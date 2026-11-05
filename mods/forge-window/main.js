@@ -9,8 +9,8 @@ import { PANELS, RESOLVE, parseConfig, parseFields, forgeLayout, keptBlocks, oth
 import { button, pill } from "./ui.js";
 
 // Forge: ctrl-shift-f (keys.json: "mod.open:forge-window") turns the whole Herdr window into
-// the Forge layout for the remembered project, and back to the layout you came from.
-// Only the first open uses the focused terminal's repo; Other project changes the saved choice.
+// the Forge layout for the focused terminal's repo (else the remembered project), and back
+// to the layout you came from. Other project changes the saved choice until the next open.
 // The layout is written to layouts/forge.json for that project, so every panel is an
 // ordinary block: it collapses, detaches and opens as a pane, and Herdr keeps its size.
 //
@@ -99,19 +99,16 @@ export default class Forge extends View {
   init(_props, cx) {
     if (props()?.empty) { this.empty = true; return; }
     if (props()?.bar) return this.initBar(cx);
-    // The launcher: in Forge, go back; elsewhere, restore the last project. Shared
-    // state survives restarts, unlike whatever terminal happens to have focus now.
+    // The launcher: in Forge, go back; elsewhere, the focused terminal's repo, else the
+    // last project (a terminal outside any repo, or one Forge can't read).
     cx.spawn(async () => {
       try {
         if (shared("layout") === LAYOUT) back();
         else {
           const config = await readConfig();
-          let project = rememberedProject(state().project);
-          if (!project) {
-            const where = focusedFolder();
-            const found = where ? await resolve(where, config).catch(() => null) : null;
-            project = rememberedProject(found);
-          }
+          const where = focusedFolder();
+          const found = where ? await resolve(where, config).catch(() => null) : null;
+          const project = rememberedProject(found) ?? rememberedProject(state().project);
           if (project) await show(project, config);
           else toast("Focus a terminal in a GitLab or GitHub repo, then press ctrl-shift-f again.");
         }
