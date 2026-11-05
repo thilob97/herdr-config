@@ -37,7 +37,5 @@
 /mods/workspace-status/
 /mods/worktree/
 /layouts/*.old-*
-/layouts/*-edited*
-/mods/*-edited*/
 *.reset-*
 *.error
