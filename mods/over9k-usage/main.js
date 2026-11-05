@@ -234,10 +234,16 @@ export default class Usage extends View {
     cx.notify();
   }
 
-  // The limit a service's row shows: the one picked for it, or else its fullest.
+  // The limit a service's row shows: the one picked for it, or else its shortest
+  // window (5h before 7d); among equal windows, or none known, the fullest.
   headline(s) {
     if (!s.limits?.length) return null;
-    return s.limits.find((l) => l.label === this.picked[s.key]) ?? s.limits.reduce((a, b) => (b.used > a.used ? b : a));
+    const minutes = (l) => {
+      const m = /^(\d+)\s*(h|hour|d|day)/i.exec(l.label);
+      return m ? Number(m[1]) * (/^h/i.test(m[2]) ? 60 : 1440) : Infinity;
+    };
+    return s.limits.find((l) => l.label === this.picked[s.key])
+      ?? s.limits.reduce((a, b) => (minutes(b) < minutes(a) || (minutes(b) === minutes(a) && b.used > a.used) ? b : a));
   }
 
   // The tab a row billed by use is on: the one picked for it, or else the day.
