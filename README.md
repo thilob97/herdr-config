@@ -12,6 +12,8 @@ Neue Panel-Mods (Seitenleisten wie Git-Graph, Timeline) **nicht** als eigene Spa
 2. In `mods/tabs-graph/main.js` die Liste `extra` um `["<id>", "<Label>", "<icon.svg>"]` ergänzen.
 3. In der `mod.json` des Mods `"place": "none"` setzen, und einen Block, den Herdr selbst angedockt hat, aus dem Layout entfernen.
 
+Mods, die das ganze Fenster übernehmen (z. B. Forge), bekommen keinen Panel-Eintrag, sondern einen Button rechts hinter dem Trennstrich in `mods/tabs-graph/main.js` (wie `open-forge`).
+
 ## Was getrackt wird
 
 | Datei | Zweck |

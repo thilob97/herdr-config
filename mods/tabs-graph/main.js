@@ -104,6 +104,14 @@ export default class Tabs extends View {
       .when(enabled.includes("files"), el => el.child(panelButton("files", "Files", "mods/files/file.svg")))
       .when(enabled.includes("changes"), el => el.child(panelButton("changes", "Changes", "mods/changes/changes.svg")))
       .children(extra.map(([id, label, icon]) => panelButton(id, label, icon)))
+      // Forge is a whole-window view, not a panel: a divider, then a button that switches to it
+      // (the same as ctrl-shift-f).
+      .child(div().w(1).h(16).mx(4).flex_none().bg(t.border))
+      .child(h_flex().id("open-forge").h(26).px(8).gap(5).flex_none().items_center().rounded(6)
+        .text_size(12).bg(t.chrome).text_color(t.muted).tooltip("Forge: PRs, CI and issues of this repo (ctrl-shift-f)")
+        .hover(s => s.bg(t.hover)).on_mouse_down("left", stop)
+        .on_click(() => run("mod.open", { name: "forge-window" }))
+        .child(svg("mods/git-graph/icons/merge.svg").size(14)).child("Forge"))
       .when(w?.buttons, el => el.child(button("minimize", w.platform === "windows" ? svg("mods/tabs-graph/win-min.svg").size(16) : "−", () => run("window.minimize")))
         .child(button("maximize", w.platform === "windows" ? svg(`mods/tabs-graph/${w.maximized ? "win-restore" : "win-max"}.svg`).size(16) : "□", () => run("window.maximize")))
         .child(button("close-window", w.platform === "windows" ? svg("mods/tabs-graph/win-close.svg").size(16) : svg("mods/pane/close.svg").size(13), () => run("window.close"))));
