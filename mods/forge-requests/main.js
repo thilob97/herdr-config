@@ -35,6 +35,15 @@ const ORDER_EVERY = 300;             // seconds: how far behind and changed file
 // Herdr's functions the shared agent and cleanup flows use (agents.js, cleanup.js).
 const H = { exec, agents, panes, terminals };
 
+// The PR window (mods/forge-pr): the request in full, with the owning agent's terminal beside
+// it. The same key replaces an open window. forge-pr has the same function.
+function prWindow(p, terminal = null) {
+  const pr = { id: "pr", type: "block", size: { weight: 1.25 }, content: { mod: "forge-pr", props: { ...p, terminal } } };
+  const children = terminal ? [pr, { id: "pr-agent", type: "block", size: { weight: 1 }, content: { terminal } }] : [pr];
+  return openOverlay({ kind: "window", key: "forge-pr", width: 0.92, height: 0.88,
+    layout: { id: "pr-window", type: "row", divider: { width: 1, color: "border" }, children } });
+}
+
 export default class ForgeRequests extends View {
   init(_props, cx) {
     this.forge = forgeClient({ exec, readTextFile }, `${appHome()}/mods/${MOD}/forge.py`);
@@ -324,6 +333,16 @@ export default class ForgeRequests extends View {
     });
   }
 
+  // Opens the request in the PR window, with the agent on it (one with a pane first) beside.
+  openPr(r, agentList) {
+    const p = props() ?? {};
+    const project = projectOf(p);
+    const folder = checkoutOf(p.folder, spaces(), project.on, project.repo);
+    const agent = agentList.find((a) => a.pane) ?? agentList[0] ?? null;
+    prWindow({ provider: project.provider, host: project.host, repo: project.repo, on: project.on, folder,
+      iid: r.iid, fork: Boolean(r.fork) }, agent?.address ?? null);
+  }
+
   // A glyph for the request's CI; click opens it.
   ciBadge(t, r, terms) {
     const ci = r.ci;
@@ -561,9 +580,13 @@ export default class ForgeRequests extends View {
               if (on) this.hovered = r.iid; else if (this.hovered === r.iid) this.hovered = null;
               cx.notify();
             })
-            .on_click(() => openUrl(exec, r.url))
+            .on_click(() => this.openPr(r, agentsOf(r)))
+            .tooltip(`Open ${terms.reqPrefix}${r.iid}: conversation, files, checks and its agent`)
             .child(h_flex().gap(6).items_center()
-              .child(div().flex_none().text_size(11).text_color(t.dim).child(`${terms.reqPrefix}${r.iid}`))
+              .child(div().id(`rq-link-${r.iid}`).flex_none().text_size(11).text_color(t.dim).cursor_pointer()
+                .hover((s) => s.text_color(t.accent)).tooltip(`Open on ${terms.name}`)
+                .on_click((_e, cx) => { cx.stop_propagation(); openUrl(exec, r.url); })
+                .child(`${terms.reqPrefix}${r.iid}`))
               .when(Boolean(r.draft), (e) => e.child(chip(t, "Draft")))
               .when(Boolean(r.auto_merge), (e) => e.child(chip(t, "Auto-merge", t.accent)))
               .child(div().flex_1().min_w(0).truncate().text_size(13).child(r.title ?? ""))

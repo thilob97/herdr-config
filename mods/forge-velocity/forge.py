@@ -17,7 +17,7 @@
 # agents may rely on. Every mod folder carries a copy of this file stamped with its
 # version; edit shared/forge.py and run `npm run sync`.
 
-VERSION = "0.1.5+f116f7cc0f83"
+VERSION = "0.1.5+f116f7cc0f83.omp1"
 
 import bisect, json, os, random, re, sqlite3, subprocess, sys, time, urllib.parse
 from concurrent.futures import ThreadPoolExecutor
@@ -141,6 +141,27 @@ UNTRUSTED_END = "<<<END UNTRUSTED ISSUE DATA>>>"
 def plain_text(s):
     """A description or comment: control characters gone, newlines and tabs kept."""
     return None if s is None else CONTROL.sub(lambda m: m.group() if m.group() in "\n\t" else "", str(s))
+
+
+PATCH_LINES = 400               # a file's diff lines kept in `request-show`
+PATCH_TOTAL = 200_000           # characters of diff kept over all files
+
+
+def cut_patches(files):
+    """Trims each file's patch to PATCH_LINES and all of them to PATCH_TOTAL characters;
+    a cut file says `truncated`."""
+    left = PATCH_TOTAL
+    for f in files:
+        patch = plain_text(f.get("patch") or "")
+        lines = patch.split("\n")
+        cut = len(lines) > PATCH_LINES
+        if cut:
+            patch = "\n".join(lines[:PATCH_LINES])
+        if len(patch) > left:
+            patch, cut = patch[:max(0, left)], True
+        left -= len(patch)
+        f["patch"], f["truncated"] = patch, cut
+    return files
 
 
 def issue_in_branch(iid, branch):
@@ -863,6 +884,69 @@ class GitLab(Cli):
     def issue_comment(self, iid, body):
         self.api(f"{self.project}/issues/{iid}/notes", "POST", {"body": body})
 
+    # -- one merge request in full (request-show) --
+
+    def request_detail(self, iid):
+        base = f"{self.project}/merge_requests/{int(iid)}"
+        m = self.api(base)
+        notes = []
+        for d in self.all_pages(f"{base}/discussions"):
+            for n in d.get("notes") or []:
+                if n.get("system"):
+                    continue
+                pos = n.get("position") or {}
+                kind = "review_comment" if n.get("type") == "DiffNote" or pos else "comment"
+                notes.append({"id": n.get("id"), "kind": kind, "author": (n.get("author") or {}).get("username"),
+                              "body": n.get("body") or "", "created_ms": ms(n.get("created_at")),
+                              **({"path": pos.get("new_path") or pos.get("old_path"),
+                                  "line": pos.get("new_line") or pos.get("old_line"),
+                                  "resolved": bool(n.get("resolved")), "outdated": False,
+                                  "thread": d.get("id")} if kind == "review_comment" else {})})
+        try:
+            approvals = self.api(f"{base}/approvals") or {}
+        except RuntimeError:
+            approvals = {}
+        files = []
+        for c in (self.api(f"{base}/changes") or {}).get("changes") or []:
+            diff = c.get("diff") or ""
+            lines = diff.split("\n")
+            files.append({"path": c.get("new_path") or c.get("old_path"),
+                          "status": "added" if c.get("new_file") else "removed" if c.get("deleted_file")
+                          else "renamed" if c.get("renamed_file") else "modified",
+                          "additions": sum(1 for l in lines if l.startswith("+") and not l.startswith("+++")),
+                          "deletions": sum(1 for l in lines if l.startswith("-") and not l.startswith("---")),
+                          "patch": diff})
+        checks = []
+        pipe = m.get("head_pipeline") or {}
+        if pipe.get("id"):
+            for j in self.all_pages(f"{self.project}/pipelines/{pipe['id']}/jobs"):
+                st = j.get("status")
+                checks.append({"name": j.get("name"),
+                               "status": "completed" if st in ("success", "failed", "canceled", "skipped") else
+                               "in_progress" if st == "running" else "queued",
+                               "conclusion": {"success": "success", "failed": "failure", "canceled": "cancelled",
+                                              "skipped": "skipped"}.get(st),
+                               "url": j.get("web_url")})
+        return {
+            "request": {"title": m.get("title"), "url": m.get("web_url"),
+                        "state": {"opened": "open", "merged": "merged"}.get(m.get("state"), "closed"),
+                        "draft": bool(m.get("draft")), "author": (m.get("author") or {}).get("username"),
+                        "source": m.get("source_branch"), "target": m.get("target_branch"), "sha": m.get("sha"),
+                        "created_ms": ms(m.get("created_at")), "updated_ms": ms(m.get("updated_at")),
+                        "additions": sum(f["additions"] for f in files), "deletions": sum(f["deletions"] for f in files),
+                        "changed_files": len(files),
+                        "mergeable": None if m.get("has_conflicts") is None else not m.get("has_conflicts"),
+                        "review_decision": "APPROVED" if approvals.get("approved") else
+                        "REVIEW_REQUIRED" if approvals.get("approvals_left") else None},
+            "description": m.get("description") or "",
+            "notes": sorted(notes, key=lambda n: n["created_ms"] or 0),
+            "files": files,
+            "checks": checks,
+        }
+
+    def request_comment(self, iid, body):
+        self.api(f"{self.project}/merge_requests/{int(iid)}/notes", "POST", {"body": body})
+
 
 # GitHub's run and job words -> the GitLab CI words the shapes use.
 GH_QUEUED = {"in_progress": "running", "queued": "pending", "requested": "pending", "pending": "pending",
@@ -1505,6 +1589,87 @@ class GitHub(Cli):
     def issue_comment(self, iid, body):
         self.api(f"{self.repo}/issues/{iid}/comments", "POST", body={"body": body})
 
+
+    # -- one pull request in full (request-show) --
+
+    PR_DETAIL_Q = """query($o:String!,$n:String!,$i:Int!){repository(owner:$o,name:$n){pullRequest(number:$i){
+      number title url state isDraft body author{login __typename} headRefName baseRefName headRefOid
+      createdAt updatedAt additions deletions changedFiles mergeable reviewDecision
+      comments(first:100){nodes{databaseId author{login __typename} body createdAt}}
+      reviews(first:50){nodes{databaseId author{login __typename} body state submittedAt}}
+      reviewThreads(first:50){nodes{id isResolved isOutdated path line originalLine
+        comments(first:30){nodes{databaseId author{login __typename} body createdAt}}}}
+      commits(last:1){nodes{commit{statusCheckRollup{contexts(first:60){nodes{__typename
+        ... on CheckRun{name status conclusion detailsUrl}
+        ... on StatusContext{context state targetUrl}}}}}}}}}}"""
+
+    @staticmethod
+    def _who(a):
+        return None if not a else (a.get("login") or "") + ("[bot]" if a.get("__typename") == "Bot" else "")
+
+    def request_detail(self, iid):
+        pr = self.repository(self.PR_DETAIL_Q, i=int(iid))["pullRequest"]
+        if not pr:
+            raise RuntimeError(f"pull request #{iid} not found")
+        notes = []
+        for c in (pr.get("comments") or {}).get("nodes") or []:
+            if c:
+                notes.append({"id": c.get("databaseId"), "kind": "comment", "author": self._who(c.get("author")),
+                              "body": c.get("body") or "", "created_ms": ms(c.get("createdAt"))})
+        for r in (pr.get("reviews") or {}).get("nodes") or []:
+            # A review that only carries inline comments has no body: its comments show in their threads.
+            if r and (r.get("body") or r.get("state") in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED")):
+                notes.append({"id": r.get("databaseId"), "kind": "review", "author": self._who(r.get("author")),
+                              "body": r.get("body") or "", "created_ms": ms(r.get("submittedAt")), "state": r.get("state")})
+        for t in (pr.get("reviewThreads") or {}).get("nodes") or []:
+            for c in ((t or {}).get("comments") or {}).get("nodes") or []:
+                if c:
+                    notes.append({"id": c.get("databaseId"), "kind": "review_comment", "author": self._who(c.get("author")),
+                                  "body": c.get("body") or "", "created_ms": ms(c.get("createdAt")),
+                                  "path": t.get("path"), "line": t.get("line") or t.get("originalLine"),
+                                  "outdated": bool(t.get("isOutdated")), "resolved": bool(t.get("isResolved")),
+                                  "thread": t.get("id")})
+        files = []
+        for batch in self.pages(f"{self.repo}/pulls/{int(iid)}/files"):
+            for f in batch:
+                files.append({"path": f.get("filename"), "status": f.get("status") if f.get("status") in
+                              ("added", "removed", "renamed") else "modified",
+                              "additions": f.get("additions") or 0, "deletions": f.get("deletions") or 0,
+                              "patch": f.get("patch") or ""})
+            if len(files) >= 300 or over_budget():
+                break
+        checks = []
+        commit = (((pr.get("commits") or {}).get("nodes") or [{}])[-1] or {}).get("commit") or {}
+        for c in (((commit.get("statusCheckRollup") or {}).get("contexts") or {}).get("nodes") or []):
+            if not c:
+                continue
+            if c.get("__typename") == "CheckRun":
+                checks.append({"name": c.get("name"), "status": (c.get("status") or "").lower() or "queued",
+                               "conclusion": (c.get("conclusion") or "").lower() or None, "url": c.get("detailsUrl")})
+            else:
+                st = (c.get("state") or "").lower()
+                checks.append({"name": c.get("context"),
+                               "status": "completed" if st in ("success", "failure", "error") else "in_progress",
+                               "conclusion": {"success": "success", "failure": "failure", "error": "failure"}.get(st),
+                               "url": c.get("targetUrl")})
+        return {
+            "request": {"title": pr.get("title"), "url": pr.get("url"),
+                        "state": {"OPEN": "open", "MERGED": "merged"}.get(pr.get("state"), "closed"),
+                        "draft": bool(pr.get("isDraft")), "author": self._who(pr.get("author")),
+                        "source": pr.get("headRefName"), "target": pr.get("baseRefName"), "sha": pr.get("headRefOid"),
+                        "created_ms": ms(pr.get("createdAt")), "updated_ms": ms(pr.get("updatedAt")),
+                        "additions": pr.get("additions") or 0, "deletions": pr.get("deletions") or 0,
+                        "changed_files": pr.get("changedFiles") or len(files),
+                        "mergeable": {"MERGEABLE": True, "CONFLICTING": False}.get(pr.get("mergeable")),
+                        "review_decision": pr.get("reviewDecision")},
+            "description": pr.get("body") or "",
+            "notes": sorted(notes, key=lambda n: n["created_ms"] or 0),
+            "files": files,
+            "checks": checks,
+        }
+
+    def request_comment(self, iid, body):
+        self.api(f"{self.repo}/issues/{int(iid)}/comments", "POST", body={"body": body})
 
 PROVIDERS = {"gitlab": GitLab, "github": GitHub}
 
@@ -2295,6 +2460,28 @@ class Project:
         self.db.commit()
         return self.show(iid, refetch=True)
 
+    REQUEST_EMPTY = {"request": None, "description": "", "notes": [], "files": [], "checks": []}
+
+    def request_show(self, iid, max_age, force):
+        """One merge/pull request in full: description, comments, reviews, review comments,
+        files with their (cut) diffs, checks. Cleaned like `show`: still untrusted."""
+        data, at, err = self.cached(f"request:{int(iid)}", max_age, lambda: self.forge.request_detail(iid),
+                                    self.REQUEST_EMPTY, force)
+        r = data.get("request")
+        if r:
+            r = {**r, **{k: one_line(r.get(k)) for k in ("title", "author", "source", "target")}}
+        notes = [{**n, "author": one_line(n.get("author")), "body": plain_text(n.get("body")),
+                  **({"path": one_line(n.get("path"))} if n.get("path") else {})} for n in data.get("notes") or []]
+        files = cut_patches([{**f, "path": one_line(f.get("path"))} for f in data.get("files") or []])
+        checks = [{**c, "name": one_line(c.get("name"))} for c in data.get("checks") or []]
+        return {"iid": int(iid), "request": r, "description": plain_text(data.get("description") or ""),
+                "notes": notes, "files": files, "checks": checks, "at": at, "error": err}
+
+    def request_comment(self, iid, body):
+        self.forge.request_comment(iid, body)
+        self.drop(f"request:{int(iid)}", "requests")
+        return self.request_show(iid, 0, True)
+
     def labels_meta(self):
         # Startup reads only local state. The UI can paint cached rows and decide
         # whether a sync is due without refetching issues or looking up the login.
@@ -2579,6 +2766,8 @@ def main(argv):
         "search": lambda: {"iids": p.search(a[0])},
         "update": lambda: p.update(int(a[0]), json.loads(a[1])),
         "comment": lambda: p.comment(int(a[0]), a[1]),
+        "request-show": lambda: p.request_show(int(a[0]), age(1), force(2)),
+        "request-comment": lambda: p.request_comment(int(a[0]), a[1]),
         "launch": lambda: p.write("INSERT INTO launches(iid, action, tab, at) VALUES(?,?,?,?)",
                                   (int(a[0]), a[1], a[2], time.time())),
         # A proposal accepted or dismissed in the browser (the label change itself goes through `update`).
