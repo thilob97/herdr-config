@@ -43,3 +43,5 @@
 /mods/*/gpui-kit.d.ts
 /mods/*/herdr.d.ts
 /mods/*/jsconfig.json
+# Forge writes this layout itself each time it opens
+/layouts/forge.json
