@@ -162,6 +162,13 @@
                               "content": {
                                 "mod": "over9k-prompts"
                               }
+                            },
+                            {
+                              "id": "filetree",
+                              "type": "block",
+                              "content": {
+                                "mod": "filetree"
+                              }
                             }
                           ],
                           "active": "files"

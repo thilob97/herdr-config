@@ -81,6 +81,7 @@ export default class Tabs extends View {
     const extra = [
       ["graph", "Git", "mods/git-graph/icons/graph.svg"],
       ["prompts", "Timeline", "mods/over9k-prompts/timeline.svg"],
+      ["filetree", "Tree", "mods/filetree/folder.svg"],
     ];
     const enabled = [...(shared("workspace.panels") ?? ["files", "changes"]), ...extra.map(([id]) => id)];
     this.syncPanel(space, panel, body, enabled);
