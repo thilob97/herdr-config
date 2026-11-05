@@ -240,6 +240,16 @@ function parseNumstat(stdout, git) {
 }
 
 // ── opening files ──────────────────────────────────────────────────────────────────────
+// Through mods/open-with: "editor" opens it in the terminal editor used last (Neovim by
+// default; a Neovim already open in the tab takes the file), "pick" shows the picker.
+// m: { root, rel, abs, dir, on }.
+function openWithTarget(m, mode) {
+  const target = m.dir ? { folder: m.abs, machine: m.on ?? null }
+    : { file: m.abs, machine: m.on ?? null, root: m.root, rel: m.rel };
+  if (mode === "pick") openOverlay({ mod: "open-with", kind: "popup", at: "top", width: 380, props: target });
+  else openOverlay({ mod: "open-with", kind: "popup", width: 2, height: 2, props: { ...target, direct: "editor" } });
+}
+
 async function openExternal(abs) {
   const platform = window()?.platform;
   const r = platform === "macos" ? await exec("open", ["--", abs])
@@ -733,6 +743,7 @@ export default class FileTree extends View {
   // app; anything else is a command with {path} and {dir}, run without a shell.
   openFile(rel, cx) {
     const how = String(this.config.open ?? "preview").trim(), abs = join(this.root, rel);
+    if (how === "editor") { this.openWith(rel, false, "editor"); return; }
     if (how === "preview" || this.on) { this.show(rel, cx); return; }
     cx.spawn(async (cx) => {
       try {
@@ -750,7 +761,14 @@ export default class FileTree extends View {
 
   openMenu(rel, dir) {
     const abs = join(this.root, rel);
-    openOverlay({ mod: NAME, kind: "popup", width: 210, height: dir ? 5 * 28 + 10 : 7 * 28 + 10, props: { menu: { root: this.root, rel, abs, dir, local: !this.on } } });
+    openOverlay({ mod: NAME, kind: "popup", width: 210, height: dir ? 7 * 28 + 10 : 9 * 28 + 10, props: { menu: { root: this.root, rel, abs, dir, local: !this.on, on: this.on ?? null } } });
+  }
+
+  // Terminal editors and the rest (mods/open-with). "editor": the terminal editor used last
+  // (Neovim by default) opens it at once, into a Neovim already open in this tab if there is
+  // one; "pick": the editor picker, with "Preview in the Tree" for text files.
+  openWith(rel, dir, mode) {
+    openWithTarget({ root: this.root, rel, abs: join(this.root, rel || ""), dir, on: this.on ?? null }, mode);
   }
 
   // A virtual list's rows can't hold handlers, so the list reports the row and
@@ -795,6 +813,7 @@ export default class FileTree extends View {
     if (this.file) {
       if (k === "escape" || k === "left" || k === "h") this.closePreview();
       else if (k === "o" && !this.on) openExternal(join(this.root, this.file)).catch(() => {});
+      else if (k === "e") this.openWith(this.file, false, "editor");
       else return;
       cx.stop_propagation(); cx.notify(); return;
     }
@@ -818,6 +837,8 @@ export default class FileTree extends View {
     else if (k === "enter") { if (this.hits) this.jump(cx); else if (cur.e.dir) this.toggle(cur.rel, cx); else this.openFile(cur.rel, cx); }
     else if (k === "space") { if (cur.e.dir) this.toggle(cur.rel, cx); else this.show(cur.rel, cx); }
     else if (k === "p" && !cur.e.dir) this.show(cur.rel, cx);
+    else if (k === "e") this.openWith(cur.rel, cur.e.dir, "editor");
+    else if (k === "o" && shift) this.openWith(cur.rel, cur.e.dir, "pick");
     else if (k === "y") copy(cx, shift ? join(this.root, cur.rel) : cur.rel);
     else if (k === "a") sendToAgent(cx, join(this.root, cur.rel));
     else return;
@@ -936,6 +957,8 @@ export default class FileTree extends View {
       .hover((s) => s.bg(t.hover)).on_click((_e, cx) => { close(); act(cx); }).child(label);
     const items = [];
     if (!m.dir) items.push(item("m-preview", "Preview", () => setShared(`${NAME}.preview`, { root: m.root, rel: m.rel, n: Date.now() })));
+    items.push(item("m-editor", m.dir ? "Open folder in Neovim (e)" : "Open in Neovim (e)", () => openWithTarget(m, "editor")));
+    items.push(item("m-with", "Open with… (⇧O)", () => openWithTarget(m, "pick")));
     if (!m.dir && m.local) items.push(item("m-open", "Open in default app", () => openExternal(m.abs).catch((e) => notify({ title: "Could not open the file", body: String(e?.message ?? e), level: "error" }))));
     if (m.local) items.push(item("m-reveal", window()?.platform === "macos" ? "Reveal in Finder" : "Show in folder", () => revealExternal(m.abs).catch(() => {})));
     items.push(item("m-rel", "Copy relative path", (cx) => copy(cx, m.rel)));
@@ -969,6 +992,7 @@ export default class FileTree extends View {
       .when(Boolean(this.file), (el) => el.child(image(fileIcon(this.file, false, false, settings().dark !== false)).size(14).flex_none()))
       .child(div().flex_1().min_w(0).truncate().font_medium().text_color(this.file ? t.foreground : t.muted).child(title))
       .when(Boolean(this.file), (el) => el
+        .child(btn("ft-edit", "✎", "Open in Neovim (e)", false, () => this.openWith(this.file, false, "editor")))
         .when(!this.on, (el) => el.child(btn("ft-ext", "↗", "Open in default app (o)", false, () => openExternal(join(this.root, this.file)).catch(() => {}))))
         .child(btn("ft-copy", "⧉", "Copy path", false, (cx) => copy(cx, this.file)))
         .child(btn("ft-send", "@", "Send to agent", false, (cx) => sendToAgent(cx, join(this.root, this.file)))))

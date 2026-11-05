@@ -1,6 +1,7 @@
 {
   "global": {
     "ctrl-shift-f": "mod.open:forge-window",
+    "cmd-shift-o": "mod.open:open-with",
     "cmd-q": "app.quit",
     "cmd-h": "app.hide",
     "cmd-alt-h": "app.hide_others",
