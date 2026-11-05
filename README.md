@@ -2,6 +2,10 @@
 
 Meine Konfiguration für die [Herdr](https://herdr.dev) Desktop-App. Das Repo ist direkt `~/.config/herdr-app`.
 
+## Regel für Agents
+
+Nach **jeder** Änderung an dieser Config sofort committen und pushen (`git add -A && git commit && git push`).
+
 ## Was getrackt wird
 
 | Datei | Zweck |
