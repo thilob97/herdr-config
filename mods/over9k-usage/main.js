@@ -7,6 +7,10 @@
 // and tabs for the period it covers, with a chart by day and model. Local models have
 // no limits, so they aren't here.
 // Where the numbers come from (this computer):
+//   omp          first: ~/.omp/agent/agent.db's usage_history (what omp's /usage shows,
+//                kept current while omp runs), the newest reading of each limit per
+//                provider and account, read with `sqlite3 -readonly`. Accounts not read
+//                in OMP_FRESH_DAYS are left out. A service omp has skips its source below.
 //   Claude       ~/.cache/over9k/usage/claude.json, saved by Over9k's optional status
 //                line (claude-statusline.sh: Options › Session footers, or "Show its
 //                limits" here), the only thing Claude Code gives its limits to; plan
@@ -84,6 +88,48 @@ async function readJson(path) {
   try { return r?.code === 0 ? JSON.parse(r.stdout) : null; } catch { return null; }
 }
 
+// omp's providers as this mod's services: [key, name, the Options switch it follows].
+const OMP_DB = ".omp/agent/agent.db", OMP_FRESH_DAYS = 7;
+const OMP_PROVIDERS = {
+  anthropic: ["claude", "Claude", "claude"],
+  "openai-codex": ["codex", "Codex", "codex"],
+  "google-antigravity": ["antigravity", "Antigravity", "gemini"],
+  "google-gemini-cli": ["gemini", "Gemini CLI", "gemini"],
+  "opencode-go": ["opencode-go", "OpenCode Go", null],
+};
+const OMP_SQL = `SELECT provider, account_key, email, label, window_label, used_fraction, resets_at
+FROM usage_history WHERE id IN (SELECT max(id) FROM usage_history GROUP BY provider, account_key, label, window_label)
+AND recorded_at > (strftime('%s','now') - ${OMP_FRESH_DAYS} * 86400) * 1000 ORDER BY provider, account_key, resets_at`;
+// "5 Hour" is "5h", "7 Day" and "Weekly" "7d"; a label naming a model group keeps it: "7d OpenAI".
+function ompLabel(window, label) {
+  const w = (window ?? "").toLowerCase();
+  const short = /^5 ?h/.test(w) ? "5h" : /^(7 ?d|week)/.test(w) ? "7d" : /^(30 ?d|month)/.test(w) ? "30d"
+    : /^(1 ?d|dai)/.test(w) ? "1d" : window && !/^(default|quota window)$/i.test(window) ? window : null;
+  const group = /\(([^)]+)\)/.exec(label ?? "")?.[1] ?? (/^gemini /i.test(label ?? "") ? label.replace(/^gemini /i, "") : null);
+  return [short, group].filter(Boolean).join(" ") || label;
+}
+
+// omp's rows: one per provider and account, its limits from the newest readings.
+async function ompRows(limit) {
+  const r = await exec("sqlite3", ["-readonly", "-json", `file:${home()}/${OMP_DB}?mode=ro`, OMP_SQL]).catch(() => null);
+  let rows;
+  try { rows = r?.code === 0 ? JSON.parse(r.stdout || "[]") : []; } catch { rows = []; }
+  const accounts = new Map();
+  for (const x of rows) {
+    const id = `${x.provider}|${x.account_key}`;
+    if (!accounts.has(id)) accounts.set(id, { provider: x.provider, email: x.email, limits: new Map() });
+    const label = ompLabel(x.window_label, x.label);
+    accounts.get(id).limits.set(label, limit(label, (x.used_fraction ?? 0) * 100, x.resets_at ? x.resets_at / 1000 : null));
+  }
+  const perProvider = {};
+  for (const a of accounts.values()) perProvider[a.provider] = (perProvider[a.provider] ?? 0) + 1;
+  return [...accounts.values()].map((a, i) => {
+    const [key, name, service] = OMP_PROVIDERS[a.provider] ?? [a.provider, a.provider, null];
+    const many = perProvider[a.provider] > 1;
+    return { key: many ? `${key}-${i}` : key, name, service, where: many ? a.email : null, omp: true, limits: [...a.limits.values()] };
+  });
+}
+
 export default class Usage extends View {
   init(_props, cx) {
     this.services = [];
@@ -108,7 +154,11 @@ export default class Usage extends View {
     // A limit: label, used % (0 once it has reset), seconds to its reset.
     const limit = (label, used, resetsAt) => resetsAt && resetsAt <= now ? { label, used: 0, left: null } : { label, used: Math.max(0, Math.min(100, used ?? 0)), left: resetsAt ? resetsAt - now : null };
 
-    const claude = await readJson(`${dir}/claude.json`);
+    const omp = await ompRows(limit);
+    const fromOmp = new Set(omp.map((s) => s.service ?? s.key));
+    out.push(...omp);
+
+    const claude = fromOmp.has("claude") ? null : await readJson(`${dir}/claude.json`);
     if (claude?.api || claude?.bedrock) {
       const row = await apiRow(null);
       if (row) out.push(row);
@@ -119,12 +169,12 @@ export default class Usage extends View {
         claude.seven_day && limit("7d", claude.seven_day.used_percentage, claude.seven_day.resets_at),
       ].filter(Boolean) });
     }
-    const codex = await exec("sh", ["-c", CODEX]).then((r) => JSON.parse(r.stdout || "null")).catch(() => null);
+    const codex = fromOmp.has("codex") ? null : await exec("sh", ["-c", CODEX]).then((r) => JSON.parse(r.stdout || "null")).catch(() => null);
     if (codex) {
       out.push({ key: "codex", name: "Codex", plan: planName(codex.plan), limits: [codex.primary, codex.secondary].filter(Boolean)
         .map((w) => limit(windowName(w.window_minutes), w.used_percent, w.resets_at)) });
     }
-    const agy = await readJson(`${dir}/antigravity.json`);
+    const agy = fromOmp.has("gemini") ? null : await readJson(`${dir}/antigravity.json`);
     if (agy?.quota) {
       const q = agy.quota, at = agy.at ?? now;
       const b = (key, label) => q[key] && limit(label, (1 - (q[key].remaining_fraction ?? 1)) * 100, q[key].reset_in_seconds != null ? at + q[key].reset_in_seconds : null);
@@ -238,7 +288,7 @@ export default class Usage extends View {
   // limit and when it resets; hover shows every limit.
   strip(t, cx) {
     if (this.claudeChecked !== true) { this.claudeChecked = true; this.checkClaude(cx); }
-    const missingClaude = this.claudeHere && !this.claudeOurs && !this.services.some((s) => s.key === "claude");
+    const missingClaude = this.claudeHere && !this.claudeOurs && !this.services.some((s) => (s.service ?? s.key) === "claude");
     return h_flex().size_full().px(12).gap(18).items_center().bg(t.chrome).border_t(1).border_color(t.border).text_size(12)
       .children(this.services.map((s) => {
         const top = this.headline(s);
@@ -257,7 +307,7 @@ export default class Usage extends View {
         .text_color(t.accent).hover((x) => x.bg(t.hover)).on_click((_e, cx) => this.setUpClaude(cx))
         .tooltip("Turns on Over9k's Claude Code status line, which shows a line under the prompt and saves the limits. Your own comes back when it's off.")
         .child(div().text_color(t.muted).child("Claude")).child("Show its limits")))
-      .when(!this.services.length && !missingClaude, (el) => el.child(div().text_color(t.dim).child("No usage yet: start Claude Code, Codex or Antigravity")));
+      .when(!this.services.length && !missingClaude, (el) => el.child(div().text_color(t.dim).child("No usage yet: run /usage in omp, or start Claude Code, Codex or Antigravity")));
   }
 
   render(cx) {
