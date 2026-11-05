@@ -6,6 +6,12 @@ Meine Konfiguration für die [Herdr](https://herdr.dev) Desktop-App. Das Repo is
 
 Nach **jeder** Änderung an dieser Config sofort committen und pushen (`git add -A && git commit && git push`).
 
+Neue Panel-Mods (Seitenleisten wie Git-Graph, Timeline) **nicht** als eigene Spalte andocken, sondern in die Leiste oben neben Files/Changes:
+
+1. In `layouts/main-folders.json` dem Stack `panel-body` ein Kind geben: `{ "id": "<id>", "type": "block", "content": { "mod": "<mod>" } }`.
+2. In `mods/tabs-graph/main.js` die Liste `extra` um `["<id>", "<Label>", "<icon.svg>"]` ergänzen.
+3. In der `mod.json` des Mods `"place": "none"` setzen, und einen Block, den Herdr selbst angedockt hat, aus dem Layout entfernen.
+
 ## Was getrackt wird
 
 | Datei | Zweck |

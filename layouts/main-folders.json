@@ -155,6 +155,13 @@
                               "content": {
                                 "mod": "git-graph"
                               }
+                            },
+                            {
+                              "id": "prompts",
+                              "type": "block",
+                              "content": {
+                                "mod": "over9k-prompts"
+                              }
                             }
                           ],
                           "active": "files"
@@ -214,16 +221,6 @@
       "divider": {
         "width": 1,
         "color": "border"
-      }
-    },
-    {
-      "id": "ba9efe92dc96e80812e3cc91bac19657a",
-      "type": "block",
-      "content": {
-        "mod": "over9k-prompts"
-      },
-      "size": {
-        "px": 368
       }
     }
   ],
