@@ -179,14 +179,35 @@
                   "gap": 8
                 },
                 {
-                  "id": "status",
-                  "type": "block",
-                  "content": {
-                    "mod": "workspace-status"
-                  },
+                  "id": "status-row",
+                  "type": "row",
                   "size": {
                     "px": 28
-                  }
+                  },
+                  "resizable": false,
+                  "children": [
+                    {
+                      "id": "status",
+                      "type": "block",
+                      "size": {
+                        "weight": 1
+                      },
+                      "content": {
+                        "mod": "workspace-status"
+                      }
+                    },
+                    {
+                      "id": "usage-limits",
+                      "type": "block",
+                      "size": {
+                        "weight": 2.2
+                      },
+                      "min": 130,
+                      "content": {
+                        "mod": "usage-limits"
+                      }
+                    }
+                  ]
                 }
               ],
               "resizable": false
@@ -206,16 +227,6 @@
             12,
             16
           ]
-        },
-        {
-          "id": "b327f068ea0d5bba8a9c6dd7a3d3147dd",
-          "type": "block",
-          "content": {
-            "mod": "over9k-usage"
-          },
-          "size": {
-            "px": 30
-          }
         }
       ],
       "divider": {
