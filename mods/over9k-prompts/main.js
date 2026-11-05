@@ -7,9 +7,11 @@
 // only gets a message's tokens once it's finished), the files it changed and
 // the commands it ran, and the start of its reply. Click one, or ↑/↓ then Enter,
 // to read the whole prompt and the reply (Markdown) here; Esc closes it.
-// Claude Code agents only: claude-info.py (Over9k's sidebar runs it; on its own, this
-// mod's copy) says which conversation runs in each terminal, from Claude Code's own
-// session files (~/.cache/over9k/agents/<terminal>.json); prompts.py reads it.
+// Claude Code and omp agents. Claude Code: claude-info.py (Over9k's sidebar runs it; on
+// its own, this mod's copy) says which conversation runs in each terminal, from Claude
+// Code's own session files (~/.cache/over9k/agents/<terminal>.json); prompts.py reads it.
+// omp: the agent's foreground pid (hc get), whose tty omp maps to its session in
+// ~/.omp/agent/terminal-sessions; omp-prompts.py finds and reads it.
 // Followed: the agent you're in, else the last one you were in.
 
 import { View, div, svg } from "gpui-kit";
@@ -22,6 +24,8 @@ const python = (args) => (PY ??= exec("python3", ["-c", "1"]).then((r) => (r?.co
   .then((p) => exec(p, args));
 
 const READER = () => `${appHome()}/mods/over9k-prompts/prompts.py`;
+const OMP_READER = () => `${appHome()}/mods/over9k-prompts/omp-prompts.py`;
+const isOmp = (a) => Boolean(a) && (a.app === "omp" || a.program?.key === "omp");
 const pad = (n) => String(n).padStart(2, "0");
 
 // "15:30" today, "yesterday 9:00", "mon 15:30", else the date.
@@ -79,6 +83,15 @@ export default class Prompts extends View {
     this.busy = true;
     cx.spawn(async (cx) => {
       try {
+        const last = this.transcript && this.size != null ? `${this.transcript}\t${this.size}` : "";
+        // omp: the session omp recorded for the tty of the agent's running program.
+        if (isOmp(agents().find((x) => x.address === this.agent))) {
+          const g = await hc(["get", this.agent, "--json"]).catch(() => null);
+          let pid = null;
+          try { pid = JSON.parse(g?.stdout ?? "")?.foreground?.pid ?? null; } catch {}
+          const r = pid ? await python(["-I", OMP_READER(), "--pid", String(pid), last]).catch(() => null) : null;
+          return this.take(r, null, cx, "No omp session found for this terminal");
+        }
         let info = await readTextFile(`${home()}/.cache/over9k/agents/${this.agent}.json`).catch(() => null);
         // On its own (no sidebar keeps those files): run claude-info.py here.
         if (!info) {
@@ -94,24 +107,29 @@ export default class Prompts extends View {
         const cwd = panes().find((p) => p.terminal === this.agent)?.cwd;
         const claude = a && (a.app === "claude-code" || a.program?.key === "claude" || /claude/i.test(a.program?.name ?? ""));
         if (!path && claude && cwd) path = `${home()}/.claude/projects/${cwd.replace(/[^A-Za-z0-9]/g, "-")}`;
-        if (!path) { this.note = "The timeline shows Claude Code agents"; this.prompts = []; this.transcript = null; cx.notify(); return; }
+        if (!path) { this.note = "The timeline shows Claude Code and omp agents"; this.prompts = []; this.transcript = null; cx.notify(); return; }
         // Read only when it has grown (the reader checks its size).
-        const r = await python(["-I", READER(), path, this.transcript && this.size != null ? `${this.transcript}\t${this.size}` : ""]).catch(() => null);
-        let got = null;
-        try { got = JSON.parse(r?.stdout ?? ""); } catch {}
-        const list = got?.prompts;
-        if (!Array.isArray(list)) return;
-        this.prompts = list.reverse();
-        this.context = got.context ?? 0;
-        this.transcript = got.path ?? path;
-        this.size = got.size ?? null;
-        this.note = this.prompts.length ? "" : "No prompts yet";
-        if (this.at >= this.prompts.length) this.at = 0;
-        cx.notify();
+        const r = await python(["-I", READER(), path, last]).catch(() => null);
+        this.take(r, path, cx);
       } finally {
         this.busy = false;
       }
     });
+  }
+
+  // A reader's answer: the prompts, newest first. {"same": true} (or nothing) keeps them.
+  take(r, path, cx, missing) {
+    let got = null;
+    try { got = JSON.parse(r?.stdout ?? ""); } catch {}
+    const list = got?.prompts;
+    if (!Array.isArray(list)) return;
+    this.prompts = list.reverse();
+    this.context = got.context ?? 0;
+    this.transcript = got.path ?? path;
+    this.size = got.size ?? null;
+    this.note = this.prompts.length ? "" : got.path || !missing ? "No prompts yet" : missing;
+    if (this.at >= this.prompts.length) this.at = 0;
+    cx.notify();
   }
 
   // The working agent's own counter, from the bottom of its screen: Claude Code's
