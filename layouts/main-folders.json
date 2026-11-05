@@ -136,13 +136,6 @@
                           "type": "stack",
                           "children": [
                             {
-                              "id": "files",
-                              "type": "block",
-                              "content": {
-                                "mod": "files"
-                              }
-                            },
-                            {
                               "id": "changes",
                               "type": "block",
                               "content": {
@@ -171,7 +164,7 @@
                               }
                             }
                           ],
-                          "active": "files"
+                          "active": "filetree"
                         }
                       ],
                       "size": {

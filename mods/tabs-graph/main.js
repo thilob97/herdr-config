@@ -83,7 +83,8 @@ export default class Tabs extends View {
       ["prompts", "Timeline", "mods/over9k-prompts/timeline.svg"],
       ["filetree", "Tree", "mods/filetree/folder.svg"],
     ];
-    const enabled = [...(shared("workspace.panels") ?? ["files", "changes"]), ...extra.map(([id]) => id)];
+    // Herdr's Files panel is replaced by the filetree mod ("Tree").
+    const enabled = [...(shared("workspace.panels") ?? ["files", "changes"]).filter((id) => id !== "files"), ...extra.map(([id]) => id)];
     this.syncPanel(space, panel, body, enabled);
     const panelButton = (id, label, icon) => {
       const on = panel && !panel.hidden && body?.active === id;
