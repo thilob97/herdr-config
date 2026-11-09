@@ -1,7 +1,6 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { spaces, panes, run, openOverlay, theme, window, shared, layout, settings } from "herdr";
-import { randomUUID } from "crypto";
+import { spaces, panes, run, openOverlay, theme, window, layout, settings } from "herdr";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -50,9 +49,6 @@ export default class Tabs extends View {
     const t = theme();
     const space = spaces().find(p => p.active);
     const shown = space?.tabs ?? [];
-    const chatSupported = Boolean(space) && (space.machine === null || space.machine === "wsl");
-    const chatCwd = panes().find(p => p.focused && p.tab === shown.find(tab => tab.active)?.id)?.cwd || space?.folder || "";
-    const chatHint = !space ? "Erst ein Projekt öffnen" : !chatSupported ? "OMP Chat unterstützt Windows und die konfigurierte WSL-Maschine" : "Nativer OMP-Chat in diesem Projekt";
     const stop = (_e, cx) => cx.stop_propagation();
     const button = (id, label, action) => div().id(id).size(26).flex_none().flex().items_center().justify_center().rounded(6).text_color(t.dim).hover(s => s.bg(t.hover).text_color(t.foreground))
       .on_mouse_down("left", stop).on_click(action).child(label);
@@ -81,14 +77,7 @@ export default class Tabs extends View {
       ? Math.max(10, (root.traffic_lights[0] + 64) / settings().zoom - (sidebar?.hidden ? 0 : sidebar?.size?.px ?? 0))
       : 10;
     const panel = find(root, "panel"), body = find(root, "panel-body");
-    // Our own panels, after Files and Changes: [panel-body child id, label, icon].
-    const extra = [
-      ["graph", "Git", "mods/git-graph/icons/graph.svg"],
-      ["prompts", "Timeline", "mods/over9k-prompts/timeline.svg"],
-      ["filetree", "Tree", "mods/filetree/folder.svg"],
-    ];
-    // Herdr's Files panel is replaced by the filetree mod ("Tree").
-    const enabled = [...(shared("workspace.panels") ?? ["files", "changes"]).filter((id) => id !== "files"), ...extra.map(([id]) => id)];
+    const enabled = ["changes", "graph", "filetree", "blueprint"];
     this.syncPanel(space, panel, body, enabled);
     const panelButton = (id, label, icon) => {
       const on = panel && !panel.hidden && body?.active === id;
@@ -105,24 +94,10 @@ export default class Tabs extends View {
       .on_scroll_wheel(e => { if (Math.abs(e.delta.y) >= 1) run(e.delta.y > 0 ? "tab.prev" : "tab.next"); })
       .child(h_flex().id("tab-scroll").flex_1().min_w(0).h_full().items_center().gap(3).overflow_x_scrollbar().children(shown.map(item)))
       .child(button("tab-new", "+", () => openOverlay({ mod: "new-menu", kind: "popup", width: 250, height: 512 })))
-      .when(enabled.includes("files"), el => el.child(panelButton("files", "Files", "mods/files/file.svg")))
       .when(enabled.includes("changes"), el => el.child(panelButton("changes", "Changes", "mods/changes/changes.svg")))
-      .children(extra.map(([id, label, icon]) => panelButton(id, label, icon)))
-      // Forge is a whole-window view, not a panel: a divider, then a button that switches to it
-      // (the same as ctrl-shift-f).
-      .child(div().w(1).h(16).mx(4).flex_none().bg(t.border))
-      .child(h_flex().id("open-omp-chat").h(26).px(8).gap(5).flex_none().items_center().rounded(6)
-        .text_size(12).bg(t.chrome).text_color(chatSupported ? t.muted : t.dim).tooltip(chatHint)
-        .hover(s => chatSupported ? s.bg(t.hover) : s).on_mouse_down("left", stop)
-        .on_click(() => {
-          if (!chatSupported) return;
-          run("tab.new", { space: space.id, name: "OMP Chat", mod: "omp-chat", props: { spaceId: space.id, machine: space.machine, cwd: chatCwd, sessionKey: randomUUID() } });
-        }).child("OMP Chat"))
-      .child(h_flex().id("open-forge").h(26).px(8).gap(5).flex_none().items_center().rounded(6)
-        .text_size(12).bg(t.chrome).text_color(t.muted).tooltip("Forge: PRs, CI and issues of this repo (ctrl-shift-f)")
-        .hover(s => s.bg(t.hover)).on_mouse_down("left", stop)
-        .on_click(() => run("mod.open", { name: "forge-window" }))
-        .child(svg("mods/git-graph/icons/merge.svg").size(14)).child("Forge"))
+      .child(panelButton("graph", "Git", "mods/git-graph/icons/graph.svg"))
+      .child(panelButton("filetree", "Tree", "mods/filetree/folder.svg"))
+      .child(panelButton("blueprint", "Blueprint", "mods/blueprint/icon.svg"))
       .when(w?.buttons, el => el.child(button("minimize", w.platform === "windows" ? svg("mods/tabs-graph/win-min.svg").size(16) : "−", () => run("window.minimize")))
         .child(button("maximize", w.platform === "windows" ? svg(`mods/tabs-graph/${w.maximized ? "win-restore" : "win-max"}.svg`).size(16) : "□", () => run("window.maximize")))
         .child(button("close-window", w.platform === "windows" ? svg("mods/tabs-graph/win-close.svg").size(16) : svg("mods/pane/close.svg").size(13), () => run("window.close"))));

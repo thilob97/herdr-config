@@ -150,10 +150,10 @@
                               }
                             },
                             {
-                              "id": "prompts",
+                              "id": "blueprint",
                               "type": "block",
                               "content": {
-                                "mod": "over9k-prompts"
+                                "mod": "blueprint"
                               }
                             },
                             {
@@ -194,17 +194,6 @@
                       },
                       "content": {
                         "mod": "workspace-status"
-                      }
-                    },
-                    {
-                      "id": "usage-limits",
-                      "type": "block",
-                      "size": {
-                        "weight": 2.2
-                      },
-                      "min": 130,
-                      "content": {
-                        "mod": "usage-limits"
                       }
                     }
                   ]
