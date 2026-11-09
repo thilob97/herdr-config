@@ -55,3 +55,19 @@ git init -b main
 git remote add origin https://github.com/thilob97/herdr-config.git
 git pull origin main
 ```
+
+## OMP Chat
+
+Der Einstieg **OMP Chat** in der Projekttabbar öffnet den nativen Chat aus `mods/omp-chat`. Dort lässt sich eine neue eigene RPC-Sitzung starten, eine eigene laufende Sitzung wieder anhängen oder eine gespeicherte Sitzung ausdrücklich **fortsetzen**. Maschine und Projektordner (`machine`/`cwd`) bleiben an die anfängliche Auswahl gebunden: lokales Windows oder die vorhandene WSL-Maschine `wsl` mit Distribution `Ubuntu-24.04` und Benutzer `thilo`. Ein späterer Projektwechsel leitet die Sitzung nicht um. Bestehende interaktive omp-Terminals werden weder übernommen noch beendet.
+
+**Enter** fügt einen Zeilenumbruch ein, **Ctrl+Enter** sendet. Der Verlauf zeigt **Neueste oben**; manuelles Scrollen pausiert das Folgen, **Neue Nachrichten ↑** zeigt wieder die neuesten Einträge. Die Darstellung verwendet eine native Lazy-Liste statt WebView oder Herdr-/omp-Fork; die Reihenfolge „Neueste oben“ berücksichtigt die fehlende native AutoBottom-API. **Vor jedem Tool fragen** ist eine optionale Einstellung pro neuer Sitzung und ändert keine globale omp-Konfiguration.
+
+**Tab schließen** trennt nur die Ansicht; der eigene Worker und die Bridge laufen weiter. Wiederverbinden sendet keine Prompts erneut. Nur die ausdrückliche Aktion **Sitzung beenden** beendet den betreffenden eigenen Worker.
+
+Einmalig in Windows-PowerShell einrichten:
+
+```powershell
+node "$env:USERPROFILE\.config\herdr-app\mods\omp-chat\service.mjs" setup --app-home "$env:USERPROFILE\.config\herdr-app"
+```
+
+Die Einrichtung validiert Windows Node, die bestehenden Windows-/WSL-omp-Installationen und die Core-CLI `hc`; sie installiert diese nicht. Der Service läuft im Core und nutzt ausschließlich authentifiziertes Loopback. `data/omp-chat` enthält maschinenlokale Runtime- und Endpointdaten mit SID-basierten ACLs für den Benutzer und SYSTEM. Diese Daten bleiben lokal; **niemals Tokens einchecken**.
