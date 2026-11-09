@@ -1,6 +1,7 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { spaces, panes, run, openOverlay, theme, window, shared, layout, settings } from "herdr";
+import { randomUUID } from "crypto";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -49,6 +50,9 @@ export default class Tabs extends View {
     const t = theme();
     const space = spaces().find(p => p.active);
     const shown = space?.tabs ?? [];
+    const chatSupported = Boolean(space) && (space.machine === null || space.machine === "wsl");
+    const chatCwd = panes().find(p => p.focused && p.tab === shown.find(tab => tab.active)?.id)?.cwd || space?.folder || "";
+    const chatHint = !space ? "Erst ein Projekt öffnen" : !chatSupported ? "OMP Chat unterstützt Windows und die konfigurierte WSL-Maschine" : "Nativer OMP-Chat in diesem Projekt";
     const stop = (_e, cx) => cx.stop_propagation();
     const button = (id, label, action) => div().id(id).size(26).flex_none().flex().items_center().justify_center().rounded(6).text_color(t.dim).hover(s => s.bg(t.hover).text_color(t.foreground))
       .on_mouse_down("left", stop).on_click(action).child(label);
@@ -107,6 +111,13 @@ export default class Tabs extends View {
       // Forge is a whole-window view, not a panel: a divider, then a button that switches to it
       // (the same as ctrl-shift-f).
       .child(div().w(1).h(16).mx(4).flex_none().bg(t.border))
+      .child(h_flex().id("open-omp-chat").h(26).px(8).gap(5).flex_none().items_center().rounded(6)
+        .text_size(12).bg(t.chrome).text_color(chatSupported ? t.muted : t.dim).tooltip(chatHint)
+        .hover(s => chatSupported ? s.bg(t.hover) : s).on_mouse_down("left", stop)
+        .on_click(() => {
+          if (!chatSupported) return;
+          run("tab.new", { space: space.id, name: "OMP Chat", mod: "omp-chat", props: { spaceId: space.id, machine: space.machine, cwd: chatCwd, sessionKey: randomUUID() } });
+        }).child("OMP Chat"))
       .child(h_flex().id("open-forge").h(26).px(8).gap(5).flex_none().items_center().rounded(6)
         .text_size(12).bg(t.chrome).text_color(t.muted).tooltip("Forge: PRs, CI and issues of this repo (ctrl-shift-f)")
         .hover(s => s.bg(t.hover)).on_mouse_down("left", stop)
