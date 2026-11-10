@@ -5,7 +5,7 @@
 // session files on the agent's machine, every 5 seconds (a snapshot, not live).
 
 import { View, div, image, svg } from "gpui-kit";
-import { v_flex, h_flex } from "gpui-base";
+import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout, exec, readTextFile, appHome } from "herdr";
 
 function find(node, id) {
@@ -105,14 +105,24 @@ function shownSubs(list) {
   return list.filter((s) => keep.has(s));
 }
 const tokens = (n) => (n < 1000 ? String(n) : n < 1e6 ? `${Math.round(n / 1000)}k` : `${(n / 1e6).toFixed(1)}M`);
+// Pixel creatures in the Elric palette (avatars/a01..a16.svg).
+const AVATARS = Array.from({ length: 16 }, (_, i) => `mods/agent-cards/avatars/a${String(i + 1).padStart(2, "0")}.svg`);
+// Names for the creatures, handed out at random like the avatars.
+const NAMES = ["Blip", "Byte", "Glitch", "Zorbo", "Nyx", "Quark", "Pixel", "Moxie", "Vex", "Zap", "Rune", "Sprocket",
+  "Krill", "Bloop", "Fizz", "Gizmo", "Nova", "Orbit", "Puck", "Riff", "Sparky", "Tango", "Uno", "Wisp",
+  "Yuki", "Ziggy", "Comet", "Dash", "Echo", "Flux", "Grit", "Halo", "Ion", "Jinx", "Kip", "Lumo",
+  "Mochi", "Nibbles", "Ozzy", "Pogo", "Quill", "Rex", "Sizzle", "Tofu", "Vortex", "Waffle", "Xeno", "Zuzu"];
 
 export default class Agents extends View {
   init(_props, cx) {
     if (props()?.sortMenu) return;
+    if (props()?.rename) return this.initRename(cx);
     this.folded = new Set();
     // Each agent's last state and when it changed (ms), kept across restarts.
     this.changed = JSON.parse(localStorage.getItem("changed") ?? "{}");
     this.pendingPins = JSON.parse(localStorage.getItem("pins") ?? "[]");
+    // Each agent's avatar (index into AVATARS), picked at random when it first shows.
+    this.avatars = JSON.parse(localStorage.getItem("avatars") ?? "{}");
     if (!this.pendingPins.length) localStorage.removeItem("pins");
     this.migratingPins = new Set();
     cx.timer.every(30000, (cx) => cx.notify());
@@ -206,6 +216,110 @@ export default class Agents extends View {
     this.pendingPins = pending;
     if (pending.length) localStorage.setItem("pins", JSON.stringify(pending));
     else localStorage.removeItem("pins");
+  }
+
+  // A new agent gets a random avatar among the least used and a random name
+  // nobody has yet; it keeps both, and one not seen for a week is forgotten.
+  assignAvatars(list, now) {
+    const DAY = 86400000;
+    const uses = AVATARS.map(() => 0);
+    for (const v of Object.values(this.avatars)) if (uses[v.n] != null) uses[v.n]++;
+    const taken = new Set(Object.values(this.avatars).map((v) => v.name));
+    const pickName = () => {
+      const free = NAMES.filter((x) => !taken.has(x));
+      const name = free.length ? free[Math.floor(Math.random() * free.length)] : `${NAMES[Math.floor(Math.random() * NAMES.length)]} ${taken.size}`;
+      taken.add(name);
+      return name;
+    };
+    let dirty = false;
+    for (const a of list) {
+      const known = this.avatars[a.address];
+      if (known) {
+        // Saved before names existed: give it one now.
+        if (!known.name) { known.name = pickName(); dirty = true; }
+        // "Last seen" only needs day precision: save it at most once a day.
+        if (now - known.at > DAY) { known.at = now; dirty = true; }
+        continue;
+      }
+      const least = Math.min(...uses);
+      const free = uses.flatMap((u, n) => (u === least ? [n] : []));
+      const n = free[Math.floor(Math.random() * free.length)];
+      uses[n]++;
+      this.avatars[a.address] = { n, name: pickName(), at: now };
+      dirty = true;
+    }
+    for (const [k, v] of Object.entries(this.avatars)) if (now - v.at > 7 * DAY) { delete this.avatars[k]; dirty = true; }
+    if (dirty) localStorage.setItem("avatars", JSON.stringify(this.avatars));
+  }
+
+  // Renaming goes through a dialog copy of this mod, which has its own storage:
+  // it hands the name over in shared state and the list copy keeps it. An empty
+  // name rolls a new random one.
+  applyRename() {
+    const r = shared("agent-cards.rename");
+    if (!r?.id || r.id === localStorage.getItem("renamed")) return;
+    localStorage.setItem("renamed", r.id);
+    const entry = this.avatars[r.address];
+    if (!entry) return;
+    const name = String(r.name ?? "").trim().slice(0, 40);
+    if (name) entry.name = name;
+    else {
+      const taken = new Set(Object.values(this.avatars).map((v) => v.name));
+      const free = NAMES.filter((x) => !taken.has(x));
+      entry.name = (free.length ? free : NAMES)[Math.floor(Math.random() * (free.length || NAMES.length))];
+    }
+    localStorage.setItem("avatars", JSON.stringify(this.avatars));
+  }
+
+  openRename(address) {
+    openOverlay({ mod: "agent-cards", kind: "dialog", width: 360, height: 200, props: { rename: address, value: this.avatars[address]?.name ?? "" } });
+  }
+
+  initRename(cx) {
+    this.input = InputState.new({ value: props().value ?? "" });
+    const len = (props().value ?? "").length;
+    if (len) this.input.set_selected_range({ start: 0, end: len });
+    this.input.on("submit", () => this.submitRename());
+    this.input.focus();
+    cx.timer.after(600, () => this.input.focus());
+    this.handle = cx.focus_handle();
+  }
+
+  submitRename() {
+    const p = props();
+    setShared("agent-cards.rename", { address: p.rename, name: this.input.value(), id: `${p.rename}:${Date.now()}` });
+    closeOverlay(p.overlay);
+  }
+
+  renameDialog(t) {
+    const p = props();
+    const button = (id, text, primary, action) => h_flex().id(id).h(32).px(14).items_center().rounded(8)
+      .border_1().border_color(primary ? t.solid : t.input).bg(primary ? t.solid : t.raised)
+      .text_color(primary ? t.solid_foreground : t.foreground).text_size(12.5).font_medium().cursor_pointer()
+      .hover((s) => s.opacity(0.88)).on_click(action).child(text);
+    return v_flex().id("rename").track_focus(this.handle)
+      .on_key_down((e, cx) => { if (e.key === "escape") { closeOverlay(p.overlay); cx.stop_propagation(); } })
+      .w_full().min_h(0).p(18).bg(t.popover).text_color(t.foreground)
+      .child(h_flex().items_center().child(div().flex_1().text_size(15).font_semibold().child("Rename agent"))
+        .child(div().text_size(11).text_color(t.dim).child("Esc")))
+      .child(div().pt(16).pb(7).text_size(11.5).text_color(t.dim).child("Name"))
+      .child(Input.new(this.input).h(36).px(10).rounded(9).border_1().border_color(t.accent).bg(t.background).text_size(12.8).text_color(t.foreground))
+      .child(div().pt(6).text_size(11.5).text_color(t.dim).child("Leave empty for a new random name."))
+      .child(h_flex().pt(16).gap(8).justify_end()
+        .child(button("rn-cancel", "Cancel", false, () => closeOverlay(p.overlay)))
+        .child(button("rn-save", "Save", true, () => this.submitRename())));
+  }
+
+  // The avatar tile: bobs while working, blinks while it needs you.
+  avatar(t, a) {
+    const n = this.avatars[a.address]?.n ?? 0;
+    const ring = t[a.status] ?? t.border;
+    const sprite = image(AVATARS[n]).w(24).h(24).absolute().left(3)
+      .when(a.status === "working", (el) => el.loop("top", { from: 4, to: 0, period: 700 }))
+      .when(a.status !== "working", (el) => el.top(3))
+      .when(a.status === "blocked", (el) => el.loop("opacity", { from: 0.35, to: 1, period: 900 }))
+      .when(a.status === "idle" && !a.focused, (el) => el.opacity(0.6));
+    return div().relative().size(32).flex_none().rounded(8).bg(t.background).border(1.5).border_color(ring).overflow_hidden().child(sprite);
   }
 
   since(a) {
@@ -347,10 +461,13 @@ export default class Agents extends View {
   render(cx) {
     const t = theme();
     if (props()?.sortMenu) return this.sortMenu(t);
+    if (props()?.rename) return this.renameDialog(t);
     const collapsed = narrow();
     const sort = sortOf();
     let list = agents();
     this.listed = new Map(list.map((a) => [a.address, a.status]));
+    this.assignAvatars(list, Date.now());
+    this.applyRename();
     const all = terminals();
     this.migratePins(all);
     const shown = focused()?.agent;
@@ -495,12 +612,13 @@ export default class Agents extends View {
         o.cost != null ? `cost $${o.cost.toFixed(2)} in this session file` : null,
       ].filter(Boolean).join("\n") : "";
       const fill = pct == null ? null : pct >= 85 ? t.blocked : pct >= 60 ? t.working : t.accent;
-      return v_flex()
+      return h_flex()
         .id(`ag-${a.address}`)
         .mb(6)
         .px(10)
         .py(8)
-        .gap(4)
+        .gap(10)
+        .items_start()
         .flex_none()
         .rounded(10)
         .bg(a.focused ? t.selected : t.surface)
@@ -515,6 +633,9 @@ export default class Agents extends View {
           cx.notify();
         })
         .on_click(() => run("pane.focus", { pane: a.pane }))
+        .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.openRename(a.address); })
+        .child(this.avatar(t, a))
+        .child(v_flex().flex_1().min_w(0).gap(4)
         .child(h_flex().gap(8).items_center()
           .when(Boolean(pic), el => el.child(div().id(`agent-fold-${a.address}`)
             .when(subs.length + inner.length > 0, el => el.on_click((_e, cx) => {
@@ -522,7 +643,9 @@ export default class Agents extends View {
               this.folded.has(a.address) ? this.folded.delete(a.address) : this.folded.add(a.address);
               cx.notify();
             })).child(pic)))
-          .child(div().flex_1().min_w(0).truncate().font_semibold().text_color(idle ? t.muted : t.foreground).child(name))
+          .child(h_flex().flex_1().min_w(0).gap(6).items_center()
+            .child(div().flex_none().font_semibold().text_color(idle ? t.muted : t.foreground).child(this.avatars[a.address]?.name ?? name))
+            .when(Boolean(this.avatars[a.address]?.name), el => el.child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.dim).child(name))))
           .child(this.status(t, a, byPriority && !isPinned)))
         .child(h_flex().gap(6).items_center().text_size(11).text_color(t.dim)
           .child(div().size(6).flex_none().rounded(3).bg(accent))
@@ -533,7 +656,7 @@ export default class Agents extends View {
         .when(facts.length > 0, el => el.child(v_flex().id(`omp-${a.address}`).gap(3).tooltip(about)
           .child(div().min_w(0).truncate().text_size(11).text_color(t.dim).child(facts.join(" \u00b7 ")))
           .when(fill != null, el => el.child(div().h(2).w_full().rounded(1).bg(t.border)
-            .child(div().h(2).rounded(1).w(`${Math.min(100, Math.max(0, pct))}%`).bg(fill))))));
+            .child(div().h(2).rounded(1).w(`${Math.min(100, Math.max(0, pct))}%`).bg(fill)))))));
     };
 
     // Groups in list order: spaces (grouped) or priority sections. Agents of a
