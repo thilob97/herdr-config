@@ -10,7 +10,7 @@
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { agents, panes, machines, theme, props, closeOverlay, notify, home } from "herdr";
-import { HOSTS, hostInfo, probe, readHost, pluginAction, marketplaceAction, projectRoot, readProject, editProjectSettings, localIsWindows, errorText } from "./hosts.js";
+import { HOSTS, hostInfo, probe, readHost, pluginAction, marketplaceAction, projectRoot, readProject, editProjectSettings, localIsWindows, errorText, npmFor, switchToMarketplace } from "./hosts.js";
 import { loadCatalog } from "./catalog.js";
 
 const CELL = 84;
@@ -109,7 +109,7 @@ export default class Marketplaces extends View {
       M.home = p.home;
       for (const h of HOSTS) {
         const b = p.bins[h.key];
-        M.hosts[h.key] = { bin: b.path ?? null, missing: b.missing ?? null, loading: Boolean(b.path), error: null, marketplaces: [], installed: {} };
+        M.hosts[h.key] = { bin: b.path ?? null, missing: b.missing ?? null, loading: Boolean(b.path), error: null, marketplaces: [], installed: {}, npm: {} };
       }
       M.state = "ready";
     } catch (e) {
@@ -284,6 +284,18 @@ export default class Marketplaces extends View {
     }
     const known = H.marketplaces.some((x) => x.name === mk.name);
     this.act(cx, busyKey, `Installing ${id}`, M, hostKey, () => pluginAction(M, hostKey, H.bin, "install", { id, scope: "user", cwd: M.home, known, repo: mk.repo }), { project: this.mode === "project" });
+  }
+
+  // omp has this plugin as a plain npm package: offer to swap it for the marketplace one.
+  npmCell(cx, M, id, mk, pkg) {
+    const H = M.hosts.omp;
+    const v = H.npm[pkg]?.version;
+    const known = H.marketplaces.some((x) => x.name === mk.name);
+    this.ask(cx, `Switch ${pkg} to ${id}?`,
+      `omp on ${M.label} has ${pkg}${v ? ` v${v}` : ""} from npm. This uninstalls the npm package and installs ${id} from the ${mk.name} marketplace, so it updates with the marketplace.`,
+      "Switch",
+      (cx) => this.act(cx, `${M.key}|omp|${id}|user`, `Switching ${pkg} to ${id}`, M, "omp",
+        () => switchToMarketplace(M, H.bin, pkg, { id, scope: "user", cwd: M.home, known, repo: mk.repo }), { project: this.mode === "project" }));
   }
 
   userToggle(cx, M, hostKey, id, inst) {
@@ -499,7 +511,7 @@ export default class Marketplaces extends View {
   }
 
   marketStrip(t, markets) {
-    return h_flex().id("mk-strip").flex_none().h(40).px(12).gap(6).items_center().overflow_x_scrollbar().border_b(1).border_color(t.border)
+    return h_flex().id("mk-strip").flex_none().flex_wrap().px(12).py(7).gap(6).items_center().border_b(1).border_color(t.border)
       .children(markets.map((x) => {
         const on = x.name === this.current;
         const cat = this.catalogs.get(x.name);
@@ -606,7 +618,7 @@ export default class Marketplaces extends View {
     const note = sel?.host === "copilot" ? "Copilot CLI has no project scope flag: this edits .claude/settings.json (read by Claude Code too)."
       : sel?.host === "claude" ? "claude plugin … --scope project (writes .claude/settings.json)" : sel?.host === "omp" ? "omp plugin … --scope=project (.omp/plugins)" : null;
     return v_flex().flex_none().px(14).py(8).gap(6).border_b(1).border_color(t.border)
-      .child(h_flex().id("mk-agents").gap(6).overflow_x_scrollbar().children(choices.map((c) => {
+      .child(h_flex().id("mk-agents").flex_wrap().gap(6).children(choices.map((c) => {
         const on = c.a.address === this.agent;
         const pic = programIcon(c.a.program, 13, t.foreground);
         return this.control(`mk-ag-${c.a.address}`).flex().flex_none().items_center().gap(6).h(26).px(9).rounded(7).border_1()
@@ -718,6 +730,19 @@ export default class Marketplaces extends View {
     const st = scope === "project" ? P.state[id] : inst ? { status: inst.enabled ? "enabled" : "disabled", version: inst.version } : null;
     const known = H.marketplaces.some((x) => x.name === mk.name);
     const where = scope === "project" ? `${h.name}, project ${P.root}` : `${h.name} on ${M.label}`;
+    if (!st && scope === "user" && h.key === "omp") {
+      const pkg = npmFor(H.npm, p.name);
+      if (pkg) {
+        const n = H.npm[pkg];
+        const color = n.enabled ? t.working : t.dim;
+        return box.child(this.control(`mk-c-${cid}`).h(22).px(8).flex().items_center().rounded(11).border_1()
+          .border_color(color + "aa").bg(color + "1a").text_size(11).text_color(n.enabled ? t.foreground : t.dim)
+          .tooltip(`Installed in omp on ${M.label} as npm package ${pkg}${n.version ? ` v${n.version}` : ""}${n.enabled ? "" : " (disabled)"}, not from ${mk.name}. Click to switch to the marketplace version.`)
+          .hover((s) => s.border_color(t.accent))
+          .on_click((_e, cx) => this.npmCell(cx, M, id, mk, pkg))
+          .child(n.version ? `npm ${n.version}` : "npm"));
+      }
+    }
     if (!st) {
       const can = known || Boolean(mk.repo);
       if (p.orphan) return box.child(div().text_color(t.dim + "88").child("·"));

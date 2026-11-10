@@ -118,11 +118,15 @@ export async function readHost(m, key, bin) {
         .map(([, name, source]) => ({ name, source, repo: /^[\w.-]+\/[\w.-]+$/.test(source) ? source : null, clone: null, catalogFile: null }));
     }
     const installed = {};
-    for (const p of parseJson(pl.stdout).marketplace ?? []) {
+    const json = parseJson(pl.stdout);
+    for (const p of json.marketplace ?? []) {
       const e = (p.entries ?? []).find((x) => x.scope === "user");
       if (e) installed[p.id] = { version: e.version ?? null, enabled: e.enabled !== false };
     }
-    return { marketplaces, installed };
+    // Extensions installed straight from npm (`omp install <pkg>`), outside any marketplace.
+    const npm = {};
+    for (const p of json.npm ?? []) npm[p.name] = { version: p.version ?? null, enabled: p.enabled !== false };
+    return { marketplaces, installed, npm };
   }
   const [ml, pl] = await Promise.all([
     must(m, [bin, "plugin", "marketplace", "list", "--json"]),
@@ -152,6 +156,15 @@ export async function pluginAction(m, key, bin, op, { id, scope = "user", cwd, k
     await must(m, [bin, "plugin", "marketplace", "add", repo], { timeout: LONG });
   }
   const args = op === "install" ? ["plugin", "install", id] : ["plugin", op, id];
+  if (op === "install" && key === "omp") {
+    try {
+      return await must(m, [bin, ...args, ...scopeFlag(key, scope)], { cwd, timeout: LONG });
+    } catch (e) {
+      const pkg = errorText(e).match(/conflicts with installed package "([^"]+)"/)?.[1];
+      if (pkg) throw new Error(`omp already has ${pkg} as an npm package. Switch it to the marketplace version instead (click its "npm" cell).`);
+      throw e;
+    }
+  }
   return must(m, [bin, ...args, ...scopeFlag(key, scope)], { cwd, timeout: op === "install" ? LONG : READ });
 }
 
@@ -159,6 +172,15 @@ export async function marketplaceAction(m, key, bin, op, { source, name, force }
   if (op === "add") return must(m, [bin, "plugin", "marketplace", "add", source, ...(key === "claude" ? ["--scope", "user"] : [])], { timeout: LONG });
   if (op === "update") return must(m, [bin, "plugin", "marketplace", "update", name], { timeout: LONG });
   return must(m, [bin, "plugin", "marketplace", "remove", name, ...(key === "copilot" && force ? ["--force"] : [])], { timeout: READ });
+}
+
+// An npm package that omp has for a marketplace plugin: same name, or <scope>/<name>.
+export const npmFor = (npm, plugin) => Object.keys(npm ?? {}).find((pkg) => pkg === plugin || pkg.endsWith(`/${plugin}`)) ?? null;
+
+// Replace omp's npm copy of a plugin with the marketplace one: remove the package, then install.
+export async function switchToMarketplace(m, bin, pkg, opts) {
+  await must(m, [bin, "plugin", "uninstall", pkg], { timeout: READ });
+  return pluginAction(m, "omp", bin, "install", opts);
 }
 
 // The project an agent works in: its git root, else its folder.
