@@ -19,6 +19,7 @@
     "cmd-shift-p": "app.palette",
     "ctrl-shift-m": "mod.open:marketplaces",
     "ctrl-shift-y": "mod.open:mcp-servers",
+    "ctrl-shift-q": "layout.switch:quests",
     "cmd-,": "app.settings",
     "cmd-d": "pane.split:right",
     "cmd-shift-d": "pane.split:down",
@@ -81,5 +82,8 @@
     "ctrl-shift-pageup": "space-folders.prev",
     "ctrl-space shift-n": "space-folders.next",
     "ctrl-space shift-p": "space-folders.prev"
+  },
+  "layout:quests": {
+    "ctrl-shift-q": "layout.switch:elric"
   }
 }

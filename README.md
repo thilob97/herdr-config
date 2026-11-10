@@ -75,6 +75,14 @@ Die Mod fragt lokal mit Git den Projektordner ab und speichert Mermaid-Dateien s
 
 **Windows/WSL-Grenze:** Speicherung und Git-Projektabfrage erfolgen auf dem lokalen Windows-Host. An Agenten werden Windows-Diagrammpfade gesendet; eine Übersetzung/Übertragung nach WSL oder auf entfernte Herdr-Maschinen ist upstream nicht implementiert. Die Panel-Installation stellt deshalb keine vollständige Remote-/WSL-Zeichenfunktion bereit. Die eingebauten Befehle `blueprint.add-button` und `blueprint.remove-button` nicht verwenden: Sie ersetzen das Layout bzw. klonen Standard-Tabs statt dieser `elric`-/`tabs-graph`-Integration.
 
+## Quests
+
+Eigene Mod `quests`: Tickets aus GitHub Issues (`gh`, Repos der Spaces plus Liste in den Einstellungen), Asana (PAT), Trilium (ETAPI, Suche Standard `#quest`) und lokalen Markdown-Tickets (`data/quests/tickets/*.md` mit Frontmatter `title`, `status` todo/doing/done, `repo`, `labels`, `due`). Panel **Quests** in der Leiste oben (Stack `panel-body`), ganze Seite = Layout `quests` (Quellen | Liste | Detail + Start, „Back to Elric“); `ctrl-shift-q` wechselt zwischen `elric` und `quests`.
+
+**Start:** Space/Maschine wählen, Branch (`feat/…` oder `fix/…` nach Labels, editierbar), optional Worktree unter `~/.herdr/worktrees/<repo>/<branch>` auf der Maschine des Space (eigener Space wie beim mitgelieferten `worktree`-Mod), Agent aus `knownAgents` (Standard omp) oder freies Kommando, erste Nachricht aus Vorlage. Gestartet wird über `herdr-app do space.new|tab.new` (liefert Space/Tab/Terminal-IDs), festgehalten in `data/quests/started.json`; Karten zeigen den Agent-Status. **Writeback** (pro Start abschaltbar, global „Dry run“): GitHub Kommentar + `--add-assignee @me`, Asana Kommentar, Trilium Labels `questStatus=doing` und `questBranch=<branch>`, lokal `status: doing`.
+
+Zugangsdaten nur in `data/quests/settings.json` (git-ignoriert), Eingabe in den Einstellungen der Mod; Tokens werden nie wieder angezeigt und in Fehlermeldungen maskiert.
+
 ## Auf einem neuen Rechner
 
 Vor dem ersten Herdr-Start:

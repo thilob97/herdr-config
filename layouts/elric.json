@@ -169,6 +169,16 @@
                               "content": {
                                 "mod": "docker"
                               }
+                            },
+                            {
+                              "id": "quests",
+                              "type": "block",
+                              "content": {
+                                "mod": "quests",
+                                "props": {
+                                  "view": "panel"
+                                }
+                              }
                             }
                           ],
                           "active": "filetree"
