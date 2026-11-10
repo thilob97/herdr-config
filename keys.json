@@ -18,6 +18,7 @@
     "cmd-p": "mod.open:picker",
     "cmd-shift-p": "app.palette",
     "ctrl-shift-m": "mod.open:marketplaces",
+    "ctrl-shift-y": "mod.open:mcp-servers",
     "cmd-,": "app.settings",
     "cmd-d": "pane.split:right",
     "cmd-shift-d": "pane.split:down",

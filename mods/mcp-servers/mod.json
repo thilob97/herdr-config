@@ -1,0 +1,5 @@
+{
+  "place": "none",
+  "title": "MCP servers",
+  "overlay": { "kind": "window", "key": "mcp-servers", "width": 860, "height": 600 }
+}
