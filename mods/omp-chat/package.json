@@ -1,8 +1,0 @@
-{
-  "name": "herdr-omp-chat",
-  "version": "1.0.0",
-  "private": true,
-  "type": "module",
-  "description": "Native OMP chat for the Herdr desktop app, with persistent Windows and WSL RPC sessions.",
-  "engines": { "node": ">=24" }
-}
