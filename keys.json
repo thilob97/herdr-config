@@ -72,7 +72,7 @@
     "cmd-right": "send:\u0005",
     "cmd-backspace": "send:\u0015"
   },
-  "layout:main-folders": {
+  "layout:elric": {
     "alt-down": "space-folders.next",
     "alt-up": "space-folders.prev",
     "cmd-alt-]": "space-folders.next",

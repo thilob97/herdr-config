@@ -8,7 +8,7 @@ Nach **jeder** Änderung an dieser Config sofort committen und pushen (`git add 
 
 Neue Panel-Mods (Seitenleisten wie Git-Graph, Timeline) **nicht** als eigene Spalte andocken, sondern in die Leiste oben neben Files/Changes:
 
-1. In `layouts/main-folders.json` dem Stack `panel-body` ein Kind geben: `{ "id": "<id>", "type": "block", "content": { "mod": "<mod>" } }`.
+1. In `layouts/elric.json` dem Stack `panel-body` ein Kind geben: `{ "id": "<id>", "type": "block", "content": { "mod": "<mod>" } }`.
 2. In `mods/tabs-graph/main.js` die Liste `extra` um `["<id>", "<Label>", "<icon.svg>"]` ergänzen.
 3. In der `mod.json` des Mods `"place": "none"` setzen, und einen Block, den Herdr selbst angedockt hat, aus dem Layout entfernen.
 
@@ -41,7 +41,7 @@ Die `.gitignore` ist eine Whitelist (`/*`, dann gezielt `!`). Ausgeschlossen sin
 
 ## Bereinigte Mod-Installation
 
-Aktiv ist `main-folders`. Die sechs eigenen Addons sind **blueprint**, **filetree**, **file-icons**, **git-graph**, **space-folders** und **tabs-graph**. `tabs-graph` ist ein frischer Klon der mitgelieferten `tabs`-Mod **0.1.14**; seine Buttons **Changes**, **Git**, **Tree** und **Blueprint** wählen Panels im bestehenden Stack `panel-body`, ohne zusätzliche Spalten. Timeline und Usage sind nicht mehr eingebunden.
+Aktiv ist `elric`. Die sechs eigenen Addons sind **blueprint**, **filetree**, **file-icons**, **git-graph**, **space-folders** und **tabs-graph**. `tabs-graph` ist ein frischer Klon der mitgelieferten `tabs`-Mod **0.1.14**; seine Buttons **Changes**, **Git**, **Tree** und **Blueprint** wählen Panels im bestehenden Stack `panel-body`, ohne zusätzliche Spalten. Timeline und Usage sind nicht mehr eingebunden.
 
 Die alten Installationen von `open-with`, allen 16 `over9k*`-Mods und `usage-limits` sowie das Over9k-Layout samt Vorschau und Tastenbelegungen wurden entfernt. Die fünf externen Addons wurden sauber aus folgenden Quellen neu installiert; vorhandene Lizenzen liegen bei den Mods. Nicht angegebene Release-Versionen sind durch den vollständigen Commit gepinnt.
 
@@ -62,7 +62,7 @@ Die alten Installationen von `open-with`, allen 16 `over9k*`-Mods und `usage-lim
 
 ## Blueprint-Panel
 
-Installiert aus [chappse6/herdr-blueprint-app](https://github.com/chappse6/herdr-blueprint-app/tree/master), Version **0.3.5**, Commit `9e6533ace80e392a14311ad05c1dbda10696deda` (MIT, Lizenz unter `mods/blueprint/LICENSE`). Native Mod ohne Backend oder Paketinstallation; Herdr ≥ 0.1.10. Im aktiven **main-folders**-Layout öffnet der Button **Blueprint** in der Leiste neben Changes, Git und Tree das vorhandene Seitenpanel im Stack `panel-body`; keine neue Spalte, Layout-Umschaltung oder globale Tastenbelegung. Alternativ:
+Installiert aus [chappse6/herdr-blueprint-app](https://github.com/chappse6/herdr-blueprint-app/tree/master), Version **0.3.5**, Commit `9e6533ace80e392a14311ad05c1dbda10696deda` (MIT, Lizenz unter `mods/blueprint/LICENSE`). Native Mod ohne Backend oder Paketinstallation; Herdr ≥ 0.1.10. Im aktiven **elric**-Layout öffnet der Button **Blueprint** in der Leiste neben Changes, Git und Tree das vorhandene Seitenpanel im Stack `panel-body`; keine neue Spalte, Layout-Umschaltung oder globale Tastenbelegung. Alternativ:
 
 ```powershell
 herdr-app do layout.select --stack panel-body --child blueprint
@@ -73,7 +73,7 @@ herdr-app do layout.show --id panel
 
 Die Mod fragt lokal mit Git den Projektordner ab und speichert Mermaid-Dateien sowie Projekt-/Agent-Metadaten unter `data/blueprint/projects/`. Ungepinnte Diagramme werden nach sieben Tagen automatisch gelöscht; nach einem Tag bleiben höchstens zehn ungepinnte Diagramme. Die automatische GitHub-Versionsabfrage lädt nur Metadaten, keine Updates; `herdr-app do blueprint.update-check-off` schaltet sie ab (`blueprint.update-check-on` wieder an). Ein ausdrücklich ausgelöstes Update sendet dagegen einen Update-Auftrag an den Agenten. Sprache kommt automatisch aus `~/.claude/settings.json`; `blueprint.lang-auto`, `blueprint.lang-en`, `blueprint.lang-ko` und `blueprint.lang-ja` steuern sie über `herdr-app do`. Eigene Einstellungen: `blueprint.lang` und `blueprint.update`. PNG-Export ist nur unter macOS verfügbar.
 
-**Windows/WSL-Grenze:** Speicherung und Git-Projektabfrage erfolgen auf dem lokalen Windows-Host. An Agenten werden Windows-Diagrammpfade gesendet; eine Übersetzung/Übertragung nach WSL oder auf entfernte Herdr-Maschinen ist upstream nicht implementiert. Die Panel-Installation stellt deshalb keine vollständige Remote-/WSL-Zeichenfunktion bereit. Die eingebauten Befehle `blueprint.add-button` und `blueprint.remove-button` nicht verwenden: Sie ersetzen das Layout bzw. klonen Standard-Tabs statt dieser `main-folders`-/`tabs-graph`-Integration.
+**Windows/WSL-Grenze:** Speicherung und Git-Projektabfrage erfolgen auf dem lokalen Windows-Host. An Agenten werden Windows-Diagrammpfade gesendet; eine Übersetzung/Übertragung nach WSL oder auf entfernte Herdr-Maschinen ist upstream nicht implementiert. Die Panel-Installation stellt deshalb keine vollständige Remote-/WSL-Zeichenfunktion bereit. Die eingebauten Befehle `blueprint.add-button` und `blueprint.remove-button` nicht verwenden: Sie ersetzen das Layout bzw. klonen Standard-Tabs statt dieser `elric`-/`tabs-graph`-Integration.
 
 ## Auf einem neuen Rechner
 
