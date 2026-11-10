@@ -678,7 +678,12 @@ export default class Agents extends View {
             .when(Boolean(this.avatars[a.address]?.name), el => el.child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.dim).child(name))))
           .child(this.status(t, a, byPriority && !isPinned)))
         .child(h_flex().gap(6).items_center().text_size(11).text_color(t.dim)
-          .child(div().size(6).flex_none().rounded(3).bg(accent))
+          .child(a.status === "working" || a.status === "blocked"
+            // A soft halo breathes around the dot while working, faster when it needs you (as in the Docker panel).
+            ? div().relative().size(12).flex_none().flex().items_center().justify_center()
+              .child(div().absolute().inset_0().rounded(6).bg(accent + "55").loop("opacity", { from: 0, to: 1, period: a.status === "blocked" ? 800 : 2200 }))
+              .child(div().size(6).rounded(3).bg(accent))
+            : div().size(6).flex_none().rounded(3).bg(accent))
           .child(div().flex_1().min_w(0).truncate().child(where || a.status || ""))
           .when(subs.length + inner.length > 0, el => el.child(fold(a, subs, inner)))
           .when(this.hovered === a.address, el => el.child(plugins).child(mcp).child(pin))
