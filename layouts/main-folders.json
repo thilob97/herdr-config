@@ -48,7 +48,7 @@
                       "id": "agents",
                       "type": "block",
                       "content": {
-                        "mod": "agents"
+                        "mod": "agent-cards"
                       },
                       "size": {
                         "weight": 1
