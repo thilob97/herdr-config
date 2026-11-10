@@ -587,6 +587,21 @@ export default class Agents extends View {
           cx.notify();
         })
         .child(svg(`mods/workspace-chrome/${isPinned ? "pin-off" : "pin"}.svg`).size(13));
+      // This agent's plugins: the Marketplaces window, in Project mode for it.
+      const plugins = div()
+        .id(`plugins-${a.address}`)
+        .flex_none()
+        .p(2)
+        .rounded(4)
+        .text_color(t.dim)
+        .cursor_pointer()
+        .hover((s) => s.bg(t.hover).text_color(t.foreground))
+        .tooltip("Plugins for this agent")
+        .on_click((_e, cx) => {
+          cx.stop_propagation();
+          openOverlay({ mod: "marketplaces", kind: "window", key: "marketplaces", width: 860, height: 600, props: { agent: a.address } });
+        })
+        .child(svg("mods/workspace-chrome/layers.svg").size(13));
       // Under a space header the space goes without saying; an automatic tab number says nothing.
       // Without a space header above (priority, pinned) the row names its space.
       const full = byPriority || isPinned;
@@ -651,7 +666,7 @@ export default class Agents extends View {
           .child(div().size(6).flex_none().rounded(3).bg(accent))
           .child(div().flex_1().min_w(0).truncate().child(where || a.status || ""))
           .when(subs.length + inner.length > 0, el => el.child(fold(a, subs, inner)))
-          .when(this.hovered === a.address, el => el.child(pin))
+          .when(this.hovered === a.address, el => el.child(plugins).child(pin))
           .when(this.hovered !== a.address && Boolean(when), el => el.child(div().flex_none().child(duration(now - when)))))
         .when(facts.length > 0, el => el.child(v_flex().id(`omp-${a.address}`).gap(3).tooltip(about)
           .child(div().min_w(0).truncate().text_size(11).text_color(t.dim).child(facts.join(" \u00b7 ")))
