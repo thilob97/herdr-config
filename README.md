@@ -9,7 +9,7 @@ Nach **jeder** Änderung an dieser Config sofort committen und pushen (`git add 
 Neue Panel-Mods (Seitenleisten wie Git-Graph, Timeline) **nicht** als eigene Spalte andocken, sondern in die Leiste oben neben Files/Changes:
 
 1. In `layouts/elric.json` dem Stack `panel-body` ein Kind geben: `{ "id": "<id>", "type": "block", "content": { "mod": "<mod>" } }`.
-2. In `mods/tabs-graph/main.js` die Liste `extra` um `["<id>", "<Label>", "<icon.svg>"]` ergänzen.
+2. In `mods/tabs-graph/main.js` die ID in die Liste `enabled` aufnehmen und eine Zeile `.child(panelButton("<id>", "<Label>", "mods/<mod>/<icon>.svg"))` nach den bestehenden Buttons ergänzen.
 3. In der `mod.json` des Mods `"place": "none"` setzen, und einen Block, den Herdr selbst angedockt hat, aus dem Layout entfernen.
 
 Forge ist entfernt: Es gibt keinen Forge-Button, keine Forge-Tastenbelegung und keine `forge-*`-Mods oder Forge-Ansicht mehr. Git-Graph und Tree bleiben als Panels erhalten. Bereits vorhandene Forge-Laufzeitdaten und externe Backend-Caches werden nicht gelöscht.
