@@ -4,7 +4,8 @@ import * as fs from "fs/promises";
 import { appHome } from "herdr";
 
 export const ticketsDir = () => `${appHome()}/data/quests/tickets`;
-const FIELDS = ["title", "status", "repo", "labels", "due", "machine", "agent", "branch", "worktree", "terminal", "by", "updated"];
+const FIELDS = ["title", "status", "repo", "labels", "due", "machine", "agent", "branch", "base", "worktree", "terminal",
+  "source", "merged", "pr", "by", "updated"];
 
 export function parse(id, text) {
   const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(text);

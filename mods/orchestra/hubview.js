@@ -9,10 +9,14 @@ import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { agents, terminals, run, notify, playSound, openOverlay, shared, setShared, knownAgents } from "herdr";
 import * as orch from "./orchestrator.js";
 import * as tickets from "./tickets.js";
+import * as costs from "./costs.js";
+import { exec, appHome } from "herdr";
 
 const WC = "mods/workspace-chrome";
 const STATE = { working: "arbeitet", blocked: "wartet auf dich", error: "Fehler", done: "bereit", idle: "bereit" };
 const errorText = (e) => String(e?.message ?? e ?? "fehlgeschlagen").replace(/^Error: /, "");
+// Whole dollars without cents ($3), small amounts with them ($0.26).
+const usd = (n) => `$${Number.isInteger(n) ? n : (n ?? 0).toFixed(2)}`;
 
 export class HubDaemon {
   constructor(cx) {
@@ -23,6 +27,15 @@ export class HubDaemon {
     cx.timer.every(5000, (cx) => this.refresh(cx));
     cx.timer.after(8000, (cx) => this.ensure(cx));
     cx.timer.every(30000, (cx) => this.ensure(cx));
+    cx.spawn(async () => { await costs.load(); });
+    cx.timer.after(10000, (cx) => this.pollCosts(cx));
+    cx.timer.every(30000, (cx) => this.pollCosts(cx));
+  }
+
+  pollCosts(cx) {
+    if (this.costing) return;
+    this.costing = true;
+    cx.spawn(async () => { try { await costs.poll(); } finally { this.costing = false; } });
   }
 
   ensure(cx) {
@@ -130,7 +143,27 @@ export class HubSection {
   accept(cx, t) {
     this.act(cx, `${t.title}: abgenommen`, async () => {
       await tickets.setStatus(t.id, "done");
-      if (orch.find()) await orch.send(`Ticket ${t.id} „${t.title}“ wurde vom Menschen abgenommen.`);
+      if (orch.find()) await orch.send(`Ticket ${t.id} „${t.title}“ wurde vom Menschen abgenommen (ohne Merge).`);
+    });
+  }
+
+  // Accepted and landed in one go: `hub land` merges (or opens a PR), then ends the
+  // agent and removes the worktree. A merge conflict goes back to the orchestrator.
+  land(cx, t, how) {
+    this.act(cx, how === "merge" ? `${t.title}: gemergt` : `${t.title}: PR erstellt`, async () => {
+      const r = await exec(`${appHome()}/mods/orchestra/bin/hub`, ["land", t.id, `--${how}`], { timeout: 180000 });
+      if (r.code !== 0) {
+        const err = (r.stderr || r.stdout).trim().replace(/^hub: /, "");
+        if (/merge conflict/.test(err) && orch.find()) {
+          await tickets.setStatus(t.id, "doing");
+          await orch.send(`Merge-Konflikt bei Ticket ${t.id} „${t.title}“: ${err}. Lass den Agent rebasen, prüfe erneut und gib es wieder zum Review.`);
+          return "Konflikt: an den Orchestrator zurückgegeben";
+        }
+        throw new Error(err);
+      }
+      const out = JSON.parse(r.stdout.trim().split("\n").pop());
+      if (orch.find()) await orch.send(`Ticket ${t.id} „${t.title}“ wurde abgenommen und ${out.merged ? `gemergt (${out.merged})` : `als Pull Request eingereicht: ${out.pr}`}. Agent und Worktree sind aufgeräumt.`);
+      return out.pr ? `PR: ${out.pr}` : `gemergt: ${out.merged}`;
     });
   }
 
@@ -205,7 +238,9 @@ export class HubSection {
             .child(div().text_color(t.dim).child("·"))
             .child(div().id("hub-agent").text_color(t.dim).cursor_pointer().hover((s) => s.text_color(t.foreground))
               .tooltip("Agent wechseln (gilt beim nächsten Start)").on_click((_e, cx) => { this.cycleAgent(); cx.notify(); })
-              .child(`${name} ▾`))))
+              .child(`${name} ▾`))
+            .when(Boolean(o) && costs.costs().orchestrator > 0, (e) => e.child(div().text_color(t.dim).child("·"))
+              .child(div().text_color(t.dim).tooltip("Kosten der aktuellen Orchestrator-Sitzung").child(`$${costs.costs().orchestrator.toFixed(2)}`)))))
         .when(Boolean(o), (el) => el
           .child(this.iconBtn(t, "hub-open", "mods/orchestra/icons/open.svg", "Terminal öffnen", () => run("terminal.peek", { terminal: o.address })))
           .child(this.iconBtn(t, "hub-restart", "mods/orchestra/icons/restart.svg", "Neu starten (frischer Kontext)", restart))
@@ -233,6 +268,9 @@ export class HubSection {
     const review = tk.status === "review", done = tk.status === "done";
     const fb = this.feedbackFor === tk.id;
     const where = [tk.branch || tk.repo?.split("/").pop(), tk.machine].filter(Boolean).join(" · ");
+    const spent = costs.costs().tickets?.[tk.id], limit = costs.ticketLimit(tk.id);
+    const stopped = Boolean(costs.costs().stopped?.[tk.id]) && !done;
+    const landed = tk.merged ? `gemergt ${tk.merged}` : tk.pr ? "PR offen" : "";
     const right = tk.status === "doing"
       ? (live ? { working: "arbeitet", blocked: "wartet", done: "fertig", idle: "ruhig" }[ast] ?? ast ?? "" : "beendet")
       : tk.status === "todo" ? "offen" : "";
@@ -244,18 +282,28 @@ export class HubSection {
           .child(div().size(7).rounded_full().when(review, (e) => e.bg(t.done)).when(done, (e) => e.bg(t.dim)).when(!review && !done, (e) => e.border_1().border_color(t.muted))))
         .child(v_flex().flex_1().min_w(0)
           .child(div().truncate().text_size(12.5).text_color(done ? t.dim : t.foreground).when(done, (e) => e.line_through()).child(tk.title))
-          .when(Boolean(where), (e) => e.child(div().truncate().text_size(10.5).text_color(t.dim).child(where))))
+          .when(Boolean(where || spent != null || landed), (e) => e.child(h_flex().gap(6).text_size(10.5).text_color(t.dim)
+            .when(Boolean(where), (r) => r.child(div().min_w(0).truncate().child(where)))
+            .when(spent != null, (r) => r.child(div().flex_none().text_color(stopped || spent > limit ? t.blocked : t.dim)
+              .tooltip(`Kosten dieses Tickets / Budget (${tk.agent || "Agent"}; nur omp meldet Kosten)`).child(`${usd(spent)} / ${usd(limit)}`)))
+            .when(Boolean(landed), (r) => r.child(div().flex_none().text_color(t.done).when(Boolean(tk.pr), (x) => x.tooltip(tk.pr)).child(landed))))))
         .when(Boolean(right), (el) => el.child(div().flex_none().text_size(10.5).text_color(ast === "blocked" ? t.blocked : ast === "working" ? t.working : t.dim).child(right))))
+      .when(stopped, (el) => el.child(h_flex().pl(19).gap(6).items_center()
+        .child(div().flex_1().min_w(0).text_size(11).text_color(t.blocked).child("Budget erreicht, Agent angehalten."))
+        .child(this.btn(t, `tk-raise-${tk.id}`, `+${usd(costs.budget().ticket)}`, (cx) => this.act(cx, "Budget erhöht", () => costs.raiseTicket(tk)), { strong: true }))))
       .when(review && Boolean(tk.summary), (el) => el.child(div().pl(19).text_size(11.5).text_color(t.muted).child(tk.summary.length > 320 ? `${tk.summary.slice(0, 320)}…` : tk.summary)))
       .when(review, (el) => el.child(h_flex().pl(19).gap(5).items_center().flex_wrap()
         .child(this.btn(t, `tk-rv-${tk.id}`, "Review", () => openOverlay({ mod: "review", kind: "window", key: "review", width: 960, height: 680,
-          props: { terminal: tk.terminal, folder: tk.worktree || tk.repo, on: tk.machine || null } }), { strong: true }))
-        .child(this.btn(t, `tk-ok-${tk.id}`, "Abnehmen", (cx) => this.accept(cx, tk), { enabled: !this.busy }))
+          props: { terminal: tk.terminal, folder: tk.worktree || tk.repo, on: tk.machine || null } })))
+        .child(this.btn(t, `tk-merge-${tk.id}`, "Mergen", (cx) => this.land(cx, tk, "merge"), { strong: true, enabled: !this.busy && Boolean(tk.worktree) }))
+        .child(this.btn(t, `tk-pr-${tk.id}`, "PR", (cx) => this.land(cx, tk, "pr"), { enabled: !this.busy && Boolean(tk.worktree) }))
         .child(this.btn(t, `tk-fb-${tk.id}`, fb ? "Abbrechen" : "Änderungen …", (cx) => {
           this.feedbackFor = fb ? null : tk.id;
           if (!fb) this.feedback.focus();
           cx.notify();
-        }))))
+        }))
+        .child(div().id(`tk-ok-${tk.id}`).text_size(10.5).text_color(t.dim).cursor_pointer().hover((s) => s.text_color(t.foreground))
+          .tooltip("Abnehmen, ohne zu mergen (Branch und Worktree bleiben)").on_click((_e, cx) => this.accept(cx, tk)).child("nur abnehmen"))))
       .when(fb, (el) => el.child(h_flex().ml(19).h(30).px(9).items_center().rounded(7).border_1().border_color(t.input).bg(t.background)
         .child(Input.new(this.feedback).flex_1().h_full().text_size(12).text_color(t.foreground))));
   }
@@ -283,7 +331,21 @@ export class HubSection {
   render(t) {
     return v_flex().flex_none().gap(4)
       .child(this.card(t))
-      .child(this.label(t, "Tickets", (shared("orchestra.tickets") ?? []).filter((x) => x.status !== "done").length || null))
+      .child(h_flex().items_center()
+        .child(div().flex_1().child(this.label(t, "Tickets", (shared("orchestra.tickets") ?? []).filter((x) => x.status !== "done").length || null)))
+        .child(this.budgetChips(t)))
       .child(this.tickets(t));
+  }
+
+  // Budget per ticket and for the whole team (open tickets + orchestrator); click to change.
+  budgetChips(t) {
+    const b = costs.budget(), c = costs.costs();
+    const over = c.teamCost > b.team;
+    const chip = (id, text, tip, kind) => div().id(id).h(20).px(7).flex().items_center().rounded(5).bg(t.raised).text_size(10.5)
+      .text_color(over && kind === "team" ? t.blocked : t.muted).cursor_pointer().hover((s) => s.text_color(t.foreground)).tooltip(tip)
+      .on_click((_e, cx) => { costs.cycle(kind); cx.notify(); }).child(text);
+    return h_flex().pt(6).gap(4).items_center()
+      .child(chip("bud-ticket", `${usd(b.ticket)}/Ticket`, "Budget pro Ticket (klicken zum Ändern). Darüber wird der Agent angehalten.", "ticket"))
+      .child(chip("bud-team", `Team ${usd(c.teamCost ?? 0)} / ${usd(b.team)}`, "Kosten offener Tickets + Orchestrator / Team-Budget (klicken zum Ändern). Darüber wird alles angehalten.", "team"));
   }
 }

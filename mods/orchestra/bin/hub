@@ -5,21 +5,25 @@ team agents run in their own git worktree and Herdr space, started with `hc run`
 from the orchestrator's terminal, so they are its children (hc types their
 reports into it) and show in the Team graph under it.
 
-  hub ticket new --title T --repo PATH [--on MACHINE] [--labels a,b] [--body TEXT | --body-file F | -]
+  hub ticket new --title T --repo PATH [--on MACHINE] [--labels a,b] [--source URL] [--body TEXT | --body-file F | -]
   hub ticket list [--all] [--json]          open tickets (--all: done too)
   hub ticket show ID
   hub ticket set ID key=value ...           e.g. status=todo, repo=/path
   hub dispatch ID [--agent omp|claude|codex|"cmd args"] [--no-worktree] [--branch B]
   hub review ID --summary TEXT              ready for the human: status review + summary
-  hub done ID                               accepted (normally the human's button)
-  hub status                                tickets with their agents' live status
+  hub land ID --merge | --pr                after acceptance: merge into its base branch, or push and open a
+                                            pull request (gh); then end its agent and remove its worktree
+  hub done ID                               accepted without landing
+  hub status                                tickets with their agents' live status and cost so far
 Python 3, standard library only.
 """
 import argparse, json, os, pwd, re, secrets, shlex, subprocess, sys, time, unicodedata
 
 APP = os.environ.get("HERDR_APP_HOME") or os.path.expanduser("~/.config/herdr-app")
 TICKETS = os.path.join(APP, "data", "quests", "tickets")
-FIELDS = ["title", "status", "repo", "labels", "due", "machine", "agent", "branch", "worktree", "terminal", "by", "updated"]
+FIELDS = ["title", "status", "repo", "labels", "due", "machine", "agent", "branch", "base", "worktree", "terminal",
+          "source", "merged", "pr", "by", "updated"]
+COSTS = os.path.join(APP, "data", "orchestra", "costs.json")  # written by the Team panel's watcher
 AGENTS = {"omp": ["omp"], "claude": ["claude"], "codex": ["codex", "--no-daemon"], "pi": ["pi"]}
 
 
@@ -112,7 +116,7 @@ def cmd_new(a):
     while os.path.exists(path_of(tid)):
         tid, n = f"{base}-{n}", n + 1
     t = {"id": tid, "title": a.title, "status": "todo", "repo": a.repo or "", "labels": a.labels or "",
-         "machine": a.on or "", "by": "orchestrator", "body": (body or "").strip() + "\n"}
+         "machine": a.on or "", "source": a.source or "", "by": "orchestrator", "body": (body or "").strip() + "\n"}
     write(t)
     print(tid)
 
@@ -176,6 +180,8 @@ def cmd_dispatch(a):
         exists = run(["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"], on, main, check=False).returncode == 0
         if run(["test", "-d", folder], on, check=False).returncode != 0:
             run(["git", "worktree", "add", folder, branch] if exists else ["git", "worktree", "add", "-b", branch, folder, "HEAD"], on, top)
+        # Where it lands later: the branch the repo was on when the work started.
+        t["base"] = t.get("base") or run(["git", "rev-parse", "--abbrev-ref", "HEAD"], on, top).stdout.strip()
     report = f"hc send {me} \"…\"" if me else "deine Abschlussnachricht"
     task = (
         f"Ticket {a.id}: {t['title']}\n\n{t['body'].strip()}\n\n---\n"
@@ -225,6 +231,61 @@ def cmd_done(a):
     print(f"{a.id}: done")
 
 
+def main_checkout(t, on):
+    common = run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], on, t.get("worktree") or t["repo"]).stdout.strip()
+    return common[:-5] if common.endswith("/.git") else common
+
+
+def cmd_land(a):
+    t = read(a.id)
+    on, wt, branch = t.get("machine") or None, t.get("worktree"), t.get("branch")
+    if not (wt and branch):
+        die(f"{a.id} has no worktree branch to land")
+    if run(["test", "-d", wt], on, check=False).returncode != 0:
+        die(f"worktree {wt} is gone")
+    if run(["git", "status", "--porcelain"], on, wt).stdout.strip():
+        die(f"{wt} has uncommitted changes; the agent must commit first")
+    main = main_checkout(t, on)
+    base = t.get("base") or run(["git", "rev-parse", "--abbrev-ref", "HEAD"], on, main).stdout.strip()
+    if a.merge:
+        here = run(["git", "rev-parse", "--abbrev-ref", "HEAD"], on, main).stdout.strip()
+        if here != base:
+            die(f"the main checkout {main} is on {here}, not on {base}; switch it to {base} first")
+        if run(["git", "status", "--porcelain", "--untracked-files=no"], on, main).stdout.strip():
+            die(f"the main checkout {main} has uncommitted changes; commit or stash them first")
+        r = run(["git", "merge", "--no-ff", "-m", f"Merge {branch}: {t['title']}", branch], on, main, check=False)
+        if r.returncode != 0:
+            run(["git", "merge", "--abort"], on, main, check=False)
+            die(f"merge conflict between {branch} and {base}; have the agent rebase {branch} onto {base}")
+        t["merged"] = f"{base}@{run(['git', 'rev-parse', '--short', 'HEAD'], on, main).stdout.strip()}"
+    else:
+        if run(["git", "remote", "get-url", "origin"], on, wt, check=False).returncode != 0:
+            die("no remote 'origin' to push to")
+        run(["git", "push", "-u", "origin", branch], on, wt)
+        summary = re.search(r"\n## Zusammenfassung \(Orchestrator\)\n(.*)\Z", t["body"], re.S)
+        body = (summary.group(1).strip() if summary else t["body"].strip()) + f"\n\n---\nTicket `{a.id}`, über den Herdr-Orchestrator umgesetzt."
+        r = run(["gh", "pr", "create", "--base", base, "--head", branch, "--title", t["title"], "--body", body], on, wt, check=False)
+        if r.returncode != 0:
+            die(f"gh pr create: {(r.stderr or r.stdout).strip()}")
+        t["pr"] = r.stdout.strip().splitlines()[-1]
+    # The work is landed: its agent and checkout are no longer needed (a PR branch stays on the remote).
+    if t.get("terminal") and is_live(t["terminal"]):
+        subprocess.run(["hc", "kill", t["terminal"]], capture_output=True)
+    run(["git", "worktree", "remove", wt], on, main, check=False)
+    if a.merge:
+        run(["git", "branch", "-d", branch], on, main, check=False)
+    t["status"] = "done"
+    write(t)
+    print(json.dumps({"ticket": a.id, "merged": t.get("merged"), "pr": t.get("pr")}, ensure_ascii=False))
+
+
+def costs():
+    try:
+        return json.load(open(COSTS, encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
 def cmd_status(_a):
     live = {}
     try:
@@ -232,11 +293,16 @@ def cmd_status(_a):
             live[x["address"]] = x.get("status") or x.get("state")
     except Exception:
         pass
+    c = costs()
+    per = c.get("tickets", {})
     for t in all_tickets():
         if t["status"] == "done":
             continue
         term = t.get("terminal", "")
-        print(f"{t['id']:<40} {t['status']:<7} {term:<16} {live.get(term, '-' if not term else 'beendet'):<9} {t['title']}")
+        cost = f"${per[t['id']]:.2f}" if t["id"] in per else "-"
+        print(f"{t['id']:<40} {t['status']:<7} {term:<16} {live.get(term, '-' if not term else 'beendet'):<9} {cost:>7} {t['title']}")
+    if c:
+        print(f"\nBudget pro Ticket ${c.get('ticketBudget', 0):.0f}, Team ${c.get('teamBudget', 0):.0f}; offen bisher ${c.get('teamCost', 0):.2f}")
 
 
 def main():
@@ -248,6 +314,7 @@ def main():
     n.add_argument("--repo")
     n.add_argument("--on")
     n.add_argument("--labels")
+    n.add_argument("--source")
     n.add_argument("--body")
     n.add_argument("--body-file")
     n.set_defaults(fn=cmd_new)
@@ -275,6 +342,12 @@ def main():
     dn = sub.add_parser("done")
     dn.add_argument("id")
     dn.set_defaults(fn=cmd_done)
+    ld = sub.add_parser("land")
+    ld.add_argument("id")
+    how = ld.add_mutually_exclusive_group(required=True)
+    how.add_argument("--merge", action="store_true")
+    how.add_argument("--pr", action="store_true")
+    ld.set_defaults(fn=cmd_land)
     sub.add_parser("status").set_defaults(fn=cmd_status)
     a = p.parse_args()
     a.fn(a)

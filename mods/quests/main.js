@@ -6,7 +6,7 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, TextView } from "gpui-base";
-import { props, theme, run, spaces, agents, notify, openOverlay, closeOverlay, shared, setShared, knownAgents, exec, home, window as host } from "herdr";
+import { props, theme, run, spaces, agents, terminals, notify, openOverlay, closeOverlay, shared, setShared, knownAgents, exec, home, window as host } from "herdr";
 import * as store from "./store.js";
 import { SOURCES, label, stage, load, writeback, place, repoOf, homeOn, git, errorText } from "./sources.js";
 
@@ -73,7 +73,9 @@ function dot(color, anim) {
 function liveState(rec) {
   if (!rec) return null;
   const a = agents().find((x) => x.address === rec.terminal);
-  return { status: a?.status ?? null, alive: Boolean(a) || spaces().some((s) => s.tabs.some((c) => c.id === rec.tab)) };
+  // Handed to the orchestrator: a terminal without a tab of its own.
+  const term = a ? null : terminals().find((x) => x.address === rec.terminal && x.state === "live");
+  return { status: a?.status ?? term?.status ?? null, alive: Boolean(a || term) || spaces().some((s) => s.tabs.some((c) => c.id === rec.tab)) };
 }
 
 function lastRecord(list, key) {
@@ -348,6 +350,34 @@ class Board {
     })?.id ?? null;
   }
 
+  // Hands a ticket to the orchestrator (Team panel): it plans, dispatches and brings
+  // it back for review. A local ticket becomes its own (by: orchestrator); others it
+  // copies into a local one with --source, linking back.
+  handOver(tk, cx) {
+    cx.spawn(async (cx) => {
+      try {
+        const o = terminals().find((x) => x.name === "orchestrator" && x.state === "live");
+        if (!o) throw new Error("Der Orchestrator läuft nicht (Team-Panel: Starten).");
+        const sp = spaces().find((s) => s.id === this.suggest(tk));
+        const repo = tk.source === "plain" && tk.repo ? tk.repo : sp ? place(sp) : null;
+        const where = repo ? `Lokaler Checkout: ${repo}${sp?.machine ? ` auf Maschine ${sp.machine}` : ""}` : "Lokaler Checkout: unbekannt, finde ihn über die Herdr-Spaces (herdr-app ls) oder frag mich.";
+        const src = tk.source === "plain" ? `lokales Quests-Ticket ${tk.id}` : `${label(tk.source)} ${tk.source === "github" ? `#${tk.number} in ${tk.repo}` : tk.id}${tk.url ? ` (${tk.url})` : ""}`;
+        if (tk.source === "plain") await store.savePlain(tk.id, { ...tk, extra: { ...(tk.extra ?? {}), by: "orchestrator" } });
+        const how = tk.source === "plain"
+          ? `Es ist schon dein Ticket \`${tk.id}\` (hub ticket show ${tk.id}); setze repo/machine, falls sie fehlen.`
+          : `Lege es mit \`hub ticket new --source "${tk.url || tk.id}" …\` an.`;
+        const text = `Neues Ticket aus Quests: „${tk.title}“\nQuelle: ${src}\n${where}\n\n${(tk.body ?? "").trim().slice(0, 4000) || "(keine Beschreibung)"}\n\n---\n${how} Plane es, verteile es ans Team und gib es mir wie gewohnt erst geprüft zum Review.`;
+        const r = await exec("hc", ["send", "orchestrator", text, ...(o.status === "blocked" ? ["--force"] : [])]);
+        if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim().split("\n").pop());
+        await store.addStarted({ key: keyOf(tk), source: tk.source, id: tk.id, title: tk.title, url: tk.url, branch: "beim Orchestrator", worktree: false,
+          folder: repo ?? "", machine: sp?.machine ?? null, space: null, tab: null, terminal: o.address, agent: "Orchestrator", at: Date.now() });
+        bump("local");
+        notify({ title: "An den Orchestrator übergeben", body: tk.title, level: "success", timeout: 6000, action: { name: "tabs-graph.panel-team" } });
+      } catch (e) { notify({ title: "Übergabe fehlgeschlagen", body: errorText(e), level: "error", timeout: 10000 }); }
+      cx.notify();
+    });
+  }
+
   start(tk, cx) {
     if (this.view === "page") return this.select(tk, cx);
     openOverlay({ mod: "quests", kind: "dialog", width: 640, height: 0.9, props: { view: "start", ticket: tk, space: this.suggest(tk) } });
@@ -392,7 +422,9 @@ class Board {
     const hov = this.hovered === k;
     const meta = [tk.source === "github" ? `#${tk.number}` : null, tk.project, tk.due && `due ${tk.due}`, tk.assignee].filter(Boolean).join(" · ");
     const right = hov && l.live?.alive ? btn(t, `open-${k}`, "Open", () => openRecord(rec, this.view === "page"))
-      : hov && this.view === "panel" ? btn(t, `start-${k}`, "Start", (cx) => this.start(tk, cx), { primary: true })
+      : hov && this.view === "panel" ? h_flex().flex_none().gap(4)
+        .child(btn(t, `orch-${k}`, "Orchestrator", (cx) => this.handOver(tk, cx), { tip: "Dem Orchestrator übergeben: er plant, verteilt und bringt es geprüft zum Review" }))
+        .child(btn(t, `start-${k}`, "Start", (cx) => this.start(tk, cx), { primary: true }))
       : h_flex().flex_none().gap(4).items_center().when(Boolean(l.live?.alive), (el) => el.child(dot(l.color, l.anim)))
         .child(div().text_size(10.5).text_color(l.live?.alive ? l.color : t.dim).child(l.text));
     return div().id(`q-${k}`).relative().mb(6).flex_none().rounded(10).overflow_hidden().cursor_pointer()
@@ -541,7 +573,8 @@ class Board {
       .child(h_flex().gap(8).items_start()
         .child(div().flex_1().min_w(0).text_size(15).font_semibold().child(tk.title))
         .when(tk.source === "plain", (el) => el.child(btn(t, "d-edit", "Edit", () => openEdit(tk.id), { icon: `${WC}/square-pen.svg` })))
-        .when(tk.source !== "plain" && Boolean(tk.url), (el) => el.child(btn(t, "d-url", "Open", (cx) => cx.open_url(tk.url), { tip: tk.url }))))
+        .when(tk.source !== "plain" && Boolean(tk.url), (el) => el.child(btn(t, "d-url", "Open", (cx) => cx.open_url(tk.url), { tip: tk.url })))
+        .child(btn(t, "d-orch", "An Orchestrator", (cx) => this.handOver(tk, cx), { primary: true, tip: "Er plant, verteilt ans Team und bringt es geprüft zum Review" })))
       .child(h_flex().flex_wrap().gap(5).items_center().text_size(11.5).text_color(t.dim)
         .child(div().child(meta.join(" · ")))
         .children(tk.labels.map((x, i) => chip(t, `d-l${i}`, x))))

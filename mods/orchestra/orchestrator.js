@@ -61,11 +61,12 @@ export function digest(lines) {
   const message = [];
   for (let i = keep.length - 1; i >= 0; i--) {
     const l = keep[i], text = l.trim();
-    if (!text) { if (message.length) break; continue; }
+    // Blank lines separate paragraphs of the same message: skip them, stop at tool boxes.
+    if (!text) continue;
     if (BOX.test(l) || NOISE.test(text) || /^[⎋⠀-⣿]/.test(text) || /^π\b/.test(text)) { if (message.length) break; continue; }
     message.unshift(text);
   }
-  return { step, message: message.slice(-6) };
+  return { step, message: message.slice(-5) };
 }
 
 export function setAutostart(on) { setShared("orchestra.autostart", on); }
