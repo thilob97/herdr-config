@@ -35,7 +35,7 @@
     "cmd-alt-shift-down": "pane.swap:down",
     "f2": "tab.rename",
     "shift-f2": "space.rename",
-    "cmd-/": "app.help",
+    "cmd-/": "mod.open:cheatsheet",
     "cmd-shift-/": "app.help",
     "cmd-b": "layout.toggle:sidebar",
     "cmd-=": "app.zoom_in",

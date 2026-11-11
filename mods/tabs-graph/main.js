@@ -1,6 +1,6 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { spaces, panes, run, openOverlay, theme, window, layout, settings, nextCommand } from "herdr";
+import { spaces, panes, agents, run, openOverlay, theme, window, layout, settings, nextCommand } from "herdr";
 
 const PANELS = ["changes", "graph", "filetree", "blueprint", "docker", "quests"];
 
@@ -108,11 +108,21 @@ export default class Tabs extends View {
           else { run("layout.select", { stack: "panel-body", child: id }); run("layout.show", { id: "panel" }); }
         }).child(svg(icon).size(14)).child(label);
     };
+    // Agent hub: the inbox (with how many wait) and the review of the focused terminal.
+    const needs = agents().filter(a => a.status === "blocked").length, done = agents().filter(a => a.status === "done").length;
+    const hubButton = (id, label, icon, tip, action, count, color) => h_flex().id(id).h(26).px(8).gap(5).flex_none().items_center().rounded(6)
+      .text_size(12).text_color(t.muted).hover(s => s.bg(t.hover).text_color(t.foreground)).tooltip(tip)
+      .on_mouse_down("left", stop).on_click(action)
+      .child(svg(icon).size(14)).child(label)
+      .when(count > 0, el => el.child(div().px(5).h(16).flex().items_center().rounded(8).bg(color).text_size(10.5).font_semibold().text_color(t.background).child(String(count))));
     return h_flex().size_full().min_w(0).px(10).pl(lightsPadding).gap(3).items_center().bg(t.chrome).border_b(1).border_color(t.border)
       .on_mouse_up("left", () => { this.pressed = null; })
       .on_scroll_wheel(e => { if (Math.abs(e.delta.y) >= 1) run(e.delta.y > 0 ? "tab.prev" : "tab.next"); })
       .child(h_flex().id("tab-scroll").flex_1().min_w(0).h_full().items_center().gap(3).overflow_x_scrollbar().children(shown.map(item)))
       .child(button("tab-new", "+", () => openOverlay({ mod: "new-menu", kind: "popup", width: 250, height: 512 })))
+      .child(hubButton("hub-inbox", "Inbox", "mods/inbox/icon.svg", "Inbox: wartende Agents (⌘⇧J, nächster: ⌘J)", () => run("mod.open", { name: "inbox" }), needs || done, needs ? t.blocked : t.done))
+      .child(hubButton("hub-review", "Review", "mods/review/icon.svg", "Review des fokussierten Terminals (⌘⇧R)", () => run("mod.open", { name: "review" }), 0, null))
+      .child(div().w(1).h(16).mx(4).flex_none().bg(t.border))
       .when(enabled.includes("changes"), el => el.child(panelButton("changes", "Changes", "mods/changes/changes.svg")))
       .child(panelButton("graph", "Git", "mods/git-graph/icons/graph.svg"))
       .child(panelButton("filetree", "Tree", "mods/filetree/folder.svg"))

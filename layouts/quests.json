@@ -28,7 +28,7 @@
             { "id": "agents", "type": "block", "content": { "mod": "agent-cards" }, "size": { "weight": 1 }, "min": 90 }
           ]
         },
-        { "id": "sidebar-footer", "type": "block", "content": { "mod": "sidebar-footer", "props": { "footer": true } }, "size": { "px": 125 } }
+        { "id": "sidebar-footer", "type": "block", "content": { "mod": "sidebar-footer", "props": { "footer": true } }, "size": { "px": 153 } }
       ]
     },
     {

@@ -36,7 +36,7 @@ export default class WorkspaceChrome extends View {
       const row = (id, icon, label, dim, action) => h_flex().id(id).h(28).px(8).gap(9).items_center().rounded(8)
         .when(collapsed, el => el.relative().w(32).px(0).justify_center().tooltip(label))
         .text_color(dim ? t.dim : t.muted).hover(s => s.bg(t.hover).text_color(t.foreground)).cursor_pointer()
-        .on_click(action).child(svg(`mods/sidebar-footer/${icon}.svg`).size(14))
+        .on_click(action).child(svg(icon.includes("/") ? icon : `mods/sidebar-footer/${icon}.svg`).size(14))
         .when(!collapsed, el => el.child(label));
       const ready = div().size(6).rounded_full().bg(t.accent);
       return v_flex().size_full().bg(t.chrome).border_t(1).border_color(t.border).px(8).pt(4).pb(8).text_size(13)
@@ -45,6 +45,7 @@ export default class WorkspaceChrome extends View {
           .when(Boolean(updates().app.ready), el => el.child(collapsed ? ready.absolute().top(5).right(6) : ready)))
         .child(row("marketplaces", "store", "Marketplaces", false, () => run("mod.open", { name: "marketplaces" })))
         .child(row("mcp-servers", "plug", "MCP servers", false, () => run("mod.open", { name: "mcp-servers" })))
+        .child(row("cheatsheet", "mods/cheatsheet/icon.svg", "Tastenkürzel", false, () => run("mod.open", { name: "cheatsheet" })))
         .child(row("machine", "plus", "Add machine", true, () => run("mod.open", { name: "machine-add" })));
     }
     return h_flex().size_full().bg(t.chrome).pl(collapsed ? 6 : 14).pr(10).gap(4).items_center().text_size(13.5)

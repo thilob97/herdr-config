@@ -47,12 +47,13 @@ Aktiv ist das Layout `elric` (Klon von `main`), daneben `quests`. Eigene Mods:
 |---|---|
 | `space-folders` | Spaces nach Maschine und Ordner in der Seitenleiste (extern, siehe unten) |
 | `agent-cards` | Agents als Karten (Klon von `agents`): Avatar, OMP-Modell, Kontext, Kosten, Sub-Agents |
-| `sidebar-footer` | Fuß der Seitenleiste: Settings, Marketplaces, MCP servers, Add machine (Klon von `workspace-chrome`) |
-| `tabs-graph` | Tab-Leiste mit Panel-Buttons Changes, Git, Tree, Blueprint, Docker, Quests (Klon von `tabs`) |
+| `sidebar-footer` | Fuß der Seitenleiste: Settings, Marketplaces, MCP servers, Tastenkürzel, Add machine (Klon von `workspace-chrome`) |
+| `tabs-graph` | Tab-Leiste mit Buttons Inbox (mit Zähler) und Review, dann den Panel-Buttons Changes, Git, Tree, Blueprint, Docker, Quests (Klon von `tabs`) |
 | `status-bar` | Statusleiste (Klon von `workspace-status`): Maschine, Branch, Agents, Attention-Badge, Limits und Kosten |
 | `inbox` | Attention-Inbox (Popup), siehe Agent-Zentrale |
 | `review` | Review-Fenster für die Änderungen eines Agents, siehe Agent-Zentrale |
 | `toast-review` | Benachrichtigungen (Klon von `toast`, im Layout-Root als `"toast"` gesetzt) mit Review-Button bei fertigen Agents |
+| `cheatsheet` | Tastenkürzel-Übersicht (Dialog), live aus `keys.json`, deutsch beschriftet und gruppiert, filterbar |
 | `quests` | Ticket-Starter, siehe Quests |
 | `docker` | Panel mit Containern, Compose-Gruppen und Aktionen |
 | `marketplaces`, `mcp-servers` | Fenster für Agent-Plugin-Marketplaces und MCP-Server je Host, Maschine und Projekt |
@@ -62,9 +63,11 @@ Aktiv ist das Layout `elric` (Klon von `main`), daneben `quests`. Eigene Mods:
 
 **Attention:** `status-bar` merkt sich, seit wann jeder Agent in seinem Status ist (`shared("attention.since")`), und zeigt ein Badge `● 2 wartet · 1 fertig` (Klick öffnet die Inbox). `cmd-j` springt zum nächsten Agent, der wartet: erst *blocked*, dann *done*, jeweils der älteste zuerst; erneut drücken geht weiter. Funktioniert über alle Spaces und Maschinen, aber nur in Layouts mit `status-bar` (`elric`, `quests`).
 
-**Inbox** (`cmd-shift-j`): alle wartenden Agents (darunter die arbeitenden, abgedimmt). Rechts der Bildschirm des gewählten Agents (`hc read`, alle 2,5 s neu) und ein Antwortfeld. `↑/↓` wählen, `↵` hingehen, `r` antworten (über `hc send`; bei *blocked* mit `--force`, die Antwort beantwortet seinen Dialog), `v` Review (bei *done*).
+**Inbox** (`cmd-shift-j` oder Button **Inbox** in der Tab-Leiste; der Zähler dort ist rot bei wartenden, grün bei fertigen Agents): alle wartenden Agents (darunter die arbeitenden, abgedimmt). Rechts der Bildschirm des gewählten Agents (`hc read`, alle 2,5 s neu) und ein Antwortfeld. `↑/↓` wählen, `↵` hingehen, `r` antworten (über `hc send`; bei *blocked* mit `--force`, die Antwort beantwortet seinen Dialog), `v` Review (bei *done*).
 
-**Review** (`cmd-shift-r` für das fokussierte Terminal; aus der Inbox oder per Button am Toast „An agent finished“): Git-Änderungen im Ordner des Agents, auch auf entfernten Maschinen. Dateiliste mit +/−, Diff, Branch mit ↑/↓. Aktionen: **Commit** (`git add -A` + `git commit`, Nachricht mit Tab-Namen vorbelegt), **Feedback senden** (`hc send`), **Zum Agent**, **Changes-Panel** (wählt Space und öffnet `changes`), **Worktree entfernen** (nur unter `~/.herdr/worktrees/`, öffnet den mitgelieferten Worktree-Dialog).
+**Review** (`cmd-shift-r` oder Button **Review** in der Tab-Leiste für das fokussierte Terminal; aus der Inbox oder per Button am Toast „An agent finished“): Git-Änderungen im Ordner des Agents, auch auf entfernten Maschinen. Dateiliste mit +/−, Diff, Branch mit ↑/↓. Aktionen: **Commit** (`git add -A` + `git commit`, Nachricht mit Tab-Namen vorbelegt), **Feedback senden** (`hc send`), **Zum Agent**, **Changes-Panel** (wählt Space und öffnet `changes`), **Worktree entfernen** (nur unter `~/.herdr/worktrees/`, öffnet den mitgelieferten Worktree-Dialog).
+
+**Tastenkürzel** (`cmd-/` oder **Tastenkürzel** unten in der Seitenleiste): alle Belegungen aus `keys.json`, gruppiert und filterbar; Herdrs eigene Liste bleibt auf `cmd-shift-/`. Neue Mod-Kommandos bekommen ihre deutsche Beschreibung in `DESC` in `mods/cheatsheet/main.js`, sonst erscheint der Befehlsname.
 
 | Taste | Wirkung |
 |---|---|
@@ -72,6 +75,7 @@ Aktiv ist das Layout `elric` (Klon von `main`), daneben `quests`. Eigene Mods:
 | `cmd-shift-j` | Inbox |
 | `cmd-shift-r` | Review für das fokussierte Terminal |
 | `cmd-shift-t` | neuer Tab mit `omp` |
+| `cmd-/` | Tastenkürzel-Übersicht |
 | `cmd-shift-b` | rechtes Panel ein/aus (`elric`) |
 | `cmd-alt-1` … `cmd-alt-6` | Panel Changes, Git, Tree, Blueprint, Docker, Quests (`elric`; erneut drücken schließt) |
 
