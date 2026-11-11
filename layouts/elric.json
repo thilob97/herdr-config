@@ -215,6 +215,19 @@
                       "size": {
                         "weight": 1
                       }
+                    },
+                    {
+                      "id": "orchestra-daemon",
+                      "type": "block",
+                      "content": {
+                        "mod": "orchestra",
+                        "props": {
+                          "role": "daemon"
+                        }
+                      },
+                      "size": {
+                        "px": 0
+                      }
                     }
                   ],
                   "size": {

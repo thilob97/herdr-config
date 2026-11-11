@@ -33,7 +33,8 @@ function diffRows(lines) {
 
 export default class Review extends View {
   init(_props, cx) {
-    this.address = props()?.terminal ?? focused()?.terminal ?? focused()?.agent ?? null;
+    const p = props() ?? {};
+    this.address = p.terminal ?? (p.folder ? null : focused()?.terminal ?? focused()?.agent ?? null);
     this.files = []; this.rows = []; this.open = null; this.diffWidth = 300;
     this.repo = null; this.error = null; this.note = null; this.busy = null; this.loading = false;
     this.commitInput = InputState.new({ placeholder: "Commit-Nachricht" });
@@ -44,15 +45,17 @@ export default class Review extends View {
     cx.timer.every(REFRESH, (cx) => this.refresh(cx));
   }
 
-  // Where the agent is: its pane's live folder, else what the core reports.
+  // Where the agent is: its pane's live folder, else what the core reports, else
+  // props { folder, on } (a ticket whose agent has already ended).
   target() {
-    const a = this.address;
-    if (!a) return null;
-    const agent = agents().find((x) => x.address === a);
-    const pane = panes().find((p) => p.terminal === a);
-    const term = terminals().find((x) => x.address === a);
+    const a = this.address, p = props() ?? {};
+    if (!a && !p.folder) return null;
+    const agent = a ? agents().find((x) => x.address === a) : null;
+    const pane = a ? panes().find((x) => x.terminal === a) : null;
+    const term = a ? terminals().find((x) => x.address === a) : null;
     const space = spaces().find((s) => s.id === agent?.space) ?? spaces().find((s) => s.tabs?.some((t) => t.id === pane?.tab));
-    return { agent, pane, space, on: machineOf(a), cwd: pane?.cwd ?? term?.cwd ?? null, live: Boolean(term && term.state !== "finished") };
+    const live = Boolean(term && term.state !== "finished");
+    return { agent, pane, space, on: a ? machineOf(a) : p.on ?? null, cwd: (live ? pane?.cwd ?? term?.cwd : null) ?? p.folder ?? term?.cwd ?? null, live };
   }
 
   git(args, on, cwd) { return exec("git", [...READ, ...args], { cwd, on }); }
@@ -80,8 +83,13 @@ export default class Review extends View {
         ]);
         if (status.code !== 0) throw new Error(lastLine(status));
         const hasHead = head.code === 0;
+        const branchName = branch.code === 0 ? branch.stdout.trim() : null;
+        // An agent's branch: what it changed since it left the main branch, committed or
+        // not (the diff against the merge base); on the main branch itself: uncommitted only.
+        const base = hasHead ? await this.baseOf(on, root, branchName) : null;
+        const diffRef = base?.mergeBase ?? (hasHead ? "HEAD" : null);
         const stats = {};
-        const numstats = hasHead ? [await this.git(["diff", "HEAD", "--numstat", "-z", "--no-renames"], on, root)]
+        const numstats = diffRef ? [await this.git(["diff", diffRef, "--numstat", "-z", "--no-renames"], on, root)]
           : [await this.git(["diff", "--cached", "--numstat", "-z", "--no-renames"], on, root), await this.git(["diff", "--numstat", "-z", "--no-renames"], on, root)];
         for (const r of numstats) for (const entry of r.stdout.split("\0")) {
           const [a, d, ...parts] = entry.split("\t");
@@ -89,23 +97,51 @@ export default class Review extends View {
           const path = parts.join("\t"), o = stats[path] ?? { add: 0, del: 0 };
           stats[path] = { add: o.add + (Number(a) || 0), del: o.del + (Number(d) || 0), binary: a === "-" };
         }
-        const files = status.stdout.split("\0").filter(Boolean).slice(0, 1000).map((entry) => {
+        const seen = new Map();
+        for (const entry of status.stdout.split("\0").filter(Boolean).slice(0, 1000)) {
           const xy = entry.slice(0, 2), path = entry.slice(3), fresh = xy === "??";
           const s = xy.includes("U") || xy === "AA" || xy === "DD" ? "U" : xy.includes("D") ? "D" : fresh || xy.includes("A") ? "A" : "M";
-          return { path, status: s, fresh, ...(stats[path] ?? { add: 0, del: 0 }) };
-        });
+          seen.set(path, { path, status: s, fresh, ...(stats[path] ?? { add: 0, del: 0 }) });
+        }
+        if (base) {
+          const names = await this.git(["diff", base.mergeBase, "--name-status", "-z", "--no-renames"], on, root);
+          const parts = names.stdout.split("\0").filter(Boolean);
+          for (let i = 0; i + 1 < parts.length; i += 2) {
+            const s = parts[i][0], path = parts[i + 1];
+            if (!seen.has(path)) seen.set(path, { path, status: s === "D" ? "D" : s === "A" ? "A" : "M", fresh: false, ...(stats[path] ?? { add: 0, del: 0 }) });
+          }
+        }
+        const files = [...seen.values()].sort((a, b) => a.path.localeCompare(b.path));
         const [behind, ahead] = track.code === 0 ? track.stdout.trim().split(/\s+/).map(Number) : [null, null];
-        this.repo = { root, on, hasHead, branch: branch.code === 0 ? branch.stdout.trim() : null, ahead, behind,
+        const dirty = status.stdout.split("\0").filter(Boolean).length;
+        this.repo = { root, on, hasHead, branch: branchName, ahead, behind, base, diffRef, dirty,
           worktree: /\/\.herdr\/worktrees\//.test(root) }; // where the worktree mod puts checkouts
         this.files = files; this.error = null;
         if (this.open && !files.some((f) => f.path === this.open)) this.open = null;
         if (!this.open && files.length) this.open = files[0].path;
         if (this.open) await this.load(this.open);
         else this.rows = [];
-        if (!this.commitInput.value() && this.files.length) this.commitInput.set_value(this.suggestion());
+        if (!this.commitInput.value() && dirty) this.commitInput.set_value(this.suggestion());
       } catch (e) { this.error = String(e?.message ?? e); }
       finally { this.loading = false; cx.notify(); }
     });
+  }
+
+  // The main branch this one started from (origin's default, else main or master)
+  // and the merge base with it, when the branch has commits of its own.
+  async baseOf(on, root, branchName) {
+    const head = await this.git(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], on, root);
+    const candidates = [head.code === 0 ? head.stdout.trim() : null, "main", "master"].filter(Boolean);
+    for (const name of candidates) {
+      if (name === branchName || name === `origin/${branchName}`) return null;
+      const mb = await this.git(["merge-base", "HEAD", name], on, root);
+      if (mb.code !== 0) continue;
+      const mergeBase = mb.stdout.trim();
+      const count = await this.git(["rev-list", "--count", `${mergeBase}..HEAD`], on, root);
+      const commits = Number(count.stdout.trim()) || 0;
+      return commits ? { name, mergeBase, commits } : null;
+    }
+    return null;
   }
 
   suggestion() {
@@ -127,7 +163,7 @@ export default class Review extends View {
         lines = [`@@ -0,0 +1,${file.add} @@`, ...text.slice(0, 400000).replace(/\n$/, "").split("\n").slice(0, MAX_LINES).map((l) => `+${l}`)];
       }
     } else {
-      const r = await this.git(["diff", ...(repo.hasHead ? ["HEAD"] : []), "--no-ext-diff", "--no-textconv", "--no-color", "--", path], repo.on, repo.root);
+      const r = await this.git(["diff", ...(repo.diffRef ? [repo.diffRef] : []), "--no-ext-diff", "--no-textconv", "--no-color", "--", path], repo.on, repo.root);
       if (r.code !== 0) throw new Error(lastLine(r));
       const all = r.stdout.replace(/\n$/, "").split("\n"), first = all.findIndex((l) => l.startsWith("@@"));
       lines = first < 0 ? [file.binary ? "Binärdatei geändert" : "Kein Text-Diff"] : all.slice(first);
@@ -250,7 +286,7 @@ export default class Review extends View {
     const add = this.files.reduce((n, f) => n + f.add, 0), del = this.files.reduce((n, f) => n + f.del, 0);
     const who = a ? `${a.program?.name ?? "Agent"} · ${a.space_name} / ${a.tab_name}` : this.address ?? "—";
     const statusColor = t[a?.status] ?? t.dim;
-    const canCommit = Boolean(repo && this.files.length && !this.busy);
+    const canCommit = Boolean(repo?.dirty && !this.busy);
     const canSend = Boolean(tg?.live && !this.busy);
 
     const header = h_flex().h(46).flex_none().px(14).gap(10).items_center().border_b(1).border_color(t.border).bg(t.chrome)
@@ -262,7 +298,9 @@ export default class Review extends View {
       .when(Boolean(repo?.branch), (e) => e.child(h_flex().gap(5).items_center().text_size(11.5).text_color(t.muted)
         .child(svg("mods/workspace-chrome/branch.svg").size(13))
         .child(repo.branch)
-        .when(repo.ahead != null && (repo.ahead || repo.behind), (e) => e.child(div().text_color(t.dim).child(`↑${repo.ahead} ↓${repo.behind}`)))))
+        .when(repo.ahead != null && (repo.ahead || repo.behind), (e) => e.child(div().text_color(t.dim).child(`↑${repo.ahead} ↓${repo.behind}`)))
+        .when(Boolean(repo.base), (e) => e.child(div().text_color(t.dim).tooltip(`Änderungen seit dem Abzweig von ${repo.base.name} (Merge-Base), committet und uncommittet`)
+          .child(`gegen ${repo.base.name} · ${repo.base.commits} Commit${repo.base.commits === 1 ? "" : "s"}${repo.dirty ? ` · ${repo.dirty} uncommittet` : ""}`)))))
       .child(div().text_size(11.5).text_color(t.ansi2).child(`+${add}`))
       .child(div().text_size(11.5).text_color(t.ansi1).child(`−${del}`))
       .child(div().id("rv-close").size(26).flex_none().flex().items_center().justify_center().rounded(6).text_color(t.dim).cursor_pointer()

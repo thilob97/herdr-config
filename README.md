@@ -55,7 +55,7 @@ Aktiv ist das Layout `elric` (Klon von `main`), daneben `quests`. Eigene Mods:
 | `toast-review` | Benachrichtigungen (Klon von `toast`, im Layout-Root als `"toast"` gesetzt) mit Review-Button bei fertigen Agents |
 | `cheatsheet` | Tastenkürzel-Übersicht (Dialog), live aus `keys.json`, deutsch beschriftet und gruppiert, filterbar |
 | `launcher` | Agent-Launcher (Dialog) mit Prompt-Vorlagen aus `mods/launcher/templates/*.md`, siehe Agent-Zentrale |
-| `orchestra` | Team-Panel: Agent-Graph, Teams, Nachricht an mehrere Agents, siehe Agent-Zentrale |
+| `orchestra` | Team-Panel: Orchestrator (Agent, der Tickets anlegt, verteilt und prüft), Agent-Graph, Teams, Nachricht an mehrere Agents, siehe Agent-Zentrale |
 | `quests` | Ticket-Starter, siehe Quests |
 | `docker` | Panel mit Containern, Compose-Gruppen und Aktionen |
 | `marketplaces`, `mcp-servers` | Fenster für Agent-Plugin-Marketplaces und MCP-Server je Host, Maschine und Projekt |
@@ -72,6 +72,15 @@ Aktiv ist das Layout `elric` (Klon von `main`), daneben `quests`. Eigene Mods:
 **Agent starten** (`cmd-shift-n`, Button **Starten** in der Tab-Leiste oder im Team-Panel): Vorlage wählen, Space (bestimmt Maschine und Ordner), einen oder mehrere Agents (mehrere = je einer pro Agent, parallel), wo: neuer Tab im Space oder je ein eigener Git-Worktree unter `~/.herdr/worktrees/<repo>/` mit eigenem Space (bei mehreren Agents bekommt der Branch `-<agent>` angehängt). Tab-Name und erste Nachricht sind vorbelegt; `{folder}`, `{branch}`, `{branchnote}` und `{space}` werden beim Start ersetzt. Gestartet wird über `herdr-app do tab.new|space.new`. „Als Team beobachten“ legt aus den gestarteten Agents ein Team an.
 
 **Vorlagen** sind Markdown-Dateien in `mods/launcher/templates/` (getrackt), Kopf `name:` (Anzeige) und `tab:` (Tab-Name, Branch-Präfix), darunter die Nachricht. Mitgeliefert: Bug fixen, Feature bauen, Code-Review, Tests schreiben, Codebase erklären, Refactoring. Neue Datei = neue Vorlage beim nächsten Öffnen.
+
+**Orchestrator** (oben im Team-Panel): ein eigener Agent (Standard omp, umschaltbar mit dem Chip oben rechts), der immer läuft: ein unsichtbarer Block `orchestra-daemon` (0 px, in der Statuszeile von `elric`) startet ihn, wenn keiner läuft, außer er wurde mit **Stoppen** angehalten. Er hat kein eigenes Tab; **Öffnen** zeigt sein Terminal (Peek), die Karte zeigt seinen Bildschirm und nimmt Aufträge an („Auftrag an den Orchestrator…“). Er arbeitet in `~/.herdr/orchestrator` mit den Anweisungen aus `mods/orchestra/orchestrator.md` (bei jedem Start als `AGENTS.md`/`CLAUDE.md` kopiert) und hat `mods/orchestra/bin/hub` im PATH:
+
+- `hub ticket new|list|show|set` legt Tickets als lokale Quests-Tickets an (`data/quests/tickets/*.md`, Feld `by: orchestrator`; Quests-Quelle „Local“ ist dafür eingeschaltet). Quests behält die zusätzlichen Felder (`machine`, `agent`, `branch`, `worktree`, `terminal`, `by`, `updated`) beim Bearbeiten.
+- `hub dispatch <id> [--agent omp|claude|codex]` legt einen Worktree `~/.herdr/worktrees/<repo>/<branch>` an (auch `--on <maschine>` über `hc exec`) und startet den Agent dort mit `hc run` als Kind des Orchestrators, in einem eigenen Herdr-Space, mit dem Ticket als erster Nachricht. Rückfragen und Ergebnisse der Agents kommen über hc direkt beim Orchestrator an; er klärt sie selbst.
+- `hub review <id> --summary …` übergibt erst geprüfte Arbeit an dich: Das Ticket erscheint unter **Bereit für dich** mit Zusammenfassung, dazu Meldung und Ton. **Review** öffnet das Review-Fenster auf dem Ticket-Branch (Diff gegen den Abzweig von main, auch wenn der Agent schon beendet ist), **Abnehmen** setzt `done` und sagt es dem Orchestrator, **Änderungen anfordern** schickt dein Feedback an den Orchestrator, der es an den Agent weitergibt.
+- Der Orchestrator mergt und pusht nie ohne ausdrückliches OK. Endet ein Zug von ihm (Antwort oder Rückfrage), kommt die Meldung „Orchestrator meldet sich“ bzw. „… braucht dich“.
+
+Das Review-Fenster vergleicht Branches allgemein mit ihrem Abzweig von `origin/HEAD`, `main` oder `master` (Kopf: „gegen main · N Commits“); auf dem Haupt-Branch selbst zeigt es nur Uncommittetes. **Commit** gilt nur Uncommittetem.
 
 **Team** (Panel, `cmd-alt-7` oder Button **Team**): oben die Teams (`shared("orchestra.groups")`) mit Fortschrittsbalken pro Mitglied, „alle fertig“, Beobachten an/aus, Auswahl, Auflösen. Darunter der Graph aller laufenden Agents je Space und Maschine: wer wen gestartet hat (`parent` aus `hc run`), Status und Dauer; Doppelklick geht hin (ohne Pane: Peek), beim Drüberfahren Hingehen, Review, Unterbrechen. Ausgewählte Agents (Klick) bekommen eine gemeinsame Nachricht (`hc send`; wartende nur mit „auch wartende“, dann `--force`), werden unterbrochen (`hc interrupt`) oder als Team beobachtet. Die Statusleiste beobachtet die Teams, auch wenn das Panel zu ist: Hat ein Mitglied gearbeitet und arbeitet bzw. wartet keins mehr, kommt einmal „Team … ist fertig“ mit Ton.
 

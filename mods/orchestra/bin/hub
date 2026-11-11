@@ -1,0 +1,283 @@
+#!/usr/bin/env python3
+"""hub: the orchestrator's toolkit. Tickets live as Quests' local tickets
+(~/.config/herdr-app/data/quests/tickets/<id>.md, `---` frontmatter + markdown body);
+team agents run in their own git worktree and Herdr space, started with `hc run`
+from the orchestrator's terminal, so they are its children (hc types their
+reports into it) and show in the Team graph under it.
+
+  hub ticket new --title T --repo PATH [--on MACHINE] [--labels a,b] [--body TEXT | --body-file F | -]
+  hub ticket list [--all] [--json]          open tickets (--all: done too)
+  hub ticket show ID
+  hub ticket set ID key=value ...           e.g. status=todo, repo=/path
+  hub dispatch ID [--agent omp|claude|codex|"cmd args"] [--no-worktree] [--branch B]
+  hub review ID --summary TEXT              ready for the human: status review + summary
+  hub done ID                               accepted (normally the human's button)
+  hub status                                tickets with their agents' live status
+Python 3, standard library only.
+"""
+import argparse, json, os, pwd, re, secrets, shlex, subprocess, sys, time, unicodedata
+
+APP = os.environ.get("HERDR_APP_HOME") or os.path.expanduser("~/.config/herdr-app")
+TICKETS = os.path.join(APP, "data", "quests", "tickets")
+FIELDS = ["title", "status", "repo", "labels", "due", "machine", "agent", "branch", "worktree", "terminal", "by", "updated"]
+AGENTS = {"omp": ["omp"], "claude": ["claude"], "codex": ["codex", "--no-daemon"], "pi": ["pi"]}
+
+
+def die(msg):
+    sys.stderr.write(f"hub: {msg}\n")
+    sys.exit(1)
+
+
+def slug(s, n=40):
+    s = unicodedata.normalize("NFKD", str(s)).encode("ascii", "ignore").decode().lower().replace("ß", "ss")
+    return re.sub(r"[^a-z0-9]+", "-", s).strip("-")[:n].rstrip("-")
+
+
+# ---- tickets, in the format Quests reads and writes
+
+def path_of(tid):
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", tid or ""):
+        die(f"bad ticket id {tid!r}")
+    return os.path.join(TICKETS, tid + ".md")
+
+
+def read(tid):
+    p = path_of(tid)
+    try:
+        text = open(p, encoding="utf-8").read()
+    except OSError:
+        die(f"no ticket {tid} ({p})")
+    m = re.match(r"^---\r?\n(.*?)\r?\n---\r?\n?", text, re.S)
+    meta = {}
+    for line in (m.group(1) if m else "").splitlines():
+        if ":" in line:
+            k, v = line.split(":", 1)
+            meta[k.strip()] = v.strip()
+    meta["id"] = tid
+    meta["body"] = text[m.end():] if m else text
+    meta.setdefault("status", "todo")
+    return meta
+
+
+def write(t):
+    os.makedirs(TICKETS, exist_ok=True)
+    t["updated"] = time.strftime("%Y-%m-%d %H:%M")
+    one = lambda v: re.sub(r"[\r\n]+", " ", str(v or "")).strip()
+    head = [f"{k}: {one(t.get(k))}" for k in FIELDS if k in ("title", "status", "repo", "labels", "due") or t.get(k)]
+    tmp = path_of(t["id"]) + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write("---\n" + "\n".join(head) + "\n---\n" + (t.get("body") or ""))
+    os.replace(tmp, path_of(t["id"]))
+
+
+def all_tickets():
+    try:
+        names = sorted(n for n in os.listdir(TICKETS) if n.endswith(".md"))
+    except OSError:
+        return []
+    return [read(n[:-3]) for n in names]
+
+
+# ---- machines: local commands, or through `hc exec --on`
+
+def run(argv, on=None, cwd=None, check=True):
+    if on:
+        cmd = ["hc", "exec", "--on", on] + (["sh", "-c", f"cd {shlex.quote(cwd)} && exec \"$@\"", "sh"] if cwd else []) + argv
+        r = subprocess.run(cmd, capture_output=True, text=True)
+    else:
+        r = subprocess.run(argv, capture_output=True, text=True, cwd=cwd)
+    if check and r.returncode != 0:
+        die(f"{' '.join(argv)}: {(r.stderr or r.stdout).strip()}")
+    return r
+
+
+def home_of(on):
+    return run(["sh", "-c", 'printf %s "$HOME"'], on).stdout.strip() if on else os.path.expanduser("~")
+
+
+def shell():
+    return os.environ.get("SHELL") or pwd.getpwuid(os.getuid()).pw_shell or "/bin/sh"
+
+
+# ---- commands
+
+def cmd_new(a):
+    body = a.body
+    if a.body_file:
+        body = open(a.body_file, encoding="utf-8").read()
+    elif body == "-":
+        body = sys.stdin.read()
+    base = slug(a.title) or "ticket"
+    tid, n = base, 2
+    while os.path.exists(path_of(tid)):
+        tid, n = f"{base}-{n}", n + 1
+    t = {"id": tid, "title": a.title, "status": "todo", "repo": a.repo or "", "labels": a.labels or "",
+         "machine": a.on or "", "by": "orchestrator", "body": (body or "").strip() + "\n"}
+    write(t)
+    print(tid)
+
+
+def cmd_list(a):
+    rows = [t for t in all_tickets() if a.all or t["status"] != "done"]
+    if a.json:
+        print(json.dumps([{k: v for k, v in t.items() if k != "body"} for t in rows], ensure_ascii=False, indent=1))
+        return
+    for t in rows:
+        print(f"{t['id']:<40} {t['status']:<7} {t.get('terminal', ''):<14} {t['title']}")
+
+
+def cmd_show(a):
+    t = read(a.id)
+    for k in FIELDS:
+        if t.get(k):
+            print(f"{k}: {t[k]}")
+    print()
+    print(t["body"].rstrip())
+
+
+def cmd_set(a):
+    t = read(a.id)
+    for kv in a.pairs:
+        if "=" not in kv:
+            die(f"expected key=value, got {kv!r}")
+        k, v = kv.split("=", 1)
+        if k not in FIELDS:
+            die(f"unknown field {k} (known: {', '.join(FIELDS)})")
+        t[k] = v
+    write(t)
+
+
+def is_live(address):
+    r = subprocess.run(["hc", "get", address, "--json"], capture_output=True, text=True)
+    try:
+        return r.returncode == 0 and json.loads(r.stdout).get("state") == "live"
+    except ValueError:
+        return False
+
+
+def cmd_dispatch(a):
+    t = read(a.id)
+    if t["status"] in ("doing", "review") and t.get("terminal") and is_live(t["terminal"]):
+        die(f"{a.id} already runs in {t['terminal']} (status {t['status']}); talk to it with hc send")
+    repo, on = t.get("repo"), t.get("machine") or None
+    if not repo:
+        die(f"{a.id} has no repo; hub ticket set {a.id} repo=/path/to/checkout")
+    me = os.environ.get("HC_TERMINAL_ID")
+    folder, branch = repo, None
+    if not a.no_worktree:
+        top = run(["git", "rev-parse", "--show-toplevel"], on, repo).stdout.strip()
+        common = run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], on, repo).stdout.strip()
+        main = common[:-5] if common.endswith("/.git") else common
+        labels = t.get("labels", "").lower()
+        branch = a.branch or t.get("branch") or f"{'fix' if 'bug' in labels or 'fix' in labels else 'feat'}/{a.id}"[:60]
+        if run(["git", "check-ref-format", "--branch", branch], on, top, check=False).returncode:
+            die(f"bad branch name {branch!r}")
+        folder = f"{home_of(on)}/.herdr/worktrees/{os.path.basename(main)}/{slug(branch.replace('/', '-'), 60)}"
+        exists = run(["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"], on, main, check=False).returncode == 0
+        if run(["test", "-d", folder], on, check=False).returncode != 0:
+            run(["git", "worktree", "add", folder, branch] if exists else ["git", "worktree", "add", "-b", branch, folder, "HEAD"], on, top)
+    report = f"hc send {me} \"…\"" if me else "deine Abschlussnachricht"
+    task = (
+        f"Ticket {a.id}: {t['title']}\n\n{t['body'].strip()}\n\n---\n"
+        f"Du arbeitest in {folder}" + (f" auf Branch {branch}" if branch else "") + ". "
+        "Lies zuerst den relevanten Code, ändere fokussiert, führe die Checks/Tests des Projekts aus, committe in kleinen Schritten, kein Push. "
+        "Starte keine weiteren Agents. Fragen und Entscheidungen klärst du mit dem Orchestrator, nicht mit dem Menschen: "
+        f"{report}. Wenn du fertig oder blockiert bist, melde dich genauso mit: was geändert, Testergebnis, was offen ist."
+    )
+    agent = AGENTS.get(a.agent) or shlex.split(a.agent)
+    if on:
+        argv = ["sh", "-lc", '"$@"; exec "${SHELL:-sh}" -l', "sh", *agent, task]
+    else:
+        sh = shell()
+        argv = [sh, "-lic", '"$@"; exec "$0" -li', sh, *agent, task]
+    name = slug(a.id, 32) or "agent"
+    labels = ["--label", f"herdr.space=sp{secrets.token_hex(16)}", "--label", f"herdr.tab=tb{secrets.token_hex(16)}",
+              "--label", f"hub.ticket={a.id}"]
+    cmd = ["hc", "run", "--bg", "--json", "--keep", "--outlive-parent", "--name", name, "--cwd", folder, *labels]
+    if on:
+        cmd += ["--on", on]
+    r = subprocess.run(cmd + ["--", *argv], capture_output=True, text=True)
+    if r.returncode != 0 and "name" in (r.stderr or "").lower():
+        name = f"{name[:26]}-{secrets.token_hex(2)}"
+        cmd[cmd.index("--name") + 1] = name
+        r = subprocess.run(cmd + ["--", *argv], capture_output=True, text=True)
+    if r.returncode != 0:
+        die(f"hc run: {(r.stderr or r.stdout).strip()}")
+    out = json.loads(r.stdout)
+    t.update(status="doing", agent=a.agent, branch=branch or "", worktree=folder if branch else "", terminal=out["address"])
+    write(t)
+    print(json.dumps({"ticket": a.id, "terminal": out["address"], "name": name, "folder": folder, "branch": branch}, ensure_ascii=False))
+
+
+def cmd_review(a):
+    t = read(a.id)
+    body = re.sub(r"\n## Zusammenfassung \(Orchestrator\)\n.*\Z", "\n", t["body"], flags=re.S).rstrip()
+    t["body"] = f"{body}\n\n## Zusammenfassung (Orchestrator)\n{a.summary.strip()}\n"
+    t["status"] = "review"
+    write(t)
+    print(f"{a.id}: review")
+
+
+def cmd_done(a):
+    t = read(a.id)
+    t["status"] = "done"
+    write(t)
+    print(f"{a.id}: done")
+
+
+def cmd_status(_a):
+    live = {}
+    try:
+        for x in json.loads(subprocess.run(["hc", "ls", "--json"], capture_output=True, text=True).stdout)["terminals"]:
+            live[x["address"]] = x.get("status") or x.get("state")
+    except Exception:
+        pass
+    for t in all_tickets():
+        if t["status"] == "done":
+            continue
+        term = t.get("terminal", "")
+        print(f"{t['id']:<40} {t['status']:<7} {term:<16} {live.get(term, '-' if not term else 'beendet'):<9} {t['title']}")
+
+
+def main():
+    p = argparse.ArgumentParser(prog="hub", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = p.add_subparsers(dest="cmd", required=True)
+    tk = sub.add_parser("ticket").add_subparsers(dest="tcmd", required=True)
+    n = tk.add_parser("new")
+    n.add_argument("--title", required=True)
+    n.add_argument("--repo")
+    n.add_argument("--on")
+    n.add_argument("--labels")
+    n.add_argument("--body")
+    n.add_argument("--body-file")
+    n.set_defaults(fn=cmd_new)
+    l = tk.add_parser("list")
+    l.add_argument("--all", action="store_true")
+    l.add_argument("--json", action="store_true")
+    l.set_defaults(fn=cmd_list)
+    s = tk.add_parser("show")
+    s.add_argument("id")
+    s.set_defaults(fn=cmd_show)
+    st = tk.add_parser("set")
+    st.add_argument("id")
+    st.add_argument("pairs", nargs="+")
+    st.set_defaults(fn=cmd_set)
+    d = sub.add_parser("dispatch")
+    d.add_argument("id")
+    d.add_argument("--agent", default="omp")
+    d.add_argument("--no-worktree", action="store_true")
+    d.add_argument("--branch")
+    d.set_defaults(fn=cmd_dispatch)
+    rv = sub.add_parser("review")
+    rv.add_argument("id")
+    rv.add_argument("--summary", required=True)
+    rv.set_defaults(fn=cmd_review)
+    dn = sub.add_parser("done")
+    dn.add_argument("id")
+    dn.set_defaults(fn=cmd_done)
+    sub.add_parser("status").set_defaults(fn=cmd_status)
+    a = p.parse_args()
+    a.fn(a)
+
+
+main()

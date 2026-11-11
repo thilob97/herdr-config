@@ -1,13 +1,15 @@
-// Team: every agent on every space and machine as a graph: who started whom
-// (hc run sets `parent`), grouped by space, with status and how long it has
-// been in it. Select agents to message them all at once, interrupt them, or
-// watch them as a team. Teams (shared "orchestra.groups", also made by the
-// launcher) show on top; the status bar watches them and says when a whole
-// team is finished, so that works while this panel is hidden.
+// Team: the orchestrator on top (its card and tickets, hubview.js), then every
+// agent on every space and machine as a graph: who started whom (hc run sets
+// `parent`), grouped by space, with status and how long it has been in it.
+// Select agents to message them all at once, interrupt them, or watch them as
+// a team. Teams (shared "orchestra.groups", also made by the launcher) show
+// above the graph; the status bar watches them. With props { role: "daemon" }
+// (a 0px block in the elric layout) this mod only runs the orchestrator's watcher.
 
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { agents, terminals, run, hc, theme, shared, setShared, openOverlay } from "herdr";
+import { agents, terminals, run, hc, theme, shared, setShared, openOverlay, props } from "herdr";
+import { HubDaemon, HubSection } from "./hubview.js";
 
 const WC = "mods/workspace-chrome";
 const RANK = { blocked: 4, error: 4, done: 3, working: 2, idle: 1 };
@@ -28,6 +30,8 @@ function icon(p, size, color) {
 
 export default class Orchestra extends View {
   init(_props, cx) {
+    if (props()?.role === "daemon") { this.daemon = new HubDaemon(cx); return; }
+    this.hub = new HubSection(this, cx);
     this.selected = new Set();
     this.force = false;
     this.note = null;
@@ -60,7 +64,7 @@ export default class Orchestra extends View {
         // A script run by a shell is named by the script, not "sh".
         name: a?.program?.name ?? x.name ?? x.template ?? (x.program?.shell ? x.agent : x.program?.name) ?? x.agent ?? addr,
         title: plain(a?.title ?? x.title ?? ""), program: a?.program ?? x.program, pane: a?.pane ?? null,
-        space: a?.space_name ?? where[0] ?? "", tab: a?.tab_name ?? where[1] ?? "", machine: machineOf(addr),
+        space: x.name === "orchestrator" ? "Orchestrator" : a?.space_name ?? where[0] ?? "", tab: a?.tab_name ?? where[1] ?? "", machine: machineOf(addr),
         since: since[addr]?.status === status ? since[addr].at : null,
       };
     });
@@ -252,6 +256,7 @@ export default class Orchestra extends View {
   }
 
   render(cx) {
+    if (this.daemon) { this.daemon.watch(cx); return div(); }
     const t = theme();
     const nodes = this.nodes();
     for (const a of [...this.selected]) if (!nodes.some((n) => n.address === a)) this.selected.delete(a);
@@ -269,6 +274,7 @@ export default class Orchestra extends View {
       .when(internal > 0, (el) => el.child(div().text_color(t.working).tooltip("omp-interne Subagents, die gerade laufen").child(`+${internal} intern`)));
 
     const body = v_flex().id("or-body").flex_1().min_h(0).overflow_y_scrollbar().px(8).pb(8).gap(8)
+      .child(div().pt(6).child(this.hub.render(t)))
       .when(groups.length > 0, (el) => el.child(div().pt(4).text_size(10.5).font_semibold().text_color(t.dim).child("TEAMS"))
         .children(groups.map((g) => this.groupCard(t, g, nodes))))
       .child(div().pt(4).text_size(10.5).font_semibold().text_color(t.dim).child("GRAPH · WER HAT WEN GESTARTET"))

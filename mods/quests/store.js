@@ -72,6 +72,7 @@ export const fill = (text, vars) => text.replace(/\{(\w+)\}/g, (m, k) => (k in v
 // ---- Plain tickets: tickets/<id>.md, `---` frontmatter of `key: value` lines, then the markdown body.
 
 const FIELDS = ["title", "status", "repo", "labels", "due"];
+const EXTRA = ["machine", "agent", "branch", "worktree", "terminal", "by", "updated"];
 
 export function parseTicket(id, text) {
   const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(text);
@@ -82,15 +83,18 @@ export function parseTicket(id, text) {
   }
   return {
     source: "plain", id, title: meta.title || id, body: m ? text.slice(m[0].length) : text,
-    url: `${ticketsDir()}/${id}.md`, status: meta.status || "todo", repo: meta.repo || "", assignee: "",
+    url: `${ticketsDir()}/${id}.md`, status: meta.status || "todo", repo: meta.repo || "", assignee: meta.agent || "",
     labels: (meta.labels || "").split(",").map((l) => l.trim()).filter(Boolean), due: meta.due || null, project: meta.repo || "",
+    extra: Object.fromEntries(EXTRA.filter((k) => meta[k]).map((k) => [k, meta[k]])),
   };
 }
 
 export function serializeTicket(t) {
   const one = (v) => String(v ?? "").replace(/[\r\n]+/g, " ").trim();
   const meta = { ...t, labels: (t.labels ?? []).join(", ") };
-  return `---\n${FIELDS.map((k) => `${k}: ${one(meta[k])}`).join("\n")}\n---\n${t.body ?? ""}`;
+  // The orchestrator's fields (bin/hub in the orchestra mod) stay as they were.
+  const extra = Object.entries(t.extra ?? {}).filter(([k, v]) => EXTRA.includes(k) && v).map(([k, v]) => `${k}: ${one(v)}`);
+  return `---\n${[...FIELDS.map((k) => `${k}: ${one(meta[k])}`), ...extra].join("\n")}\n---\n${t.body ?? ""}`;
 }
 
 export async function listPlain() {

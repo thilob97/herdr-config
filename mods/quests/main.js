@@ -706,6 +706,7 @@ class Edit {
           this.labels.set_value(tk.labels.join(", "));
           this.due.set_value(tk.due ?? "");
           this.body.set_value(tk.body);
+          this.extra = tk.extra ?? {};
           this.status = stage(tk);
           this.ready = true;
         } catch (e) { this.error = errorText(e); }
@@ -719,7 +720,7 @@ class Edit {
     if (!title) { this.error = "Give it a title."; cx.notify(); return; }
     const t = {
       title, status: this.status, repo: this.repo.value().trim(), due: this.due.value().trim(),
-      labels: this.labels.value().split(",").map((l) => l.trim()).filter(Boolean), body: this.body.value(),
+      labels: this.labels.value().split(",").map((l) => l.trim()).filter(Boolean), body: this.body.value(), extra: this.extra ?? {},
     };
     cx.spawn(async (cx) => {
       try { await store.savePlain(this.id, t); bump("local"); closeSelf(); }
