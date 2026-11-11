@@ -63,7 +63,9 @@ export default class Orchestra extends View {
         address: addr, parent: byAddr.has(x.parent) ? x.parent : null, status,
         // A script run by a shell is named by the script, not "sh".
         name: a?.program?.name ?? x.name ?? x.template ?? (x.program?.shell ? x.agent : x.program?.name) ?? x.agent ?? addr,
-        title: plain(a?.title ?? x.title ?? ""), program: a?.program ?? x.program, pane: a?.pane ?? null,
+        // omp prefixes its title with "π >": the name already says which agent it is.
+        title: plain(a?.title ?? x.title ?? "").replace(/^π\s*>?\s*/, ""), program: a?.program ?? x.program, pane: a?.pane ?? null,
+        orch: x.name === "orchestrator",
         space: x.name === "orchestrator" ? "Orchestrator" : a?.space_name ?? where[0] ?? "", tab: a?.tab_name ?? where[1] ?? "", machine: machineOf(addr),
         since: since[addr]?.status === status ? since[addr].at : null,
       };
@@ -90,9 +92,12 @@ export default class Orchestra extends View {
     for (const r of nodes.filter((n) => !n.parent)) {
       const key = `${r.machine ?? ""}\u0000${r.space}`;
       if (!groups.has(key)) groups.set(key, { machine: r.machine, space: r.space, rows: [] });
-      groups.get(key).rows.push({ n: r, lines: [] }, ...walk({ n: r }, []));
+      // The orchestrator has its own card above: here only its team, one level up.
+      if (r.orch) groups.get(key).rows.push(...walk({ n: r }, []).map((row) => ({ ...row, lines: row.lines.slice(1) })));
+      else groups.get(key).rows.push({ n: r, lines: [] }, ...walk({ n: r }, []));
     }
-    return [...groups.values()].sort((a, b) => (a.machine ?? "").localeCompare(b.machine ?? "") || a.space.localeCompare(b.space));
+    return [...groups.values()].filter((g) => g.rows.length)
+      .sort((a, b) => (b.space === "Orchestrator") - (a.space === "Orchestrator") || (a.machine ?? "").localeCompare(b.machine ?? "") || a.space.localeCompare(b.space));
   }
 
   groups() { return shared("orchestra.groups") ?? []; }
@@ -175,33 +180,38 @@ export default class Orchestra extends View {
       .child(svg(path).size(12));
   }
 
+  // One agent: click goes to it; the box on the left (on hover, or while
+  // anything is selected) picks it for a message, a team or an interrupt.
   nodeRow(t, row) {
     const n = row.n, on = this.selected.has(n.address), hover = this.hovered === n.address;
-    return h_flex().id(`or-${n.address}`).h(30).flex_none().pl(6).pr(4).gap(0).items_center().rounded(7).cursor_pointer()
+    const picking = on || hover || this.selected.size > 0;
+    const pic = icon(n.program, 14, t.muted);
+    return h_flex().id(`or-${n.address}`).h(32).flex_none().pl(4).pr(6).gap(0).items_center().rounded(8).cursor_pointer()
       .when(on, (el) => el.bg(t.selected)).when(!on, (el) => el.hover((s) => s.bg(t.hover)))
       .on_hover((h, cx) => { this.hovered = h ? n.address : this.hovered === n.address ? null : this.hovered; cx.notify(); })
-      .on_click((e, cx) => {
-        if (e.click_count === 2) return this.open(n);
-        if (on) this.selected.delete(n.address); else this.selected.add(n.address);
-        cx.notify();
-      })
-      .child(div().mr(7).child(this.check(t, on)))
-      .children(row.lines.map((l) => div().self_start().mt(-2).w(9).h(17).mr(4).flex_none()
+      .on_click(() => this.open(n))
+      .child(div().id(`or-pick-${n.address}`).w(20).h_full().flex_none().flex().items_center().justify_center()
+        .on_click((_e, cx) => {
+          cx.stop_propagation();
+          if (on) this.selected.delete(n.address); else this.selected.add(n.address);
+          cx.notify();
+        })
+        .when(picking, (el) => el.child(this.check(t, on))))
+      .children(row.lines.map((l) => div().self_start().mt(-2).w(9).h(18).mr(4).flex_none()
         .when(Boolean(l), (el) => el.border_l(1.5).border_color(t.input))
         .when(l === "└" || l === "├", (el) => el.border_b(1.5).rounded_bl(6))))
-      .child(div().mr(6).child(this.status(t, n.status)))
-      .child(icon(n.program, 13, t.muted) ? div().mr(6).child(icon(n.program, 13, t.muted)) : div())
-      .child(v_flex().flex_1().min_w(0)
-        .child(h_flex().gap(6).items_center()
-          .child(div().flex_none().max_w(120).truncate().text_size(12).text_color(t.foreground).child(n.name))
-          .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).child(n.title || n.tab))))
+      .child(div().mr(7).child(this.status(t, n.status)))
+      .when(Boolean(pic), (el) => el.child(div().mr(7).child(pic)))
+      .child(h_flex().flex_1().min_w(0).gap(7).items_center()
+        .child(div().flex_none().max_w(130).truncate().text_size(12.5).text_color(t.foreground).child(n.name))
+        .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).child(n.title || n.tab)))
       .child(hover
-        ? h_flex().gap(1).flex_none()
-          .child(this.iconBtn(t, `or-go-${n.address}`, `${WC}/terminal.svg`, n.pane ? "Hingehen" : "Ansehen (Peek)", () => this.open(n)))
+        ? h_flex().gap(1).flex_none().ml(4)
           .child(this.iconBtn(t, `or-rv-${n.address}`, "mods/review/icon.svg", "Review", () =>
             openOverlay({ mod: "review", kind: "window", key: "review", width: 960, height: 680, props: { terminal: n.address } })))
-          .child(this.iconBtn(t, `or-int-${n.address}`, `${WC}/square.svg`, "Unterbrechen", () => hc(["interrupt", n.address]).catch(() => {})))
-        : div().flex_none().text_size(10.5).text_color(t[n.status] ?? t.dim).child(`${WORD[n.status] ?? ""}${n.since ? ` ${ago(n.since)}` : ""}`));
+          .child(this.iconBtn(t, `or-int-${n.address}`, "mods/orchestra/icons/stop.svg", "Unterbrechen", () => hc(["interrupt", n.address]).catch(() => {})))
+        : div().flex_none().ml(6).text_size(10.5).text_color(n.status === "blocked" ? t.blocked : n.status === "working" ? t.working : t.dim)
+          .child(`${WORD[n.status] ?? ""}${n.since ? ` · ${ago(n.since)}` : ""}`));
   }
 
   // A subagent omp's task tool started: no terminal of its own, so nothing to
@@ -255,6 +265,12 @@ export default class Orchestra extends View {
         .child(div().text_size(10.5).text_color(m.n ? t.muted : t.dim).child(m.n?.name ?? `${m.a} (beendet)`)))));
   }
 
+  label(t, text, n, color) {
+    return h_flex().px(4).pt(10).pb(2).gap(6).items_center().text_size(11).font_medium()
+      .child(div().text_color(color ?? t.muted).child(text))
+      .when(n != null, (el) => el.child(div().text_color(t.dim).child(String(n))));
+  }
+
   render(cx) {
     if (this.daemon) { this.daemon.watch(cx); return div(); }
     const t = theme();
@@ -266,52 +282,57 @@ export default class Orchestra extends View {
     const sel = this.selected.size;
     const internal = graph.flatMap((g) => g.rows).filter((r) => r.s && r.s.status === "running").length;
 
+    // Only what is there: "1 wartet · 2 arbeiten", each with its color.
+    const parts = [["blocked", "wartet", "warten"], ["working", "arbeitet", "arbeiten"], ["done", "fertig", "fertig"]]
+      .map(([s, one, many]) => [s, count(s), count(s) === 1 ? one : many]).filter(([, c]) => c > 0);
     const summary = h_flex().gap(10).items_center().text_size(11)
-      .child(h_flex().gap(4).items_center().child(this.status(t, "blocked")).child(div().text_color(t.blocked).child(String(count("blocked")))))
-      .child(h_flex().gap(4).items_center().child(this.status(t, "working")).child(div().text_color(t.working).child(String(count("working")))))
-      .child(h_flex().gap(4).items_center().child(this.status(t, "done")).child(div().text_color(t.done).child(String(count("done")))))
-      .child(h_flex().gap(4).items_center().child(this.status(t, "idle")).child(div().text_color(t.dim).child(String(nodes.length - count("blocked") - count("working") - count("done")))))
-      .when(internal > 0, (el) => el.child(div().text_color(t.working).tooltip("omp-interne Subagents, die gerade laufen").child(`+${internal} intern`)));
+      .children(parts.map(([s, c, w]) => h_flex().gap(5).items_center()
+        .child(div().size(6).rounded_full().bg(t[s])).child(div().text_color(s === "blocked" ? t.blocked : t.muted).child(`${c} ${w}`))))
+      .when(internal > 0, (el) => el.child(div().text_color(t.dim).tooltip("omp-interne Subagents, die gerade laufen").child(`+${internal} intern`)));
 
-    const body = v_flex().id("or-body").flex_1().min_h(0).overflow_y_scrollbar().px(8).pb(8).gap(8)
-      .child(div().pt(6).child(this.hub.render(t)))
-      .when(groups.length > 0, (el) => el.child(div().pt(4).text_size(10.5).font_semibold().text_color(t.dim).child("TEAMS"))
-        .children(groups.map((g) => this.groupCard(t, g, nodes))))
-      .child(div().pt(4).text_size(10.5).font_semibold().text_color(t.dim).child("GRAPH · WER HAT WEN GESTARTET"))
-      .when(!graph.length, (el) => el.child(div().p(10).text_size(12).text_color(t.dim).child("Keine Agents. Starte welche mit „Starten“ (⌘⇧N).")))
+    const body = v_flex().id("or-body").flex_1().min_h(0).overflow_y_scrollbar().px(10).pt(10).pb(10).gap(4)
+      .child(this.hub.render(t))
+      .when(groups.length > 0, (el) => el.child(this.label(t, "Teams", groups.length)).children(groups.map((g) => this.groupCard(t, g, nodes))))
+      .child(this.label(t, "Agents", nodes.filter((n) => !n.orch).length))
+      .when(!graph.length, (el) => el.child(div().px(4).py(6).text_size(11.5).text_color(t.dim).child("Keine Agents. Starte welche mit „Starten“ (⌘⇧N).")))
       .children(graph.map((g) => v_flex().gap(1)
-        .child(h_flex().px(6).pt(4).pb(2).gap(6).items_center().text_size(11).text_color(t.dim)
-          .child(svg(`${WC}/${g.machine ? "server" : "monitor"}.svg`).size(11))
+        .child(h_flex().px(4).pt(6).pb(2).gap(6).items_center().text_size(10.5).text_color(t.dim)
+          .child(svg(`${WC}/${g.machine ? "server" : g.space === "Orchestrator" ? "layers" : "monitor"}.svg`).size(11))
           .child(div().truncate().child(`${g.space || "ohne Space"}${g.machine ? ` · ${g.machine}` : ""}`)))
         .children(g.rows.map((r) => (r.s ? this.ompRow(t, r) : this.nodeRow(t, r))))));
 
-    const actions = v_flex().flex_none().p(8).gap(6).border_t(1).border_color(t.border).bg(t.chrome)
-      .when(Boolean(this.note), (el) => el.child(div().text_size(11).truncate().text_color(this.note.ok ? t.done : t.blocked).child(this.note.text)))
-      .child(h_flex().h(30).px(9).gap(6).items_center().rounded(7).border_1().border_color(sel ? t.input : t.border).bg(t.background)
-        .child(div().flex_none().text_size(11).text_color(t.dim).child(sel ? `${sel} →` : "0 →"))
-        .child(Input.new(this.message).flex_1().h_full().text_size(12).text_color(t.foreground)))
-      .child(h_flex().gap(4).items_center().flex_wrap()
-        .child(this.textBtn(t, "or-send", this.busy ? "sende…" : "Senden", sel > 0 && !this.busy, (cx) => this.broadcast(cx), true))
-        .child(this.textBtn(t, "or-team", "Als Team beobachten", sel > 0, () => this.addGroup()))
-        .child(this.textBtn(t, "or-int", "Unterbrechen", sel > 0 && !this.busy, (cx) => this.interrupt(cx)))
-        .child(this.textBtn(t, "or-clear", sel ? "Leeren" : "Alle", nodes.length > 0, (cx) => {
-          if (sel) this.selected.clear(); else for (const n of nodes) this.selected.add(n.address);
-          cx.notify();
-        }))
-        .child(h_flex().id("or-force").gap(5).items_center().cursor_pointer().on_click((_e, cx) => { this.force = !this.force; cx.notify(); })
+    // Appears only with a selection.
+    const actions = v_flex().flex_none().px(10).py(9).gap(7).border_t(1).border_color(t.border).bg(t.chrome)
+      .child(h_flex().gap(8).items_center().text_size(11)
+        .child(div().text_color(t.foreground).font_medium().child(`${sel} ausgewählt`))
+        .when(Boolean(this.note), (el) => el.child(div().flex_1().min_w(0).truncate().text_color(this.note.ok ? t.dim : t.blocked).child(this.note.text)))
+        .when(!this.note, (el) => el.child(div().flex_1()))
+        .child(div().id("or-clear").text_color(t.dim).cursor_pointer().hover((s) => s.text_color(t.foreground))
+          .on_click((_e, cx) => { this.selected.clear(); this.note = null; cx.notify(); }).child("Auswahl aufheben")))
+      .child(h_flex().h(32).pl(10).pr(4).gap(6).items_center().rounded(8).border_1().border_color(t.input).bg(t.background)
+        .child(Input.new(this.message).flex_1().h_full().text_size(12).text_color(t.foreground))
+        .child(div().id("or-send").size(24).flex_none().flex().items_center().justify_center().rounded(6)
+          .bg(this.busy ? t.raised : t.solid).text_color(this.busy ? t.dim : t.solid_foreground)
+          .when(!this.busy, (e) => e.cursor_pointer().hover((s) => s.opacity(0.85)).on_click((_e, cx) => this.broadcast(cx)))
+          .child(svg("mods/orchestra/icons/send.svg").size(12))))
+      .child(h_flex().gap(5).items_center()
+        .child(this.textBtn(t, "or-team", "Als Team beobachten", true, () => this.addGroup()))
+        .child(this.textBtn(t, "or-int", "Unterbrechen", !this.busy, (cx) => this.interrupt(cx)))
+        .child(div().flex_1())
+        .child(h_flex().id("or-force").gap(5).items_center().cursor_pointer().tooltip("Auch Agents anschreiben, die auf eine Antwort warten (beantwortet ihren Dialog)")
+          .on_click((_e, cx) => { this.force = !this.force; cx.notify(); })
           .child(this.check(t, this.force)).child(div().text_size(11).text_color(t.muted).child("auch wartende"))));
 
     return v_flex().id("orchestra").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground)
       .child(h_flex().h(42).flex_none().px(12).gap(8).items_center().border_b(1).border_color(t.border)
-        .child(svg("mods/orchestra/icon.svg").size(14).text_color(t.muted))
         .child(div().font_semibold().text_size(13).child("Team"))
         .child(div().flex_1())
         .child(summary)
-        .child(div().id("or-launch").ml(4).h(24).px(8).flex().items_center().gap(5).rounded(6).bg(t.solid).text_color(t.solid_foreground).text_size(11.5)
-          .cursor_pointer().hover((s) => s.opacity(0.85)).on_click(() => run("mod.open", { name: "launcher" }))
+        .child(div().id("or-launch").ml(4).h(24).px(9).flex().items_center().gap(5).rounded(6).bg(t.raised).text_color(t.foreground).text_size(11.5)
+          .cursor_pointer().hover((s) => s.bg(t.hover)).tooltip("Agents von Hand starten (⌘⇧N)").on_click(() => run("mod.open", { name: "launcher" }))
           .child(svg("mods/launcher/icon.svg").size(12)).child("Starten")))
       .child(body)
-      .child(actions);
+      .when(sel > 0, (el) => el.child(actions));
   }
 
   textBtn(t, id, label, enabled, action, strong) {

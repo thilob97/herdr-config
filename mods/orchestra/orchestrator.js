@@ -48,5 +48,25 @@ export async function screen(lines) {
   return plain(r.stdout).replace(/\s+$/, "").split("\n").map((l) => l.replace(/\s+$/, "")).filter((l) => !l.startsWith("[hc]")).slice(-lines);
 }
 
+// What a person wants to see of its screen: the step it is on (the spinner
+// line while it works) and its last message (the last paragraph of plain text:
+// no tool boxes, no logo or tips, no prompt and status line, no startup notes).
+const BOX = /^\s*[│╭╰╮╯├┤─━┃┌└]/;
+const NOISE = /^(Connected to MCP servers|Updated to v|Tip:|Loaded |Welcome)/;
+export function digest(lines) {
+  const keep = lines.filter((l) => !/^\s{12,}\S/.test(l) && !/▶|~\/\.herdr\/orchestrator/.test(l));
+  let step = null;
+  const spin = keep.map((l) => /^\s*[⎋⠀-⣿◐◓◑◒⟳]\s+(.+?)\s*$/.exec(l)).filter(Boolean).pop();
+  if (spin && !/>\s/.test(spin[1])) step = spin[1].replace(/…$/, "");
+  const message = [];
+  for (let i = keep.length - 1; i >= 0; i--) {
+    const l = keep[i], text = l.trim();
+    if (!text) { if (message.length) break; continue; }
+    if (BOX.test(l) || NOISE.test(text) || /^[⎋⠀-⣿]/.test(text) || /^π\b/.test(text)) { if (message.length) break; continue; }
+    message.unshift(text);
+  }
+  return { step, message: message.slice(-6) };
+}
+
 export function setAutostart(on) { setShared("orchestra.autostart", on); }
 export const autostart = () => shared("orchestra.autostart") !== false;

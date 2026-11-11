@@ -98,15 +98,17 @@ export default class Tabs extends View {
     const panel = find(root, "panel"), body = find(root, "panel-body");
     const enabled = PANELS;
     this.syncPanel(space, panel, body, enabled);
-    const panelButton = (id, label, icon) => {
+    // Panels as one quiet segmented group: icons, the open one also says its name.
+    const panelButton = (id, label, icon, key) => {
       const on = panel && !panel.hidden && body?.active === id;
-      return h_flex().id(`panel-${id}`).h(26).px(8).gap(5).flex_none().items_center().rounded(6)
-        .text_size(12).bg(on ? t.selected : t.chrome).text_color(on ? t.foreground : t.muted)
-        .hover(s => s.bg(t.hover)).on_mouse_down("left", stop)
+      return h_flex().id(`panel-${id}`).h(24).px(on ? 8 : 0).when(!on, el => el.w(26)).justify_center().gap(5).flex_none().items_center().rounded(6)
+        .text_size(12).bg(on ? t.selected : t.background).text_color(on ? t.foreground : t.muted)
+        .hover(s => s.bg(on ? t.selected : t.hover).text_color(t.foreground)).on_mouse_down("left", stop)
+        .tooltip(`${label} (⌘⌥${key})`)
         .on_click(() => {
           if (on) run("layout.hide", { id: "panel" });
           else { run("layout.select", { stack: "panel-body", child: id }); run("layout.show", { id: "panel" }); }
-        }).child(svg(icon).size(14)).child(label);
+        }).child(svg(icon).size(14)).when(on, el => el.child(label));
     };
     // Agent hub: the inbox (with how many wait) and the review of the focused terminal.
     const needs = agents().filter(a => a.status === "blocked").length, done = agents().filter(a => a.status === "done").length;
@@ -123,14 +125,14 @@ export default class Tabs extends View {
       .child(hubButton("hub-launch", "Starten", "mods/launcher/icon.svg", "Agent starten: Vorlage, Agents, Worktree (⌘⇧N)", () => run("mod.open", { name: "launcher" }), 0, null))
       .child(hubButton("hub-inbox", "Inbox", "mods/inbox/icon.svg", "Inbox: wartende Agents (⌘⇧J, nächster: ⌘J)", () => run("mod.open", { name: "inbox" }), needs || done, needs ? t.blocked : t.done))
       .child(hubButton("hub-review", "Review", "mods/review/icon.svg", "Review des fokussierten Terminals (⌘⇧R)", () => run("mod.open", { name: "review" }), 0, null))
-      .child(div().w(1).h(16).mx(4).flex_none().bg(t.border))
-      .when(enabled.includes("changes"), el => el.child(panelButton("changes", "Changes", "mods/changes/changes.svg")))
-      .child(panelButton("graph", "Git", "mods/git-graph/icons/graph.svg"))
-      .child(panelButton("filetree", "Tree", "mods/filetree/folder.svg"))
-      .child(panelButton("blueprint", "Blueprint", "mods/blueprint/icon.svg"))
-      .child(panelButton("docker", "Docker", "mods/docker/icon.svg"))
-      .child(panelButton("quests", "Quests", "mods/quests/icon.svg"))
-      .child(panelButton("team", "Team", "mods/orchestra/icon.svg"))
+      .child(h_flex().id("panel-group").ml(4).p(2).gap(1).flex_none().items_center().rounded(8).bg(t.background).border_1().border_color(t.border)
+        .when(enabled.includes("changes"), el => el.child(panelButton("changes", "Changes", "mods/changes/changes.svg", 1)))
+        .child(panelButton("graph", "Git", "mods/git-graph/icons/graph.svg", 2))
+        .child(panelButton("filetree", "Tree", "mods/filetree/folder.svg", 3))
+        .child(panelButton("blueprint", "Blueprint", "mods/blueprint/icon.svg", 4))
+        .child(panelButton("docker", "Docker", "mods/docker/icon.svg", 5))
+        .child(panelButton("quests", "Quests", "mods/quests/icon.svg", 6))
+        .child(panelButton("team", "Team", "mods/orchestra/icon.svg", 7)))
       .when(w?.buttons, el => el.child(button("minimize", w.platform === "windows" ? svg("mods/tabs-graph/win-min.svg").size(16) : "−", () => run("window.minimize")))
         .child(button("maximize", w.platform === "windows" ? svg(`mods/tabs-graph/${w.maximized ? "win-restore" : "win-max"}.svg`).size(16) : "□", () => run("window.maximize")))
         .child(button("close-window", w.platform === "windows" ? svg("mods/tabs-graph/win-close.svg").size(16) : svg("mods/pane/close.svg").size(13), () => run("window.close"))));

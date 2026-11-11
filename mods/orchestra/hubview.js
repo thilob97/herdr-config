@@ -64,9 +64,7 @@ export class HubDaemon {
     if (was !== "working" || !st || st === "working") return;
     cx.spawn(async () => {
       let line = "";
-      // The last line of its reply: not box borders, the right-aligned session title, or the status line.
-      try { line = (await orch.screen(14)).filter((l) => !/^\s{20,}/.test(l) && !/▶|⎋|~\/\.herdr\/orchestrator/.test(l)).map((l) => l.trim())
-        .filter((l) => l && !/^[─━│╭╰╮╯├┤>π-]/.test(l)).pop() ?? ""; } catch {}
+      try { line = orch.digest(await orch.screen(40)).message.join(" "); } catch {}
       notify({ title: st === "blocked" ? "Orchestrator braucht dich" : "Orchestrator meldet sich", body: line.slice(0, 200),
         level: st === "blocked" ? "warning" : "info", timeout: 15000, action: { name: "tabs-graph.panel-team" } });
     });
@@ -76,13 +74,13 @@ export class HubDaemon {
 export class HubSection {
   constructor(view, cx) {
     this.view = view;
-    this.lines = [];
+    this.digest = { step: null, message: [] };
     this.note = null;
     this.busy = false;
     this.feedbackFor = null;
     this.showDone = false;
     this.known = [];
-    this.ask = InputState.new({ placeholder: "Auftrag an den Orchestrator… (↵ senden)" });
+    this.ask = InputState.new({ placeholder: "Was soll das Team bauen?" });
     this.ask.on("submit", (_e, cx) => this.sendAsk(cx));
     this.feedback = InputState.new({ placeholder: "Was soll anders werden? (↵ an den Orchestrator)" });
     this.feedback.on("submit", (_e, cx) => this.sendFeedback(cx));
@@ -95,7 +93,7 @@ export class HubSection {
     if (!orch.find() || this.reading) return;
     this.reading = true;
     cx.spawn(async (cx) => {
-      try { this.lines = await orch.screen(9); } catch { this.lines = []; }
+      try { this.digest = orch.digest(await orch.screen(40)); } catch { this.digest = { step: null, message: [] }; }
       this.reading = false;
       cx.notify();
     });
@@ -151,105 +149,141 @@ export class HubSection {
   // ---------- view ----------
 
   btn(t, id, label, action, { strong = false, enabled = true } = {}) {
-    return div().id(id).h(22).px(7).flex().flex_none().items_center().rounded(5).text_size(11)
+    return div().id(id).h(24).px(9).flex().flex_none().items_center().rounded(6).text_size(11.5)
       .bg(strong && enabled ? t.solid : t.raised).text_color(!enabled ? t.dim : strong ? t.solid_foreground : t.foreground)
       .when(enabled, (el) => el.cursor_pointer().hover((s) => s.opacity(0.85)).on_click((_e, cx) => { cx.stop_propagation(); action(cx); }))
       .child(label);
   }
 
-  dot(t, st) {
-    if (st === "working") return svg(`${WC}/spinner.svg`).size(11).flex_none().text_color(t.working).spin(900);
+  iconBtn(t, id, icon, tip, action) {
+    return div().id(id).size(24).flex_none().flex().items_center().justify_center().rounded(6).text_color(t.dim).tooltip(tip)
+      .cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground))
+      .on_click((_e, cx) => { cx.stop_propagation(); action(cx); })
+      .child(svg(icon).size(13));
+  }
+
+  dot(t, st, size = 8) {
+    if (st === "working") return svg(`${WC}/spinner.svg`).size(size + 4).flex_none().text_color(t.working).spin(900);
     const color = !st ? t.dim : st === "blocked" || st === "error" ? t.blocked : t.done;
-    return div().size(11).flex_none().flex().items_center().justify_center()
-      .child(st === "blocked" ? div().size(7).rounded(4).bg(color).loop("opacity", { from: 0.3, to: 1, period: 900 }) : div().size(7).rounded(4).bg(color));
+    return div().size(size + 4).flex_none().flex().items_center().justify_center()
+      .child(st === "blocked" ? div().size(size).rounded_full().bg(color).loop("opacity", { from: 0.3, to: 1, period: 900 }) : div().size(size).rounded_full().bg(color));
+  }
+
+  label(t, text, n, color) {
+    return h_flex().px(2).pt(6).gap(6).items_center().text_size(11).font_medium()
+      .child(div().text_color(color ?? t.muted).child(text))
+      .when(n != null, (el) => el.child(div().text_color(t.dim).child(String(n))));
   }
 
   card(t) {
     const o = orch.find(), st = o?.status ?? null;
     const name = this.known.find((a) => a.key === orch.agentKey())?.name ?? orch.agentKey();
-    return v_flex().id("hub-card").flex_none().gap(7).p(9).rounded(8).bg(t.background).border(1)
-      .border_color(st === "blocked" ? t.blocked : o ? t.accent : t.border)
-      .child(h_flex().gap(7).items_center()
-        .child(svg("mods/orchestra/icon.svg").size(13).text_color(o ? t.accent : t.dim))
-        .child(div().text_size(12.5).font_semibold().text_color(t.foreground).child("Orchestrator"))
-        .child(this.dot(t, o ? st ?? "idle" : null))
-        .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(st === "blocked" ? t.blocked : t.dim)
-          .child(o ? `${STATE[st] ?? "startet…"} · ${o.address}` : orch.autostart() ? "startet gleich…" : "aus"))
-        .child(div().id("hub-agent").h(20).px(6).flex().items_center().rounded(5).bg(t.raised).text_size(10.5).text_color(t.muted)
-          .cursor_pointer().tooltip("Agent für den Orchestrator (gilt beim nächsten Start)").on_click((_e, cx) => { this.cycleAgent(); cx.notify(); })
-          .child(`${name} ▾`)))
-      .when(Boolean(o), (el) => el.child(v_flex().id("hub-screen").p(7).rounded(6).bg(t.chrome).text_size(10.5).text_color(t.muted)
-        .cursor_pointer().tooltip("Öffnen").on_click(() => run("terminal.peek", { terminal: o.address }))
-        .children((this.lines.length ? this.lines : ["…"]).map((l, i) => div().id(`hub-ln-${i}`).whitespace_nowrap().overflow_hidden().child(l || " ")))))
-      .child(h_flex().h(28).px(8).gap(6).items_center().rounded(7).border_1().border_color(o ? t.input : t.border).bg(t.background)
-        .child(div().text_color(t.dim).text_size(11).child("›"))
-        .child(Input.new(this.ask).flex_1().h_full().text_size(12).text_color(t.foreground)))
-      .child(h_flex().gap(4).items_center().flex_wrap()
-        .child(this.btn(t, "hub-send", "Senden", (cx) => this.sendAsk(cx), { strong: true, enabled: Boolean(o) && !this.busy }))
-        .child(this.btn(t, "hub-open", "Öffnen", () => run("terminal.peek", { terminal: o.address }), { enabled: Boolean(o) }))
-        .child(o
-          ? this.btn(t, "hub-stop", "Stoppen", (cx) => this.act(cx, "Orchestrator gestoppt", async () => { orch.setAutostart(false); await orch.stop(); }))
-          : this.btn(t, "hub-start", "Starten", (cx) => this.act(cx, "Orchestrator gestartet", async () => { orch.setAutostart(true); await orch.start(); }), { strong: true, enabled: !this.busy }))
-        .when(Boolean(o), (el) => el.child(this.btn(t, "hub-restart", "Neu starten", (cx) => this.act(cx, "Orchestrator neu gestartet", async () => {
-          await orch.stop();
-          await orch.start();
-        }))))
-        .when(Boolean(this.note), (el) => el.child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(this.note.ok ? t.done : t.blocked).child(this.note.text))));
+    const { step, message } = this.digest;
+    const word = !o ? (orch.autostart() ? "startet gleich" : "aus") : st === "working" ? "arbeitet" : st === "blocked" ? "braucht dich" : "bereit";
+    const stColor = !o ? t.dim : st === "blocked" ? t.blocked : st === "working" ? t.working : t.done;
+    const restart = (cx) => this.act(cx, "neu gestartet", async () => { await orch.stop(); await orch.start(); });
+    const body = !o
+      ? div().text_size(12).text_color(t.dim).child(orch.autostart() ? "Startet in wenigen Sekunden …" : "Angehalten. Starte ihn, damit er Aufträge annimmt.")
+      : st === "working"
+        ? h_flex().gap(7).items_center().text_size(12).text_color(t.muted)
+          .child(svg(`${WC}/spinner.svg`).size(12).flex_none().text_color(t.working).spin(900))
+          .child(div().flex_1().min_w(0).truncate().child(step ?? "denkt nach"))
+        : message.length
+          ? v_flex().gap(2).text_size(12).text_color(st === "blocked" ? t.foreground : t.muted).children(message.map((l, i) => div().id(`hub-msg-${i}`).child(l)))
+          : div().text_size(12).text_color(t.dim).child("Bereit. Beschreib ein Ziel, er plant Tickets und verteilt sie ans Team.");
+    return v_flex().id("hub-card").flex_none().rounded(10).bg(t.background).border(1)
+      .border_color(st === "blocked" ? t.blocked : t.border).overflow_hidden()
+      // Header: who, state, and the quiet controls.
+      .child(h_flex().px(10).pt(9).pb(7).gap(8).items_center()
+        .child(div().size(26).flex_none().rounded(7).bg(t.raised).flex().items_center().justify_center()
+          .child(svg("mods/orchestra/icon.svg").size(14).text_color(o ? t.accent : t.dim)))
+        .child(v_flex().flex_1().min_w(0)
+          .child(div().text_size(12.5).font_semibold().text_color(t.foreground).child("Orchestrator"))
+          .child(h_flex().gap(5).items_center().text_size(10.5)
+            .child(this.dot(t, o ? st ?? "idle" : null, 6))
+            .child(div().text_color(stColor).child(word))
+            .child(div().text_color(t.dim).child("·"))
+            .child(div().id("hub-agent").text_color(t.dim).cursor_pointer().hover((s) => s.text_color(t.foreground))
+              .tooltip("Agent wechseln (gilt beim nächsten Start)").on_click((_e, cx) => { this.cycleAgent(); cx.notify(); })
+              .child(`${name} ▾`))))
+        .when(Boolean(o), (el) => el
+          .child(this.iconBtn(t, "hub-open", "mods/orchestra/icons/open.svg", "Terminal öffnen", () => run("terminal.peek", { terminal: o.address })))
+          .child(this.iconBtn(t, "hub-restart", "mods/orchestra/icons/restart.svg", "Neu starten (frischer Kontext)", restart))
+          .child(this.iconBtn(t, "hub-stop", "mods/orchestra/icons/stop.svg", "Anhalten (startet nicht mehr von selbst)",
+            (cx) => this.act(cx, "angehalten", async () => { orch.setAutostart(false); await orch.stop(); }))))
+        .when(!o, (el) => el.child(this.btn(t, "hub-start", "Starten", (cx) => this.act(cx, "gestartet", async () => { orch.setAutostart(true); await orch.start(); }), { strong: true, enabled: !this.busy }))))
+      // What it is doing or last said.
+      .child(div().id("hub-body").px(12).py(9).mx(10).rounded(8).bg(t.chrome).cursor_pointer()
+        .when(Boolean(o), (el) => el.tooltip("Klicken: Terminal öffnen").on_click(() => run("terminal.peek", { terminal: o.address })))
+        .child(body))
+      // The ask field with its send button inside.
+      .child(h_flex().m(10).h(34).pl(11).pr(4).gap(6).items_center().rounded(8).border_1()
+        .border_color(o ? t.input : t.border).bg(t.background)
+        .child(Input.new(this.ask).flex_1().h_full().text_size(12.5).text_color(t.foreground))
+        .child(div().id("hub-send").size(26).flex_none().flex().items_center().justify_center().rounded(6)
+          .bg(o && !this.busy ? t.solid : t.raised).text_color(o && !this.busy ? t.solid_foreground : t.dim)
+          .when(Boolean(o) && !this.busy, (e) => e.cursor_pointer().hover((s) => s.opacity(0.85)).on_click((_e, cx) => this.sendAsk(cx)))
+          .child(svg("mods/orchestra/icons/send.svg").size(13))))
+      .when(Boolean(this.note), (el) => el.child(div().px(12).pb(8).mt(-4).text_size(10.5).text_color(this.note.ok ? t.dim : t.blocked).child(this.note.text)));
   }
 
   ticketRow(t, tk) {
     const live = tk.terminal ? terminals().find((x) => x.address === tk.terminal && x.state === "live") : null;
     const ast = live?.status ?? null;
-    const review = tk.status === "review";
+    const review = tk.status === "review", done = tk.status === "done";
     const fb = this.feedbackFor === tk.id;
-    return v_flex().id(`tk-${tk.id}`).flex_none().gap(4).px(8).py(6).rounded(7)
-      .bg(review ? t.raised : t.background).border(1).border_color(review ? t.done : t.border)
-      .child(h_flex().gap(6).items_center()
-        .child(tk.status === "doing" ? this.dot(t, ast ?? "idle") : div().size(7).flex_none().rounded(4).bg(review ? t.done : tk.status === "done" ? t.dim : t.muted))
-        .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(tk.status === "done" ? t.dim : t.foreground).child(tk.title))
-        .when(tk.status === "doing" && Boolean(tk.terminal), (el) => el.child(div().id(`tk-go-${tk.id}`).flex_none().text_size(10.5).text_color(t.dim)
-          .cursor_pointer().hover((s) => s.text_color(t.foreground)).on_click(() => this.openTerminal(tk.terminal))
-          .child(live ? `${tk.agent || "agent"} · ${{ working: "arbeitet", blocked: "wartet", done: "fertig", idle: "ruhig" }[ast] ?? ast ?? ""}` : "beendet"))))
-      .child(div().truncate().text_size(10.5).text_color(t.dim)
-        .child([tk.branch || tk.repo, tk.machine].filter(Boolean).join(" · ")))
-      .when(review && Boolean(tk.summary), (el) => el.child(div().text_size(11).text_color(t.muted).child(tk.summary.slice(0, 400))))
-      .when(review, (el) => el.child(h_flex().gap(4).items_center().flex_wrap()
+    const where = [tk.branch || tk.repo?.split("/").pop(), tk.machine].filter(Boolean).join(" · ");
+    const right = tk.status === "doing"
+      ? (live ? { working: "arbeitet", blocked: "wartet", done: "fertig", idle: "ruhig" }[ast] ?? ast ?? "" : "beendet")
+      : tk.status === "todo" ? "offen" : "";
+    return v_flex().id(`tk-${tk.id}`).flex_none().gap(6).px(10).py(8).rounded(9)
+      .bg(t.background).border(1).border_color(review ? t.done : t.border)
+      .when(!review, (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)).on_click(() => tk.terminal && this.openTerminal(tk.terminal)))
+      .child(h_flex().gap(8).items_center()
+        .child(tk.status === "doing" ? this.dot(t, ast ?? "idle", 7) : div().size(11).flex_none().flex().items_center().justify_center()
+          .child(div().size(7).rounded_full().when(review, (e) => e.bg(t.done)).when(done, (e) => e.bg(t.dim)).when(!review && !done, (e) => e.border_1().border_color(t.muted))))
+        .child(v_flex().flex_1().min_w(0)
+          .child(div().truncate().text_size(12.5).text_color(done ? t.dim : t.foreground).when(done, (e) => e.line_through()).child(tk.title))
+          .when(Boolean(where), (e) => e.child(div().truncate().text_size(10.5).text_color(t.dim).child(where))))
+        .when(Boolean(right), (el) => el.child(div().flex_none().text_size(10.5).text_color(ast === "blocked" ? t.blocked : ast === "working" ? t.working : t.dim).child(right))))
+      .when(review && Boolean(tk.summary), (el) => el.child(div().pl(19).text_size(11.5).text_color(t.muted).child(tk.summary.length > 320 ? `${tk.summary.slice(0, 320)}…` : tk.summary)))
+      .when(review, (el) => el.child(h_flex().pl(19).gap(5).items_center().flex_wrap()
         .child(this.btn(t, `tk-rv-${tk.id}`, "Review", () => openOverlay({ mod: "review", kind: "window", key: "review", width: 960, height: 680,
           props: { terminal: tk.terminal, folder: tk.worktree || tk.repo, on: tk.machine || null } }), { strong: true }))
         .child(this.btn(t, `tk-ok-${tk.id}`, "Abnehmen", (cx) => this.accept(cx, tk), { enabled: !this.busy }))
-        .child(this.btn(t, `tk-fb-${tk.id}`, fb ? "Abbrechen" : "Änderungen anfordern", (cx) => {
+        .child(this.btn(t, `tk-fb-${tk.id}`, fb ? "Abbrechen" : "Änderungen …", (cx) => {
           this.feedbackFor = fb ? null : tk.id;
           if (!fb) this.feedback.focus();
           cx.notify();
         }))))
-      .when(fb, (el) => el.child(h_flex().h(26).px(7).items_center().rounded(6).border_1().border_color(t.input).bg(t.background)
-        .child(Input.new(this.feedback).flex_1().h_full().text_size(11.5).text_color(t.foreground))));
+      .when(fb, (el) => el.child(h_flex().ml(19).h(30).px(9).items_center().rounded(7).border_1().border_color(t.input).bg(t.background)
+        .child(Input.new(this.feedback).flex_1().h_full().text_size(12).text_color(t.foreground))));
   }
 
   tickets(t) {
     const all = shared("orchestra.tickets") ?? [];
     const by = (s) => all.filter((x) => x.status === s);
-    const doing = all.filter((x) => x.status !== "review" && x.status !== "done" && x.status !== "todo");
+    const doing = all.filter((x) => !["review", "done", "todo"].includes(x.status));
     const done = by("done");
-    const head = (label, n, color) => h_flex().pt(4).gap(6).text_size(10.5).font_semibold().text_color(color ?? t.dim)
-      .child(label.toUpperCase()).child(div().text_color(t.dim).child(String(n)));
-    const el = v_flex().flex_none().gap(5);
-    if (!all.length) return el.child(div().px(2).text_size(11).text_color(t.dim)
-      .child("Noch keine Tickets. Gib dem Orchestrator oben einen Auftrag; er legt Tickets in Quests an und verteilt sie ans Team."));
-    if (by("review").length) el.child(head("Bereit für dich", by("review").length, t.done)).children(by("review").map((x) => this.ticketRow(t, x)));
-    if (doing.length) el.child(head("In Arbeit", doing.length)).children(doing.map((x) => this.ticketRow(t, x)));
-    if (by("todo").length) el.child(head("Offen", by("todo").length)).children(by("todo").map((x) => this.ticketRow(t, x)));
-    if (done.length) el.child(h_flex().id("tk-done").pt(4).gap(6).text_size(10.5).font_semibold().text_color(t.dim).cursor_pointer()
-      .on_click((_e, cx) => { this.showDone = !this.showDone; cx.notify(); })
-      .child(`ERLEDIGT ${done.length} ${this.showDone ? "▴" : "▾"}`))
+    const el = v_flex().flex_none().gap(6);
+    if (!all.length) return el.child(h_flex().gap(10).px(12).py(11).rounded(9).border_1().border_color(t.border).items_center()
+      .child(svg("mods/orchestra/icons/tray.svg").size(16).flex_none().text_color(t.dim))
+      .child(div().flex_1().min_w(0).text_size(11.5).text_color(t.dim).child("Noch keine Tickets. Der Orchestrator legt sie in Quests an, sobald du ihm ein Ziel gibst.")));
+    if (by("review").length) el.child(this.label(t, "Bereit für dich", by("review").length, t.done)).children(by("review").map((x) => this.ticketRow(t, x)));
+    if (doing.length) el.child(this.label(t, "In Arbeit", doing.length, t.working)).children(doing.map((x) => this.ticketRow(t, x)));
+    if (by("todo").length) el.child(this.label(t, "Geplant", by("todo").length)).children(by("todo").map((x) => this.ticketRow(t, x)));
+    if (done.length) el.child(h_flex().id("tk-done").px(2).pt(6).gap(6).items_center().text_size(11).font_medium().text_color(t.dim).cursor_pointer()
+      .hover((s) => s.text_color(t.foreground)).on_click((_e, cx) => { this.showDone = !this.showDone; cx.notify(); })
+      .child("Erledigt").child(String(done.length))
+      .child(svg(`${WC}/${this.showDone ? "chevron-down" : "chevron-right"}.svg`).size(11)))
       .when(this.showDone, (e) => e.children(done.map((x) => this.ticketRow(t, x))));
     return el;
   }
 
   render(t) {
-    return v_flex().flex_none().gap(8)
+    return v_flex().flex_none().gap(4)
       .child(this.card(t))
-      .child(div().pt(2).text_size(10.5).font_semibold().text_color(t.dim).child("TICKETS DES ORCHESTRATORS"))
+      .child(this.label(t, "Tickets", (shared("orchestra.tickets") ?? []).filter((x) => x.status !== "done").length || null))
       .child(this.tickets(t));
   }
 }

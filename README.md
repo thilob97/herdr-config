@@ -48,7 +48,7 @@ Aktiv ist das Layout `elric` (Klon von `main`), daneben `quests`. Eigene Mods:
 | `space-folders` | Spaces nach Maschine und Ordner in der Seitenleiste (extern, siehe unten) |
 | `agent-cards` | Agents als Karten (Klon von `agents`): Avatar, OMP-Modell, Kontext, Kosten, Sub-Agents |
 | `sidebar-footer` | Fuß der Seitenleiste: Settings, Marketplaces, MCP servers, Tastenkürzel, Add machine (Klon von `workspace-chrome`) |
-| `tabs-graph` | Tab-Leiste mit Buttons Starten, Inbox (mit Zähler) und Review, dann den Panel-Buttons Changes, Git, Tree, Blueprint, Docker, Quests, Team (Klon von `tabs`) |
+| `tabs-graph` | Tab-Leiste mit Buttons Starten, Inbox (mit Zähler) und Review, dann die Panels Changes, Git, Tree, Blueprint, Docker, Quests, Team als Icon-Gruppe (das offene zeigt seinen Namen, Tooltip mit Taste) (Klon von `tabs`) |
 | `status-bar` | Statusleiste (Klon von `workspace-status`): Maschine, Branch, Agents, Attention-Badge, Limits und Kosten |
 | `inbox` | Attention-Inbox (Popup), siehe Agent-Zentrale |
 | `review` | Review-Fenster für die Änderungen eines Agents, siehe Agent-Zentrale |
