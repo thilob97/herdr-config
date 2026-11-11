@@ -12,6 +12,8 @@ import { agents, terminals, run, hc, theme, shared, setShared, openOverlay } fro
 const WC = "mods/workspace-chrome";
 const RANK = { blocked: 4, error: 4, done: 3, working: 2, idle: 1 };
 const WORD = { blocked: "wartet", error: "Fehler", done: "fertig", working: "arbeitet", idle: "ruhig" };
+// omp task subagents: their job states, as the agent cards map them.
+const SUB = { running: ["working", "läuft"], pending: ["idle", "wartet auf Start"], completed: ["done", "fertig"], failed: ["blocked", "fehlgeschlagen"], cancelled: ["blocked", "abgebrochen"], aborted: ["blocked", "abgebrochen"] };
 const plain = (s) => (s ?? "").replace(/[\uE000-\uF8FF\u{10000}-\u{10FFFF}]\s*/gu, "").trim();
 const machineOf = (a) => (a.includes("/") ? a.slice(0, a.indexOf("/")) : null);
 function ago(ms) {
@@ -64,21 +66,27 @@ export default class Orchestra extends View {
     });
   }
 
-  // Roots per space (machine first), each followed by its subtree with tree lines.
+  // Roots per space (machine first), each followed by its subtree with tree lines:
+  // terminals it started (hc run) and the subagents omp's task tool started inside
+  // it (shared "omp.subagents", published by agent-cards), nested as omp reports them.
   graph(nodes) {
+    const omp = shared("omp.subagents") ?? {};
     const kids = (addr) => nodes.filter((n) => n.parent === addr).sort((a, b) => (RANK[b.status] ?? 0) - (RANK[a.status] ?? 0));
-    const walk = (n, lead) => {
-      const list = kids(n.address);
+    const children = (item) => item.n
+      ? [...kids(item.n.address).map((n) => ({ n })), ...(omp[item.n.address] ?? []).map((s) => ({ s, owner: item.n.address, path: `${item.n.address}/${s.id}` }))]
+      : (item.s.children ?? []).map((s) => ({ s, owner: item.owner, path: `${item.path}/${s.id}` }));
+    const walk = (item, lead) => {
+      const list = children(item);
       return list.flatMap((k, i) => {
         const last = i === list.length - 1;
-        return [{ n: k, lines: [...lead, last ? "└" : "├"] }, ...walk(k, [...lead, last ? "" : "│"])];
+        return [{ ...k, lines: [...lead, last ? "└" : "├"] }, ...walk(k, [...lead, last ? "" : "│"])];
       });
     };
     const groups = new Map();
     for (const r of nodes.filter((n) => !n.parent)) {
       const key = `${r.machine ?? ""}\u0000${r.space}`;
       if (!groups.has(key)) groups.set(key, { machine: r.machine, space: r.space, rows: [] });
-      groups.get(key).rows.push({ n: r, lines: [] }, ...walk(r, []));
+      groups.get(key).rows.push({ n: r, lines: [] }, ...walk({ n: r }, []));
     }
     return [...groups.values()].sort((a, b) => (a.machine ?? "").localeCompare(b.machine ?? "") || a.space.localeCompare(b.space));
   }
@@ -192,6 +200,26 @@ export default class Orchestra extends View {
         : div().flex_none().text_size(10.5).text_color(t[n.status] ?? t.dim).child(`${WORD[n.status] ?? ""}${n.since ? ` ${ago(n.since)}` : ""}`));
   }
 
+  // A subagent omp's task tool started: no terminal of its own, so nothing to
+  // select or open; its task shows on hover, a click goes to the omp agent.
+  ompRow(t, row) {
+    const s = row.s, [st, word] = SUB[s.status] ?? ["idle", s.status ?? ""];
+    const quiet = s.status === "completed";
+    return h_flex().id(`or-sub-${row.path}`).h(26).flex_none().pl(26).pr(4).gap(0).items_center().rounded(7)
+      .cursor_pointer().hover((x) => x.bg(t.hover)).when(quiet, (el) => el.opacity(0.6))
+      .when(Boolean(s.description), (el) => el.tooltip(s.description))
+      .on_click(() => { const n = this.nodes().find((x) => x.address === row.owner); if (n) this.open(n); })
+      .children(row.lines.map((l) => div().self_start().mt(-2).w(9).h(15).mr(4).flex_none()
+        .when(Boolean(l), (el) => el.border_l(1.5).border_color(t.input))
+        .when(l === "└" || l === "├", (el) => el.border_b(1.5).rounded_bl(6))))
+      .child(div().mr(6).child(s.status === "failed" || s.status === "cancelled" || s.status === "aborted"
+        ? div().size(11).flex_none().flex().items_center().justify_center().child(div().size(7).rounded(4).bg(t.blocked))
+        : this.status(t, st)))
+      .child(div().flex_none().mr(6).px(4).h(15).rounded(4).bg(t.raised).text_size(10).text_color(t.dim).flex().items_center().child(s.agent))
+      .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.muted).child(s.description || s.id))
+      .child(div().flex_none().ml(6).text_size(10.5).text_color(st === "blocked" ? t.blocked : t[st] ?? t.dim).child(word));
+  }
+
   groupCard(t, g, nodes) {
     const byAddr = new Map(nodes.map((n) => [n.address, n]));
     const members = g.members.map((a) => ({ a, n: byAddr.get(a) }));
@@ -231,12 +259,14 @@ export default class Orchestra extends View {
     const graph = this.graph(nodes);
     const groups = this.groups();
     const sel = this.selected.size;
+    const internal = graph.flatMap((g) => g.rows).filter((r) => r.s && r.s.status === "running").length;
 
     const summary = h_flex().gap(10).items_center().text_size(11)
       .child(h_flex().gap(4).items_center().child(this.status(t, "blocked")).child(div().text_color(t.blocked).child(String(count("blocked")))))
       .child(h_flex().gap(4).items_center().child(this.status(t, "working")).child(div().text_color(t.working).child(String(count("working")))))
       .child(h_flex().gap(4).items_center().child(this.status(t, "done")).child(div().text_color(t.done).child(String(count("done")))))
-      .child(h_flex().gap(4).items_center().child(this.status(t, "idle")).child(div().text_color(t.dim).child(String(nodes.length - count("blocked") - count("working") - count("done")))));
+      .child(h_flex().gap(4).items_center().child(this.status(t, "idle")).child(div().text_color(t.dim).child(String(nodes.length - count("blocked") - count("working") - count("done")))))
+      .when(internal > 0, (el) => el.child(div().text_color(t.working).tooltip("omp-interne Subagents, die gerade laufen").child(`+${internal} intern`)));
 
     const body = v_flex().id("or-body").flex_1().min_h(0).overflow_y_scrollbar().px(8).pb(8).gap(8)
       .when(groups.length > 0, (el) => el.child(div().pt(4).text_size(10.5).font_semibold().text_color(t.dim).child("TEAMS"))
@@ -247,7 +277,7 @@ export default class Orchestra extends View {
         .child(h_flex().px(6).pt(4).pb(2).gap(6).items_center().text_size(11).text_color(t.dim)
           .child(svg(`${WC}/${g.machine ? "server" : "monitor"}.svg`).size(11))
           .child(div().truncate().child(`${g.space || "ohne Space"}${g.machine ? ` · ${g.machine}` : ""}`)))
-        .children(g.rows.map((r) => this.nodeRow(t, r)))));
+        .children(g.rows.map((r) => (r.s ? this.ompRow(t, r) : this.nodeRow(t, r))))));
 
     const actions = v_flex().flex_none().p(8).gap(6).border_t(1).border_color(t.border).bg(t.chrome)
       .when(Boolean(this.note), (el) => el.child(div().text_size(11).truncate().text_color(this.note.ok ? t.done : t.blocked).child(this.note.text)))

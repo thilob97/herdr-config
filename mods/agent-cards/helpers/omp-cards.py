@@ -21,6 +21,8 @@
 #             otherwise its own file (<session>/<id>.jsonl) says it started, a
 #             session_exit at its end that it ended. Shown: those spawned since your
 #             last prompt, and unfinished ones whose file moved in the last 30 minutes.
+#             A subagent that started its own (its file has task calls) lists them under
+#             "children", the same way, up to NESTED levels deep (the Team panel's graph).
 # Python 3, standard library only.
 import glob, hashlib, json, os, re, sqlite3, sys, time
 from urllib.parse import unquote
@@ -303,7 +305,10 @@ def ended(path):
     return bool(last) and b'"customType":"session_exit"' in last[-1]
 
 
-def subagents(session, st):
+NESTED = 3
+
+
+def subagents(session, st, depth=0):
     now = time.time()
     out = []
     for sid in st["order"]:
@@ -324,7 +329,17 @@ def subagents(session, st):
         unfinished = status in ("running", "pending")
         if not this_turn and not (unfinished and mtime and now - mtime < RECENT):
             continue
-        out.append({"id": sid, "agent": s.get("agent") or "task", "description": s.get("description") or "", "status": status})
+        entry = {"id": sid, "agent": s.get("agent") or "task", "description": s.get("description") or "", "status": status}
+        if depth < NESTED:
+            p = sub_file(session, sid)
+            if p:
+                try:
+                    kids = subagents(p, parse(p), depth + 1)
+                except Exception:
+                    kids = []
+                if kids:
+                    entry["children"] = kids
+        out.append(entry)
     return out
 
 

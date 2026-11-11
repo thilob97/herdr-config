@@ -152,7 +152,7 @@ export default class Agents extends View {
       if (!live.has(address)) { this.omp.delete(address); gone = true; }
     }
     for (const key of [...this.ompText.keys()]) if (!byMachine.has(key)) this.ompText.delete(key);
-    if (gone) cx.notify();
+    if (gone) { this.publishOmp(); cx.notify(); }
     for (const [key, { on, wanted }] of byMachine) {
       if (this.ompBusy.has(key)) continue;
       this.ompBusy.add(key);
@@ -173,12 +173,21 @@ export default class Agents extends View {
             if (info && typeof info === "object") this.omp.set(address, info);
             else this.omp.delete(address);
           }
+          this.publishOmp();
           cx.notify();
         } finally {
           this.ompBusy.delete(key);
         }
       });
     }
+  }
+
+  // The subagents omp's task tool started, by agent address, for other mods (the
+  // Team panel's graph): shared "omp.subagents", written only when it changed.
+  publishOmp() {
+    const next = {};
+    for (const [address, info] of this.omp) if (info.subagents?.length) next[address] = info.subagents;
+    if (JSON.stringify(next) !== JSON.stringify(shared("omp.subagents") ?? {})) setShared("omp.subagents", next);
   }
 
   // Stamps agents whose state changed. Done and idle count as one: looking at a
