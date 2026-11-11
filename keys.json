@@ -59,7 +59,11 @@
     "ctrl-6": "space.select:6",
     "ctrl-7": "space.select:7",
     "ctrl-8": "space.select:8",
-    "ctrl-9": "space.select:9"
+    "ctrl-9": "space.select:9",
+    "cmd-j": "status-bar.attention-next",
+    "cmd-shift-j": "mod.open:inbox",
+    "cmd-shift-r": "mod.open:review",
+    "cmd-shift-t": { "command": "tab.new", "args": { "argv": ["omp"] } }
   },
   "terminal": {
     "cmd-f": "terminal.search",
@@ -81,7 +85,14 @@
     "ctrl-shift-pagedown": "space-folders.next",
     "ctrl-shift-pageup": "space-folders.prev",
     "ctrl-space shift-n": "space-folders.next",
-    "ctrl-space shift-p": "space-folders.prev"
+    "ctrl-space shift-p": "space-folders.prev",
+    "cmd-shift-b": "tabs-graph.panel",
+    "cmd-alt-1": "tabs-graph.panel-changes",
+    "cmd-alt-2": "tabs-graph.panel-graph",
+    "cmd-alt-3": "tabs-graph.panel-filetree",
+    "cmd-alt-4": "tabs-graph.panel-blueprint",
+    "cmd-alt-5": "tabs-graph.panel-docker",
+    "cmd-alt-6": "tabs-graph.panel-quests"
   },
   "layout:quests": {
     "ctrl-shift-q": "layout.switch:elric"

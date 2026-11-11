@@ -1,6 +1,8 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { spaces, panes, run, openOverlay, theme, window, layout, settings } from "herdr";
+import { spaces, panes, run, openOverlay, theme, window, layout, settings, nextCommand } from "herdr";
+
+const PANELS = ["changes", "graph", "filetree", "blueprint", "docker", "quests"];
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -12,9 +14,26 @@ function find(node, id) {
 }
 
 export default class Tabs extends View {
-  init() {
+  init(_props, cx) {
     this.pressed = null;
     this.panels = JSON.parse(localStorage.getItem("panels") ?? "{}");
+    // Keys: tabs-graph.panel toggles the side panel, tabs-graph.panel-<id> toggles one panel.
+    cx.spawn(async () => {
+      for (;;) {
+        const c = await nextCommand();
+        if (c === "panel") this.togglePanel(null);
+        else if (c.startsWith("panel-") && PANELS.includes(c.slice(6))) this.togglePanel(c.slice(6));
+      }
+    });
+  }
+
+  togglePanel(id) {
+    const root = layout(), panel = find(root, "panel"), body = find(root, "panel-body");
+    if (!panel) return;
+    const open = !panel.hidden;
+    if (id === null) run(open ? "layout.hide" : "layout.show", { id: "panel" });
+    else if (open && body?.active === id) run("layout.hide", { id: "panel" });
+    else { run("layout.select", { stack: "panel-body", child: id }); run("layout.show", { id: "panel" }); }
   }
 
   // The side panel is remembered per space: switching shows that space's choice
@@ -77,7 +96,7 @@ export default class Tabs extends View {
       ? Math.max(10, (root.traffic_lights[0] + 64) / settings().zoom - (sidebar?.hidden ? 0 : sidebar?.size?.px ?? 0))
       : 10;
     const panel = find(root, "panel"), body = find(root, "panel-body");
-    const enabled = ["changes", "graph", "filetree", "blueprint", "docker", "quests"];
+    const enabled = PANELS;
     this.syncPanel(space, panel, body, enabled);
     const panelButton = (id, label, icon) => {
       const on = panel && !panel.hidden && body?.active === id;

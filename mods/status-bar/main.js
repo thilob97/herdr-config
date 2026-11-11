@@ -4,7 +4,7 @@
 // (`omp usage --json --redact`, ~/.omp/stats.db); no token or email leaves it.
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, HoverCard } from "gpui-base";
-import { spaces, agents, theme, run, window, keys, exec, machines, appHome, readTextFile } from "herdr";
+import { spaces, agents, theme, run, window, keys, exec, machines, appHome, readTextFile, shared, setShared, nextCommand, notify, focused } from "herdr";
 
 const HELPER = () => `${appHome()}/mods/status-bar/helpers/usage.py`;
 const CARDS = () => `${appHome()}/mods/agent-cards/helpers/omp-cards.py`; // per-session cost, as the agent cards read it
@@ -26,6 +26,9 @@ function until(ms) {
   return d >= 2 ? `${d}d` : d ? `${d}d${h}h` : h ? `${h}h${m}m` : `${m}m`;
 }
 
+// Attention order: blocked before finished, the longest waiting first.
+const ATTENTION = { blocked: 0, done: 1 };
+
 export default class StatusBar extends View {
   init(_props, cx) {
     this.width = 0;
@@ -35,6 +38,42 @@ export default class StatusBar extends View {
     this.py = {};                          // machine key → promise of "python3" | "python"
     this.src = {};                         // helper path → promise of its text, for other machines
     cx.timer.every(30 * 1000, (cx) => { this.refresh("limits", EVERY.limits, cx); this.refresh("costs", EVERY.costs, cx); });
+    // Keys: status-bar.attention-next goes to the next agent that waits for you.
+    cx.spawn(async () => {
+      for (;;) if ((await nextCommand()) === "attention-next") this.attentionNext();
+    });
+  }
+
+  // When each agent's status last changed, for every mod (the inbox reads it).
+  // The status bar shows in the elric and quests layouts, so it keeps watch.
+  trackSince(list) {
+    const old = shared("attention.since") ?? {};
+    const next = {};
+    let changed = Object.keys(old).length !== list.length;
+    for (const a of list) {
+      const o = old[a.address];
+      next[a.address] = o && o.status === a.status ? o : { status: a.status, at: Date.now() };
+      if (next[a.address] !== o) changed = true;
+    }
+    if (changed) setShared("attention.since", next);
+  }
+
+  waiting() {
+    const since = shared("attention.since") ?? {};
+    const at = (a) => (since[a.address]?.status === a.status ? since[a.address].at : a.seq);
+    return agents().filter((a) => a.status in ATTENTION)
+      .sort((x, y) => ATTENTION[x.status] - ATTENTION[y.status] || at(x) - at(y));
+  }
+
+  // The most urgent waiting agent that isn't the one in front of you; pressing
+  // again from there moves on, so it cycles through all of them.
+  attentionNext() {
+    const list = this.waiting();
+    if (!list.length) return notify({ title: "Keine wartenden Agents", level: "info", timeout: 2500 });
+    const here = focused()?.terminal;
+    const i = list.findIndex((a) => a.address === here);
+    const a = i < 0 ? list[0] : list[(i + 1) % list.length];
+    run("pane.focus", { pane: a.pane });
   }
 
   // The palette key as actually bound, not a hardcoded one; without a
@@ -280,7 +319,10 @@ export default class StatusBar extends View {
     for (const kind of ["limits", "costs"]) this.refresh(kind, EVERY[kind], cx);
     const space = spaces().find(s => s.active);
     const list = agents();
+    this.trackSince(list);
     const needs = list.filter(a => a.status === "blocked").length;
+    const done = list.filter(a => a.status === "done").length;
+    const badgeText = [needs ? `${needs} wartet` : "", done ? `${done} fertig` : ""].filter(Boolean).join(" · ");
     const label = (icon, text) => h_flex().gap(6).items_center().child(svg(`mods/workspace-chrome/${icon}.svg`).size(13)).child(text);
     const where = space?.machine ?? "This computer";
     const hint = this.hint();
@@ -288,7 +330,7 @@ export default class StatusBar extends View {
     const chips = this.chips();
     const costText = `${money(cost)} today`;
     // Left side + hint + cost chip + paddings and gaps, estimated as in fit().
-    const used = 7 * (where.length + (space?.branch?.length ?? 0) + `${list.length} agents`.length + (needs ? 14 : 0) + hint.length + costText.length) + 28 + 20 * 6 + 60;
+    const used = 7 * (where.length + (space?.branch?.length ?? 0) + `${list.length} agents`.length + (badgeText ? badgeText.length + 4 : 0) + hint.length + costText.length) + 28 + 20 * 6 + 60;
     const n = this.fit(chips, used);
     const anyLimits = Object.values(this.data.limits).some((s) => s.value);
     const trigger = h_flex().id("costs-limits").gap(14).items_center().flex_none()
@@ -301,8 +343,15 @@ export default class StatusBar extends View {
       .on_size_change((size, cx) => { this.width = size.width; cx.notify(); })
       .child(label(space?.machine ? "server" : "monitor", where))
       .when(Boolean(space?.branch), el => el.child(label("branch", space.branch)))
-      .child(h_flex().gap(6).items_center().child(div().size(6).rounded(3).bg(t.dim)).child(`${list.length} agents`)
-        .when(needs > 0, el => el.child(div().text_color(t.blocked).child(`· ${needs} needs you`))))
+      .child(h_flex().gap(6).items_center().child(div().size(6).rounded(3).bg(t.dim)).child(`${list.length} agents`))
+      // Waiting agents: click opens the inbox; the dot breathes while one is blocked.
+      .when(Boolean(badgeText), el => el.child(h_flex().id("attention").gap(6).items_center().px(7).h(20).rounded(5)
+        .cursor_pointer().bg(t.raised).hover(s => s.bg(t.hover))
+        .on_click(() => run("mod.open", { name: "inbox" }))
+        .child(this.dot(needs ? t.blocked : t.done, needs > 0))
+        .when(needs > 0, e => e.child(div().text_color(t.blocked).child(`${needs} wartet`)))
+        .when(needs > 0 && done > 0, e => e.child(div().text_color(t.dim).child("·")))
+        .when(done > 0, e => e.child(div().text_color(t.done).child(`${done} fertig`)))))
       .child(div().flex_1())
       .child(HoverCard.new("costs-limits-card").anchor("bottom_right").open_delay(250).close_delay(300)
         .trigger(trigger)
