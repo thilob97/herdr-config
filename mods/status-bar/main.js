@@ -4,7 +4,7 @@
 // (`omp usage --json --redact`, ~/.omp/stats.db); no token or email leaves it.
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, HoverCard } from "gpui-base";
-import { spaces, agents, theme, run, window, keys, exec, machines, appHome, readTextFile, shared, setShared, nextCommand, notify, focused } from "herdr";
+import { spaces, agents, terminals, theme, run, window, keys, exec, machines, appHome, readTextFile, shared, setShared, nextCommand, notify, focused, playSound } from "herdr";
 
 const HELPER = () => `${appHome()}/mods/status-bar/helpers/usage.py`;
 const CARDS = () => `${appHome()}/mods/agent-cards/helpers/omp-cards.py`; // per-session cost, as the agent cards read it
@@ -56,6 +56,36 @@ export default class StatusBar extends View {
       if (next[a.address] !== o) changed = true;
     }
     if (changed) setShared("attention.since", next);
+  }
+
+  // Watched teams (shared "orchestra.groups", from the launcher or the Team panel):
+  // once a member has worked, the team is finished when none works or waits any
+  // more (ended members count as finished). Says so once per round of work.
+  watchTeams() {
+    const groups = shared("orchestra.groups") ?? [];
+    if (!groups.length) return;
+    const live = new Map(terminals().filter((x) => x.state === "live").map((x) => [x.address, x.status]));
+    const app = new Map(agents().map((a) => [a.address, a.status]));
+    let changed = false;
+    const next = groups.map((g) => {
+      if (!g.watch) return g;
+      const states = g.members.map((m) => app.get(m) ?? live.get(m) ?? "gone");
+      const busy = states.some((s) => s === "working" || s === "blocked");
+      const worked = g.worked || states.includes("working");
+      if (busy) {
+        if (g.notified || worked !== g.worked) { changed = true; return { ...g, worked, notified: false }; }
+        return g;
+      }
+      if (worked && !g.notified) {
+        changed = true;
+        notify({ title: `Team „${g.name}“ ist fertig`, body: `${g.members.length} Agents · im Team-Panel ansehen`, level: "success", timeout: 15000,
+          action: { name: "tabs-graph.panel-team" } });
+        playSound("done");
+        return { ...g, worked, notified: true };
+      }
+      return g;
+    });
+    if (changed) setShared("orchestra.groups", next);
   }
 
   waiting() {
@@ -320,6 +350,7 @@ export default class StatusBar extends View {
     const space = spaces().find(s => s.active);
     const list = agents();
     this.trackSince(list);
+    this.watchTeams();
     const needs = list.filter(a => a.status === "blocked").length;
     const done = list.filter(a => a.status === "done").length;
     const badgeText = [needs ? `${needs} wartet` : "", done ? `${done} fertig` : ""].filter(Boolean).join(" · ");

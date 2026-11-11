@@ -8,12 +8,13 @@ import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { keys, props, closeOverlay, theme, window } from "herdr";
 
 const SEND = { "\u001bb": "Wort zurück", "\u001bf": "Wort vor", "\u0017": "Wort löschen", "\u0001": "Zeilenanfang", "\u0005": "Zeilenende", "\u0015": "Zeile löschen" };
-const PANEL = { changes: "Changes", graph: "Git", filetree: "Tree", blueprint: "Blueprint", docker: "Docker", quests: "Quests" };
+const PANEL = { changes: "Changes", graph: "Git", filetree: "Tree", blueprint: "Blueprint", docker: "Docker", quests: "Quests", team: "Team (Agent-Graph)" };
 const DIR = { left: "links", right: "rechts", up: "oben", down: "unten" };
 const DESC = {
   "status-bar.attention-next": "Nächster wartender Agent (blocked, dann fertig)",
   "mod.open:inbox": "Inbox: wer wartet, Bildschirm, antworten",
   "mod.open:review": "Review: Änderungen des fokussierten Agents",
+  "mod.open:launcher": "Agent starten: Vorlage, Agents, Worktree",
   "mod.open:cheatsheet": "Diese Übersicht",
   "agent.next": "Nächster Agent", "agent.prev": "Vorheriger Agent",
   "tab.new": "Neuer Tab (Shell)", "tab.close": "Tab schließen", "tab.next": "Nächster Tab", "tab.prev": "Vorheriger Tab", "tab.rename": "Tab umbenennen",
@@ -30,7 +31,7 @@ const DESC = {
   "terminal.search": "Suchen", "terminal.copy": "Kopieren", "terminal.paste": "Einfügen", "terminal.paste_image": "Bild einfügen",
 };
 const GROUPS = [
-  ["Agents", (a) => /^agent\.|^status-bar\.|^mod\.open:(inbox|review)$/.test(a)],
+  ["Agents", (a) => /^agent\.|^status-bar\.|^mod\.open:(inbox|review|launcher)$/.test(a)],
   ["Panels & Seitenleiste", (a) => /^tabs-graph\.|^layout\.toggle:sidebar$/.test(a)],
   ["Tabs", (a) => /^tab\./.test(a)],
   ["Spaces", (a) => /^space\.|^space-folders\./.test(a)],

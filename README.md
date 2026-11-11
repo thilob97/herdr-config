@@ -48,12 +48,14 @@ Aktiv ist das Layout `elric` (Klon von `main`), daneben `quests`. Eigene Mods:
 | `space-folders` | Spaces nach Maschine und Ordner in der Seitenleiste (extern, siehe unten) |
 | `agent-cards` | Agents als Karten (Klon von `agents`): Avatar, OMP-Modell, Kontext, Kosten, Sub-Agents |
 | `sidebar-footer` | Fuß der Seitenleiste: Settings, Marketplaces, MCP servers, Tastenkürzel, Add machine (Klon von `workspace-chrome`) |
-| `tabs-graph` | Tab-Leiste mit Buttons Inbox (mit Zähler) und Review, dann den Panel-Buttons Changes, Git, Tree, Blueprint, Docker, Quests (Klon von `tabs`) |
+| `tabs-graph` | Tab-Leiste mit Buttons Starten, Inbox (mit Zähler) und Review, dann den Panel-Buttons Changes, Git, Tree, Blueprint, Docker, Quests, Team (Klon von `tabs`) |
 | `status-bar` | Statusleiste (Klon von `workspace-status`): Maschine, Branch, Agents, Attention-Badge, Limits und Kosten |
 | `inbox` | Attention-Inbox (Popup), siehe Agent-Zentrale |
 | `review` | Review-Fenster für die Änderungen eines Agents, siehe Agent-Zentrale |
 | `toast-review` | Benachrichtigungen (Klon von `toast`, im Layout-Root als `"toast"` gesetzt) mit Review-Button bei fertigen Agents |
 | `cheatsheet` | Tastenkürzel-Übersicht (Dialog), live aus `keys.json`, deutsch beschriftet und gruppiert, filterbar |
+| `launcher` | Agent-Launcher (Dialog) mit Prompt-Vorlagen aus `mods/launcher/templates/*.md`, siehe Agent-Zentrale |
+| `orchestra` | Team-Panel: Agent-Graph, Teams, Nachricht an mehrere Agents, siehe Agent-Zentrale |
 | `quests` | Ticket-Starter, siehe Quests |
 | `docker` | Panel mit Containern, Compose-Gruppen und Aktionen |
 | `marketplaces`, `mcp-servers` | Fenster für Agent-Plugin-Marketplaces und MCP-Server je Host, Maschine und Projekt |
@@ -67,6 +69,12 @@ Aktiv ist das Layout `elric` (Klon von `main`), daneben `quests`. Eigene Mods:
 
 **Review** (`cmd-shift-r` oder Button **Review** in der Tab-Leiste für das fokussierte Terminal; aus der Inbox oder per Button am Toast „An agent finished“): Git-Änderungen im Ordner des Agents, auch auf entfernten Maschinen. Dateiliste mit +/−, Diff, Branch mit ↑/↓. Aktionen: **Commit** (`git add -A` + `git commit`, Nachricht mit Tab-Namen vorbelegt), **Feedback senden** (`hc send`), **Zum Agent**, **Changes-Panel** (wählt Space und öffnet `changes`), **Worktree entfernen** (nur unter `~/.herdr/worktrees/`, öffnet den mitgelieferten Worktree-Dialog).
 
+**Agent starten** (`cmd-shift-n`, Button **Starten** in der Tab-Leiste oder im Team-Panel): Vorlage wählen, Space (bestimmt Maschine und Ordner), einen oder mehrere Agents (mehrere = je einer pro Agent, parallel), wo: neuer Tab im Space oder je ein eigener Git-Worktree unter `~/.herdr/worktrees/<repo>/` mit eigenem Space (bei mehreren Agents bekommt der Branch `-<agent>` angehängt). Tab-Name und erste Nachricht sind vorbelegt; `{folder}`, `{branch}`, `{branchnote}` und `{space}` werden beim Start ersetzt. Gestartet wird über `herdr-app do tab.new|space.new`. „Als Team beobachten“ legt aus den gestarteten Agents ein Team an.
+
+**Vorlagen** sind Markdown-Dateien in `mods/launcher/templates/` (getrackt), Kopf `name:` (Anzeige) und `tab:` (Tab-Name, Branch-Präfix), darunter die Nachricht. Mitgeliefert: Bug fixen, Feature bauen, Code-Review, Tests schreiben, Codebase erklären, Refactoring. Neue Datei = neue Vorlage beim nächsten Öffnen.
+
+**Team** (Panel, `cmd-alt-7` oder Button **Team**): oben die Teams (`shared("orchestra.groups")`) mit Fortschrittsbalken pro Mitglied, „alle fertig“, Beobachten an/aus, Auswahl, Auflösen. Darunter der Graph aller laufenden Agents je Space und Maschine: wer wen gestartet hat (`parent` aus `hc run`), Status und Dauer; Doppelklick geht hin (ohne Pane: Peek), beim Drüberfahren Hingehen, Review, Unterbrechen. Ausgewählte Agents (Klick) bekommen eine gemeinsame Nachricht (`hc send`; wartende nur mit „auch wartende“, dann `--force`), werden unterbrochen (`hc interrupt`) oder als Team beobachtet. Die Statusleiste beobachtet die Teams, auch wenn das Panel zu ist: Hat ein Mitglied gearbeitet und arbeitet bzw. wartet keins mehr, kommt einmal „Team … ist fertig“ mit Ton.
+
 **Tastenkürzel** (`cmd-/` oder **Tastenkürzel** unten in der Seitenleiste): alle Belegungen aus `keys.json`, gruppiert und filterbar; Herdrs eigene Liste bleibt auf `cmd-shift-/`. Neue Mod-Kommandos bekommen ihre deutsche Beschreibung in `DESC` in `mods/cheatsheet/main.js`, sonst erscheint der Befehlsname.
 
 | Taste | Wirkung |
@@ -76,8 +84,9 @@ Aktiv ist das Layout `elric` (Klon von `main`), daneben `quests`. Eigene Mods:
 | `cmd-shift-r` | Review für das fokussierte Terminal |
 | `cmd-shift-t` | neuer Tab mit `omp` |
 | `cmd-/` | Tastenkürzel-Übersicht |
+| `cmd-shift-n` | Agent starten (Launcher) |
 | `cmd-shift-b` | rechtes Panel ein/aus (`elric`) |
-| `cmd-alt-1` … `cmd-alt-6` | Panel Changes, Git, Tree, Blueprint, Docker, Quests (`elric`; erneut drücken schließt) |
+| `cmd-alt-1` … `cmd-alt-7` | Panel Changes, Git, Tree, Blueprint, Docker, Quests, Team (`elric`; erneut drücken schließt) |
 
 ## Externe Addons
 

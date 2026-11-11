@@ -63,7 +63,8 @@
     "cmd-j": "status-bar.attention-next",
     "cmd-shift-j": "mod.open:inbox",
     "cmd-shift-r": "mod.open:review",
-    "cmd-shift-t": { "command": "tab.new", "args": { "argv": ["omp"] } }
+    "cmd-shift-t": { "command": "tab.new", "args": { "argv": ["omp"] } },
+    "cmd-shift-n": "mod.open:launcher"
   },
   "terminal": {
     "cmd-f": "terminal.search",
@@ -92,7 +93,8 @@
     "cmd-alt-3": "tabs-graph.panel-filetree",
     "cmd-alt-4": "tabs-graph.panel-blueprint",
     "cmd-alt-5": "tabs-graph.panel-docker",
-    "cmd-alt-6": "tabs-graph.panel-quests"
+    "cmd-alt-6": "tabs-graph.panel-quests",
+    "cmd-alt-7": "tabs-graph.panel-team"
   },
   "layout:quests": {
     "ctrl-shift-q": "layout.switch:elric"

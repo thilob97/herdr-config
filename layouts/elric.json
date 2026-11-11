@@ -1,7 +1,6 @@
 {
   "id": "rd6d9267a8e15d3edf17106def7f5c7d2",
   "type": "row",
-  "toast": "toast-review",
   "children": [
     {
       "id": "rd6760435d2a1e4b8726f7ab08a75d7d2",
@@ -180,6 +179,13 @@
                                   "view": "panel"
                                 }
                               }
+                            },
+                            {
+                              "id": "team",
+                              "type": "block",
+                              "content": {
+                                "mod": "orchestra"
+                              }
                             }
                           ],
                           "active": "filetree"
@@ -199,22 +205,22 @@
                 {
                   "id": "status-row",
                   "type": "row",
-                  "size": {
-                    "px": 28
-                  },
-                  "resizable": false,
                   "children": [
                     {
                       "id": "status",
                       "type": "block",
-                      "size": {
-                        "weight": 1
-                      },
                       "content": {
                         "mod": "status-bar"
+                      },
+                      "size": {
+                        "weight": 1
                       }
                     }
-                  ]
+                  ],
+                  "size": {
+                    "px": 28
+                  },
+                  "resizable": false
                 }
               ],
               "resizable": false
@@ -245,5 +251,6 @@
   "divider": {
     "width": 1,
     "color": "border"
-  }
+  },
+  "toast": "toast-review"
 }

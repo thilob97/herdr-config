@@ -2,7 +2,7 @@ import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { spaces, panes, agents, run, openOverlay, theme, window, layout, settings, nextCommand } from "herdr";
 
-const PANELS = ["changes", "graph", "filetree", "blueprint", "docker", "quests"];
+const PANELS = ["changes", "graph", "filetree", "blueprint", "docker", "quests", "team"];
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -120,6 +120,7 @@ export default class Tabs extends View {
       .on_scroll_wheel(e => { if (Math.abs(e.delta.y) >= 1) run(e.delta.y > 0 ? "tab.prev" : "tab.next"); })
       .child(h_flex().id("tab-scroll").flex_1().min_w(0).h_full().items_center().gap(3).overflow_x_scrollbar().children(shown.map(item)))
       .child(button("tab-new", "+", () => openOverlay({ mod: "new-menu", kind: "popup", width: 250, height: 512 })))
+      .child(hubButton("hub-launch", "Starten", "mods/launcher/icon.svg", "Agent starten: Vorlage, Agents, Worktree (⌘⇧N)", () => run("mod.open", { name: "launcher" }), 0, null))
       .child(hubButton("hub-inbox", "Inbox", "mods/inbox/icon.svg", "Inbox: wartende Agents (⌘⇧J, nächster: ⌘J)", () => run("mod.open", { name: "inbox" }), needs || done, needs ? t.blocked : t.done))
       .child(hubButton("hub-review", "Review", "mods/review/icon.svg", "Review des fokussierten Terminals (⌘⇧R)", () => run("mod.open", { name: "review" }), 0, null))
       .child(div().w(1).h(16).mx(4).flex_none().bg(t.border))
@@ -129,6 +130,7 @@ export default class Tabs extends View {
       .child(panelButton("blueprint", "Blueprint", "mods/blueprint/icon.svg"))
       .child(panelButton("docker", "Docker", "mods/docker/icon.svg"))
       .child(panelButton("quests", "Quests", "mods/quests/icon.svg"))
+      .child(panelButton("team", "Team", "mods/orchestra/icon.svg"))
       .when(w?.buttons, el => el.child(button("minimize", w.platform === "windows" ? svg("mods/tabs-graph/win-min.svg").size(16) : "−", () => run("window.minimize")))
         .child(button("maximize", w.platform === "windows" ? svg(`mods/tabs-graph/${w.maximized ? "win-restore" : "win-max"}.svg`).size(16) : "□", () => run("window.maximize")))
         .child(button("close-window", w.platform === "windows" ? svg("mods/tabs-graph/win-close.svg").size(16) : svg("mods/pane/close.svg").size(13), () => run("window.close"))));
