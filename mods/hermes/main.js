@@ -31,7 +31,10 @@ const find = () => terminals().find((t) => t.name === NAME && t.state === "live"
 async function start() {
   const sh = await exec("sh", ["-c", 'printf %s "${SHELL:-/bin/sh}"']);
   const shell = sh.stdout.trim() || "/bin/sh";
-  const script = 'cd ~ && exec "$(command -v hermes || echo "$HOME/.hermes/hermes-agent/hermes")"';
+  // An early failure stays on screen (exit code, Enter closes) instead of
+  // the window vanishing with the terminal.
+  const script = 'cd ~ && "$(command -v hermes || echo "$HOME/.hermes/hermes-agent/hermes")"; c=$?; '
+    + 'if [ $c -ne 0 ]; then printf "\\n[Hermes beendet mit Code %s. Enter schließt.]\\n" $c; read -r _; fi; exit $c';
   const r = await hc(["run", "--bg", "--json", "--no-parent", "--name", NAME, "--", shell, "-lic", script]);
   if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim().split("\n").pop());
   return JSON.parse(r.stdout).address;
