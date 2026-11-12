@@ -64,7 +64,9 @@
     "cmd-shift-j": "mod.open:inbox",
     "cmd-shift-r": "mod.open:review",
     "cmd-shift-t": { "command": "tab.new", "args": { "argv": ["omp"] } },
-    "cmd-shift-n": "mod.open:launcher"
+    "cmd-shift-n": "mod.open:launcher",
+    "control control": "hermes.toggle",
+    "cmd-shift-h": "hermes.toggle"
   },
   "terminal": {
     "cmd-f": "terminal.search",
@@ -76,7 +78,9 @@
     "alt-backspace": "send:\u0017",
     "cmd-left": "send:\u0001",
     "cmd-right": "send:\u0005",
-    "cmd-backspace": "send:\u0015"
+    "cmd-backspace": "send:\u0015",
+    "control control": "hermes.toggle",
+    "cmd-shift-h": "hermes.toggle"
   },
   "layout:elric": {
     "alt-down": "space-folders.next",

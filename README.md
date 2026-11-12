@@ -57,6 +57,7 @@ Aktiv ist das Layout `elric` (Klon von `main`), daneben `quests`. Eigene Mods:
 | `launcher` | Agent-Launcher (Dialog) mit Prompt-Vorlagen aus `mods/launcher/templates/*.md`, siehe Agent-Zentrale |
 | `orchestra` | Team-Panel: Orchestrator (Agent, der Tickets anlegt, verteilt und prüft), Agent-Graph, Teams, Nachricht an mehrere Agents, siehe Agent-Zentrale |
 | `quests` | Ticket-Starter, siehe Quests |
+| `hermes` | Chat mit dem Hermes-Agent (Fenster oben rechts), siehe Hermes |
 | `docker` | Panel mit Containern, Compose-Gruppen und Aktionen |
 | `marketplaces`, `mcp-servers` | Fenster für Agent-Plugin-Marketplaces und MCP-Server je Host, Maschine und Projekt |
 | `blueprint`, `filetree`, `file-icons`, `git-graph` | Extern, siehe unten |
@@ -101,7 +102,16 @@ Das Review-Fenster vergleicht Branches allgemein mit ihrem Abzweig von `origin/H
 | `cmd-/` | Tastenkürzel-Übersicht |
 | `cmd-shift-n` | Agent starten (Launcher) |
 | `cmd-shift-b` | rechtes Panel ein/aus (`elric`) |
+| `ctrl` `ctrl` (doppelt) / `cmd-shift-h` | Hermes-Chat auf/zu |
 | `cmd-alt-1` … `cmd-alt-7` | Panel Changes, Git, Tree, Blueprint, Docker, Quests, Team (`elric`; erneut drücken schließt) |
+
+## Hermes
+
+Mod `hermes`: Doppel-Ctrl (`"control control"` in `keys.json`, global und im Terminal) oder `cmd-shift-h` öffnet oben rechts (480×600, unter der Tab-Leiste) ein Fenster mit dem [Hermes Agent](https://github.com/NousResearch/hermes-agent) (`hermes`-TUI, aus dem PATH, sonst `~/.hermes/hermes-agent/hermes`, in der Login-Shell im Home-Ordner). Erneut drücken oder **✕** in der Titelzeile schließt es. Hermes läuft in einem unsichtbaren Core-Terminal namens `hermes` (`hc run --bg --no-parent`, ohne Space/Tab) weiter; Wiederöffnen zeigt dieselbe Sitzung. Beendet sich Hermes, schließt das Fenster, und das nächste Öffnen startet neu. Das Fenster lässt sich ziehen und merkt sich seinen Platz.
+
+Aufbau: ein unsichtbarer 0-px-Block `hermes-host` (volle Breite, unter `root` in `elric`) empfängt `hermes.toggle` und misst die Fensterbreite; die Titelzeile ist dieselbe Mod mit `role: "titlebar"`.
+
+**Grenzen:** Herdr kann ein Overlay-Terminal nicht per Befehl fokussieren (`pane.focus` erreicht nur Tab-Panes und Layout-Blöcke): nach dem Öffnen einmal in den Chat klicken. Esc geht an Hermes, nicht ans Fenster (Hermes braucht Esc selbst). Doppel-Ctrl nutzt die Modifier-Tap-Erkennung von GPUI; sie ist nicht dokumentiert und konnte ohne Bedienungshilfen-Recht nicht automatisch getestet werden, `cmd-shift-h` ist die sichere Taste.
 
 ## Externe Addons
 
