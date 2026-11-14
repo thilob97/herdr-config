@@ -351,6 +351,7 @@ export class HubSection {
 
   ticketRow(t, tk, { primary = false } = {}) {
     const stage = stageOf(tk);
+    const gate = gateOf(tk.id);
     const live = tk.terminal ? terminals().find((x) => x.address === tk.terminal && x.state === "live") : null;
     const c = costs.costs();
     const spent = c.tickets?.[tk.id], limit = costs.ticketLimit(tk.id);
@@ -383,7 +384,9 @@ export class HubSection {
         })
         .when(Boolean(landed), (el) => el.child(div().flex_none().text_size(T_XS).text_color(t.done).when(Boolean(tk.pr), (x) => x.tooltip(tk.pr)).child(landed))))
       .when(stage !== "todo", (el) => el.child(h_flex().flex_wrap().gap(ui.GAP_S).items_center()
-        .children(ui.gateChips(t, tk, gateOf(tk.id)))))
+        .children(ui.gateChips(t, tk, gate))
+        .when(gate?.base?.ok === false, (x) => x.child(ui.chip(t, "Basis veraltet", t.blocked,
+          { tip: `${gate.base.reason}\nhub rebase ${tk.id}` })))))
       .when(stage === "review", (el) => el.child(h_flex().gap(ui.GAP_S).items_center().min_w(0)
         .child(div().flex_none().text_size(T_XS).text_color(t.dim).child("Reviewer"))
         .when(Boolean(tk.review_terminal), (x) => x.child(div().flex_none().max_w(130).child(ui.identityChip(t, `tk-reviewer-${tk.id}`, tk.review_terminal))))
