@@ -183,3 +183,12 @@ git init -b main
 git remote add origin https://github.com/thilob97/herdr-config.git
 git pull origin main
 ```
+
+## Start-Dashboard
+
+`layouts/dashboard.json` ist eine ruhige Fabrik-Übersicht ohne Seitenleiste, Tab-Leiste und Statusleiste: eine Karte mit „Wartet auf dich“ (Tickets in Prüfung, Rückfragen von Agents mit Antwortfeld, offene Fragen aus Tickets), der Fabrik-Stufenleiste mit den wichtigsten Tickets in Arbeit und den Kosten heute, dazu das Auftragsfeld an den Orchestrator (⌘↵ sendet; ohne laufenden Orchestrator steht dort „Orchestrator starten“).
+
+- **Zum Startbildschirm:** `⌘⇧0` wechselt zwischen `dashboard` und `elric`; im Dashboard geht dieselbe Taste zurück, ebenso der Knopf „Workspace“ und `g` `w`. Herdr startet mit dem zuletzt gezeigten Layout (`shared("layout")`), nach dem Wechsel also im Dashboard.
+- **Rückweg:** `⌘⇧0` (in `keys.json` global `layout.switch:dashboard`, im Layout `dashboard` `layout.switch:elric`).
+- **Im Dashboard:** `↑↓` wählt, `↵` öffnet (Agent → Terminal, Ticket → Review-Fenster), `r` antwortet der gewählten Rückfrage, `g` `w` geht zum Workspace, `Esc` räumt Wahl und Fokus.
+- Datenquellen sind dieselben wie in Team, Inbox und Statusleiste: `shared("orchestra.tickets")`, `agents()`, `shared("orchestra.costs")` und `shared("orchestra.budget")`. `layouts/elric.json` bleibt unverändert.
