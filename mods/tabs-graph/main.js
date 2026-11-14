@@ -159,7 +159,7 @@ export default class Tabs extends View {
         })
         .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); openOverlay({ mod: "menu", kind: "popup", width: 200, props: { tab: "tab", target: { id: c.id, space: space.id } } }); })
         .when(Boolean(program?.icon), el => el.child(program.tint ? svg(program.icon).size(14).flex_none().text_color(t.muted) : image(program.icon).size(14).flex_none()))
-        .child(div().max_w(170).truncate().child(c.zoomed ? `${name} Z` : name))
+        .child(div().max_w(170).truncate().tooltip(c.zoomed ? `${name} (gezoomt)` : name).child(c.zoomed ? `${name} Z` : name))
         .when(c.status && c.status !== "idle", el => el.child(statusMark(t, c.status)))
         .when(c.active, el => el.child(div().id(`close-${c.id}`).size(16).flex_none().flex().items_center().justify_center().rounded(4)
           .text_color(t.dim).hover(s => s.bg(t.hover).text_color(t.foreground)).tooltip("Tab schließen (⌘W)")
@@ -173,19 +173,17 @@ export default class Tabs extends View {
       : 10;
     const panel = find(root, "panel"), body = find(root, "panel-body");
     this.syncPanel(space, panel, body, PANELS);
-    // Segments (5.6): both groups the same — icon only in a narrow bar, icon and name when
-    // there is room; the open panel always says its name.
-    const wide = (this.barW ?? 0) / (settings().zoom || 1) >= 1400;
+    // Segments (5.6, icon variant for both groups alike): entries 22×22, only the open panel
+    // also says its name — names would cost the tab strip ~470 px.
     const segEntry = p => {
       const on = panel && !panel.hidden && body?.active === p.id;
-      const labeled = on || wide;
-      return h_flex().id(`panel-${p.id}`).h(H_SEG_ITEM).when(labeled, el => el.px(8)).when(!labeled, el => el.w(H_SEG_ITEM))
+      return h_flex().id(`panel-${p.id}`).h(H_SEG_ITEM).when(on, el => el.px(8)).when(!on, el => el.w(H_SEG_ITEM))
         .justify_center().gap(GAP_XS).flex_none().items_center().rounded(6).text_size(T_S)
         .bg(on ? t.selected : t.background).text_color(on ? t.foreground : t.muted)
         .hover(s => s.bg(on ? t.selected : t.hover).text_color(t.foreground)).on_mouse_down("left", stop)
         .tooltip(`${p.tip} (⌘⌥${p.key})`)
         .on_click(() => this.togglePanel(p.id))
-        .child(svg(p.icon).size(14).flex_none()).when(labeled, el => el.child(p.label));
+        .child(svg(p.icon).size(14).flex_none()).when(on, el => el.child(p.label));
     };
     const segment = (id, list) => h_flex().id(id).h(H_BTN).p(2).gap(2).flex_none().items_center().rounded(8)
       .bg(t.background).border_1().border_color(t.border).children(list.map(segEntry));
@@ -224,6 +222,20 @@ export default class Tabs extends View {
     const stripMax = (this.barW ?? 0) > 0
       ? Math.max(120, (this.barW - (this.rightW ?? 0)) / zoom - RESERVED - lightsPadding - 10 - 2 * GAP_M)
       : 0;
+    // Only whole tabs show (a tile cut mid-word reads as broken); the rest count into "+n".
+    // Measured in real px, like the tab widths; back to layout px for max_w.
+    const wholeTabs = (() => {
+      const avail = stripMax * zoom;
+      if (!(avail > 0)) return 0;
+      let x = 0;
+      for (const id of this.shownIds ?? []) {
+        const w = this.tabW[id];
+        if (w == null) return 0; // not measured yet: no cap this frame
+        if (x + w > avail + 0.5) break;
+        x += w + GAP_XS * zoom;
+      }
+      return x > 0 ? x / zoom : 0;
+    })();
     return h_flex().size_full().min_w(0).px(10).pl(lightsPadding).gap(GAP_M).items_center().bg(t.chrome).border_b(1).border_color(t.border)
       .on_mouse_up("left", () => { this.pressed = null; })
       .on_size_change((s, cx) => {
@@ -237,7 +249,7 @@ export default class Tabs extends View {
       // reachable with any number of tabs (the rest of the bar drags the window).
       .child(h_flex().flex_shrink_1().min_w(0).h_full().items_center().gap(GAP_XS)
         .child(h_flex().id("tab-scroll").flex_shrink_1().min_w(0).h_full().items_center().gap(GAP_XS).overflow_x_scrollbar()
-          .when(stripMax > 0, el => el.max_w(Math.floor(stripMax)))
+          .when(wholeTabs > 0 ? wholeTabs < stripMax : stripMax > 0, el => el.max_w(Math.floor(wholeTabs > 0 ? wholeTabs : stripMax)))
           .on_size_change((s, cx) => {
             if (this.stripW === s.width) return;
             this.stripW = s.width;
