@@ -7,14 +7,19 @@ import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { keys, props, closeOverlay, theme, window } from "herdr";
 
+// Tokens (docs/ui-spec.md, 5).
+const GAP_XS = 4, GAP_S = 6, GAP_M = 8, GAP_L = 12, GAP_XL = 16;
+const INSET_CARD = 10, H_SECTION = 28, H_ROW = 28, H_INPUT = 30, H_CHIP = 18;
+const T_XS = 10.5, T_S = 11, T_M = 12, T_XL = 15;
+
 const SEND = { "\u001bb": "Wort zurück", "\u001bf": "Wort vor", "\u0017": "Wort löschen", "\u0001": "Zeilenanfang", "\u0005": "Zeilenende", "\u0015": "Zeile löschen" };
-const PANEL = { changes: "Changes", graph: "Git", filetree: "Tree", blueprint: "Blueprint", docker: "Docker", quests: "Quests", team: "Team (Agent-Graph)" };
+const PANEL = { changes: "Changes", graph: "Git", filetree: "Tree", blueprint: "Blueprint", docker: "Docker", quests: "Quests", team: "Team" };
 const DIR = { left: "links", right: "rechts", up: "oben", down: "unten" };
 const DESC = {
-  "status-bar.attention-next": "Nächster wartender Agent (blocked, dann fertig)",
-  "mod.open:inbox": "Inbox: wer wartet, Bildschirm, antworten",
-  "mod.open:review": "Review: Änderungen des fokussierten Agents",
-  "mod.open:launcher": "Agent starten: Vorlage, Agents, Worktree",
+  "mod.open:launcher": "Auftrag: neue Arbeit ans Team oder selbst starten",
+  "mod.open:inbox": "Inbox: was auf dich wartet",
+  "status-bar.attention-next": "Zum nächsten wartenden Agent (wartet, dann fertig)",
+  "mod.open:review": "Review des fokussierten Terminals",
   "mod.open:cheatsheet": "Diese Übersicht",
   "agent.next": "Nächster Agent", "agent.prev": "Vorheriger Agent",
   "tab.new": "Neuer Tab (Shell)", "tab.close": "Tab schließen", "tab.next": "Nächster Tab", "tab.prev": "Vorheriger Tab", "tab.rename": "Tab umbenennen",
@@ -31,13 +36,13 @@ const DESC = {
   "terminal.search": "Suchen", "terminal.copy": "Kopieren", "terminal.paste": "Einfügen", "terminal.paste_image": "Bild einfügen",
 };
 const GROUPS = [
-  ["Agents", (a) => /^agent\.|^status-bar\.|^mod\.open:(inbox|review|launcher)$/.test(a)],
-  ["Panels & Seitenleiste", (a) => /^tabs-graph\.|^layout\.toggle:sidebar$/.test(a)],
+  ["Auftrag und Agents", (a) => /^agent\.|^status-bar\.|^mod\.open:(inbox|review|launcher)$/.test(a)],
+  ["Panels und Seitenleiste", (a) => /^tabs-graph\.|^layout\.toggle:sidebar$/.test(a)],
   ["Tabs", (a) => /^tab\./.test(a)],
   ["Spaces", (a) => /^space\.|^space-folders\./.test(a)],
   ["Panes", (a) => /^pane\./.test(a)],
   ["Terminal", (a) => /^terminal\.|^send:/.test(a)],
-  ["App & Layouts", () => true],
+  ["App und Layouts", () => true],
 ];
 
 function actionText(action) {
@@ -89,8 +94,10 @@ const scope = (s) => (s === "global" ? null : s === "terminal" ? "im Terminal" :
 export default class Cheatsheet extends View {
   init(_props, cx) {
     this.filter = "";
-    this.input = InputState.new({ placeholder: "Filtern… (Taste oder Beschreibung)" });
+    this.input = InputState.new({ placeholder: "Filtern … (Taste oder Beschreibung)" });
     this.input.on("change", (_e, cx) => { this.filter = this.input.value().toLowerCase(); cx.notify(); });
+    this.input.on("focus", (_e, cx) => { this.typing = true; cx.notify(); });
+    this.input.on("blur", (_e, cx) => { this.typing = false; cx.notify(); });
     this.input.focus();
     cx.timer.after(400, () => this.input.focus());
   }
@@ -117,15 +124,16 @@ export default class Cheatsheet extends View {
     return [...byKey.values()].filter((r) => !f || r.desc.toLowerCase().includes(f) || r.keys.join(" ").toLowerCase().includes(f) || r.action.toLowerCase().includes(f));
   }
 
+  // A group as a card (5.6) with a section head; keys as chips.
   card(t, name, rows) {
-    return v_flex().w_full().gap(1).p(10).rounded(9).bg(t.background).border(1).border_color(t.border)
-      .child(div().pb(4).text_size(11).font_semibold().text_color(t.dim).child(name.toUpperCase()))
-      .children(rows.map((r, i) => h_flex().id(`cs-${name}-${i}`).min_h(26).gap(10).items_center()
-        .child(h_flex().w(150).flex_none().gap(4).flex_wrap()
-          .children(r.keys.map((k) => div().px(6).py(1).rounded(5).bg(t.raised).border(1).border_color(t.border)
-            .text_size(11.5).text_color(t.accent).child(k))))
-        .child(div().flex_1().min_w(0).text_size(12).text_color(t.foreground).child(r.desc))
-        .when(Boolean(scope(r.section)), (el) => el.child(div().flex_none().px(5).rounded(4).bg(t.raised).text_size(10).text_color(t.muted).child(scope(r.section))))));
+    return v_flex().w_full().px(INSET_CARD).pb(GAP_S).rounded(8).bg(t.surface).border_1().border_color(t.border)
+      .child(h_flex().h(H_SECTION).items_center().text_size(T_S).font_medium().text_color(t.muted).child(name))
+      .children(rows.map((r, i) => h_flex().id(`cs-${name}-${i}`).min_h(H_ROW).gap(GAP_M).items_center()
+        .child(h_flex().w(150).flex_none().gap(GAP_XS).flex_wrap()
+          .children(r.keys.map((k) => div().h(H_CHIP).px(6).flex().items_center().rounded(4).bg(t.raised)
+            .text_size(T_XS).text_color(t.foreground).child(k))))
+        .child(div().flex_1().min_w(0).text_size(T_M).text_color(t.foreground).child(r.desc))
+        .when(Boolean(scope(r.section)), (el) => el.child(div().flex_none().h(H_CHIP).px(6).flex().items_center().rounded(4).bg(t.raised).text_size(T_XS).text_color(t.muted).child(scope(r.section))))));
   }
 
   render() {
@@ -142,22 +150,23 @@ export default class Cheatsheet extends View {
     const cols = [[], []], height = [0, 0];
     for (const g of groups) { const c = height[0] <= height[1] ? 0 : 1; cols[c].push(g); height[c] += g[1].length + 2; }
     const close = () => closeOverlay(props().overlay);
-    return v_flex().id("cheatsheet").size_full().min_h(0).p(18).gap(12).bg(t.popover).text_size(12)
+    // Dialog (5.6): p 16, gap 12, a 28 px title row, content fills the height.
+    return v_flex().id("cheatsheet").size_full().min_h(0).p(GAP_XL).gap(GAP_L).bg(t.popover).text_size(T_M)
       .on_key_down((e) => { if (e.key === "escape") close(); })
-      .child(h_flex().items_center().gap(10)
-        .child(svg("mods/cheatsheet/icon.svg").size(16).text_color(t.muted))
-        .child(div().text_size(15).font_semibold().text_color(t.foreground).child("Tastenkürzel"))
-        .child(div().text_size(11).text_color(t.dim).child("aus keys.json · live"))
+      .child(h_flex().h(28).flex_none().items_center().gap(GAP_M)
+        .child(div().text_size(T_XL).font_semibold().text_color(t.foreground).child("Tastenkürzel"))
+        .child(div().text_size(T_S).text_color(t.muted).child("aus keys.json, live"))
         .child(div().flex_1())
-        .child(div().id("cs-esc").px(6).py(2).rounded(5).text_size(11).text_color(t.dim).cursor_pointer()
-          .hover((s) => s.bg(t.hover).text_color(t.foreground)).on_click(close).child("Esc")))
-      .child(h_flex().h(34).flex_none().px(10).gap(8).items_center().rounded(9).border_1().border_color(t.accent).bg(t.background)
-        .child(svg("mods/workspace-chrome/search.svg").size(14).text_color(t.dim))
-        .child(Input.new(this.input).flex_1().h_full().text_size(12.5).text_color(t.foreground)))
+        .child(div().text_size(T_XS).text_color(t.dim).child("tippen filtert"))
+        .child(div().id("cs-esc").h(H_CHIP).px(6).flex().items_center().rounded(4).bg(t.raised).text_size(T_XS).text_color(t.dim).cursor_pointer()
+          .hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip("Schließen (Esc)").on_click(close).child("Esc")))
+      .child(h_flex().h(H_INPUT).flex_none().px(10).gap(GAP_S).items_center().rounded(6).border_1().border_color(this.typing ? t.accent : t.input).bg(t.background)
+        .child(svg("mods/workspace-chrome/search.svg").size(12).text_color(t.dim))
+        .child(Input.new(this.input).flex_1().h_full().text_size(T_M).text_color(t.foreground)))
       .child(div().id("cs-scroll").flex_1().min_h(0).overflow_y_scrollbar()
         .child(groups.length
-          ? h_flex().w_full().gap(12).items_start()
-            .children(cols.map((col, i) => v_flex().id(`cs-col-${i}`).flex_1().min_w(0).gap(12).children(col.map(([name, rows]) => this.card(t, name, rows)))))
-          : div().p(20).text_color(t.dim).child("Keine Taste passt zum Filter.")));
+          ? h_flex().w_full().gap(GAP_L).items_start()
+            .children(cols.map((col, i) => v_flex().id(`cs-col-${i}`).flex_1().min_w(0).gap(GAP_L).children(col.map(([name, rows]) => this.card(t, name, rows)))))
+          : h_flex().h(H_ROW).items_center().text_size(T_S).text_color(t.dim).child("Keine Taste passt zum Filter.")));
   }
 }
