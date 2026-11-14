@@ -106,7 +106,9 @@ class Board {
     this.repos = [];
     this.filter = "";
     this.only = localStorage.getItem("only") || null;
-    this.stage = localStorage.getItem("stage") || "open";
+    // Geplant / In Arbeit (mit Prüfung) / Alle — the same words the rows use (N6).
+    const st = localStorage.getItem("stage");
+    this.stage = st === "todo" || st === "doing" ? st : "all";
     this.folded = new Set();
     this.hovered = null;
     // The page comes back fresh after every layout switch: shared selection.
@@ -162,7 +164,7 @@ class Board {
 
   matches(tk) {
     const st = this.stageOf(tk);
-    if (this.stage === "open" && st === "done") return false;
+    if (this.stage === "todo" && st !== "todo") return false;
     if (this.stage === "doing" && st !== "doing" && st !== "review" && !liveState(this.record(tk))?.alive) return false;
     if (!this.filter) return true;
     return [tk.title, tk.id, tk.project, tk.assignee, ...tk.labels].some((s) => String(s ?? "").toLowerCase().includes(this.filter));
@@ -356,8 +358,8 @@ class Board {
 
   stageSeg(t) {
     return ui.segment(t, "q-stage", [
-      { value: "open", label: "Offen", tip: "Alles außer Erledigtem" },
-      { value: "doing", label: "Begonnen", tip: "In Arbeit oder Prüfung, oder mit laufendem Agent" },
+      { value: "todo", label: "Geplant", tip: "Noch nicht begonnen" },
+      { value: "doing", label: "In Arbeit", tip: "In Arbeit und Prüfung, oder mit laufendem Agent" },
       { value: "all", label: "Alle" },
     ], this.stage, (value, cx) => { this.stage = value; localStorage.setItem("stage", value); cx.notify(); });
   }
