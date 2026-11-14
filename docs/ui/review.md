@@ -1,10 +1,146 @@
-# UI/UX-Review des Gesamtumbaus (`feat/ui-umbau`)
+# UI/UX-Review des Gesamtumbaus — zweiter Durchgang (Kontroll-Review)
+
+Basis: `feat/ui-umbau` @ `6da7aa3` (Merge Paket C Kostenformat; davor B- und C-Nachbesserungen,
+Tickets-Werkzeuge Teil 1). Der Branch `feat/ui-review` wurde dafür auf diesen Stand zurückgesetzt.
+Geprüft wurde alles aus dem Ticket erneut, nicht nur die Nachbesserungen. Der Bericht des ersten
+Durchgangs steht unverändert im Anhang; seine Screenshots liegen weiter unter `/tmp/ui-review/`, die
+dieses Durchgangs unter `/tmp/ui-review2/`.
+
+## Urteil
+
+**Abnahmefähig — ja**, mit kleinen Auflagen. Von den 10 Major des ersten Durchgangs sind 8 belegt
+behoben (A1, A2/S3, B1, B2, B3, B4, C1, C2); der Kontrast (S1) ist auf den Hauptflächen behoben und
+hat zwei Reste (N4), der Fokusrand (S2) ist umgesetzt, konnte im Hintergrundfenster aber nicht
+bewiesen werden. Von den 18 Minor sind 16 behoben, 2 offen (B5; A5 nur für Karten und Spaces, nicht
+für Tabs). Von den 7 Nit sind 5 behoben (B16, B17, B18, C5, C7), 2 bleiben (A7, A8). Dazu kommen 7
+neue Minor und 6 Nit — keiner davon blockiert den Fabrikpfad
+(Auftrag → Stufenleiste → Prüfung → Review → Mergen). Ein Blocker ist nicht dabei.
+
+Empfohlen, bevor das Review-Ticket zugeht (jeweils < 30 min, Details unten): B5 (Stufenleiste lässt
+mit zweistelligen Zählern eine Stufe weg), N1 (roher Exec-Fehler im Review-Fenster nach dem Mergen),
+N4 (Auftrag-Hinweis 2,77:1), N7 (Titel in der Inbox-Abnahme auf 12 Zeichen), N8 (zwei Zahlen unter
+„Arbeitet").
+
+## Verfahren
+
+- Testfenster nach Spec §1 neu aufgebaut (`docs/ui-preview.sh up` nach dem Reset), eigenes Test-Home
+  `~/.herdr/ui-preview/feat-ui-review`, Core `uiprev-36b2d7e3`, Demo-Welt, Fenster 1710×1010.
+- Aufgenommen (Screenshots in `/tmp/ui-review2/`): Gesamtfenster (mit Team-Toast), Sidebar
+  (normal, Rail, 11 Spaces, Auswahl, Hover, Mehr-Menü), Tab-Leiste (4 und 9 Tabs), Status- und
+  Versorgungsleiste, Team-Panel (Demo-Daten, 12 Tickets, nach dem Mergen), Quests (Panel und Layout
+  `quests`), Changes/Git/Tree/Blueprint/Docker, Review-Fenster (Ticket-Modus mit Gates und
+  Nachweisen, Terminal-Modus, nach dem Mergen), Inbox, Auftrag-Dialog (3 Varianten), Toasts
+  („wartet", „Team fertig"), Marketplaces, MCP-Server, Tastenkürzel, Theme `elric`.
+- Ablauf echt gegen die Demo-Welt: `hub ticket new` → `status=doing` → `hub review --checks pass
+  --evidence …` → Review-Fenster im Ticket-Modus → `hub land --merge` (Merge im Demo-Repo
+  `fe87949`), danach Fenster im abgeschlossenen Zustand. Zusätzlich geprüft: `hub review` ohne
+  `--checks/--evidence` erhält beide Felder (Ticket-Datei und `orchestra.tickets`).
+- Grenzen (unverändert): Maus- und Tastenereignisse lassen sich nicht in das Hintergrund-Testfenster
+  posten. Hover/Auswahl habe ich wie im ersten Durchgang kurzzeitig im Test-Home injiziert und per
+  `sync` zurückgenommen (`33-sidebar-auswahl-hover.png`). Klickpfade sind am Code und über dieselben
+  Kommandos geprüft, die die Knöpfe aufrufen.
+
+## Stand der Befunde aus dem ersten Durchgang
+
+| ID (Runde 1) | Schwere | Stand | Beleg |
+|---|---|---|---|
+| C1 „+" im scrollenden Streifen | major | **behoben** — „+" und Überlaufzähler `+n` stehen fest neben dem Streifen, Tooltip nennt ⌘⇧] | `47-tabs-viele.png` |
+| A1 Ordner-Menü/-Dialog englisch | major | **behoben** — „Neuer Ordner", „Ordner löschen", „Abbrechen", „Sichern", „Neue Spaces starten in"; `Loading…` → „lädt …" | `mods/space-folders/main.js:166,618-648` |
+| A2/S3 „This computer" | major | **behoben** — überall „Dieser Computer" | `10-panel-quests.png`, `32-sidebar-many.png` |
+| B1 Quests nennt Prüfung „in Arbeit" | major | **behoben** — `STAGE_WORD = {todo: Geplant, doing: In Arbeit, review: Prüfung, done: Fertig}`, Zeilen zeigen „Prüfung" | `10-panel-quests.png`, `46-layout-quests.png` |
+| B2 Start für laufende Tickets | major | **behoben** — laufend: primär „Zum Agent", „An Orchestrator" sekundär, kein „Start" | `46-layout-quests.png`, `quests/main.js:307-315` |
+| B3 Toast englisch/ohne Identität | major | **behoben** — „Glitch wartet auf dich" mit Identitäts-Chip (Avatar, Name, Status) | `36-toast-wartet.png` |
+| B4 Toast über der Versorgungsleiste | major | **behoben** — Toast-Karte hält 36 px (28 + 8) Abstand, Versorgungsleiste bleibt frei | `36-toast-wartet.png`, `44-ablauf-5-gemergt.png` |
+| S1 Kontrast | major | **weitgehend behoben** — Kosten, Branch, Gates, Nachweise, „Nur abnehmen", Statusleiste auf `muted` (5,3–15:1); `elric`-`dim` 4,55–5,8; Reste siehe N4 | Messungen unten |
+| S2 Fokusrand | major | **umgesetzt, im Hintergrundfenster nicht beweisbar** — `ui.focusFields()` in sieben Mods, `border(accent)` bei Fokus; im Testfenster bleibt der Rand `input`, weil das Fenster nicht Tastaturfokus hat. Im Vordergrundfenster gegenprüfen | `mods/launcher/ui.js:32-41,185`, `23-auftrag-team.png` |
+| B5 Stufenleiste ohne Kürzung | minor | **nicht behoben** — mit `Geplant 12` ist die Leiste voll und „› Fertig 1" fällt still weg (`overflow_hidden`); Zähler `99+` allein reicht nicht. Vorschlag: bei Platzmangel nur die Zähler zeigen (`12 · 1 · 1 · 1`, Tooltip mit Stufe) oder die Leiste zweizeilig | `45-team-viele-tickets.png` |
+| B6 leere Stufen verschwinden | minor | **behoben** — alle vier Stufen mit „Nichts in Prüfung."/„Nichts in Arbeit." | `10-panel-team.png` |
+| B7 mehrere primäre „Prüfen" | minor | **behoben** — primär nur das älteste Prüf-Ticket, die anderen sekundär (nachgemessen) | `43-ablauf-4-review.png` |
+| B8 Budget-Chips ohne Affordanz | minor | **behoben** — Stift-Icon + Tooltip „Klicken: erhöhen" | `10-panel-team.png` |
+| B9 zwei Zahlenformate | minor | **behoben** — `ui.usd()` überall (`$2.87 / $20`, `$162 heute`) | `01-overview.png`, `45-team-viele-tickets.png` |
+| B10 Inbox zählt doppelt | minor | **behoben** — Badge statt Satz; Hinweise auf `muted` | `22-inbox.png` |
+| B11 Abnahme-Zeile nur ein Gate | minor | **behoben** — „Checks –" und „Review offen" | `22-inbox.png` |
+| B12 Popup über der Tab-Leiste | minor | **behoben** — Popup beginnt bei 48 px unter der 42-px-Leiste | `22-inbox.png` |
+| B13 ausgegraute Knöpfe nach Abnahme | minor | **behoben** — Fußleiste zeigt Ergebnis + „Schließen" (primär) | `44-ablauf-5-gemergt.png` |
+| B14 Nachweise ohne Vorschau | minor | **behoben** — 48-px-Vorschauen der Screenshots, Tooltip mit Pfad; Fußleisten beschriftet („Abnahme", „Arbeit am Agent") | `43-ablauf-4-review.png`, `21-review-terminal.png` |
+| B15 Terminal-Modus ohne Ticket | minor | **behoben** — Kopf „Ticket demo-2 · Team-Panel: Pipeline-A…" + Identitäts-Chip | `21-review-terminal.png` |
+| B16 Orchestrator-Karte `· 0.41` | nit | **behoben** — `· $0.41` | `10-panel-team.png` |
+| B17 `hub --help` verweist auf Team-Graph | nit | **behoben** — „Team-Panel" | `mods/orchestra/bin/hub:6` |
+| B18 `h(4000)`-Hack | nit | **behoben** (nicht mehr im Code) | `mods/inbox/main.js` |
+| C2 Zwillinge ungleich | major | **behoben** — beide „+" in der Titelzeile, gleiche Gewichtung | `27-marketplaces.png`, `28-mcp.png` |
+| C3 Tastenspalte presst Beschreibungen | minor | **behoben** — Tastenchips nach Inhalt, Beschreibung einzeilig mit Tooltip, Layout-Chip nur am Gruppenkopf | `26-tastenkuerzel.png` |
+| C5 doppelter Spinner | nit | **behoben** | `27-marketplaces.png` |
+| C6 Blueprint-Agent ohne Identität | minor | **behoben** — Identitäts-Chip (Avatar + „Puck" + Status) | `10-panel-blueprint.png` |
+| C7 Projektname auf 5 Zeichen | nit | **behoben** — Projektname steht in der Diagramm-Zeile | `10-panel-blueprint.png` |
+| A3 Auswahlleiste drei Zeilen | minor | **behoben** — zwei Zeilen (Aktionen + Eingabe) | `33-sidebar-auswahl-hover.png` |
+| A4 Rail ohne Identität | minor | **behoben** — Avatar 16 + Status statt Nummern | `31-sidebar-rail.png` |
+| A5 Abschneiden ohne Tooltip | minor | **teilweise** — Karten- und Space-Namen haben Tooltips; Tab-Namen nicht (N2) | `mods/agent-cards/main.js:846`, `space-folders/main.js:810` |
+| A6 Idle-Agent unter „Arbeitet" wortlos | minor | **behoben** — „Sub-Agent arbeitet" | `45-team-viele-tickets.png`, `33-sidebar-auswahl-hover.png` |
+| A7 `gap(10)` literal | nit | offen (unverändert, unkritisch) | `mods/agent-cards/main.js` |
+| A8 `pl(16)` literal | nit | offen (unverändert, unkritisch) | `mods/agent-cards/main.js` |
+| C4 Segment-Gruppen ungleich | minor | **geändert, siehe N3** | `47-tabs-viele.png` |
+
+## Neue und gebliebene Befunde
+
+| ID | Schwere | Paket | Datei | Bild | Befund | Vorschlag |
+|---|---|---|---|---|---|---|
+| N1 | minor | B | `mods/review/main.js:132-201,523` | `44-ablauf-5-gemergt.png` | Mergen bei geöffnetem Fenster: der nächste 5-s-Refresh läuft in den entfernten Worktree, `exec` meldet „herdr.exec: cannot run git: No such file or directory (os error 2)". Weil `orchestra.tickets` in diesem Moment noch `review` trägt, greift der „gelandet"-Zweig nicht — der rohe englische Text bleibt als `this.error` stehen, auch nachdem der Fuß schon „Abgenommen und gemergt" zeigt. Neu geöffnet ist alles korrekt | Im Catch auch „Ordner/Worktree weg" (ENOENT, `cannot run git`) als gelandet/beendet behandeln und `this.error` leeren, sobald `ticket().status` auf `done` wechselt; Exec-Text nie roh zeigen |
+| N2 | minor | C | `mods/tabs-graph/main.js:146` | `47-tabs-viele.png` | Tab-Namen werden bei 170 px gekürzt, ohne Tooltip (Karten und Spaces haben einen) | `.tooltip(name)` am Tab-Label |
+| N3 | minor | C | `mods/tabs-graph/main.js:196-210` | `47-tabs-viele.png` | Beide Panel-Gruppen zeigen ab 1400 px *alle* Namen (5.6 sagt: Icon-Variante, nur das offene Panel mit Namen). Das kostet rund 470 px der Leiste: bei 9 Tabs sind 3 sichtbar und 6 hinter „+6" | Wie 5.6: nur Icons, offenes Panel mit Namen; ab ~1500 px optional Werkzeuge als ein Menü |
+| N4 | minor | B + C | `mods/launcher/main.js:304,339`, `mods/inbox/main.js:226` | `23-auftrag-team.png`, `22-inbox.png` | Zwei Kontrast-Reste: Auftrag-Hinweis und `repo · …`-Zeile noch `dim` = 2,77:1; Metazeile in der **gewählten** Inbox-Zeile `muted` auf `selected` = 3,98:1 | Hinweis/Repo-Zeile auf `muted`; in gewählten Zeilen `selected`-Hintergrund aufhellen (Theme) oder Text `foreground` |
+| N5 | nit | C | `mods/tabs-graph/main.js:243-249` | `47-tabs-viele.png` | Der Streifen schneidet den letzten sichtbaren Tab mitten im Wort ab („Arbeits") — kein Ellipsis, kein Fade | Clip am Streifenrand mit Fade oder letzte Kachel ausblenden (zählt dann in `+n`) |
+| N6 | nit | B | `mods/quests/main.js:359-360` | `10-panel-quests.png` | Filter sagt „Offen / Begonnen", die Zeilen „Geplant / In Arbeit / Prüfung" | Filter „Geplant · In Arbeit/Prüfung · Alle" oder „Offen/Begonnen" auch als Statuswörter (eine Sprache) |
+| N7 | minor | B | `mods/inbox/main.js:196-226` | `22-inbox.png` | In der Abnahme-Zeile teilen sich zwei Gate-Chips die erste Zeile mit dem Titel: „Sidebar: Ab…" bleibt von 33 Zeichen | Chips in die zweite Zeile (wie die Ticket-Karte im Team-Panel) oder Kurzformen „✓"/„Review" |
+| N8 | minor | A + B | `mods/agent-cards/main.js` (Sektion), `mods/inbox/main.js:296` | `22-inbox.png` | Beide Flächen schreiben „Arbeitet", zählen aber verschieden: Sidebar 2 (Dringlichkeit inkl. Sub-Agent), Inbox 1 (eigener Status). Zwei Zahlen unter demselben Wort | Inbox-Zahl auf „Agent oder Sub-Agent arbeitet" erweitern, oder die Sidebar-Sektion „Beschäftigt" nennen |
+| N9 | minor | C | `mods/git-graph/dialog.js:72,94` | — | Commit-Dialog des externen Git-Mods: Eingabe h 36, Radius 9, Schrift 12.8, Knopf „Cancel" — abseits der Tokens (5.6: h 30, Radius 6, `T_M`) | Eingabe/Knöpfe auf `H_INPUT`/6/`T_M`; „Cancel" → „Abbrechen" (C3 deckt Knöpfe und Eingaben ab) |
+| N10 | nit | C | `mods/blueprint/main.js:1597-1610` | `10-panel-blueprint.png` | Agent-Auswahl und Leerzustand im Blueprint nutzen 11,5/12,5/14 px und Radien 7/12 | Auf die Skala ziehen (T_S/T_M/T_L, 6/8) |
+| N11 | nit | C | `mods/docker/main.js` (Leerzustand) | `10-panel-docker.png` | „Docker läuft nicht." ohne nächsten Schritt | Zweiter Satz oder Link „Docker Desktop starten" |
+| N12 | nit | B | `mods/review/main.js:432-441` | `43-ablauf-4-review.png` | Nachweis-Vorschauen ohne Bildunterschrift; nur der Tooltip nennt den Pfad | Dateiname unter/neben der Vorschau (`T_XS`) |
+| N13 | nit | B | `mods/inbox/main.js:311` | `22-inbox.png` | Tastenhinweis „↑↓ ↵ r v" bleibt kryptisch (Buchstaben ohne Verb) | „↑↓ wählen · ↵ öffnen · r antworten · v Review" wie im ersten Entwurf, nur in `muted` |
+
+## Kontrast, gemessen (Standard-Theme, kleine Schrift)
+
+| Stelle | Vordergrund / Grund | vorher | jetzt |
+|---|---|---|---|
+| Gate-Chip „Checks –" | mit → `muted` | 2,84 | **6,80** |
+| Team: Branch, `$1.84 / $3` | mit → `muted`/`foreground` | 3,25 | **6,17 / 15,18** |
+| Statusleiste `⌘⇧P Befehle`, „Nur abnehmen" | mit → `muted` | 3,49 | **6,62** |
+| Review „keine angegeben" | mit → `muted` | 2,77 | **5,25** |
+| Inbox Meta in gewählter Zeile | `muted` auf `selected` | 2,10 | **3,98** (N4) |
+| Auftrag-Hinweis, `repo · …` | noch `dim` | 2,77 | **2,77** (N4) |
+| Theme `elric` `dim` | #928ac0 auf surface/chrome/selected | 3,44 | **5,57 / 5,82 / 4,55** |
+
+## Prüfbefehle
+
+- Spec §10 über alle Paket-Dateien: keine Treffer bei Schriftgrößen, Radien, Hex-Farben,
+  `toUpperCase()` (nur Space-Kachel und Tastennamen), englischer Stichprobe. Ausnahmen liegen nur in
+  externen Addons jenseits von Kopf/Knöpfen (`blueprint`-Canvas, `filetree`-Zeilen, `git-graph`
+  „Loading more commits…", `blueprint`-i18n) — laut G11 so gewollt; N9/N10 betreffen die dortigen
+  Knöpfe/Eingaben.
+- `errors: []` in jeder Aufnahme des Testfensters; keine Mod-Warnung.
+- Kopfhöhen: alle Panel-Köpfe 42 px, Titel-x identisch; Fenster Marketplaces/MCP/Review 42; Dialoge
+  mit Titelzeile 28 + Esc-Chip.
+- Sieben `ui.js`-Kopien tragen dieselben Helfer (`usd`, `focusFields`, `inputBox`, `statusIcon`).
+
+## Testfenster und Live-Welt
+
+- Testfenster per `docs/ui-preview.sh down` beendet, Test-Cores gestoppt; im Test-Home angelegte
+  Helfer (`mods/zzopen`) und Zustandsinjektionen sind wieder entfernt.
+- Live-Config `~/.config/herdr-app`: keine Änderung an getrackten Dateien, keine Spur des Tests
+  (`rg 'uiprev|ui-preview|feat-ui-review'` leer); geändert hat sich nur Laufzeitzustand, den das
+  laufende Fenster des Menschen selbst schreibt.
+
+---
+
+# Anhang: Bericht des ersten Durchgangs (unverändert)
+
+## UI/UX-Review des Gesamtumbaus (`feat/ui-umbau`)
 
 Unabhängiger Review nach dem Merge von Spec und den Paketen A, B und C. Ich habe keinen Mod-Code
 geändert. Alle Befunde sind belegt (Screenshot-Pfad und Datei:Zeile); die Vorschläge gehören den
 Paket-Agents (Eigentum nach Spec §9).
 
-## Verfahren
+### Verfahren
 
 - Testfenster nach Spec §1: eigenes Test-Home `~/.herdr/ui-preview/feat-ui-review`, eigener Core
   `uiprev-36b2d7e3`, Demo-Welt, Fenster 1710×1010, Screenshots 2×. Live-Config und echtes Fenster
@@ -43,7 +179,7 @@ Paket-Agents (Eigentum nach Spec §9).
 | Tastenkürzel | `26-tastenkuerzel.png` |
 | Ablauf 1–5 | `40-ablauf-1-ticket-geplant.png` … `44-ablauf-5-gemergt.png` |
 
-## Urteil vorab
+### Urteil vorab
 
 **Nicht abnahmefähig.** Kein Blocker (nichts ist unbedienbar, kein Absturz, `errors: []` in jeder
 Aufnahme). **Zehn Major** (acht in den Paket-Tabellen, dazu die zwei querschnittlichen S1 Kontrast und
@@ -54,9 +190,9 @@ Marketplaces/MCP (C). Zwei brauchen eine Entscheidung des Orchestrators: die Toa
 Core (B4), und die Kontrastregel steckt im Theme (C) wie in sechs byte-identischen `ui.js`-Kopien
 (B) — dort eine Stelle zu ändern heißt, sechs zu ändern.
 
-## Querschnitt: Sprache, Kontrast, Fokus
+### Querschnitt: Sprache, Kontrast, Fokus
 
-### S1 — Kontrast: `dim` trägt Funktion und liegt unter 4.5:1 (major, B + C)
+#### S1 — Kontrast: `dim` trägt Funktion und liegt unter 4.5:1 (major, B + C)
 
 Gemessen aus den Screenshots (kleine Schrift 10.5–11 px, WCAG AA verlangt 4.5:1):
 
@@ -77,7 +213,7 @@ Nachweis-Namen, Tastenhinweise, die Aktion „Nur abnehmen". Vorschlag: funktion
 `mods/orchestra/hubview.js:226-241`, `mods/inbox/main.js:190,197,308`, `mods/review/main.js:406-412,434`,
 `mods/status-bar/main.js:418-422`, `themes/elric.json`.
 
-### S2 — Kein Fokusrand an Eingabefeldern (major, B + C)
+#### S2 — Kein Fokusrand an Eingabefeldern (major, B + C)
 
 Spec 5.6: Eingabefeld „mit Fokus `border(accent)`". `ui.inputBox()` hat den Parameter `focused`,
 aber **kein Aufrufer übergibt ihn** (`mods/{orchestra,quests,inbox,review,launcher,toast-review}/ui.js:171-176`);
@@ -88,7 +224,7 @@ zeigen ebenfalls nur `input`. Der Fokus ist damit nur am Cursor erkennbar — in
 `inputBox`/`area` den Fokus aus der `InputState` ableiten (`input.is_focused()` bzw. `this.typing`
 wie in `docker/main.js:325`) und den Rand dann `accent` setzen — eine Stelle, sechs Mods.
 
-### S3 — Ein Rechner, drei Namen (major, A + C)
+#### S3 — Ein Rechner, drei Namen (major, A + C)
 
 `space-folders` schreibt „This computer" (`mods/space-folders/main.js:699`), die Statusleiste
 „Dieser Computer" (`mods/status-bar/main.js:332,384`), der Auftrag-Dialog „dieser Rechner"
@@ -96,7 +232,7 @@ wie in `docker/main.js:325`) und den Rand dann `accent` setzen — eine Stelle, 
 überall „Dieser Computer" (Produktwort, wie in der Statusleiste), „Host" nur da, wo eine
 Agent-Konfiguration gemeint ist, sonst „Maschine".
 
-### S4 — Sprache: Paket A hat noch englische Flächen (major, A)
+#### S4 — Sprache: Paket A hat noch englische Flächen (major, A)
 
 `mods/space-folders/main.js` ist außen deutsch (Tooltips „Neuer Ordner", „Neuer Space (⌘N)") und
 innen englisch: Kontextmenü `New folder` (`:166`), `New space here` (`:618`), `Delete folder` (`:620`),
@@ -106,7 +242,7 @@ innen englisch: Kontextmenü `New folder` (`:166`), `New space here` (`:618`), `
 Ordner", „Neuer Space hier", „Ordner löschen", „Ordner bearbeiten", „Abbrechen", „Sichern",
 „lädt …"). Reste der englischen Inhalte (`Blueprint`-Canvas, Git-Spalten) bleiben laut G11.
 
-## Paket A — Sidebar und Agent-Darstellung
+### Paket A — Sidebar und Agent-Darstellung
 
 | ID | Schwere | Datei | Bild | Befund | Vorschlag |
 |---|---|---|---|---|---|
@@ -124,7 +260,7 @@ Spaces-Block passt sich dem Inhalt an (bei 3 Spaces 8 px Leerraum, bei 10 Spaces
 5 Agents ohne Scrollen sichtbar, Kartenhöhe ~52 px, identische `ui.js`-Kopien (sechsmal derselbe
 Hash), Spec-Prüfbefehle ohne Treffer.
 
-## Paket B — Agenten-Fabrik
+### Paket B — Agenten-Fabrik
 
 | ID | Schwere | Datei | Bild | Befund | Vorschlag |
 |---|---|---|---|---|---|
@@ -154,7 +290,7 @@ Diff `feat/demo-review` gegen `main` und Fußleiste; Mergen hat im Demo-Repo fun
 und -Zähler stimmen mit der 7.3-Formel; Auftrag-Dialog hat die zwei Modi und füllt bei Ticket-Vorbelegung
 Text, Tab-Name und Branch; Toasts haben den Review-Knopf.
 
-## Paket C — Rahmen und Werkzeuge
+### Paket C — Rahmen und Werkzeuge
 
 | ID | Schwere | Datei | Bild | Befund | Vorschlag |
 |---|---|---|---|---|---|
@@ -171,7 +307,7 @@ in derselben Größe wie Changes; Statusleiste ohne Agent-Zahl/Attention-Badge, 
 Team-Panel; „Auftrag" einmal und primär; Marktplätze/MCP/Review mit gleicher Titelzeile;
 Spec-Prüfbefehle ohne Treffer.
 
-## Ablaufprüfung (wie der Mensch)
+### Ablaufprüfung (wie der Mensch)
 
 | Schritt | Beobachtung | Urteil |
 |---|---|---|
@@ -183,7 +319,7 @@ Spec-Prüfbefehle ohne Treffer.
 | Mergen | „Mergt …", danach Erfolgssatz im Fenster, Ticket wandert nach „Fertig 2" und in der Inbox aus den Abnahmen; die restlichen Knöpfe bleiben ausgegraut stehen (B13) | funktioniert; Aufräumen fehlt |
 | Zweiter Weg nach dem Umbau | Quests → Hover „Orchestrator"/„Start" (B2: auch für laufende Tickets) → Auftrag-Dialog vorbelegt | gefährlich für schon laufende Arbeit |
 
-## Prüfnachweise
+### Prüfnachweise
 
 - `rg`-Prüfbefehle aus Spec §10 über alle eigenen Dateien von A, B und C: keine Treffer
   (Schriftgrößen, Radien, Hex-Farben, `toUpperCase()` nur Tastennamen, englische Stichprobe leer);
@@ -200,7 +336,7 @@ Spec-Prüfbefehle ohne Treffer.
   `~/.local/state/herdr-core/uiprev-36b2d7e3*` entfernt; die im Test-Home angelegten Helfer
   (`mods/zzopen`) und Zustandsinjektionen sind wieder entfernt.
 
-## Mindeständerungen für die Abnahme
+### Mindeständerungen für die Abnahme
 
 1. **C1**: „+" aus dem scrollenden Tab-Streifen lösen, Überlauf sichtbar machen.
 2. **A (S4, S3)**: Ordner-Dialog/-Menü deutsch; „Dieser Computer" überall gleich.
@@ -214,3 +350,4 @@ Spec-Prüfbefehle ohne Treffer.
 
 Danach ist der Umbau in meinen Augen abnahmefähig; die Minor- und Nit-Befunde können in einem
 zweiten Durchgang folgen.
+
