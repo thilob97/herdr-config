@@ -19,6 +19,10 @@ const READ_REVEAL = 12, SEARCH_REVEAL = 60;
 const PRUNE = [".git", "node_modules", "target", ".venv", "__pycache__", "dist", ".next"];
 const HOME_PRUNE = ["Library", "AppData", ".Trash"];
 const DEFAULTS = { activity: "reads and writes", follow: true, column: "date", open: "preview" };
+// Herdr UI tokens (docs/ui-spec.md, 5), for the panel frame, head, buttons, input and empty states.
+const GAP_XS = 4, GAP_S = 6, GAP_M = 8, INSET_PANEL = 14;
+const H_HEADER = 42, H_BTN = 26, H_BTN_S = 22, H_INPUT = 30;
+const T_S = 11, T_M = 12, T_L = 13;
 // Reads write nothing under .git (no index refresh or lock, no fsmonitor cookie): the folder
 // watch would see it, and every refresh would start the next one.
 const READ = ["--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "diff.autoRefreshIndex=false"];
@@ -110,7 +114,7 @@ function alpha(color, a) {
 const tones = (t) => ({ purple: t.ansi5, orange: t.ansi3, green: t.ansi2, teal: t.ansi6, blue: t.ansi4, red: t.ansi1, cyan: t.ansi14 ?? t.ansi6, yellow: t.ansi11 ?? t.ansi3 });
 const gitColor = (t, s) => (!s ? null : s === "D" || s === "U" ? t.ansi1 : s === "?" || s === "A" || s === "C" ? t.ansi2 : s === "R" ? t.ansi4 : t.ansi11 ?? t.ansi3);
 const KIND = { purple: "read", orange: "write", green: "commit" };
-const VIEWS = [["tree", "Tree", "folder"], ["recent", "Recent", "clock"]];
+const VIEWS = [["tree", "Tree", "folder"], ["recent", "Zuletzt", "clock"]];
 function ago(ms) {
   const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
   return s < 10 ? "now" : s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m` : s < 86400 ? `${Math.floor(s / 3600)}h` : `${Math.floor(s / 86400)}d`;
@@ -293,7 +297,7 @@ export default class FileTree extends View {
     this.sizes = new Map(); this.sizing = new Set(); this.visible = [];
     this.chip = null; this.branchFlash = null; this.width = 320; this.query = ""; this.hits = null; this.searchSeq = 0;
     this.seenAt = Date.now() - 2000; this.seenPreview = shared(`${NAME}.preview`)?.n ?? 0; this.seenView = shared(`${NAME}.view`)?.n ?? 0;
-    this.input = InputState.new({ placeholder: "Filter files" });
+    this.input = InputState.new({ placeholder: "Dateien filtern …" });
     this.input.on("change", (_e, cx) => this.search(this.input.value(), cx));
     this.input.on("submit", (_e, cx) => this.jump(cx));
     this.input.on("focus", (_e, cx) => { this.typing = true; cx.notify(); });
@@ -825,9 +829,10 @@ export default class FileTree extends View {
   }
 
   // ── drawing ──────────────────────────────────────────────────────────────────────────
-  button(id, label, tip, on, onClick, t, R) {
-    return div().id(id).h(20).min_w(20).px(4).flex_none().flex().items_center().justify_center().rounded(R).cursor_pointer()
-      .text_size(12).text_color(on ? t.foreground : t.dim).hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip(tip)
+  // Icon button (5.6): 22×22 in rows (the tools beside the filter), 26×26 in the head.
+  button(id, label, tip, on, onClick, t, _R, size = H_BTN_S) {
+    return div().id(id).size(size).flex_none().flex().items_center().justify_center().rounded(6).cursor_pointer()
+      .text_size(T_M).text_color(on ? t.foreground : t.dim).when(on, (s) => s.bg(t.selected)).hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip(tip)
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .on_click((_e, cx) => { onClick(cx); cx.notify(); })
       .child(label);
@@ -962,37 +967,46 @@ export default class FileTree extends View {
       if (at >= 0) { this.scroll.scroll_to_item(at, "center"); this.scrollTo = null; }
       else if (!this.pending.size && !this.loading) this.scrollTo = null;
     }
-    const title = this.file ?? (this.root ? baseOf(this.root) : "Files");
     const btn = (id, label, tip, on, fn) => this.button(id, label, tip, on, fn, t, R);
-    const header = h_flex().h(look.header).flex_none().px(8).gap(4).items_center().bg(t.chrome).border_b(1).border_color(t.border).text_size(12)
-      .when(Boolean(this.file), (el) => el.child(btn("ft-back", svg(ICON("chevron-left")).size(12), "Back to the tree (Esc)", false, () => this.closePreview())))
-      .when(Boolean(this.file), (el) => el.child(image(fileIcon(this.file, false, false, settings().dark !== false)).size(14).flex_none()))
-      .child(div().flex_1().min_w(0).truncate().font_medium().text_color(this.file ? t.foreground : t.muted).child(title))
+    const headBtn = (id, label, tip, fn) => this.button(id, label, tip, false, fn, t, R, H_BTN);
+    // Panel head (5.6): the panel's name, its folder as meta, the Tree / Zuletzt segment on the right.
+    // While a file shows: back, the file's name and its actions.
+    const header = h_flex().h(H_HEADER).flex_none().px(INSET_PANEL).gap(GAP_M).items_center().border_b(1).border_color(t.border)
       .when(Boolean(this.file), (el) => el
-        .when(!this.on, (el) => el.child(btn("ft-ext", "↗", "Open in default app (o)", false, () => openExternal(join(this.root, this.file)).catch(() => {}))))
-        .child(btn("ft-copy", "⧉", "Copy path", false, (cx) => copy(cx, this.file)))
-        .child(btn("ft-send", "@", "Send to agent", false, (cx) => sendToAgent(cx, join(this.root, this.file)))))
-      .when(!this.file, (el) => el.child(h_flex().flex_none().gap(2).items_center().children(VIEWS.map(([id, label, icon], i) => {
-        const on = this.view === id;
-        return h_flex().id(`ft-tab-${id}`).h(22).px(7).gap(5).flex_none().items_center().rounded(R).cursor_pointer().text_size(11.5)
-          .text_color(on ? t.foreground : t.dim).when(on, (el) => el.bg(t.selected)).when(!on, (el) => el.hover((s) => s.bg(t.hover).text_color(t.foreground)))
-          .tooltip(`${label} (${i + 1})`).on_mouse_down("left", (_e, cx) => cx.stop_propagation()).on_click((_e, cx) => this.setView(id, cx))
-          .child(svg(ICON(icon)).size(12).flex_none())
-          .when(on || this.width >= 300, (el) => el.child(label));
-      }))));
+        .child(headBtn("ft-back", svg(ICON("chevron-left")).size(14), "Zurück zum Tree (Esc)", () => this.closePreview()).ml(-6))
+        .child(image(fileIcon(this.file, false, false, settings().dark !== false)).size(14).flex_none())
+        .child(div().flex_1().min_w(0).truncate().text_size(T_L).font_semibold().child(this.file))
+        .when(!this.on, (el) => el.child(headBtn("ft-ext", "↗", "Mit der Standard-App öffnen (o)", () => openExternal(join(this.root, this.file)).catch(() => {}))))
+        .child(headBtn("ft-copy", "⧉", "Pfad kopieren", (cx) => copy(cx, this.file)))
+        .child(headBtn("ft-send", "@", "Pfad an den Agent im Tab senden", (cx) => sendToAgent(cx, join(this.root, this.file)))))
+      .when(!this.file, (el) => el
+        .child(div().flex_none().text_size(T_L).font_semibold().child("Tree"))
+        .when(Boolean(this.root), (el) => el.child(div().flex_1().min_w(0).truncate().text_size(T_S).text_color(t.dim).child(baseOf(this.root))))
+        .when(!this.root, (el) => el.child(div().flex_1()))
+        // Segment (5.6), icon variant when narrow.
+        .child(h_flex().h(H_BTN).p(2).gap(2).flex_none().items_center().rounded(8).bg(t.background).border_1().border_color(t.border)
+          .children(VIEWS.map(([id, label, icon], i) => {
+            const on = this.view === id;
+            return h_flex().id(`ft-tab-${id}`).h(H_BTN_S).px(8).gap(GAP_XS).flex_none().items_center().rounded(6).cursor_pointer().text_size(T_S)
+              .bg(on ? t.selected : t.background).text_color(on ? t.foreground : t.muted).hover((s) => s.text_color(t.foreground))
+              .tooltip(`${label} (${i + 1})`).on_mouse_down("left", (_e, cx) => cx.stop_propagation()).on_click((_e, cx) => this.setView(id, cx))
+              .child(svg(ICON(icon)).size(12).flex_none())
+              .when(on || this.width >= 300, (el) => el.child(label));
+          }))));
 
     // Tools sit beside the filter box and change with the view.
     const tools = this.view === "tree" ? [
-      btn("ft-up", "↑", "Up a folder", false, () => { if (!this.root) return; this.follow = false; this.pinned = this.root.replace(/[\\/][^\\/]+[\\/]?$/, "") || "/"; this.pinnedOn = this.on; }),
-      btn("ft-home", "⌂", this.follow ? "Following the focused pane" : "Back to the focused pane's folder", this.follow, () => { this.follow = true; this.pinned = null; }),
-      btn("ft-hidden", this.showHidden ? "◉" : "○", this.showHidden ? "Hide dotfiles (.)" : "Show dotfiles (.)", this.showHidden, () => { this.showHidden = !this.showHidden; this.savePrefs(); }),
-      btn("ft-size", "Σ", this.showSize ? "Show dates" : "Show sizes", Boolean(this.showSize), () => { this.showSize = !this.showSize; this.savePrefs(); }),
-      btn("ft-collapse", "⊟", "Collapse all", false, (cx) => this.collapseAll(cx)),
+      btn("ft-up", "↑", "Einen Ordner höher", false, () => { if (!this.root) return; this.follow = false; this.pinned = this.root.replace(/[\\/][^\\/]+[\\/]?$/, "") || "/"; this.pinnedOn = this.on; }),
+      btn("ft-home", "⌂", this.follow ? "Folgt dem fokussierten Pane" : "Zurück zum Ordner des fokussierten Panes", this.follow, () => { this.follow = true; this.pinned = null; }),
+      btn("ft-hidden", this.showHidden ? "◉" : "○", this.showHidden ? "Dotfiles ausblenden (.)" : "Dotfiles zeigen (.)", this.showHidden, () => { this.showHidden = !this.showHidden; this.savePrefs(); }),
+      btn("ft-size", "Σ", this.showSize ? "Datum zeigen" : "Größen zeigen", Boolean(this.showSize), () => { this.showSize = !this.showSize; this.savePrefs(); }),
+      btn("ft-collapse", "⊟", "Alles einklappen", false, (cx) => this.collapseAll(cx)),
     ] : [
-      btn("ft-forget", "⊘", "Clear the list", false, () => { this.history = []; try { localStorage.setItem("history", "[]"); } catch {} }),
+      btn("ft-forget", "⊘", "Liste leeren", false, () => { this.history = []; try { localStorage.setItem("history", "[]"); } catch {} }),
     ];
 
-    const root = v_flex().id(NAME).size_full().min_h(0).overflow_hidden().bg(t.background).text_color(t.foreground).text_size(13)
+    // Panel (5.6): rounded 10, background, border.
+    const root = v_flex().id(NAME).size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(T_L)
       .track_focus(this.handle).on_key_down((e, cx) => this.key(e, cx))
       .on_size_change((size, cx) => { if (Math.abs(size.width - this.width) > 4) { this.width = size.width; cx.notify(); } })
       .child(header);
@@ -1000,21 +1014,23 @@ export default class FileTree extends View {
     if (this.file) {
       return root.child(this.code ? Editor.new(this.code).flex_1().min_h(0)
         : this.md !== null ? div().id("ft-md").flex_1().min_h(0).overflow_y_scrollbar().px(14).py(10).child(TextView.markdown("ft-md-text", this.md).selectable(true))
-        : div().p(12).text_color(t.dim).child(this.fileError || "Loading file…"));
+        : div().p(12).text_size(T_S).text_color(t.dim).child(this.fileError || "lädt …"));
     }
 
     const q = this.query.trim();
-    const note = this.error || (!this.root ? "No folder"
-      : this.view === "recent" ? (rows.length ? null : q ? "No matches" : "Files Claude reads and writes here show up in this list")
-      : this.searching && !rows.length ? "Searching…" : this.hits ? (rows.length ? null : "No matches") : this.loading && !rows.length ? "Loading files…" : !rows.length ? "Empty folder" : null);
+    // Empty state (5.6): icon 16 and one sentence, dim; while waiting a spinner.
+    const wait = !this.error && this.root && ((this.searching && !rows.length) || (this.loading && !rows.length && !this.hits && this.view !== "recent"));
+    const note = this.error || (!this.root ? "Kein Ordner: fokussiere ein Terminal."
+      : this.view === "recent" ? (rows.length ? null : q ? "Keine Treffer." : "Dateien, die Claude hier liest und schreibt, erscheinen in dieser Liste.")
+      : this.searching && !rows.length ? "sucht …" : this.hits ? (rows.length ? null : "Keine Treffer.") : this.loading && !rows.length ? "lädt …" : !rows.length ? "Leerer Ordner." : null);
     return root
       .child(this.summary(t))
-      .child(h_flex().flex_none().mx(6).mt(6).mb(4).gap(2).items_center()
-        .child(h_flex().flex_1().min_w(0).h(26).px(8).gap(6).items_center().rounded(R).bg(t.canvas ?? t.background).border_1().border_color(this.typing ? t.accent : t.input ?? t.border).cursor_text()
+      .child(h_flex().flex_none().mx(6).mt(GAP_M).mb(GAP_XS).gap(GAP_XS).items_center()
+        .child(h_flex().flex_1().min_w(0).h(H_INPUT).px(10).gap(GAP_S).items_center().rounded(6).bg(t.background).border_1().border_color(this.typing ? t.accent : t.input ?? t.border).cursor_text()
           .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
           .child(svg(ICON("search")).size(12).flex_none().text_color(t.dim))
-          .child(Input.new(this.input).flex_1().h_full().text_size(12).text_color(t.foreground))
-          .when(Boolean(this.query), (el) => el.child(div().id("ft-clear").flex_none().text_size(12).text_color(t.dim).cursor_pointer().hover((s) => s.text_color(t.foreground)).on_click((_e, cx) => this.clearSearch(cx)).child("×"))))
+          .child(Input.new(this.input).flex_1().h_full().text_size(T_M).text_color(t.foreground))
+          .when(Boolean(this.query), (el) => el.child(div().id("ft-clear").flex_none().text_size(T_M).text_color(t.dim).cursor_pointer().hover((s) => s.text_color(t.foreground)).tooltip("Filter leeren (Esc)").on_click((_e, cx) => this.clearSearch(cx)).child("×"))))
         .children(tools))
       .child(div().flex_1().min_h(0).relative().px(4)
         .child(v_virtual_list("ft-rows", rows.length, ROW, (i) => rows[i]?.rel ?? String(i), (range) => {
@@ -1025,7 +1041,9 @@ export default class FileTree extends View {
           .on_item_click((rel, cx) => this.press(rel, cx))
           .on_item_secondary_click((rel, _e, cx) => { const r = this.rows().find((x) => x.rel === rel); if (!r) return; this.cursor = rel; this.openMenu(rel, r.e.dir); cx.notify(); }))
         .child(Scrollbar.vertical("ft-rows").viewport_from_layout().absolute().inset_0())
-        .when(Boolean(note), (el) => el.child(div().absolute().top(4).left(0).right(0).px(10).text_size(12).text_color(t.dim).child(note))))
+        .when(Boolean(note), (el) => el.child(v_flex().absolute().inset_0().px(28).pb(40).gap(GAP_M).items_center().justify_center().text_size(T_S).text_color(t.dim)
+          .child(wait ? svg("mods/workspace-chrome/spinner.svg").size(12).text_color(t.dim).spin(900) : svg(ICON(this.view === "recent" ? "clock" : "folder")).size(16).text_color(t.dim))
+          .child(div().max_w(280).text_center().child(note)))))
       .when(this.limited, (el) => el.child(div().px(10).py(3).text_size(11).text_color(t.dim).child(`Folders show their first ${PER_FOLDER} entries`)))
       .when(Boolean(this.hits?.length >= FIND_LIMIT), (el) => el.child(div().px(10).py(3).text_size(11).text_color(t.dim).child(`First ${FIND_LIMIT} matches · Enter jumps to the selected one`)))
       .when(Boolean(this.cursor || this.chip), (el) => el.child(this.footer(t)));
