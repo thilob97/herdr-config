@@ -19,16 +19,16 @@
       "background": "chrome",
       "resizable": false,
       "children": [
-        { "id": "brand", "type": "block", "content": { "mod": "workspace-chrome" }, "size": { "px": 46 }, "window_drag": true },
+        { "id": "brand", "type": "block", "content": { "mod": "sidebar-footer" }, "size": { "px": 42 }, "window_drag": true },
         {
           "id": "sidebar-lists",
           "type": "column",
           "children": [
-            { "id": "spaces", "type": "block", "content": { "mod": "space-folders" }, "size": { "weight": 1 }, "min": 90 },
-            { "id": "agents", "type": "block", "content": { "mod": "agent-cards" }, "size": { "weight": 1 }, "min": 90 }
+            { "id": "spaces", "type": "block", "content": { "mod": "space-folders" }, "size": { "px": 160 }, "min": 90 },
+            { "id": "agents", "type": "block", "content": { "mod": "agent-cards" }, "size": { "weight": 1 }, "min": 160 }
           ]
         },
-        { "id": "sidebar-footer", "type": "block", "content": { "mod": "sidebar-footer", "props": { "footer": true } }, "size": { "px": 153 } }
+        { "id": "sidebar-footer", "type": "block", "content": { "mod": "sidebar-footer", "props": { "footer": true } }, "size": { "px": 28 } }
       ]
     },
     {

@@ -9,6 +9,7 @@
 !/layouts/
 /layouts/.state/
 !/mods/
+!/docs/
 
 # Von Herdr ausgeliefert, wird bei jedem Start ueberschrieben
 /layouts/main.json

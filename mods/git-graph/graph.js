@@ -21,6 +21,10 @@ function location(folder) {
 }
 
 const PAGE = 300, ROW = 24, LANE = 12, PAD = 6, DIFF_ROW = 20;
+// Herdr UI tokens (docs/ui-spec.md, 5), for the head, buttons, segments and empty states.
+const GAP_XS = 4, GAP_S = 6, GAP_M = 8, INSET_PANEL = 14;
+const H_HEADER = 42, H_BTN = 26, H_BTN_S = 22, H_CHIP = 18;
+const T_XS = 10.5, T_S = 11, T_M = 12, T_L = 13;
 // Herdr 0.1.12 zooms a list itself ("Lists in mods follow the zoom"): its row
 // heights and the lines painted in its rows are layout units there, where before
 // they were screen pixels. Asked once: the version doesn't change while running.
@@ -606,44 +610,50 @@ export class Graph {
         .child(div().w(this.cols.hash).flex_none().font_family(mono).text_size(11).text_color(t.dim).child(commit.uncommitted ? "*" : commit.hash.slice(0, 8))));
   }
 
-  iconButton(id, glyph, tip, active, action, t) {
-    return h_flex().id(id).h(24).px(6).gap(5).flex_none().items_center().rounded(6).text_size(11.5).cursor_pointer()
-      .text_color(active ? t.foreground : t.muted).when(active, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover).text_color(t.foreground))
+  // Icon button (26×26, icon 14, tooltip) or, with a text, a bar button (h 26, px 8, icon 14 + T_M).
+  iconButton(id, glyph, text, active, action, t, tooltip) {
+    return h_flex().id(id).h(H_BTN).when(Boolean(text), (e) => e.px(8)).when(!text, (e) => e.w(H_BTN)).justify_center().gap(GAP_S).flex_none().items_center().rounded(6)
+      .text_size(T_M).cursor_pointer().text_color(active ? t.foreground : t.dim).when(active, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover).text_color(t.foreground))
+      .when(Boolean(tooltip), (e) => e.tooltip(tooltip))
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).on_click(action)
-      .child(svg(icon(glyph)).size(13).flex_none()).when(Boolean(tip), (e) => e.child(tip));
+      .child(svg(icon(glyph)).size(14).flex_none()).when(Boolean(text), (e) => e.child(text));
   }
 
   header(t) {
     const ready = this.state === "ready" || this.state === "empty", ws = this.workspace;
-    const where = this.current ?? (this.head ? `detached at ${this.head.slice(0, 8)}` : null);
+    const where = this.current ?? (this.head ? `detached ${this.head.slice(0, 8)}` : null);
     // Opened from the Manygit list: "‹ Manygit" goes back to it, the repository's name
     // drops the same rows down over the graph to switch to another.
     const repo = ws && this.opened ? ws.repos.find((r) => r.path === this.opened) : null;
     const settingsShown = this.state === "workspace" || (this.state === "norepo" && !this.skipped);
-    return h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
-      .when(!repo, (e) => e.child(div().text_size(13).font_semibold().child(ws ? "Manygit" : "Git")))
+    const chip = (id) => h_flex().id(id).h(H_CHIP).px(6).gap(GAP_XS).min_w(0).flex_shrink(1).items_center().rounded(4).text_size(T_XS);
+    return h_flex().h(H_HEADER).flex_none().px(INSET_PANEL).gap(GAP_M).items_center().border_b(1).border_color(t.border)
+      .when(!repo, (e) => e.child(div().flex_none().text_size(T_L).font_semibold().child(ws ? "Manygit" : "Git")))
       .when(Boolean(repo), (e) => e
-        .child(h_flex().id("graph-back").h(24).pl(2).pr(6).gap(3).flex_none().items_center().rounded(6).cursor_pointer()
-          .hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.back(cx))
-          .child(svg(icon("back")).size(14).flex_none().text_color(t.muted)).child(div().text_size(13).font_semibold().child("Manygit")))
-        .child(h_flex().id("graph-repository").h(22).px(7).gap(5).min_w(0).items_center().rounded(6).cursor_pointer()
-          .bg(this.picking ? t.selected : t.raised).text_color(t.foreground).hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.togglePicker(cx))
-          .child(svg(icon("folder")).size(12).flex_none()).child(div().min_w(0).truncate().text_size(11.5).font_semibold().child(repo.name))))
-      .when(ready && Boolean(where), (e) => e.child(h_flex().h(22).px(7).gap(5).min_w(0).items_center().rounded(6).bg(t.accent + "26").text_color(t.accent)
-        .child(svg(icon(this.current ? "branch" : "commit")).size(12).flex_none()).child(div().min_w(0).truncate().text_size(11.5).font_semibold().child(where))))
-      .when(this.state === "workspace", (e) => e.child(div().flex_none().text_size(11.5).text_color(t.dim).child(count(ws.repos.length, "repo"))))
+        .child(h_flex().id("graph-back").h(H_BTN).pl(2).pr(GAP_S).gap(GAP_XS).flex_none().items_center().rounded(6).cursor_pointer()
+          .hover((s) => s.bg(t.hover)).tooltip("Zurück zur Repository-Liste (Esc)").on_click((_e, cx) => this.back(cx))
+          .child(svg(icon("back")).size(14).flex_none().text_color(t.muted)).child(div().text_size(T_L).font_semibold().child("Manygit")))
+        .child(h_flex().id("graph-repository").h(H_BTN_S).px(8).gap(GAP_XS).min_w(0).items_center().rounded(6).cursor_pointer()
+          .bg(this.picking ? t.selected : t.raised).text_color(t.foreground).hover((s) => s.bg(t.hover)).tooltip("Anderes Repository wählen")
+          .on_click((_e, cx) => this.togglePicker(cx))
+          .child(svg(icon("folder")).size(12).flex_none()).child(div().min_w(0).truncate().text_size(T_M).font_medium().child(repo.name))))
+      // The branch as a chip (5.6).
+      .when(ready && Boolean(where), (e) => e.child(chip("graph-branch").bg(t.raised).text_color(t.muted).tooltip(this.current ? `Branch ${where}` : "Kein Branch ausgecheckt")
+        .child(svg(icon(this.current ? "branch" : "commit")).size(12).flex_none()).child(div().min_w(0).truncate().child(where))))
+      .when(this.state === "workspace", (e) => e.child(div().flex_none().text_size(T_S).text_color(t.dim).child(`${ws.repos.length} ${ws.repos.length === 1 ? "Repository" : "Repositorys"}`)))
       .child(div().flex_1())
-      // A newer release: a dot, and the update window on click.
-      .when(Boolean(available()), (e) => e.child(h_flex().id("graph-update").h(24).px(7).gap(5).flex_none().items_center().rounded(6).text_size(11.5)
-        .cursor_pointer().text_color(t.accent).hover((s) => s.bg(t.hover)).on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-        .on_click(() => openUpdate()).child(div().size(6).rounded(3).bg(t.accent)).child("Update Graph")))
-      .when(ready && this.remoteNames?.length > 0, (e) => e.child(this.iconButton("graph-fetch", "fetch", this.fetching ? "Fetching…" : null, false, (_e, cx) => this.fetch(cx), t)))
+      // A newer release: a chip, and the update window on click.
+      .when(Boolean(available()), (e) => e.child(chip("graph-update").flex_none().cursor_pointer().bg(t.done + "26").text_color(t.done)
+        .hover((s) => s.bg(t.done + "55")).tooltip("Neue Version von Git Graph: ansehen und aktualisieren")
+        .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+        .on_click(() => openUpdate()).child("Update")))
+      .when(ready && this.remoteNames?.length > 0, (e) => e.child(this.iconButton("graph-fetch", "fetch", this.fetching ? "Fetch läuft …" : null, false, (_e, cx) => this.fetch(cx), t, "Fetch: neue Commits der Remotes holen")))
       .when(this.state === "workspace", (e) => {
         const run = this.fetchAll?.root === ws.root ? this.fetchAll : null;
-        return e.child(this.iconButton("graph-fetch-all", "fetch", run ? `Fetching ${run.done}/${run.total}…` : "Fetch all", Boolean(run), (_e, cx) => this.fetchEvery(cx), t));
+        return e.child(this.iconButton("graph-fetch-all", "fetch", run ? `Fetch ${run.done}/${run.total} …` : "Alle fetchen", Boolean(run), (_e, cx) => this.fetchEvery(cx), t, "Fetch für jedes Repository der Liste"));
       })
-      .when(this.state !== "nofolder", (e) => e.child(this.iconButton("graph-refresh", "refresh", null, false, (_e, cx) => this.refresh(cx), t)))
-      .when(settingsShown, (e) => e.child(this.iconButton("graph-settings", "settings", null, false, () => this.openSettings(), t)));
+      .when(this.state !== "nofolder", (e) => e.child(this.iconButton("graph-refresh", "refresh", null, false, (_e, cx) => this.refresh(cx), t, "Neu laden")))
+      .when(settingsShown, (e) => e.child(this.iconButton("graph-settings", "settings", null, false, () => this.openSettings(), t, "Einstellungen")));
   }
 
   openSettings() {
@@ -721,17 +731,18 @@ export class Graph {
 
 
   toolbar(t) {
-    const segment = (id, text, on, action) => div().id(id).h(22).px(9).flex().items_center().rounded(5).text_size(11.5).cursor_pointer()
-      .bg(on ? t.raised : t.background).text_color(on ? t.foreground : t.muted).when(on, (e) => e.border_1().border_color(t.border))
+    // Segment (5.6): container h 26, entries h 22.
+    const segment = (id, text, on, action) => div().id(id).h(H_BTN_S).px(8).flex().items_center().rounded(6).text_size(T_S).cursor_pointer()
+      .bg(on ? t.selected : t.background).text_color(on ? t.foreground : t.muted)
       .hover((s) => s.text_color(t.foreground)).on_click(action).child(text);
-    return h_flex().h(34).flex_none().px(10).gap(8).items_center().border_b(1).border_color(t.border)
-      .child(h_flex().p(2).gap(2).rounded(7).bg(t.background).border_1().border_color(t.border)
-        .child(segment("graph-all", "All branches", this.all, (_e, cx) => this.setScope(true, cx)))
-        .child(segment("graph-current", "Current", !this.all, (_e, cx) => this.setScope(false, cx))))
-      .child(h_flex().id("graph-remotes").h(24).px(6).gap(6).items_center().rounded(6).cursor_pointer().text_size(11.5).text_color(t.muted)
-        .hover((s) => s.bg(t.hover).text_color(t.foreground)).on_click((_e, cx) => this.setRemotes(cx))
-        .child(div().size(13).rounded(3).border_1().border_color(this.remotes ? t.accent : t.input).when(this.remotes, (e) => e.bg(t.accent)).flex().items_center().justify_center()
-          .when(this.remotes, (e) => e.child(svg(icon("check")).size(10).text_color(t.accent_foreground))))
+    return h_flex().h(H_HEADER - 8).flex_none().px(INSET_PANEL).gap(GAP_M).items_center().border_b(1).border_color(t.border)
+      .child(h_flex().h(H_BTN).p(2).gap(2).items_center().rounded(8).bg(t.background).border_1().border_color(t.border)
+        .child(segment("graph-all", "Alle Zweige", this.all, (_e, cx) => this.setScope(true, cx)))
+        .child(segment("graph-current", "Aktueller Zweig", !this.all, (_e, cx) => this.setScope(false, cx))))
+      .child(h_flex().id("graph-remotes").h(H_BTN).px(GAP_S).gap(GAP_S).items_center().rounded(6).cursor_pointer().text_size(T_S).text_color(t.muted)
+        .hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip("Remote-Zweige zeigen").on_click((_e, cx) => this.setRemotes(cx))
+        .child(div().size(12).rounded(4).border_1().border_color(this.remotes ? t.solid : t.input).when(this.remotes, (e) => e.bg(t.solid)).flex().items_center().justify_center()
+          .when(this.remotes, (e) => e.child(svg(icon("check")).size(10).text_color(t.solid_foreground))))
         .child("Remotes"));
   }
 
@@ -836,19 +847,18 @@ export class Graph {
       .child(div().flex_1().min_w(0).truncate().child(text));
   }
 
+  // Empty state (5.6): icon 16 and one sentence, both dim; while loading a spinner.
   empty(t) {
-    const s = this.state, where = tilde(this.cwd, this.on);
-    const [glyph, title, body] = s === "nofolder" ? ["folder", "No folder", "Focus a terminal to see the history of the repository it's in."]
-      : s === "norepo" && this.skipped ? ["folder", "Not a git repository", `${where ?? "This folder"} isn't a repository, and is too big to search for them. Focus a terminal in a repository, or in a folder that holds some.`]
-      : s === "norepo" ? ["folder", "Not a git repository", `${where ?? "This folder"} isn't inside a git repository, and holds none within ${count(depthSetting(), "level")}. Focus a terminal in one, or search deeper in settings.`]
-      : s === "empty" ? ["commit", "No commits yet", "Make the first commit and it shows up here."]
-      : s === "error" ? ["graph", "Can't read the history", this.error]
-      : ["graph", "Loading history…", ""];
-    return v_flex().flex_1().min_h(0).items_center().justify_center().gap(10).px(28).pb(40)
-      .child(div().size(46).rounded(12).bg(t.raised).border_1().border_color(t.border).flex().items_center().justify_center()
-        .child(svg(icon(glyph)).size(22).text_color(s === "error" ? t.ansi1 : t.muted)))
-      .child(div().text_size(14).font_semibold().text_color(t.foreground).child(title))
-      .when(Boolean(body), (e) => e.child(div().max_w(280).text_center().text_size(12).text_color(t.muted).child(body)));
+    const s = this.state, where = tilde(this.cwd, this.on), depth = depthSetting();
+    const [glyph, text] = s === "nofolder" ? ["folder", "Kein Ordner: fokussiere ein Terminal, um die Historie seines Repositorys zu sehen."]
+      : s === "norepo" && this.skipped ? ["folder", `${where ?? "Dieser Ordner"} ist kein Git-Repository und zu groß, um darin zu suchen. Fokussiere ein Terminal in einem Repository oder in einem Ordner, der welche enthält.`]
+      : s === "norepo" ? ["folder", `${where ?? "Dieser Ordner"} liegt in keinem Git-Repository und enthält bis ${depth} ${depth === 1 ? "Ebene" : "Ebenen"} tief keins. Fokussiere ein Terminal in einem oder such in den Einstellungen tiefer.`]
+      : s === "empty" ? ["commit", "Noch keine Commits: der erste erscheint hier."]
+      : s === "error" ? ["graph", `Historie nicht lesbar: ${this.error}`]
+      : [null, "lädt …"];
+    return v_flex().flex_1().min_h(0).items_center().justify_center().gap(GAP_M).px(28).pb(40).text_size(T_S).text_color(t.dim)
+      .child(glyph ? svg(icon(glyph)).size(16).text_color(s === "error" ? t.blocked : t.dim) : svg("mods/workspace-chrome/spinner.svg").size(12).text_color(t.dim).spin(900))
+      .child(div().max_w(280).text_center().child(text));
   }
 
   render(cx) {

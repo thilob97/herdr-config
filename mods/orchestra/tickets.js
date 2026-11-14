@@ -1,11 +1,11 @@
 // Quests' local tickets (data/quests/tickets/<id>.md), as bin/hub writes them:
 // `---` frontmatter of `key: value` lines, then the markdown body.
 import * as fs from "fs/promises";
-import { appHome } from "herdr";
+import { appHome, shared, setShared } from "herdr";
 
 export const ticketsDir = () => `${appHome()}/data/quests/tickets`;
 const FIELDS = ["title", "status", "repo", "labels", "due", "machine", "agent", "branch", "base", "worktree", "terminal",
-  "source", "merged", "pr", "by", "updated"];
+  "source", "checks", "evidence", "merged", "pr", "by", "updated"];
 
 export function parse(id, text) {
   const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(text);
@@ -46,3 +46,21 @@ export async function setStatus(id, status) {
 
 // The orchestrator's summary section that `hub review` appends.
 export const summaryOf = (t) => /\n## Zusammenfassung \(Orchestrator\)\n([\s\S]*)$/.exec(t.body ?? "")?.[1]?.trim() ?? "";
+
+// The orchestrator's tickets as shared("orchestra.tickets") carries them: no body, but its
+// summary, `checks` (pass|fail|null) and `evidence` (paths), newest first.
+export async function published() {
+  return (await list()).filter((t) => t.by === "orchestrator")
+    .map(({ body, checks, evidence, ...t }) => ({
+      ...t, summary: summaryOf({ body }), checks: checks || null,
+      evidence: (evidence ?? "").split(",").map((p) => p.trim()).filter(Boolean),
+    }))
+    .sort((a, b) => (b.updated ?? "").localeCompare(a.updated ?? ""));
+}
+
+// Publishes them when they changed; returns the list.
+export async function publish() {
+  const slim = await published();
+  if (JSON.stringify(slim) !== JSON.stringify(shared("orchestra.tickets") ?? [])) setShared("orchestra.tickets", slim);
+  return slim;
+}
