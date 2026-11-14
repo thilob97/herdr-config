@@ -7,6 +7,8 @@
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, HoverCard } from "gpui-base";
 import { spaces, agents, terminals, theme, run, window, keys, exec, machines, appHome, readTextFile, shared, setShared, nextCommand, notify, focused, playSound } from "herdr";
+// Costs in one format everywhere (B9, same copy as in mods/orchestra/ui.js).
+import { usd } from "./ui.js";
 
 // Tokens (docs/ui-spec.md, 5).
 const GAP_XS = 4, GAP_S = 6, GAP_M = 8, GAP_L = 12, GAP_XL = 16;
@@ -23,7 +25,8 @@ const COL_W = 330;
 const HERE = "Dieser Computer";
 
 const short = (p) => NAMES[p] ?? p ?? "?";
-const money = (n) => (n == null ? "—" : n >= 1000 ? `$${Math.round(n)}` : `$${n.toFixed(2)}`);
+// A missing value stays "—": no reading is not free.
+const dollars = (n) => (n == null ? "—" : usd(n));
 const clock = (ms) => (ms ? new Date(ms).toTimeString().slice(0, 5) : "—");
 const machineOf = (address) => (address.includes("/") ? address.slice(0, address.indexOf("/")) : null);
 const isHot = (w) => w.pct >= 85 || w.status === "exhausted";
@@ -319,8 +322,8 @@ export default class StatusBar extends View {
     const c = slot.value;
     return v
       .child(row(`ch-${key}`, "", ["heute", "7 Tage", "30 Tage"], t.dim, false).text_size(T_S))
-      .child(row(`ct-${key}`, "alle Modelle", [money(c.today), money(c.week), money(c.month)], t.foreground, true))
-      .children(c.models.map((m, i) => row(`cm-${key}-${i}`, m.model, [money(m.today), money(m.week), money(m.month)], t.muted, false).tooltip(`${m.provider}/${m.model}`)));
+      .child(row(`ct-${key}`, "alle Modelle", [dollars(c.today), dollars(c.week), dollars(c.month)], t.foreground, true))
+      .children(c.models.map((m, i) => row(`cm-${key}-${i}`, m.model, [dollars(m.today), dollars(m.week), dollars(m.month)], t.muted, false).tooltip(`${m.provider}/${m.model}`)));
   }
 
   machineColumn(on, t) {
@@ -347,10 +350,10 @@ export default class StatusBar extends View {
         // Titles carry Nerd Font icons and emoji the UI font can't draw.
         .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(`${a?.space_name ?? x.address} · ${(a?.title ?? "").replace(/[\uE000-\uF8FF\u{10000}-\u{10FFFF}]\s*/gu, "")}`))
         .child(div().flex_none().text_size(T_S).text_color(t.dim).child(`${x.model ?? "?"}${x.percent != null ? ` · ctx ${x.percent}%` : ""}`))
-        .child(div().w(60).flex_none().flex().justify_end().text_color(t.foreground).child(money(x.cost))));
+        .child(div().w(60).flex_none().flex().justify_end().text_color(t.foreground).child(dollars(x.cost))));
     }
     if (!s.list.length && !s.errors.length) v.child(div().text_size(T_S).text_color(t.dim).child("Keine."));
-    if (s.list.length > 1) v.child(h_flex().justify_end().text_color(t.dim).child(`zusammen ${money(s.list.reduce((n, x) => n + (x.cost ?? 0), 0))}`));
+    if (s.list.length > 1) v.child(h_flex().justify_end().text_color(t.dim).child(`zusammen ${dollars(s.list.reduce((n, x) => n + (x.cost ?? 0), 0))}`));
     s.errors.forEach((e) => v.child(this.error(e, t)));
     return v;
   }
@@ -385,9 +388,9 @@ export default class StatusBar extends View {
     const hint = this.hint();
     const cost = this.costToday();
     const chips = this.chips();
-    const costText = `${money(cost)} heute`;
+    const costText = `${dollars(cost)} heute`;
     const team = teamBudget();
-    const teamText = team ? `Team ${money(team.cost)} / ${money(team.budget)}` : "";
+    const teamText = team ? `Team ${dollars(team.cost)} / ${dollars(team.budget)}` : "";
     // Left side + team chip + cost + hint + paddings and gaps, estimated as in fit() (11px mono ≈ 6.6px).
     const used = 6.6 * (where.length + (space?.branch?.length ?? 0) + costText.length + `${hint.key ?? ""} ${hint.text}`.length) + 6.3 * teamText.length
       + 2 * 14 + 2 * 20 + 6 * GAP_L + 28 + 60;
