@@ -130,6 +130,16 @@ Kein Ticket kommt in **Prüfung**, ohne dass die Prüfung des Repos gelaufen ist
 
 **In der Oberfläche** zeigt der Gate-Chip im Team-Panel und im Review-Fenster `Checks ✓ · 3.2s · HEAD abc1234` bzw. rot den Grund (`nicht geprüft`, `Exit 1`, `neuer Commit`). Im Review-Fenster steht über den Nachweisen die Zeile **Prüfung** mit **Letzte Zeilen** (Auszug aufklappen) und **Prüfung erneut ausführen** (`hub verify <id>`).
 
+## CI
+
+Ein Ticket ist erst fertig, wenn die Checks seines Pull Requests grün sind. Das Prüf-Gate oben belegt die Arbeit vor dem Review; CI ist das PR-Gate danach.
+
+**`hub ci <id>`** fragt `gh pr checks --json` für den PR des Tickets ab und schreibt das Ergebnis ins Ticket: `ci: pass|fail|running|unknown`, `ci_at` und `ci_url`. Rote Checks stehen mit Name, Zustand, Link und den letzten Log-Zeilen in `ci_details` und als Kommentar (`--from ci`) im `## Verlauf`. `fail` setzt das Ticket auf `doing`; läuft sein Agent noch, bekommt er `hc send "<id>: CI rot, siehe Kommentar"`. Ein Netz- oder `gh`-Fehler wird `ci: unknown`, ohne Absturz. Ohne PR und ohne Branch sagt der Befehl, dass er nichts prüfen kann.
+
+**`hub land <id> --pr --wait-ci`** pusht, öffnet den PR (oder nimmt den vorhandenen) und pollt danach 30 s lang, höchstens 20 min. Nur `pass` schließt ab (Agent beenden, Worktree entfernen, `done`); `fail`, `unknown` oder nach 20 min noch `running` lassen Agent und Worktree stehen, damit nachgebessert werden kann. Fehlt `gh` oder `origin`, endet der Befehl mit einer klaren Meldung.
+
+**In der Oberfläche** steht im Review-Fenster (Ticket-Modus) unter den Gates die CI-Zeile: Zustand, Zeitpunkt, **PR öffnen** und **Erneut prüfen** (`hub ci`); rote Checks klappen Namen und Log-Auszug auf. `hub status` hat die Spalte `CI` (`✓`, `…`, `✗`, `?`).
+
 ## Rahmen: Seitenleiste, Tab-Leiste, Statusleiste
 
 **Seitenleiste.** Der **Kopf** (42 px, bündig mit der Tab-Leiste) zeigt Logo, „Herdr“, Suche (`cmd-p`) und Ein-/Ausklappen; er kommt aus dem eigenen Mod `sidebar-footer` statt aus dem ausgelieferten `workspace-chrome`. Der **Fuß** ist eine 28-px-Zeile (bündig mit der Statusleiste) mit Icon-Knöpfen für Einstellungen (`cmd-,`, mit Punkt, wenn ein Update bereitliegt), Marketplaces (`ctrl-shift-m`), MCP-Server (`ctrl-shift-y`), Maschine hinzufügen und Tastenkürzel (`cmd-/`); eingeklappt (Rail) bleiben Einstellungen und „…“ mit den übrigen vier. **Spaces** nehmen nur so viel Höhe, wie sie brauchen (Kopf, eine 28-px-Zeile je Space, Ordner oder Maschine), höchstens 40 % der Listenhöhe, darüber scrollen sie; den Rest bekommen die Agents. Kopf „Spaces n“ mit „Neuer Ordner“ und „Neuer Space (⌘N)“; Maschinen-Zeilen sind Sektionsköpfe; Kachelfarben kommen aus dem Theme.
