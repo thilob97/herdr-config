@@ -1,23 +1,27 @@
 // Start-Dashboard: the factory at a glance on one calm screen, without sidebar,
-// tab bar or status bar. Three areas: "Wartet auf dich" (tickets in review,
-// questions from agents, an open-questions card), "Fabrik" (the pipeline, the
-// oldest tickets in work with duration and cost, the money) and "Auftrag" (send
-// to the orchestrator). Rows open their place; ↑↓ choose, ↵ opens, g w goes to
-// the workspace, Esc clears the choice. Every number comes from the same sources
-// Team, Inbox and the status bar read: shared("orchestra.tickets"), agents(),
-// shared("orchestra.costs") and shared("orchestra.budget").
+// tab bar or status bar. Four areas: "Wartet auf dich" (tickets in review, open
+// ticket questions, questions from agents), "Team" (who works on what: identity,
+// status, space/tab, ticket, duration, cost, teams as group rows) with "Letzte
+// Aktivität" beside it, "Fabrik" (the pipeline, the oldest tickets in work and
+// the cost card) and "Auftrag" (send to the orchestrator). Rows open their place;
+// ↑↓ choose, ↵ opens, g w goes to the workspace, Esc clears the choice. Every
+// number comes from the same sources Team, Inbox and the status bar read:
+// shared("orchestra.tickets"), agents(), shared("orchestra.costs"),
+// shared("orchestra.budget"), shared("orchestra.groups") and attention.since.
 
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea } from "gpui-base";
-import { agents, terminals, run, hc, exec, theme, shared, setShared, openOverlay, knownAgents, appHome, home } from "herdr";
+import { agents, terminals, spaces, run, hc, exec, theme, shared, setShared, openOverlay, knownAgents, appHome, home } from "herdr";
 import * as ui from "./ui.js";
 import { T_XS, T_S, T_M, T_L, T_XL, usd } from "./ui.js";
 
 const ORCH = "orchestrator";
 const MAXW = 1200;
-const PAD = 24;
+const PAD = 16;
 const REFRESH = 3000;
 const DOING_MAX = 5;
+// Team rows keep these columns aligned; the two middle ones share what is left.
+const COL_WHO = 132, COL_STATUS = 68, COL_TIME = 40, COL_COST = 46;
 const SEND_ICON = "mods/orchestra/icons/send.svg";
 
 // Same quoting as mods/orchestra/orchestrator.js, whose start this copies.
@@ -33,6 +37,14 @@ function ago(ms) {
   const s = Math.max(0, (Date.now() - ms) / 1000);
   return s < 60 ? "gerade" : s < 3600 ? `${Math.floor(s / 60)} min` : s < 86400 ? `${Math.floor(s / 3600)} h` : `${Math.floor(s / 86400)} d`;
 }
+
+// Ticket timestamps are "JJJJ-MM-TT HH:MM" (local), `updated` and each Verlauf line.
+function at(ts) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/.exec(String(ts ?? ""));
+  return m ? new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]).getTime() : 0;
+}
+
+const CHEVRON = "mods/workspace-chrome/chevron-right.svg";
 
 // The pipeline as the Team panel orders it (hubview.js STAGES, copied: a mod owns
 // no module outside its folder).
@@ -74,6 +86,50 @@ export default class Dashboard extends View {
   tickets() { return shared("orchestra.tickets") ?? []; }
   costs() { return shared("orchestra.costs") ?? {}; }
   teamBudget() { return { team: 20, ...(shared("orchestra.budget") ?? {}) }.team; }
+  teams() { return shared("orchestra.groups") ?? []; }
+
+  // The ticket an agent is working on, and the open questions that wait in tickets
+  // (the source Team and Inbox read: tickets carry `question` and `verlauf`).
+  openTicket(address) { return this.tickets().find((tk) => tk.terminal === address && tk.status !== "done") ?? null; }
+  ticketQuestions() { return this.tickets().filter((tk) => tk.question && tk.status !== "done"); }
+
+  // Space and tab as the Team panel names them; an automatic tab number says nothing.
+  where(a) {
+    const tab = spaces().flatMap((s) => s.tabs ?? []).find((x) => x.id === a.tab);
+    const name = tab?.name && !/^\d+$/.test(tab.name) ? tab.name : a.title ?? "";
+    return [a.space_name, name].filter(Boolean).join(" / ");
+  }
+
+  // Since when the agent is in this state: the status bar keeps it for every mod,
+  // the local first sight fills the gap right after a start.
+  attentionAt(a) {
+    const s = (shared("attention.since") ?? {})[a.address];
+    if (s && (s.status === a.status || (a.status === "idle" && s.status === "done"))) return s.at;
+    return this.since(a.address, a.status);
+  }
+
+  // Agents in their teams (shared "orchestra.groups", as the Team panel groups them),
+  // the rest by space so no row floats without a group head.
+  teamGroups() {
+    const list = agents();
+    const by = new Map(list.map((a) => [a.address, a]));
+    const claimed = new Set();
+    const groups = [];
+    for (const g of this.teams()) {
+      const members = (g.members ?? []).map((x) => by.get(x)).filter(Boolean);
+      if (!members.length) continue;
+      for (const a of members) claimed.add(a.address);
+      groups.push({ id: `team-${g.id ?? g.name}`, label: g.name ?? "Team", team: true, members });
+    }
+    for (const a of list) {
+      if (claimed.has(a.address)) continue;
+      const id = `space-${a.space ?? a.space_name ?? ""}`;
+      const last = groups.at(-1);
+      if (last && !last.team && last.id === id) last.members.push(a);
+      else groups.push({ id, label: a.space_name || "Ohne Space", team: false, members: [a] });
+    }
+    return groups;
+  }
 
   // What waits for you, in the order the screen shows it: tickets ready to check
   // first, then the agents (and the orchestrator) with a question.
@@ -156,7 +212,7 @@ export default class Dashboard extends View {
   open(e) {
     if (!e) return;
     if (e.kind === "ticket") return this.openReview(e.tk);
-    if (e.kind === "doing") { if (e.tk.terminal) ui.focusAgent(e.tk.terminal); return; }
+    if (e.kind === "doing") { if (e.tk.terminal) this.openAgent(e.tk.terminal); return; }
     ui.focusAgent(e.address); // an agent without a pane opens as a peek
   }
 
@@ -166,9 +222,54 @@ export default class Dashboard extends View {
   }
 
   // The workspace is layout elric; the review stage also brings its Team panel.
-  workspace(team) {
+  // The panel commands wait for the layout to load, or the switch discards them.
+  workspace(team, cx) {
     run("layout.switch", { name: "elric" });
-    if (team) { run("layout.select", { stack: "panel-body", child: "team" }); run("layout.show", { id: "panel" }); }
+    if (!team) return;
+    const open = () => {
+      run("layout.select", { stack: "panel-body", child: "team" });
+      run("layout.show", { id: "panel" });
+    };
+    if (cx?.timer) cx.timer.after(250, open);
+    else open();
+  }
+
+  // To an agent: the Workspace layout, its tab and pane (the Team panel's click).
+  openAgent(address) {
+    run("layout.switch", { name: "elric" });
+    const a = agents().find((x) => x.address === address);
+    if (a?.tab) run("tab.select", { id: a.tab });
+    if (a?.pane) run("pane.focus", { pane: a.pane });
+    else run("terminal.peek", { terminal: address });
+  }
+
+  // The last events: one per ticket (its newest Verlauf line, else its state),
+  // blocked agents and budget stops, newest first.
+  activity() {
+    const out = [];
+    const push = (time, text) => { if (time || text) out.push({ time, text }); };
+    for (const tk of this.tickets()) {
+      const last = (tk.verlauf ?? []).at(-1);
+      if (last) push(at(last.ts), `Ticket ${tk.id} · ${last.role}: ${last.text}`);
+      else {
+        const time = at(tk.updated);
+        const name = tk.terminal ? ui.identity(tk.terminal).name : "Orchestrator";
+        const stage = stageOf(tk);
+        push(time, stage === "review" ? `${name} hat Ticket ${tk.id} nach Prüfung geschoben`
+          : stage === "doing" ? `${name} arbeitet an Ticket ${tk.id}`
+            : stage === "done" ? `Ticket ${tk.id} ist fertig`
+              : `Ticket ${tk.id} ist geplant`);
+      }
+    }
+    const seen = shared("attention.since") ?? {};
+    for (const a of agents()) {
+      if (a.status === "blocked") push(seen[a.address]?.at, `${ui.identity(a.address).name} wartet auf dich`);
+    }
+    const c = this.costs();
+    for (const [id, on] of Object.entries(c.stopped ?? {})) {
+      if (on) push(c.at, id === "__team" ? "Team-Budget erreicht" : `Budget für Ticket ${id} erreicht`);
+    }
+    return out.sort((x, y) => y.time - x.time).slice(0, 5);
   }
 
   select(list, i, cx) {
@@ -286,9 +387,10 @@ export default class Dashboard extends View {
       .child(image("frame/welcome/herdr.png").size(20).rounded(4).flex_none())
       .child(div().flex_none().text_size(T_XL).font_semibold().text_color(t.foreground).child("Herdr"))
       .child(div().flex_1())
+      .child(div().flex_none().text_size(T_XS).text_color(t.dim).child("⌘⇧0 Workspace"))
       .child(div().flex_none().text_size(T_S).text_color(t.muted).child(this.clockText()))
       .child(ui.button(t, "dash-workspace", "Workspace", () => this.workspace(false),
-        { small: true, tip: "Zum Layout elric (Workspace, g w)" }));
+        { small: true, tip: "Zum Layout elric (Workspace, ⌘⇧0 oder g w)" }));
   }
 
   // A ticket ready to check: title, the agent's identity, its gates, "Prüfen".
@@ -320,7 +422,7 @@ export default class Dashboard extends View {
         .child(ui.statusChip(t, "blocked"))
         .child(div().flex_1())
         .child(div().flex_none().text_size(T_XS).text_color(t.muted).child(ago(this.since(e.address, "blocked")))))
-      .child(div().max_h(36).overflow_hidden().text_size(T_S).text_color(slot?.error ? t.blocked : t.muted).child(text))
+      .child(div().max_h(20).overflow_hidden().text_size(T_S).text_color(slot?.error ? t.blocked : t.muted).child(text))
       .when(Boolean(input), (el) => el.child(ui.inputBox(t, `dash-answer-${rid(e.address)}`, Input.new(input), {
         focused: this.focus.has(`dash-answer-${rid(e.address)}`),
         send: ui.sendButton(t, `dash-answer-send-${rid(e.address)}`, SEND_ICON, "Antwort senden (↵)", (cx) => this.answer(e.address, cx)),
@@ -328,24 +430,30 @@ export default class Dashboard extends View {
       .when(Boolean(note), (el) => el.child(div().text_size(T_XS).text_color(note.ok === false ? t.blocked : note.ok ? t.done : t.muted).child(note.text)));
   }
 
-  // The orchestrator's addition: questions from ticket histories. The tickets
-  // surface that publishes them is not merged yet, so the card says so quietly.
-  openQuestions(t) {
-    return ui.card(t, "dash-ticket-questions").gap(ui.GAP_XS)
-      .child(h_flex().h(20).flex_none().gap(ui.GAP_S).items_center()
-        .child(div().text_size(T_S).font_medium().text_color(t.muted).child("Offene Fragen"))
-        .child(div().flex_none().text_size(T_XS).text_color(t.muted).child("0")))
-      .child(div().text_size(T_S).text_color(t.muted).child("Noch keine offenen Fragen in Tickets."));
+  // An open question waits in its ticket (the same `question` Inbox shows): one
+  // compact row, not a block of its own.
+  questionRow(t, tk) {
+    const q = tk.question;
+    return h_flex().id(`dash-ticket-question-${rid(tk.id)}`).h(28).flex_none().px(ui.INSET_CARD).gap(ui.GAP_S).items_center().rounded(6)
+      .bg(t.surface).border_1().border_color(t.border).cursor_pointer().hover((s) => s.bg(t.hover))
+      .tooltip(`${q.text}\nKlicken: Ticket öffnen`)
+      .on_click((_e, cx) => { cx.stop_propagation(); this.openReview(tk); })
+      .child(ui.statusIcon(t, "blocked"))
+      .child(div().flex_none().text_size(T_S).text_color(t.muted).child(`Ticket ${tk.id}`))
+      .child(div().flex_1().min_w(0).truncate().text_size(T_S).text_color(t.foreground).child(q.text))
+      .child(div().flex_none().text_size(T_XS).text_color(t.dim).child(ago(at(q.ts))));
   }
 
   waitingSection(t, reviews, waits) {
-    const count = reviews.length + waits.filter((e) => e.kind === "agent").length;
+    const asks = waits.filter((e) => e.kind === "agent");
+    const questions = this.ticketQuestions();
+    const count = reviews.length + asks.length + questions.length;
     return v_flex().flex_none().gap(ui.GAP_S)
       .child(ui.sectionHeader(t, "Wartet auf dich", { count, color: count ? t.blocked : t.muted }))
-      .when(!count, (el) => el.child(ui.empty(t, "Nichts wartet auf dich. Die Fabrik läuft ruhig.", { row: true })))
+      .when(!count, (el) => el.child(ui.empty(t, "Nichts wartet auf dich, keine offenen Fragen.", { row: true })))
       .children(reviews.map((tk, i) => this.reviewRow(t, tk, i === 0, this.key === `ticket:${tk.id}`)))
-      .children(waits.filter((e) => e.kind === "agent").map((e) => this.questionCard(t, e)))
-      .child(this.openQuestions(t));
+      .children(questions.map((tk) => this.questionRow(t, tk)))
+      .children(asks.map((e) => this.questionCard(t, e)));
   }
 
   stages(t, counts) {
@@ -360,7 +468,7 @@ export default class Dashboard extends View {
         .cursor_pointer().hover((x) => x.bg(t.hover))
         .tooltip(waits ? `${s.label}: ${n} wartet auf dich`
           : `${s.label}: ${n}. Klicken: ${s.key === "review" ? "Team-Panel im Workspace" : "Workspace"}`)
-        .on_click((_e, cx) => { cx.stop_propagation(); this.workspace(s.key === "review"); })
+        .on_click((_e, cx) => { cx.stop_propagation(); this.workspace(s.key === "review", cx); })
         .child(s.label)
         .child(div().font_semibold().text_color(waits ? t.blocked : n ? t.foreground : t.muted).child(count(n))));
     });
@@ -372,11 +480,11 @@ export default class Dashboard extends View {
     const live = tk.terminal ? agents().find((a) => a.address === tk.terminal) : null;
     const st = live?.status ?? "idle";
     const cost = this.costs().tickets?.[tk.id];
-    const dur = tk.terminal ? ago(this.since(tk.terminal, st)) : "";
+    const dur = live ? ago(this.attentionAt(live)) : "";
     return h_flex().id(`dash-doing-${rid(tk.id)}`).h(40).flex_none().px(ui.INSET_CARD).gap(ui.GAP_M).items_center().rounded(6)
       .bg(on ? t.selected : t.surface).border_1().border_color(t.border)
       .when(Boolean(tk.terminal), (el) => el.cursor_pointer().hover((s) => s.bg(t.hover))
-        .tooltip("Klicken: zum Agent").on_click((_e, cx) => { cx.stop_propagation(); this.key = `doing:${tk.id}`; this.handle.focus(); ui.focusAgent(tk.terminal); }))
+        .tooltip("Klicken: zum Agent").on_click((_e, cx) => { cx.stop_propagation(); this.key = `doing:${tk.id}`; this.handle.focus(); this.openAgent(tk.terminal); }))
       .child(ui.statusIcon(t, st))
       .child(div().flex_1().min_w(0).truncate().text_size(T_M).text_color(t.foreground).child(tk.title))
       .when(Boolean(tk.terminal), (el) => el.child(div().flex_none().max_w(150).child(ui.identityChip(t, `dash-doing-who-${rid(tk.id)}`, tk.terminal, { status: st }))))
@@ -385,16 +493,122 @@ export default class Dashboard extends View {
         .tooltip("Kosten dieses Tickets (nur omp meldet Kosten)").child(cost != null ? usd(cost) : "—"));
   }
 
-  money(t) {
+  // ---------- team ----------
+
+  // The row above the groups: what each column says, in T_XS like other meta.
+  teamColumns(t) {
+    return h_flex().h(16).flex_none().px(ui.GAP_S).gap(ui.GAP_S).items_center().text_size(T_XS).text_color(t.dim)
+      .child(div().w(COL_WHO).flex_none().child("Agent"))
+      .child(div().w(COL_STATUS).flex_none().child("Status"))
+      .child(div().flex_1().min_w(0).child("Space / Tab"))
+      .child(div().flex_1().min_w(0).child("Ticket"))
+      .child(div().w(COL_TIME).flex_none().justify_end().child("Dauer"))
+      .child(div().w(COL_COST).flex_none().justify_end().child("Kosten"));
+  }
+
+  // A group head like the Team panel's (name, count, the most urgent state); a
+  // watched team first, the rest by space.
+  teamGroupHead(t, g) {
+    const rank = { blocked: 0, working: 1, idle: 2, done: 3 };
+    const top = g.members.reduce((m, a) => ((rank[a.status] ?? 9) < (rank[m] ?? 9) ? a.status : m), "idle");
+    return h_flex().h(ui.H_SECTION).flex_none().px(ui.GAP_S).gap(ui.GAP_S).items_center().text_size(T_S).font_medium()
+      .child(div().flex_none().max_w(320).truncate().text_color(g.team ? t.foreground : t.muted).child(g.label))
+      .child(div().flex_none().text_color(t.dim).child(String(g.members.length)))
+      .child(div().flex_1())
+      .when(top !== "idle", (el) => el.child(ui.statusIcon(t, top)));
+  }
+
+  // One agent: identity, state, space/tab, ticket, how long, what it cost. The
+  // chip is passive here; the whole row goes to the agent in the Workspace.
+  teamRow(t, a) {
+    const who = ui.identity(a.address);
+    const tk = this.openTicket(a.address);
+    const key = tk ? `${tk.id}|${a.address}` : "";
+    const alone = tk ? this.tickets().filter((x) => x.id === tk.id && x.terminal).length <= 1 : false;
+    const cost = tk ? this.costs().perTerminal?.[key] ?? (alone ? this.costs().tickets?.[tk.id] : null) : null;
+    const since = this.attentionAt(a);
+    const word = ui.STATUS_WORD[a.status] ?? a.status;
+    const pic = who.avatar ? image(who.avatar).w(16).h(16).flex_none()
+      : who.program?.icon ? (who.program.tint ? svg(who.program.icon).size(16).flex_none().text_color(t.muted)
+        : image(who.program.icon).w(16).h(16).flex_none()) : null;
+    const where = this.where(a);
+    const tip = [who.name, word, where, tk ? `Ticket ${tk.id}: ${tk.title}` : null].filter(Boolean).join(" · ");
+    return h_flex().id(`dash-team-${rid(a.address)}`).h(ui.H_ROW).flex_none().px(ui.GAP_S).gap(ui.GAP_S).items_center().rounded(6)
+      .cursor_pointer().hover((s) => s.bg(t.hover)).tooltip(`${tip}\nKlicken: Workspace, Tab des Agents`)
+      .on_click((_e, cx) => { cx.stop_propagation(); this.openAgent(a.address); })
+      .child(div().w(COL_WHO).flex_none().min_w(0)
+        .child(h_flex().h(22).max_w(COL_WHO).px(6).gap(ui.GAP_XS).items_center().rounded(6).bg(t.raised)
+          .when(Boolean(pic), (el) => el.child(pic))
+          .child(div().min_w(0).truncate().text_size(T_S).text_color(t.foreground).child(who.name))))
+      .child(h_flex().w(COL_STATUS).flex_none().gap(ui.GAP_XS).items_center()
+        .child(ui.statusIcon(t, a.status))
+        .child(div().min_w(0).truncate().text_size(T_XS).text_color(t.muted).child(word)))
+      .child(div().flex_1().min_w(0).truncate().text_size(T_XS).text_color(t.muted).child(where || "—"))
+      .child(div().flex_1().min_w(0).truncate().text_size(T_XS).text_color(tk ? t.muted : t.dim)
+        .when(Boolean(tk), (el) => el.tooltip(tk.title)).child(tk ? `${tk.id} · ${tk.title}` : "—"))
+      .child(div().w(COL_TIME).flex_none().justify_end().text_size(T_XS).text_color(t.muted).child(since ? ago(since) : "—"))
+      .child(div().w(COL_COST).flex_none().justify_end().text_size(T_XS).text_color(t.muted)
+        .tooltip("Kosten dieses Agents an seinem Ticket (nur omp meldet Kosten)").child(cost != null ? usd(cost) : "—"));
+  }
+
+  teamSection(t) {
+    const list = agents();
+    return v_flex().flex_1().min_w(0).gap(ui.GAP_XS)
+      .child(ui.sectionHeader(t, "Team", { count: list.length }))
+      .when(!list.length, (el) => el.child(ui.empty(t, "Keine Agents laufen. Das Team erscheint, sobald einer meldet.", { row: true })))
+      .when(Boolean(list.length), (el) => el.child(this.teamColumns(t))
+        .children(this.teamGroups().flatMap((g) => [this.teamGroupHead(t, g), ...g.members.map((a) => this.teamRow(t, a))])));
+  }
+
+  // The last events from the ticket Verlauf, the agents and the budget, newest
+  // first; at most five so the screen keeps its calm.
+  activitySection(t) {
+    const events = this.activity();
+    return v_flex().w(250).flex_none().gap(ui.GAP_XS)
+      .child(ui.sectionHeader(t, "Letzte Aktivität", {}))
+      .when(!events.length, (el) => el.child(ui.empty(t, "Noch keine Ereignisse.", { row: true })))
+      .children(events.map((e, i) => h_flex().id(`dash-activity-${i}`).h(22).flex_none().gap(ui.GAP_S).items_center()
+        .child(div().flex_1().min_w(0).truncate().text_size(T_S).text_color(t.muted).tooltip(e.text).child(e.text))
+        .when(Boolean(e.time), (el) => el.child(div().flex_none().text_size(T_XS).text_color(t.dim).child(ago(e.time))))));
+  }
+
+  // The money as its own card right of the tickets in work: today, the team
+  // budget and per ticket, the same numbers as the status bar and Team panel.
+  // A click opens the Team panel in the Workspace.
+  costsCard(t) {
     const c = this.costs();
-    const today = c.teamCost ?? (Number(c.orchestrator ?? 0) + Object.values(c.tickets ?? {}).reduce((sum, n) => sum + (Number(n) || 0), 0));
+    const today = c.teamCost ?? 0;
     const budget = this.teamBudget();
     const over = budget != null && today > budget;
-    return v_flex().w(176).flex_none().gap(2).items_end()
-      .child(div().text_size(T_XS).text_color(t.muted).child("Kosten heute"))
-      .child(div().text_size(T_L).font_semibold().text_color(over ? t.blocked : t.foreground)
-        .tooltip("Kosten der offenen Tickets und des Orchestrators (shared orchestra.costs)").child(usd(today)))
-      .child(div().text_size(T_S).text_color(t.muted).child(`Team-Budget ${usd(budget)}`));
+    const pct = budget > 0 ? Math.min(100, Math.max(0, (today / budget) * 100)) : 0;
+    const open = this.tickets().filter((tk) => tk.status !== "done")
+      .map((tk) => ({ tk, n: c.tickets?.[tk.id] }))
+      .sort((x, y) => (y.n ?? -1) - (x.n ?? -1));
+    const booked = open.filter((r) => r.n != null).slice(0, 3);
+    const shown = booked.length ? booked : open.slice(0, 3);
+    const more = open.length - shown.length;
+    return ui.card(t, "dash-costs").w(210).p(8).gap(3).cursor_pointer().hover((s) => s.bg(t.hover))
+      .tooltip("Team-Panel im Workspace öffnen")
+      .on_click((_e, cx) => { cx.stop_propagation(); this.workspace(true, cx); })
+      .child(h_flex().h(14).gap(ui.GAP_S).items_center()
+        .child(div().text_size(T_S).font_medium().text_color(t.muted).child("Kosten"))
+        .child(div().flex_1())
+        .child(svg(CHEVRON).size(12).flex_none().text_color(t.dim)))
+      .child(h_flex().gap(ui.GAP_S).items_end()
+        .child(div().text_size(T_L).font_semibold().text_color(over ? t.blocked : t.foreground).child(usd(today)))
+        .child(div().text_size(T_XS).text_color(t.muted).child("heute")))
+      .child(div().h(2).w_full().flex_none().rounded_full().bg(t.border)
+        .child(div().h(2).rounded_full().w(`${pct}%`).bg(over ? t.blocked : t.done)))
+      .child(h_flex().gap(ui.GAP_S).items_center().text_size(T_XS).text_color(t.muted)
+        .child("Team-Budget")
+        .child(div().flex_1())
+        .child(div().text_color(over ? t.blocked : t.foreground).child(usd(budget))))
+      .child(div().text_size(T_XS).text_color(t.dim).child("pro Ticket"))
+      .when(!shown.length, (el) => el.child(div().text_size(T_XS).text_color(t.dim).child("Noch keine offenen Tickets.")))
+      .children(shown.map(({ tk, n }) => h_flex().id(`dash-cost-${rid(tk.id)}`).h(15).flex_none().gap(ui.GAP_S).items_center()
+        .child(div().flex_1().min_w(0).truncate().text_size(T_XS).text_color(t.muted).tooltip(tk.title).child(tk.id))
+        .child(div().flex_none().text_size(T_XS).text_color(n != null ? t.foreground : t.dim).child(n != null ? usd(n) : "—"))))
+      .when(more > 0, (el) => el.child(div().text_size(T_XS).text_color(t.dim).child(`+${more} weitere`)));
   }
 
   factorySection(t, counts, doing) {
@@ -406,7 +620,7 @@ export default class Dashboard extends View {
           .when(!doing.length, (el) => el.child(ui.empty(t,
             this.tickets().length ? "Nichts in Arbeit." : "Noch keine Tickets. Gib dem Team unten einen Auftrag.", { row: true })))
           .children(doing.map((tk) => this.doingRow(t, tk, this.key === `doing:${tk.id}`))))
-        .child(this.money(t)));
+        .child(this.costsCard(t)));
   }
 
   orderSection(t) {
@@ -423,8 +637,7 @@ export default class Dashboard extends View {
         .when(!o, (el) => el.child(ui.button(t, "dash-start", this.starting ? "Startet …" : "Orchestrator starten", (cx) => this.start(cx),
           { kind: "primary", small: true, enabled: !this.starting, tip: "Startet den Orchestrator, nicht die Arbeit; die kommt über den Auftrag" })))
         .child(ui.button(t, "dash-send", "Senden", (cx) => this.send(cx),
-          { kind: o ? "primary" : "secondary", icon: SEND_ICON, enabled: Boolean(o) && !this.sending, tip: "Auftrag an den Orchestrator senden (⌘↵)" })))
-      .child(div().text_size(T_XS).text_color(t.muted).child("↵ öffnen · ⌘⇧0 Dashboard · ⌘⇧N Auftrag"));
+          { kind: o ? "primary" : "secondary", icon: SEND_ICON, enabled: Boolean(o) && !this.sending, tip: "Auftrag an den Orchestrator senden (⌘↵)" })));
   }
 
   render(cx) {
@@ -441,9 +654,12 @@ export default class Dashboard extends View {
       .child(h_flex().size_full().min_h(0).justify_center().items_start().p(PAD)
         .child(v_flex().id("dash-card").w_full().max_w(MAXW).h_full().min_h(0).rounded(10).overflow_hidden()
           .bg(t.background).border_1().border_color(t.border)
-          .child(v_flex().id("dash-body").flex_1().min_h(0).overflow_y_scrollbar().p(20).gap(ui.GAP_L)
+          .child(v_flex().id("dash-body").flex_1().min_h(0).overflow_y_scrollbar().p(16).gap(ui.GAP_L)
             .child(this.header(t))
             .child(this.waitingSection(t, reviews, waits))
+            .child(h_flex().gap(ui.GAP_L).items_start()
+              .child(this.teamSection(t))
+              .child(this.activitySection(t)))
             .child(this.factorySection(t, counts, doing))
             .child(this.orderSection(t)))));
   }
