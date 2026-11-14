@@ -18,7 +18,9 @@ import { T_XS, T_S, T_M, T_L, T_XL, usd } from "./ui.js";
 const ORCH = "orchestrator";
 const MAXW = 1200;
 const PAD = 16;
-const REFRESH = 3000;
+// What waits changes with the agents, not with every frame: five seconds is enough
+// for the screen and keeps `hc read` off the terminals. Spec: no faster than 5 s.
+const REFRESH = 5000;
 const DOING_MAX = 5;
 // Team rows keep these columns aligned; the two middle ones share what is left.
 const COL_WHO = 132, COL_STATUS = 68, COL_TIME = 40, COL_COST = 46;
@@ -65,6 +67,7 @@ export default class Dashboard extends View {
     this.answers = new Map();   // address → InputState (a blocked agent's answer)
     this.answerNote = {};       // address → { ok: true|false|null, text }
     this.seen = new Map();      // "address:status" → when this screen first saw it
+    this.showDone = false;      // finished agents folded into one row at the team's end
     this.sending = false;
     this.starting = false;
     this.note = null;           // { ok: true|false|null, text }
@@ -88,10 +91,17 @@ export default class Dashboard extends View {
   teamBudget() { return { team: 20, ...(shared("orchestra.budget") ?? {}) }.team; }
   teams() { return shared("orchestra.groups") ?? []; }
 
-  // The ticket an agent is working on, and the open questions that wait in tickets
-  // (the source Team and Inbox read: tickets carry `question` and `verlauf`).
+  // The ticket an agent is working on, and the last Verlauf entry when it still asks
+  // the human: written by an agent (not `mensch`, not `hub`), nothing answered after
+  // it, and a real question. A finished turn's report is not a question, even when it
+  // tags @mensch (the Inbox's `question` field is that loose); `?` is the line.
   openTicket(address) { return this.tickets().find((tk) => tk.terminal === address && tk.status !== "done") ?? null; }
-  ticketQuestions() { return this.tickets().filter((tk) => tk.question && tk.status !== "done"); }
+  ticketQuestion(tk) {
+    if (!tk || tk.status === "done" || tk.status === "review") return null;
+    const last = (tk.verlauf ?? []).at(-1);
+    if (!last || last.role === "mensch" || last.role === "hub") return null;
+    return String(last.text ?? "").includes("?") ? last : null;
+  }
 
   // Space and tab as the Team panel names them; an automatic tab number says nothing.
   where(a) {
@@ -100,18 +110,26 @@ export default class Dashboard extends View {
     return [a.space_name, name].filter(Boolean).join(" / ");
   }
 
+  // What the terminal itself reported. `agents()` turns a finished `done` into `idle`
+  // once a client looked; the team still needs to know it is finished (and folds it),
+  // and the word "fertig" is what the person saw.
+  statusOf(a) {
+    const t = terminals().find((x) => x.address === a.address);
+    return t?.status ?? a.status;
+  }
+
   // Since when the agent is in this state: the status bar keeps it for every mod,
   // the local first sight fills the gap right after a start.
   attentionAt(a) {
+    const st = this.statusOf(a);
     const s = (shared("attention.since") ?? {})[a.address];
-    if (s && (s.status === a.status || (a.status === "idle" && s.status === "done"))) return s.at;
-    return this.since(a.address, a.status);
+    if (s && (s.status === st || (st === "idle" && s.status === "done"))) return s.at;
+    return this.since(a.address, st);
   }
 
   // Agents in their teams (shared "orchestra.groups", as the Team panel groups them),
   // the rest by space so no row floats without a group head.
-  teamGroups() {
-    const list = agents();
+  teamGroups(list = agents()) {
     const by = new Map(list.map((a) => [a.address, a]));
     const claimed = new Set();
     const groups = [];
@@ -131,18 +149,24 @@ export default class Dashboard extends View {
     return groups;
   }
 
-  // What waits for you, in the order the screen shows it: tickets ready to check
-  // first, then the agents (and the orchestrator) with a question.
+  // What waits for you: tickets ready to check, blocked agents (the orchestrator too)
+  // and questions an agent left in a ticket's Verlauf. One entry per matter; a ticket
+  // already shown as a review row or covered by its blocked agent is not repeated.
   waiting() {
     const out = this.tickets().filter((tk) => tk.status === "review")
       .map((tk) => ({ kind: "ticket", key: `ticket:${tk.id}`, tk }));
     const o = this.orchestrator();
-    for (const a of agents().filter((x) => x.status === "blocked")) {
+    const blocked = agents().filter((x) => this.statusOf(x) === "blocked");
+    if (o?.status === "blocked" && !agents().some((a) => a.address === o.address)) blocked.push(o);
+    for (const a of blocked) {
       if (out.some((e) => e.address === a.address)) continue;
-      out.push({ kind: "agent", key: `agent:${a.address}`, address: a.address });
+      out.push({ kind: "agent", key: `agent:${a.address}`, address: a.address, a });
     }
-    if (o?.status === "blocked" && !agents().some((a) => a.address === o.address)) {
-      out.push({ kind: "agent", key: `agent:${o.address}`, address: o.address });
+    for (const tk of this.tickets()) {
+      const v = this.ticketQuestion(tk);
+      if (!v) continue;
+      if (out.some((e) => e.tk?.id === tk.id || (tk.terminal && e.address === tk.terminal))) continue;
+      out.push({ kind: "ask", key: `ask:${tk.id}`, tk, v });
     }
     return out;
   }
@@ -150,7 +174,7 @@ export default class Dashboard extends View {
   // The 3–5 rows that matter: a blocked agent first, then the longest in work.
   doing() {
     const all = agents();
-    const st = (tk) => all.find((a) => a.address === tk.terminal)?.status ?? "idle";
+    const st = (tk) => { const a = all.find((x) => x.address === tk.terminal); return a ? this.statusOf(a) : "idle"; };
     return this.tickets().filter((tk) => stageOf(tk) === "doing")
       .sort((x, y) => (STATUS_RANK[st(x)] ?? 9) - (STATUS_RANK[st(y)] ?? 9)
         || String(x.updated ?? "").localeCompare(String(y.updated ?? "")))
@@ -172,6 +196,8 @@ export default class Dashboard extends View {
   // One field per blocked agent, created here (never in render: InputState needs
   // a live host call). The question is the agent's last line with a "?".
   sync(cx) {
+    const blocked = new Set(this.waiting().filter((e) => e.kind === "agent").map((e) => e.address));
+    for (const address of this.answers.keys()) if (!blocked.has(address)) this.answers.delete(address);
     for (const e of this.waiting()) {
       if (e.kind !== "agent" || this.answers.has(e.address)) continue;
       const input = InputState.new({ placeholder: `Antwort an ${ui.identity(e.address).name}…` });
@@ -197,8 +223,10 @@ export default class Dashboard extends View {
           const lines = ui.plain(r.stdout).replace(/\s+$/, "").split("\n")
             .map((l) => l.replace(/\s+$/, "").trim())
             .filter((l) => l && !l.startsWith("[hc]"));
-          const last = [...lines].reverse().find((l) => l.includes("?")) ?? lines[lines.length - 1] ?? "";
-          slot.text = last.slice(0, 240) || "Keine Frage auf dem Bildschirm.";
+          // Only a line with a "?" is a question; anything else on a blocked screen
+          // (a report, a menu) would read as raw output.
+          const last = [...lines].reverse().find((l) => l.includes("?")) ?? "";
+          slot.text = last.slice(0, 240) || "Wartet auf eine Antwort.";
         } catch (err) { slot.error = errorText(err).slice(0, 200); }
         this.reading.delete(address);
         this.questions[address] = slot;
@@ -211,7 +239,7 @@ export default class Dashboard extends View {
 
   open(e) {
     if (!e) return;
-    if (e.kind === "ticket") return this.openReview(e.tk);
+    if (e.kind === "ticket" || e.kind === "ask") return this.openReview(e.tk);
     if (e.kind === "doing") { if (e.tk.terminal) this.openAgent(e.tk.terminal); return; }
     ui.focusAgent(e.address); // an agent without a pane opens as a peek
   }
@@ -263,7 +291,7 @@ export default class Dashboard extends View {
     }
     const seen = shared("attention.since") ?? {};
     for (const a of agents()) {
-      if (a.status === "blocked") push(seen[a.address]?.at, `${ui.identity(a.address).name} wartet auf dich`);
+      if (this.statusOf(a) === "blocked") push(seen[a.address]?.at, `${ui.identity(a.address).name} wartet auf dich`);
     }
     const c = this.costs();
     for (const [id, on] of Object.entries(c.stopped ?? {})) {
@@ -393,9 +421,12 @@ export default class Dashboard extends View {
         { small: true, tip: "Zum Layout elric (Workspace, ⌘⇧0 oder g w)" }));
   }
 
-  // A ticket ready to check: title, the agent's identity, its gates, "Prüfen".
+  // A ticket ready to check: the author's identity, the title (two lines at most),
+  // its gates, the age and "Prüfen".
   reviewRow(t, tk, primary, on) {
-    return h_flex().id(`dash-review-${rid(tk.id)}`).h(ui.H_ROW2).flex_none().px(ui.INSET_CARD).gap(ui.GAP_M).items_center().rounded(6)
+    const who = tk.terminal ?? (tk.by === ORCH ? this.orchestrator()?.address ?? null : null);
+    const age = ago(at(tk.updated));
+    return h_flex().id(`dash-review-${rid(tk.id)}`).min_h(ui.H_ROW2).flex_none().py(4).px(ui.INSET_CARD).gap(ui.GAP_M).items_center().rounded(6)
       .bg(on ? t.selected : t.surface).border_1().border_color(t.border)
       .cursor_pointer().hover((s) => s.bg(t.hover))
       .on_click((_e, cx) => { this.key = `ticket:${tk.id}`; this.handle.focus(); this.openReview(tk); cx.stop_propagation(); })
@@ -403,11 +434,14 @@ export default class Dashboard extends View {
       .child(div().flex_1().min_w(0).truncate().text_size(T_M).text_color(t.foreground).child(tk.title))
       .when(Boolean(tk.terminal), (el) => el.child(div().flex_none().max_w(150).child(ui.identityChip(t, `dash-who-${rid(tk.id)}`, tk.terminal))))
       .children(ui.gateChips(t, tk))
+      .when(Boolean(age), (el) => el.child(div().flex_none().text_size(T_XS).text_color(t.muted).child(age)))
       .child(ui.button(t, `dash-check-${rid(tk.id)}`, "Prüfen", () => this.openReview(tk),
         { kind: primary ? "primary" : "secondary", small: true, tip: "Review-Fenster: Zusammenfassung, Nachweise, Diff; dort Mergen, PR oder Abnehmen" }));
   }
 
-  // A blocked agent (or the orchestrator): who, the last question, an answer field.
+  // A blocked agent (or the orchestrator): who, the question (two lines at most), the
+  // age and the answer field. No report is a question: without a "?" the screen says
+  // only that the agent waits.
   questionCard(t, e) {
     const slot = this.questions[e.address];
     const input = this.answers.get(e.address);
@@ -419,10 +453,9 @@ export default class Dashboard extends View {
       .on_click((_ev, cx) => { this.key = e.key; this.handle.focus(); cx.notify(); })
       .child(h_flex().gap(ui.GAP_S).items_center()
         .child(ui.identityChip(t, `dash-q-who-${rid(e.address)}`, e.address))
-        .child(ui.statusChip(t, "blocked"))
-        .child(div().flex_1())
-        .child(div().flex_none().text_size(T_XS).text_color(t.muted).child(ago(this.since(e.address, "blocked")))))
-      .child(div().max_h(20).overflow_hidden().text_size(T_S).text_color(slot?.error ? t.blocked : t.muted).child(text))
+        .child(div().flex_1().min_w(0).max_h(30).overflow_hidden().text_size(T_S)
+          .text_color(slot?.error ? t.blocked : t.foreground).child(text))
+        .child(div().flex_none().text_size(T_XS).text_color(t.muted).child(ago(this.attentionAt(e.a ?? { address: e.address, status: "blocked" })))))
       .when(Boolean(input), (el) => el.child(ui.inputBox(t, `dash-answer-${rid(e.address)}`, Input.new(input), {
         focused: this.focus.has(`dash-answer-${rid(e.address)}`),
         send: ui.sendButton(t, `dash-answer-send-${rid(e.address)}`, SEND_ICON, "Antwort senden (↵)", (cx) => this.answer(e.address, cx)),
@@ -430,30 +463,32 @@ export default class Dashboard extends View {
       .when(Boolean(note), (el) => el.child(div().text_size(T_XS).text_color(note.ok === false ? t.blocked : note.ok ? t.done : t.muted).child(note.text)));
   }
 
-  // An open question waits in its ticket (the same `question` Inbox shows): one
-  // compact row, not a block of its own.
-  questionRow(t, tk) {
-    const q = tk.question;
-    return h_flex().id(`dash-ticket-question-${rid(tk.id)}`).h(28).flex_none().px(ui.INSET_CARD).gap(ui.GAP_S).items_center().rounded(6)
-      .bg(t.surface).border_1().border_color(t.border).cursor_pointer().hover((s) => s.bg(t.hover))
-      .tooltip(`${q.text}\nKlicken: Ticket öffnen`)
-      .on_click((_e, cx) => { cx.stop_propagation(); this.openReview(tk); })
-      .child(ui.statusIcon(t, "blocked"))
-      .child(div().flex_none().text_size(T_S).text_color(t.muted).child(`Ticket ${tk.id}`))
-      .child(div().flex_1().min_w(0).truncate().text_size(T_S).text_color(t.foreground).child(q.text))
-      .child(div().flex_none().text_size(T_XS).text_color(t.dim).child(ago(at(q.ts))));
+  // An agent's question left in the ticket Verlauf and not answered: a link row to the
+  // ticket (the answer is a comment there), not an answer field here.
+  questionRow(t, e, on) {
+    const { tk, v } = e;
+    return h_flex().id(`dash-ticket-question-${rid(tk.id)}`).min_h(ui.H_ROW).flex_none().py(4).px(ui.INSET_CARD).gap(ui.GAP_S).items_center().rounded(6)
+      .bg(on ? t.selected : t.surface).border_1().border_color(t.border).cursor_pointer().hover((s) => s.bg(t.hover))
+      .tooltip(`${tk.title}\n${v.text}\nKlicken: Ticket öffnen`)
+      .on_click((_e, cx) => { cx.stop_propagation(); this.key = `ask:${tk.id}`; this.handle.focus(); this.openReview(tk); })
+      .child(ui.chip(t, v.role, t.muted, { tip: `Frage von ${v.role}` }))
+      .child(div().flex_1().min_w(0).max_h(30).overflow_hidden().text_size(T_S).text_color(t.foreground).child(v.text))
+      .child(div().flex_none().text_size(T_XS).text_color(t.dim).child(`${tk.id} · ${ago(at(v.ts))}`));
   }
 
-  waitingSection(t, reviews, waits) {
+  // Count is the number of rows; for review tickets and blocked agents it is the
+  // Inbox count (spec 7.3) and the Team pipeline's "Prüfung n".
+  waitingSection(t, waits) {
+    const reviews = waits.filter((e) => e.kind === "ticket");
     const asks = waits.filter((e) => e.kind === "agent");
-    const questions = this.ticketQuestions();
-    const count = reviews.length + asks.length + questions.length;
+    const questions = waits.filter((e) => e.kind === "ask");
+    const count = waits.length;
     return v_flex().flex_none().gap(ui.GAP_S)
       .child(ui.sectionHeader(t, "Wartet auf dich", { count, color: count ? t.blocked : t.muted }))
       .when(!count, (el) => el.child(ui.empty(t, "Nichts wartet auf dich, keine offenen Fragen.", { row: true })))
-      .children(reviews.map((tk, i) => this.reviewRow(t, tk, i === 0, this.key === `ticket:${tk.id}`)))
-      .children(questions.map((tk) => this.questionRow(t, tk)))
-      .children(asks.map((e) => this.questionCard(t, e)));
+      .children(reviews.map((e, i) => this.reviewRow(t, e.tk, i === 0, this.key === e.key)))
+      .children(asks.map((e) => this.questionCard(t, e)))
+      .children(questions.map((e) => this.questionRow(t, e, this.key === e.key)));
   }
 
   stages(t, counts) {
@@ -510,7 +545,7 @@ export default class Dashboard extends View {
   // watched team first, the rest by space.
   teamGroupHead(t, g) {
     const rank = { blocked: 0, working: 1, idle: 2, done: 3 };
-    const top = g.members.reduce((m, a) => ((rank[a.status] ?? 9) < (rank[m] ?? 9) ? a.status : m), "idle");
+    const top = g.members.reduce((m, a) => { const st = this.statusOf(a); return (rank[st] ?? 9) < (rank[m] ?? 9) ? st : m; }, "idle");
     return h_flex().h(ui.H_SECTION).flex_none().px(ui.GAP_S).gap(ui.GAP_S).items_center().text_size(T_S).font_medium()
       .child(div().flex_none().max_w(320).truncate().text_color(g.team ? t.foreground : t.muted).child(g.label))
       .child(div().flex_none().text_color(t.dim).child(String(g.members.length)))
@@ -527,7 +562,8 @@ export default class Dashboard extends View {
     const alone = tk ? this.tickets().filter((x) => x.id === tk.id && x.terminal).length <= 1 : false;
     const cost = tk ? this.costs().perTerminal?.[key] ?? (alone ? this.costs().tickets?.[tk.id] : null) : null;
     const since = this.attentionAt(a);
-    const word = ui.STATUS_WORD[a.status] ?? a.status;
+    const st = this.statusOf(a);
+    const word = ui.STATUS_WORD[st] ?? st;
     const pic = who.avatar ? image(who.avatar).w(16).h(16).flex_none()
       : who.program?.icon ? (who.program.tint ? svg(who.program.icon).size(16).flex_none().text_color(t.muted)
         : image(who.program.icon).w(16).h(16).flex_none()) : null;
@@ -541,7 +577,7 @@ export default class Dashboard extends View {
           .when(Boolean(pic), (el) => el.child(pic))
           .child(div().min_w(0).truncate().text_size(T_S).text_color(t.foreground).child(who.name))))
       .child(h_flex().w(COL_STATUS).flex_none().gap(ui.GAP_XS).items_center()
-        .child(ui.statusIcon(t, a.status))
+        .child(ui.statusIcon(t, st))
         .child(div().min_w(0).truncate().text_size(T_XS).text_color(t.muted).child(word)))
       .child(div().flex_1().min_w(0).truncate().text_size(T_XS).text_color(t.muted).child(where || "—"))
       .child(div().flex_1().min_w(0).truncate().text_size(T_XS).text_color(tk ? t.muted : t.dim)
@@ -551,13 +587,27 @@ export default class Dashboard extends View {
         .tooltip("Kosten dieses Agents an seinem Ticket (nur omp meldet Kosten)").child(cost != null ? usd(cost) : "—"));
   }
 
+  // A done agent has finished its turn; whether its pane still shows the last screen
+  // or the terminal is gone, it does not work anymore and does not belong between the
+  // active rows.
+  ended(a) { return this.statusOf(a) === "done"; }
+
   teamSection(t) {
-    const list = agents();
+    const all = agents();
+    const list = all.filter((a) => !this.ended(a));
+    const done = all.filter((a) => this.ended(a));
     return v_flex().flex_1().min_w(0).gap(ui.GAP_XS)
-      .child(ui.sectionHeader(t, "Team", { count: list.length }))
-      .when(!list.length, (el) => el.child(ui.empty(t, "Keine Agents laufen. Das Team erscheint, sobald einer meldet.", { row: true })))
+      .child(ui.sectionHeader(t, "Team", { count: all.length }))
+      .when(!list.length, (el) => el.child(ui.empty(t, done.length
+        ? "Keine Agents arbeiten gerade." : "Keine Agents laufen. Das Team erscheint, sobald einer meldet.", { row: true })))
       .when(Boolean(list.length), (el) => el.child(this.teamColumns(t))
-        .children(this.teamGroups().flatMap((g) => [this.teamGroupHead(t, g), ...g.members.map((a) => this.teamRow(t, a))])));
+        .children(this.teamGroups(list).flatMap((g) => [this.teamGroupHead(t, g), ...g.members.map((a) => this.teamRow(t, a))])))
+      // Finished agents fold into one row at the end; groups only exist for working ones.
+      .when(Boolean(done.length), (el) => el.child(ui.sectionHeader(t, `${done.length} beendet`, {
+        id: "dash-done-head", open: this.showDone,
+        onClick: (cx) => { this.showDone = !this.showDone; cx.notify(); },
+      }).tooltip(this.showDone ? "Beendete Agents ausblenden" : "Beendete Agents zeigen"))
+        .when(this.showDone, (r) => r.children(done.map((a) => this.teamRow(t, a)))));
   }
 
   // The last events from the ticket Verlauf, the agents and the budget, newest
@@ -646,7 +696,6 @@ export default class Dashboard extends View {
     if (this.key && !list.some((e) => e.key === this.key)) this.key = null;
     const counts = { todo: 0, doing: 0, review: 0, done: 0 };
     for (const tk of this.tickets()) counts[stageOf(tk)]++;
-    const reviews = this.tickets().filter((tk) => tk.status === "review");
     const waits = this.waiting();
     const doing = this.doing();
     return v_flex().id("dashboard").track_focus(this.handle).size_full().min_h(0).text_size(T_M).text_color(t.foreground)
@@ -656,7 +705,7 @@ export default class Dashboard extends View {
           .bg(t.background).border_1().border_color(t.border)
           .child(v_flex().id("dash-body").flex_1().min_h(0).overflow_y_scrollbar().p(16).gap(ui.GAP_L)
             .child(this.header(t))
-            .child(this.waitingSection(t, reviews, waits))
+            .child(this.waitingSection(t, waits))
             .child(h_flex().gap(ui.GAP_L).items_start()
               .child(this.teamSection(t))
               .child(this.activitySection(t)))
