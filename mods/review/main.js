@@ -27,6 +27,16 @@ const machineOf = (address) => (address?.includes("/") ? address.slice(0, addres
 const countLines = (text) => (text ? text.split("\n").length - Number(text.endsWith("\n")) : 0);
 const untab = (text) => text.replace(/[^\t]*\t/g, (s) => s.slice(0, -1).padEnd((s.length - 1) - (s.length - 1) % 4 + 4));
 const lastLine = (r) => (r.stderr || r.stdout || `exit ${r.code}`).trim().split("\n").pop().slice(0, 240);
+
+// The ticket's `## Verlauf` as `hub ticket comment` writes it: `- time · role · text`.
+const VERLAUF_ENTRY = /^- (\d{4}-\d{2}-\d{2} \d{2}:\d{2}) · ([^·]+?) · (.*)$/;
+function verlaufEntries(text) {
+  const m = /^## Verlauf[ \t]*$/m.exec(text ?? "");
+  if (!m) return [];
+  return text.slice(m.index + m[0].length).split(/^## /m)[0].split(/\r?\n/)
+    .map((l) => VERLAUF_ENTRY.exec(l.trim())).filter(Boolean)
+    .map((x) => ({ ts: x[1], role: x[2].trim(), text: x[3].trim() }));
+}
 // Never the raw exec text (N1): the prefixes and the "folder is gone" case get German words.
 const errorText = (e) => String(e?.message ?? e ?? "fehlgeschlagen")
   .replace(/^Error: /, "").replace(/^hub: /, "").replace(/^herdr\.exec: /, "")
@@ -74,14 +84,18 @@ export default class Review extends View {
     this.copying = new Set();
     this.settled = false;   // the ticket was landed or accepted here: nothing more to do
     this.asking = false;    // the "Änderungen …" field is open
+    this.verlauf = null;    // the ticket's Verlauf after a comment written here
     this.commitInput = InputState.new({ placeholder: "Commit-Nachricht" });
     this.commitInput.on("submit", (_e, cx) => this.commit(cx));
+    this.commentInput = InputState.new({ placeholder: "Kommentar (an @agent)… (↵ ins Ticket)" });
+    this.commentInput.on("submit", (_e, cx) => this.comment(cx));
     this.feedbackInput = InputState.new({ placeholder: "Feedback an den Agent… (↵ senden)" });
     this.feedbackInput.on("submit", (_e, cx) => this.feedback(cx));
     this.changesInput = InputState.new({ placeholder: "Was soll anders werden? (↵ an den Orchestrator)" });
     this.changesInput.on("submit", (_e, cx) => this.requestChanges(cx));
     this.focus = ui.focusFields();
     this.focus.track(this.commitInput, "rv-commit-msg");
+    this.focus.track(this.commentInput, "rv-comment");
     this.focus.track(this.feedbackInput, "rv-feedback");
     this.focus.track(this.changesInput, "rv-changes");
     this.refresh(cx);
@@ -325,6 +339,20 @@ export default class Review extends View {
     });
   }
 
+  // Answers and questions go into the ticket's Verlauf, where the agent reads them.
+  comment(cx) {
+    const tk = this.ticket(), text = this.commentInput.value().trim();
+    if (!tk || !text) return;
+    this.act(cx, "comment", async () => {
+      await hub(["ticket", "comment", tk.id, "--from", "mensch", text]);
+      this.commentInput.set_value("");
+      const path = `${appHome()}/data/quests/tickets/${tk.id}.md`;
+      const raw = await readTextFile(path).catch(() => null);
+      if (raw !== null) this.verlauf = verlaufEntries(raw);
+      return `Kommentar im Ticket ${tk.id}`;
+    });
+  }
+
   // ---------- terminal mode ----------
 
   commit(cx) {
@@ -418,10 +446,20 @@ export default class Review extends View {
     return parts.join(" · ");
   }
 
+  // A Verlauf line: time and role, then the text with @tags highlighted.
+  verlaufLine(t, v) {
+    return h_flex().min_w(0).gap(ui.GAP_S).items_start().text_size(T_S)
+      .child(div().flex_none().max_w(170).truncate().text_color(t.dim).child(`${v.role} · ${v.ts.slice(11)}`))
+      .child(h_flex().flex_1().min_w(0).flex_wrap().text_color(t.muted)
+        .children(v.text.split(/(@[A-Za-z0-9][A-Za-z0-9_.-]*)/g).filter(Boolean).map((p) =>
+          div().when(p.startsWith("@"), (e) => e.text_color(t.accent).font_medium()).child(p))));
+  }
+
   // Ticket mode: what was ordered, the gates and the orchestrator's evidence.
   ticketHead(t, tk, cx) {
     this.previewEvidence(tk, cx);
     const evidence = tk.evidence ?? [];
+    const verlauf = this.verlauf ?? tk.verlauf ?? [];
     const local = !tk.machine;
     return v_flex().flex_none().px(ui.INSET_PANEL).py(ui.GAP_L).gap(ui.GAP_M).border_b(1).border_color(t.border)
       .child(h_flex().gap(ui.GAP_M).items_center()
@@ -446,7 +484,16 @@ export default class Review extends View {
             .when(pic && !this.previews[p], (el) => el.child(svg("mods/review/icon.svg").size(16).text_color(t.muted)))
             .when(!pic, (el) => el.child(div().text_size(T_S).text_color(t.muted).hover((x) => x.text_color(t.foreground)).child(baseName(p))));
         }))
-        .when(!local && evidence.length > 0, (el) => el.child(div().text_size(T_XS).text_color(t.muted).child(`auf ${tk.machine}`))));
+        .when(!local && evidence.length > 0, (el) => el.child(div().text_size(T_XS).text_color(t.muted).child(`auf ${tk.machine}`))))
+      .when(verlauf.length > 0, (el) => el.child(v_flex().id("rv-verlauf").gap(2)
+        .child(h_flex().items_center().gap(ui.GAP_S)
+          .child(div().text_size(T_S).font_medium().text_color(t.muted).child("Verlauf"))
+          .child(div().text_size(T_XS).text_color(t.dim).child(String(verlauf.length))))
+        .child(div().max_h(110).overflow_y_scroll().gap(2).children(verlauf.map((v) => this.verlaufLine(t, v))))))
+      .child(h_flex().gap(ui.GAP_M).items_center()
+        .child(this.field(t, "rv-comment", this.commentInput, { focused: this.focus.has("rv-comment"),
+          send: ui.sendButton(t, "rv-comment-send", "mods/orchestra/icons/send.svg",
+            "Kommentar ins Ticket (↵); @agent taggen, dort liest er ihn", (cx) => this.comment(cx), { enabled: !this.busy }) })));
   }
 
   ticketFooter(t, tk) {
