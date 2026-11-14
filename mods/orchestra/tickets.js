@@ -112,8 +112,31 @@ export const ciCommentOf = (t) => {
 // summary, its Verlauf, an open question to the human, `checks` (pass|fail|null), the
 // check's run (HEAD, duration, exit, command) with its output tail in `verify`, the CI
 // result (`ci`, `ci_at`, `ci_details`, last CI comment) and `evidence` (paths), newest first.
+//
+// Each ticket also carries its repo's lessons (the human's and the orchestrator's, see
+// bin/hub: <repo>/.herdr/lessons.md) and the lesson proposal waiting for the human
+// (lessons-pending.md). Both are local-only: a repo on another machine has no path here,
+// so the panel shows no count for it.
+const LESSON_LINE = /^- (\d{4}-\d{2}-\d{2}) · ([^·]+?) · ([^·]+?) · (.*)$/;
+export function parseLessons(text) {
+  return String(text ?? "").split(/\r?\n/).map((l) => LESSON_LINE.exec(l.trim())).filter(Boolean)
+    .map((m) => ({ date: m[1], ticket: m[2].trim(), source: m[3].trim(), text: m[4].trim() }))
+    .filter((l) => l.text);
+}
+async function readLessons(repo) {
+  if (!repo) return null;
+  try { if (!(await fs.exists(repo))) return null; } catch { return null; }
+  try { return parseLessons(await fs.readFile(`${repo}/.herdr/lessons.md`, "utf8")); } catch { return []; }
+}
+async function readProposal(repo, id) {
+  if (!repo) return null;
+  try {
+    return parseLessons(await fs.readFile(`${repo}/.herdr/lessons-pending.md`, "utf8")).filter((l) => l.ticket === id).at(-1) ?? null;
+  } catch { return null; }
+}
+
 export async function published() {
-  return (await list()).filter((t) => t.by === "orchestrator")
+  const rows = (await list()).filter((t) => t.by === "orchestrator")
     .map(({ body, checks, evidence, ...t }) => {
       const verify = verifyOf({ body }), v = verify?.fields ?? {};
       for (const [k, val] of Object.entries({ checks_head: v.head, checks_at: v.at, checks_duration: v.duration,
@@ -126,6 +149,18 @@ export async function published() {
       };
     })
     .sort((a, b) => (b.updated ?? "").localeCompare(a.updated ?? ""));
+  const cache = new Map();
+  const lessonsOf = (repo) => {
+    if (!cache.has(repo)) cache.set(repo, readLessons(repo));
+    return cache.get(repo);
+  };
+  for (const t of rows) {
+    const lessons = await lessonsOf(t.repo ?? "");
+    if (lessons) t.lessons = lessons;
+    const proposal = await readProposal(t.repo ?? "", t.id);
+    if (proposal) t.lessonProposal = proposal;
+  }
+  return rows;
 }
 
 // Publishes them when they changed; returns the list.

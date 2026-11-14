@@ -16,7 +16,14 @@ reports into it) and show in the Team-Panel under it.
   hub ticket next AGENT                     the next startable ticket (todo, assigned, unblocked)
   hub ticket inbox AGENT [--json]           tickets naming (@), assigning or waiting on AGENT
   hub ticket watch ID --on AGENT            "waiting for an answer from @AGENT"
-  hub dispatch ID [--agent omp|claude|codex|"cmd args"] [--no-worktree] [--branch B]
+  hub dispatch ID [--agent omp|claude|codex|"cmd args"] [--no-worktree] [--branch B] [--no-lessons]
+                                            start the ticket's agent; appends the repo's last 8 lessons
+                                            (## Was hier schon schiefging) unless --no-lessons
+  hub lesson add <repo|ticket> --from review|human|ci "text"
+                                            append to <repo>/.herdr/lessons.md (at most 40 lines, oldest drop)
+  hub lesson list <repo|ticket> [--json] [--last N]
+  hub lesson propose ID "text"              the orchestrator's suggestion after feedback (waits for the human)
+  hub lesson confirm ID                     the human's OK in the Review window: writes it as a lesson
   hub verify ID [--or-command CMD]     run the repo's check in the ticket's worktree, on its machine:
                                             .herdr/verify.sh (else the ticket's `verify` command, --or-command);
                                             records checks pass|fail, exit code, duration, checks_head
@@ -27,10 +34,12 @@ reports into it) and show in the Team-Panel under it.
                                             ready for the human: status review + summary; refuses unless
                                             `hub verify` passed on the worktree's HEAD; --force needs --reason
                                             and writes it to the Verlauf; --evidence replaces the files
-  hub land ID --merge | --pr [--wait-ci]    after acceptance: merge into its base branch, or push and open a
+  hub land ID --merge | --pr [--wait-ci] [--lesson "text"]...
+                                            after acceptance: merge into its base branch, or push and open a
                                             pull request (gh); then end its agent and remove its worktree.
                                             --wait-ci polls the PR's checks (30 s, max 20 min) and only
-                                            finishes a green ticket
+                                            finishes a green ticket; --lesson writes the lesson and names it
+                                            in the ticket's Verlauf
   hub ci ID                                 gh pr checks for the ticket's PR: pass|fail|running|unknown in
                                             the ticket, failures as a Verlauf comment (--from ci) and back
                                             to the agent
@@ -48,6 +57,9 @@ FIELDS = ["title", "status", "repo", "labels", "due", "machine", "agent", "branc
           "assignee", "blocked_by", "tags", "waiting", "by", "updated"]
 COSTS = os.path.join(APP, "data", "orchestra", "costs.json")  # written by the Team panel's watcher
 AGENTS = {"omp": ["omp"], "claude": ["claude"], "codex": ["codex", "--no-daemon"], "pi": ["pi"]}
+LESSON_MAX = 40   # the file never grows past this; the oldest lines fall out
+LESSON_TAIL = 8   # hub dispatch carries this many into the next order
+LESSON_SOURCES = ["review", "human", "ci"]
 
 # CI wait: 30 s poll, 20 min at most. Overridable for the mock-gh test, not for everyday use.
 def env_int(name, default):
@@ -288,6 +300,96 @@ def age(ts):
     return f"{d // 86400} d"
 
 
+# ---- lessons: what went wrong here, per repo, carried into every next order
+#
+# <repo>/.herdr/lessons.md holds one line per lesson, oldest first, never more than
+# LESSON_MAX lines. The format is stable and parsed by bin/hub, mods/orchestra/tickets.js
+# and the Review window:
+#   - 2026-11-14 · <ticket|-> · review|human|ci · short, imperative text
+# A suggestion the orchestrator made after feedback waits in lessons-pending.md until
+# the human confirms it in the Review window (then source `review`).
+
+LESSON_FMT = re.compile(r"^- (\d{4}-\d{2}-\d{2}) · ([^·]+?) · ([^·]+?) · (.*)$")
+
+
+def lesson_dir(repo):
+    return os.path.join(repo, ".herdr")
+
+
+def lesson_line(l):
+    return f"- {l['date']} · {l['ticket']} · {l['source']} · {l['text']}"
+
+
+def parse_lessons(text):
+    out = []
+    for line in (text or "").splitlines():
+        m = LESSON_FMT.match(line.strip())
+        if m:
+            out.append({"date": m.group(1), "ticket": m.group(2).strip(), "source": m.group(3).strip(),
+                        "text": m.group(4).strip()})
+    return [l for l in out if l["text"]]
+
+
+def read_lessons(repo, on=None, name="lessons.md"):
+    path = os.path.join(lesson_dir(repo), name)
+    if on:
+        text = run(["sh", "-c", f"cat {shlex.quote(path)} 2>/dev/null || true"], on, check=False).stdout
+        return parse_lessons(text)
+    try:
+        return parse_lessons(open(path, encoding="utf-8").read())
+    except OSError:
+        return []
+
+
+def write_lessons(repo, items, on=None, name="lessons.md"):
+    d = lesson_dir(repo)
+    path = os.path.join(d, name)
+    body = "".join(lesson_line(l) + "\n" for l in items[-LESSON_MAX:])
+    sh = f"mkdir -p {shlex.quote(d)} && printf %s {shlex.quote(body)} > {shlex.quote(path)}"
+    run(["sh", "-c", sh], on)
+
+
+def one_line(text):
+    return " ".join(str(text or "").split())
+
+
+def add_lesson(repo, ticket, source, text, on=None):
+    text = one_line(text)
+    if not text:
+        die("leere Lehre")
+    items = read_lessons(repo, on)
+    for l in items:  # the same lesson twice helps nobody
+        if l["text"] == text:
+            return l
+    l = {"date": time.strftime("%Y-%m-%d"), "ticket": ticket or "-", "source": source, "text": text}
+    items.append(l)
+    write_lessons(repo, items, on)
+    return l
+
+
+def repo_of(target, on=None):
+    """(repo, ticket id, machine) for a ticket id or a repo path; dies on neither."""
+    tid = target if re.fullmatch(r"[a-z0-9][a-z0-9-]*", target or "") and os.path.exists(path_of(target)) else ""
+    if tid:
+        t = read(tid)
+        repo = t.get("repo")
+        if not repo:
+            die(f"{tid} hat kein Repo; hub ticket set {tid} repo=/pfad")
+        return repo, tid, t.get("machine") or None
+    repo = os.path.abspath(target or "") if not on else (target or "")
+    if not repo or (not on and not os.path.isdir(repo)):
+        die(f"kein Repo: {target}")
+    return repo, "", on
+
+
+def lesson_section(repo, on=None):
+    """The dispatch section with the last LESSON_TAIL lessons, or "" when there are none."""
+    items = read_lessons(repo, on)[-LESSON_TAIL:]
+    if not items:
+        return ""
+    return "## Was hier schon schiefging\n\n" + "\n".join(lesson_line(l) for l in items)
+
+
 # ---- machines: local commands, or through `hc exec --on`
 
 def run(argv, on=None, cwd=None, check=True):
@@ -503,8 +605,12 @@ def cmd_dispatch(a):
         # Where it lands later: the branch the repo was on when the work started.
         t["base"] = t.get("base") or run(["git", "rev-parse", "--abbrev-ref", "HEAD"], on, top).stdout.strip()
     report = f"hc send {me} \"…\"" if me else "deine Abschlussnachricht"
+    order = t["body"].strip()
+    lessons = "" if a.no_lessons else lesson_section(repo, on)
+    if lessons:
+        order += f"\n\n{lessons}"
     task = (
-        f"Ticket {a.id}: {t['title']}\n\n{t['body'].strip()}\n\n---\n"
+        f"Ticket {a.id}: {t['title']}\n\n{order}\n\n---\n"
         f"Du arbeitest in {folder}" + (f" auf Branch {branch}" if branch else "") + ". "
         "Lies zuerst den relevanten Code, ändere fokussiert, führe die Checks/Tests des Projekts aus, committe in kleinen Schritten, kein Push. "
         "Starte keine weiteren Agents. Das Ticket ist die einzige Quelle und der einzige Weg: Arbeit bekommst du nur über dieses Ticket, "
@@ -791,6 +897,75 @@ def cmd_ci(a):
         print(f"{a.id}: CI läuft: {res['open']} offen{where}")
     else:
         print(f"{a.id}: CI grün ({res['total']} Checks){where}")
+def cmd_lesson_add(a):
+    target = a.target
+    tid = (a.ticket or "").strip()
+    if not tid and re.fullmatch(r"[a-z0-9][a-z0-9-]*", target or "") and os.path.exists(path_of(target)):
+        tid = target
+    on = a.on or None
+    if tid:
+        t = read(tid)
+        on = on or t.get("machine") or None
+        if target == tid:
+            target = t.get("repo") or ""
+        if not target:
+            die(f"{tid} hat kein Repo; hub ticket set {tid} repo=/pfad")
+    repo = target if on else os.path.abspath(target or "")
+    if not repo or (not on and not os.path.isdir(repo)):
+        die(f"kein Repo: {target}")
+    l = add_lesson(repo, tid or "-", a.source, " ".join(a.text), on)
+    print(lesson_line(l))
+
+
+def cmd_lesson_list(a):
+    repo, tid, on = repo_of(a.target, a.on or None)
+    items = read_lessons(repo, on, "lessons-pending.md") if a.pending else read_lessons(repo, on)
+    if tid:
+        items = [l for l in items if l["ticket"] == tid]
+    if a.last:
+        items = items[-a.last:]
+    if a.json:
+        print(json.dumps(items, ensure_ascii=False, indent=1))
+        return
+    for l in items:
+        print(lesson_line(l))
+    if not items:
+        print(f"{repo}: keine Lehren")
+
+
+def cmd_lesson_propose(a):
+    t = read(a.id)
+    repo = t.get("repo")
+    if not repo:
+        die(f"{a.id} hat kein Repo; hub ticket set {a.id} repo=/pfad")
+    on = t.get("machine") or None
+    text = one_line(" ".join(a.text))
+    if not text:
+        die("leere Lehre")
+    items = [l for l in read_lessons(repo, on, "lessons-pending.md") if l["ticket"] != a.id]
+    l = {"date": time.strftime("%Y-%m-%d"), "ticket": a.id, "source": "vorschlag", "text": text}
+    items.append(l)
+    write_lessons(repo, items, on, "lessons-pending.md")
+    add_comment(t, "orchestrator", f"Vorschlag für eine Lehre: {text}")
+    write(t)
+    print(lesson_line(l))
+
+
+def cmd_lesson_confirm(a):
+    t = read(a.id)
+    repo = t.get("repo")
+    if not repo:
+        die(f"{a.id} hat kein Repo; hub ticket set {a.id} repo=/pfad")
+    on = t.get("machine") or None
+    pending = [l for l in read_lessons(repo, on, "lessons-pending.md") if l["ticket"] == a.id]
+    if not pending:
+        die(f"kein Lehren-Vorschlag für {a.id}")
+    l = add_lesson(repo, a.id, "review", pending[-1]["text"], on)
+    write_lessons(repo, [x for x in read_lessons(repo, on, "lessons-pending.md") if x["ticket"] != a.id], on,
+                  "lessons-pending.md")
+    add_comment(t, "mensch", f"Lehre übernommen: {l['text']}")
+    write(t)
+    print(lesson_line(l))
 
 
 def main_checkout(t, on):
@@ -803,6 +978,8 @@ def cmd_land(a):
     if a.wait_ci and not a.pr:
         die("--wait-ci gilt nur mit --pr")
     on, wt, branch = t.get("machine") or None, t.get("worktree"), t.get("branch")
+    if a.lesson and not t.get("repo"):
+        die(f"{a.id} has no repo; hub ticket set {a.id} repo=/path")
     if not (wt and branch):
         die(f"{a.id} has no worktree branch to land")
     if run(["test", "-d", wt], on, check=False).returncode != 0:
@@ -860,7 +1037,15 @@ def cmd_land(a):
         run(["git", "branch", "-d", branch], on, main, check=False)
     t["status"] = "done"
     write(t)
-    result.update(merged=t.get("merged"), pr=t.get("pr"), ci=t.get("ci"), ci_at=t.get("ci_at"))
+    # The lesson comes last: the work is landed even when writing the file fails (it is
+    # reported then, but the ticket stays accepted and its Verlauf is not half-written).
+    learned = [add_lesson(t.get("repo") if on else os.path.abspath(t["repo"]), a.id, "human", text, on) for text in (a.lesson or [])]
+    for l in learned:
+        add_comment(t, "mensch", f"Lehre notiert: {l['text']}")
+    if learned:
+        write(t)
+    result.update(merged=t.get("merged"), pr=t.get("pr"), ci=t.get("ci"), ci_at=t.get("ci_at"),
+                  lessons=[l["text"] for l in learned])
     print(json.dumps(result, ensure_ascii=False))
 
 
@@ -947,6 +1132,7 @@ def main():
     d.add_argument("--agent", default="omp")
     d.add_argument("--no-worktree", action="store_true")
     d.add_argument("--branch")
+    d.add_argument("--no-lessons", action="store_true")
     d.set_defaults(fn=cmd_dispatch)
     vf = sub.add_parser("verify")
     vf.add_argument("id")
@@ -959,6 +1145,28 @@ def main():
     gts = sub.add_parser("gates")
     gts.add_argument("--json", action="store_true", help="JSON (Standard)")
     gts.set_defaults(fn=cmd_gates)
+    ls = sub.add_parser("lesson").add_subparsers(dest="lcmd", required=True)
+    la = ls.add_parser("add")
+    la.add_argument("target", metavar="repo|ticket")
+    la.add_argument("--from", dest="source", required=True, choices=LESSON_SOURCES)
+    la.add_argument("--ticket")
+    la.add_argument("--on")
+    la.add_argument("text", nargs="+", metavar="TEXT")
+    la.set_defaults(fn=cmd_lesson_add)
+    ll = ls.add_parser("list")
+    ll.add_argument("target", metavar="repo|ticket")
+    ll.add_argument("--on")
+    ll.add_argument("--last", type=int)
+    ll.add_argument("--pending", action="store_true", help="die Vorschläge statt der Lehren zeigen")
+    ll.add_argument("--json", action="store_true")
+    ll.set_defaults(fn=cmd_lesson_list)
+    lp = ls.add_parser("propose")
+    lp.add_argument("id")
+    lp.add_argument("text", nargs="+", metavar="TEXT")
+    lp.set_defaults(fn=cmd_lesson_propose)
+    lc = ls.add_parser("confirm")
+    lc.add_argument("id")
+    lc.set_defaults(fn=cmd_lesson_confirm)
     rv = sub.add_parser("review")
     rv.add_argument("id")
     rv.add_argument("--summary", required=True)
@@ -975,6 +1183,8 @@ def main():
     how.add_argument("--merge", action="store_true")
     how.add_argument("--pr", action="store_true")
     ld.add_argument("--wait-ci", action="store_true")
+    ld.add_argument("--lesson", action="append", metavar="TEXT",
+                    help="Lehre für dieses Repo schreiben und im Verlauf nennen (mehrfach möglich)")
     ld.set_defaults(fn=cmd_land)
     ci = sub.add_parser("ci")
     ci.add_argument("id")

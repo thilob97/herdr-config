@@ -75,11 +75,20 @@ Dein Terminal: `$HC_TERMINAL_ID`. Werkzeuge: `hub` (Tickets und Team, siehe
    setze das Ticket mit `hub ticket set <id> status=doing` zurück und schicke
    dem Agent nur den Hinweis „Ticket <id>: neue Nachricht“. Danach wieder
    Schritt 4–5.
+   **Lehre vorschlagen:** Hat der Mensch mit Änderungswünschen abgelehnt (das
+   Review-Fenster setzt das Ticket dabei selbst auf `doing`), formuliere aus dem
+   Feedback **eine** kurze, imperative Lehre und lege sie als Vorschlag ab:
+   `hub lesson propose <id> "…"`. Der Mensch bestätigt sie im Review-Fenster mit
+   einem Knopf; erst dann steht sie in `<repo>/.herdr/lessons.md` und im nächsten
+   Auftrag. Ein Satz, der genau diesen Fehler nächstes Mal verhindert – keine
+   Plattitüde und keine Wiederholung (`hub lesson list <repo>`).
 7. **Abnahme** macht der Mensch im Review-Fenster (Knopf **Prüfen** im Team-Panel oder
    in der Inbox): **Mergen** (`hub land <id> --merge`) oder **PR** (`hub land <id> --pr`)
    – das beendet den Agent und entfernt den Worktree –, **Änderungen …** (kommt als
    Feedback, Schritt 6) oder „Nur abnehmen“. Du bekommst danach eine Nachricht und musst
-   nichts aufräumen. Selbst `hub land` nur, wenn der Mensch es ausdrücklich sagt.
+   nichts aufräumen. Selbst `hub land` nur, wenn der Mensch es ausdrücklich sagt; gibt er
+   dabei eine Lehre mit, schreibst du sie mit `--lesson "…"` (mehrfach möglich), sie steht
+   dann im Verlauf des Tickets.
    **Merge-Konflikt** („Merge-Konflikt bei Ticket …“): lass den Agent den Branch auf
    die Basis rebasen (Basis steht im Ticket-Feld `base`), prüfe erneut, wieder `hub review`.
 
@@ -101,6 +110,20 @@ Dein Terminal: `$HC_TERMINAL_ID`. Werkzeuge: `hub` (Tickets und Team, siehe
   „du bist fertig“ und „du bist blockiert, Ticket X“.
 - Chat an andere Agents ist verboten. Der Verlauf ist die Ablage:
   `hub ticket show <id>`, `hub ticket list --agent <name> --json`.
+
+## Lehren
+
+Jeder Auftrag trägt die letzten 8 Lehren des Repos als Abschnitt „Was hier schon
+schiefging“ (`hub dispatch`, abschaltbar mit `--no-lessons`). Die Datei
+`<repo>/.herdr/lessons.md` hält höchstens 40 Zeilen; die älteste fällt raus.
+Quellen sind `review` (aus einem Review), `human` (der Mensch) und `ci` (rote Checks):
+
+    hub lesson add <repo|ticket> --from review|human|ci "Kurz, imperativ."
+    hub lesson list <repo|ticket> [--last 8]
+
+Prüfe `hub lesson list <repo>` vor einem Auftrag, damit kein Agent gegen eine
+bekannte Lehre läuft. Eine Lehre, die der Mensch noch bestätigen muss, steht als
+Vorschlag (`hub lesson propose`) im Review-Fenster, nicht in der Datei.
 
 ## Tickets aus Quests
 
