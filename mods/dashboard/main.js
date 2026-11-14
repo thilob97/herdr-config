@@ -48,6 +48,13 @@ function at(ts) {
 
 const CHEVRON = "mods/workspace-chrome/chevron-right.svg";
 
+// Duration as `hub stats` prints it ("42 min", "1 h 05", "—").
+const span = (min) => {
+  if (min == null) return "—";
+  const m = Math.round(min);
+  return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, "0")}`;
+};
+
 // The pipeline as the Team panel orders it (hubview.js STAGES, copied: a mod owns
 // no module outside its folder).
 const STAGES = [
@@ -95,6 +102,7 @@ export default class Dashboard extends View {
     this.showDone = false;      // finished agents folded into one row at the team's end
     this.sending = false;
     this.starting = false;
+    this.statsBusy = false;
     this.note = null;           // { ok: true|false|null, text }
     this.armed = null;          // "g" waits for "w"
     this.handle = cx.focus_handle();
@@ -104,7 +112,9 @@ export default class Dashboard extends View {
     this.focus.track(this.order, "dash-order");
     cx.timer.after(50, () => this.handle.focus());
     cx.timer.after(100, (cx) => { this.sync(cx); this.loadQuestions(cx); cx.notify(); });
+    cx.timer.after(200, (cx) => this.fetchStats(cx));
     cx.timer.every(REFRESH, (cx) => { this.sync(cx); this.loadQuestions(cx); cx.notify(); });
+    cx.timer.every(30000, (cx) => this.fetchStats(cx));
     cx.timer.every(20000, (cx) => cx.notify()); // the clock
   }
 
@@ -113,6 +123,26 @@ export default class Dashboard extends View {
   orchestrator() { return terminals().find((x) => x.name === ORCH && x.state === "live") ?? null; }
   tickets() { return shared("orchestra.tickets") ?? []; }
   costs() { return shared("orchestra.costs") ?? {}; }
+  stats() { return shared("orchestra.stats") ?? null; }
+
+  // `hub stats` is the one calculator — the Team panel's head line runs the same command,
+  // so both screens carry the same median, rework and cost.
+  fetchStats(cx) {
+    if (this.statsBusy) return;
+    this.statsBusy = true;
+    cx.spawn(async (cx) => {
+      try {
+        const r = await exec(`${appHome()}/mods/orchestra/bin/hub`, ["stats", "--json", "--days", "14"], { timeout: 20000 });
+        if (r.code !== 0) return;
+        const next = JSON.parse(r.stdout || "{}");
+        if (JSON.stringify({ ...next, at: 0 }) !== JSON.stringify({ ...(this.stats() ?? {}), at: 0 })) {
+          setShared("orchestra.stats", next);
+          cx.notify();
+        }
+      } catch {}
+      finally { this.statsBusy = false; }
+    });
+  }
   teamBudget() { return { team: 20, ...(shared("orchestra.budget") ?? {}) }.team; }
   teams() { return shared("orchestra.groups") ?? []; }
 
@@ -686,6 +716,40 @@ export default class Dashboard extends View {
         .when(Boolean(e.time), (el) => el.child(div().flex_none().text_size(T_XS).text_color(t.dim).child(ago(e.time))))));
   }
 
+  // "Fabrik heute": the four numbers of the Team panel's head line and the last seven
+  // days as text bars — no chart framework. A click opens the Team panel for the split.
+  fabrikCard(t) {
+    const s = this.stats(), d = s?.today;
+    const hist = s?.history ?? [];
+    const peak = Math.max(1, ...hist.map((h) => h.done));
+    const blocks = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
+    const bar = (h) => blocks[h.done ? Math.max(0, Math.min(7, Math.round((h.done / peak) * 7))) : 0];
+    const metric = (label, value, color) => h_flex().flex_none().gap(3).items_end()
+      .child(div().text_size(T_L).font_semibold().text_color(color ?? t.foreground).child(value))
+      .child(div().text_size(T_XS).text_color(t.muted).child(label));
+    return ui.card(t, "dash-fabrik").w(210).p(8).gap(3).cursor_pointer().hover((x) => x.bg(t.hover))
+      .tooltip("Team-Panel im Workspace öffnen: Stationen und Repos aufschlüsseln")
+      .on_click((_e, cx) => { cx.stop_propagation(); this.workspace(true, cx); })
+      .child(h_flex().h(14).gap(ui.GAP_S).items_center()
+        .child(div().text_size(T_S).font_medium().text_color(t.muted).child("Fabrik heute"))
+        .child(div().flex_1())
+        .child(svg(CHEVRON).size(12).flex_none().text_color(t.dim)))
+      .when(!d, (el) => el.child(div().text_size(T_XS).text_color(t.dim).child("Noch keine Messwerte.")))
+      .when(Boolean(d), (el) => el
+        .child(h_flex().gap(ui.GAP_M).items_end()
+          .child(metric("erledigt", String(d.done)))
+          .child(metric("Median", span(d.median_min))))
+        .child(h_flex().gap(ui.GAP_M).items_end()
+          .child(metric("Nacharbeit", String(d.rework), d.rework ? t.blocked : undefined))
+          .child(metric("Kosten", usd(d.cost))))
+        .child(h_flex().h(18).gap(1).items_end()
+          .children(hist.map((h, i) => div().w(12).flex_none().text_size(T_S).text_center()
+            .text_color(i === hist.length - 1 ? t.foreground : t.muted)
+            .tooltip(`${h.date}: ${h.done} erledigt · ${h.rework} Nacharbeit · Median ${span(h.median_min)}`)
+            .child(bar(h)))))
+        .child(div().text_size(T_XS).text_color(t.dim).child("7 Tage · erledigt")));
+  }
+
   // The money as its own card right of the tickets in work: today, the team
   // budget and per ticket, the same numbers as the status bar and Team panel.
   // A click opens the Team panel in the Workspace.
@@ -734,6 +798,7 @@ export default class Dashboard extends View {
           .when(!doing.length, (el) => el.child(ui.empty(t,
             this.tickets().length ? "Nichts in Arbeit." : "Noch keine Tickets. Gib dem Team unten einen Auftrag.", { row: true })))
           .children(doing.map((tk) => this.doingRow(t, tk, this.key === `doing:${tk.id}`))))
+        .child(this.fabrikCard(t))
         .child(this.costsCard(t)));
   }
 

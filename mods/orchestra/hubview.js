@@ -57,6 +57,43 @@ export class GateWatcher {
 
 export const gateOf = (id) => (shared("orchestra.gates") ?? []).find((g) => g.id === id) ?? null;
 
+// Throughput for the panel and the dashboard: `hub stats` is the one calculator, so both
+// screens show the same median, rework and cost. It reads the tickets' status log.
+export class StatsWatcher {
+  constructor(cx) {
+    this.busy = false;
+    this.refresh(cx);
+    cx.timer.every(30000, (cx) => this.refresh(cx));
+  }
+
+  refresh(cx) {
+    if (this.busy) return;
+    this.busy = true;
+    cx.spawn(async () => {
+      try {
+        const r = await exec(HUB(), ["stats", "--json", "--days", "14"], { timeout: 20000 });
+        if (r.code !== 0) return;
+        const next = JSON.parse(r.stdout || "{}");
+        if (JSON.stringify({ ...next, at: 0 }) !== JSON.stringify({ ...(shared("orchestra.stats") ?? {}), at: 0 })) {
+          setShared("orchestra.stats", next);
+        }
+      } catch {}
+      finally { this.busy = false; }
+    });
+  }
+}
+
+export const statsOf = () => shared("orchestra.stats") ?? null;
+
+/** Dauer wie `hub stats` ("42 min", "1 h 05", "—"). */
+export const span = (min) => {
+  if (min == null) return "—";
+  const m = Math.round(min);
+  return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, "0")}`;
+};
+
+const sid = (s) => String(s ?? "").replace(/[^a-zA-Z0-9_.-]+/g, "-");
+
 export class HubDaemon {
   constructor(cx) {
     this.prev = null;        // ticket id → status, after the first read
@@ -70,6 +107,7 @@ export class HubDaemon {
     cx.timer.after(10000, (cx) => this.pollCosts(cx));
     cx.timer.every(30000, (cx) => this.pollCosts(cx));
     this.gates = new GateWatcher(cx);
+    this.stats = new StatsWatcher(cx);
   }
 
   pollCosts(cx) {
@@ -139,6 +177,8 @@ export class HubSection {
     this.publish(cx);
     cx.timer.every(5000, (cx) => this.publish(cx));
     this.gates = new GateWatcher(cx);
+    this.stats = new StatsWatcher(cx);
+    this.showStats = false;         // the head line's breakdown is folded
   }
 
   poll(cx) {
@@ -182,6 +222,45 @@ export class HubSection {
   }
 
   all() { return shared("orchestra.tickets") ?? []; }
+
+  // ---------- Messwerte ----------
+
+  // The head line: today in four numbers, straight from `hub stats` — the same answers
+  // the dashboard card shows. A click unfolds stations and repos right below it.
+  statsRow(t) {
+    const s = statsOf(), d = s?.today;
+    const open = this.showStats && Boolean(d);
+    return v_flex().id("hub-stats-box").flex_none().gap(ui.GAP_S)
+      .child(h_flex().id("hub-stats").flex_none().px(ui.GAP_XS).py(2).gap(ui.GAP_S).items_center().rounded(6)
+        .text_size(T_XS).text_color(d ? t.muted : t.dim)
+        .when(Boolean(d), (el) => el.cursor_pointer().hover((x) => x.bg(t.hover).text_color(t.foreground))
+          .tooltip(open ? "Aufschlüsselung schließen" : "Klicken: Stationen und Repos aufschlüsseln"))
+        .on_click((_e, cx) => { if (!d) return; this.showStats = !this.showStats; cx.notify(); })
+        // Two compact lines: the panel is too narrow for the four numbers in one.
+        .child(v_flex().flex_1().min_w(0).gap(0)
+          .when(!d, (el) => el.child(div().truncate().child("Heute: noch keine Messwerte")))
+          .when(Boolean(d), (el) => el
+            .child(div().truncate().child(`Heute: ${d.done} erledigt · Median ${span(d.median_min)}`))
+            .child(div().truncate().child(`${d.rework} Nacharbeit · ${usd(d.cost)}`))))
+        .when(Boolean(d), (el) => el.child(svg(`${WC}/chevron-right.svg`).size(10).flex_none().text_color(t.dim))))
+      .when(open, (el) => el.child(this.statsBreakdown(t, s)));
+  }
+
+  statsBreakdown(t, s) {
+    const row = (id, left, right) => h_flex().id(id).h(20).flex_none().gap(ui.GAP_S).items_center().text_size(T_XS)
+      .child(div().w(70).flex_none().truncate().text_color(t.muted).child(left))
+      .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).tooltip(right).child(right));
+    return ui.card(t, "hub-stats-break").gap(2)
+      .child(div().text_size(T_XS).text_color(t.dim)
+        .child(`Stationen · ${s.summary.tickets} Tickets im Fenster · ${s.summary.rounds} Prüfrunden`))
+      .children((s.stations ?? []).map((st) => row(`hub-station-${st.key}`, st.label,
+        `${st.count}× · Σ ${span(st.sum_min)} · Median ${span(st.median_min)}`)))
+      .when((s.repos ?? []).length > 0, (el) => el.child(div().text_size(T_XS).text_color(t.dim).pt(2).child("Repos")))
+      .children((s.repos ?? []).map((r) => v_flex().id(`hub-repo-${sid(r.repo)}`).gap(0).text_size(T_XS)
+        .child(div().truncate().text_color(t.muted).tooltip(r.repo).child(r.repo.split("/").slice(-2).join("/") || "ohne Repo"))
+        .child(div().text_color(t.foreground).child(
+          `${r.done}/${r.tickets} erledigt · Median ${span(r.median_min)} · ${r.rounds} Runden · ${r.rework} Nacharbeit · ${usd(r.cost)}`))));
+  }
 
   // ---------- orchestrator card ----------
 

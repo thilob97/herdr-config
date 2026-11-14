@@ -187,6 +187,22 @@ Nach der Abnahme bleibt nichts liegen: `hub done <id>` setzt `done` und räumt a
   `--dry-run` zeigt dieselbe Liste und ändert nichts; ohne das Flag wird in der Reihenfolge Agents → Spaces → Worktrees aufgeräumt.
 - **`hub status`** listet `done`-Tickets nur dann unter **Reste**, wenn noch ein Terminal, Worktree oder Space übrig ist; abgenommene Tickets ohne Reste erscheinen nicht extra. Die Zeilen im Team-Panel und im Dashboard hängen an lebenden Terminals und verschwinden mit ihnen.
 
+## Messwerte
+
+Die Fabrik misst sich pro Station, nicht nur in Dollar. `hub stats [--json] [--days 14]` rechnet aus den Tickets und `data/orchestra/costs.json`:
+
+- **Durchlaufzeit** je Ticket: erstes `todo` bis `done`; der Median läuft über die im Fenster erledigten Tickets.
+- **Prüfrunden**: wie oft das Ticket in **Prüfung** ging.
+- **Nacharbeit**: Rückwege nach **In Arbeit**, nachdem das Ticket schon in **Prüfung** war (Review-Feedback, CI-Fehler).
+- **Kosten** je Ticket aus `costs.json`, summiert je Station, je Repo und für heute.
+- **Alter** je Ticket in `hub status`: Zeit seit der letzten Statusänderung (`status_at`; bei alten Tickets `updated`).
+
+**Woher die Zeiten kommen.** Jeder Statuswechsel schreibt `status_at` und hängt `state@JJJJ-MM-TT HH:MM` an das Frontmatter-Feld `status_log` (`todo@…|doing@…|review@…|done@…`) — in `hub` (`set_status`) wie im Team-Panel (`tickets.js`). Daraus rechnet `hub stats` Summen, Mediane, Prüfrunden und Nacharbeit. `created`/`updated` allein reichen nicht, weil jeder Schreibvorgang `updated` überschreibt. Tickets von vor diesem Stand haben kein Protokoll: sie stehen mit `—` in der Tabelle, zählen nicht in den Median, und ihr nächster Statuswechsel beginnt das Protokoll.
+
+**Ausgabe.** Tabelle mit je Ticket (Durchlauf, Prüfrunden, Nacharbeit, Kosten), je Station (Anzahl, Summe, Median), je Repo dieselben Zahlen, dazu `Heute: …` und die letzten sieben Tage. `--json` liefert dasselbe maschinenlesbar (`today`, `history`, `summary`, `stations`, `repos`, `tickets`).
+
+**Im UI.** Das Team-Panel trägt unter der Pipeline die Kopf-Zeile „Heute: 3 erledigt · Median 42 min · 1 Nacharbeit · $12" (`shared("orchestra.stats")`, alle 30 s aus `hub stats --json`); ein Klick klappt Stationen und Repos in derselben Fläche auf. Das Dashboard hat die Karte **Fabrik heute** mit denselben vier Werten und den letzten sieben Tagen als Textbalken (kein Chart-Framework); ein Klick öffnet das Team-Panel. Beide lesen denselben Lauf derselben Funktion, deshalb sind die Zahlen gleich.
+
 ## Rahmen: Seitenleiste, Tab-Leiste, Statusleiste
 
 **Seitenleiste.** Der **Kopf** (42 px, bündig mit der Tab-Leiste) zeigt Logo, „Herdr“, Suche (`cmd-p`) und Ein-/Ausklappen; er kommt aus dem eigenen Mod `sidebar-footer` statt aus dem ausgelieferten `workspace-chrome`. Der **Fuß** ist eine 28-px-Zeile (bündig mit der Statusleiste) mit Icon-Knöpfen für Einstellungen (`cmd-,`, mit Punkt, wenn ein Update bereitliegt), Marketplaces (`ctrl-shift-m`), MCP-Server (`ctrl-shift-y`), Maschine hinzufügen und Tastenkürzel (`cmd-/`); eingeklappt (Rail) bleiben Einstellungen und „…“ mit den übrigen vier. **Spaces** nehmen nur so viel Höhe, wie sie brauchen (Kopf, eine 28-px-Zeile je Space, Ordner oder Maschine), höchstens 40 % der Listenhöhe, darüber scrollen sie; den Rest bekommen die Agents. Kopf „Spaces n“ mit „Neuer Ordner“ und „Neuer Space (⌘N)“; Maschinen-Zeilen sind Sektionsköpfe; Kachelfarben kommen aus dem Theme.
