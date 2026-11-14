@@ -1060,6 +1060,42 @@ def worktree_state(t, tickets, on=None):
     return main, None
 
 
+def review_worktree_path(t, on=None):
+    """The ticket's Prüfstation checkout, named exactly like `hub review-start` does."""
+    repo = t.get("repo")
+    if not repo:
+        return None
+    top = run(["git", "rev-parse", "--show-toplevel"], on, repo, check=False)
+    if top.returncode != 0 or not top.stdout.strip():
+        return None
+    common = run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], on, top.stdout.strip(), check=False)
+    if common.returncode != 0 or not common.stdout.strip():
+        return None
+    main = common.stdout.strip()
+    if main.endswith("/.git"):
+        main = main[:-5]
+    return f"{home_of(on)}/.herdr/worktrees/{os.path.basename(main)}/review-{slug(t['id'], 48)}"
+
+
+def remove_review_checkout(t, on=None, keep=False):
+    """Remove the ticket's review checkout when its reviewer is not running. (ok, message) or None."""
+    if keep:
+        return None
+    path = review_worktree_path(t, on)
+    if not path or run(["test", "-d", path], on, check=False).returncode != 0:
+        return None
+    rv = t.get("review_terminal") or ""
+    if rv and is_live(rv):
+        return False, f"Prüf-Worktree {path} bleibt: Reviewer {rv} läuft"
+    main, why = worktree_state({"id": t["id"], "worktree": path}, [], on)
+    if why:
+        return False, f"Prüf-Worktree {path} bleibt: {why}"
+    r = run(["git", "worktree", "remove", path], on, main, check=False)
+    if r.returncode != 0:
+        return False, f"Prüf-Worktree {path} bleibt: {(r.stderr or r.stdout).strip()}"
+    return True, f"Prüf-Worktree {path} entfernt"
+
+
 def close_space(t, space):
     """Close the ticket's own space (or just its tab) if no foreign live terminal is in it."""
     sid = space.get("id")
@@ -1147,6 +1183,9 @@ def cleanup_ticket(t, tickets=None, keep_worktree=False, keep_space=False):
                 removed = True
             else:
                 skipped.append(f"Worktree {wt} bleibt: {(r.stderr or r.stdout).strip()}")
+    review = remove_review_checkout(t, on, keep=keep_worktree)
+    if review:
+        (notes if review[0] else skipped).append(review[1])
     if not keep_space:
         spaces = app_spaces()
         if spaces is None:
@@ -1282,7 +1321,18 @@ def cmd_cleanup(a):
     for wt in local_worktrees():
         if any(same_path(wt, c) for c in claimed):
             continue
-        action = f"Worktree {wt} entfernen (ohne Ticket)"
+        base = os.path.basename(wt)
+        owner = next((t for t in tickets if base == f"review-{slug(t['id'], 48)}"), None) if base.startswith("review-") else None
+        if owner and owner.get("status") != "done":
+            skipped.append(f"Worktree {wt} gehört zur Prüfstation von {owner['id']} ({owner.get('status', '?')}); bleibt")
+            continue
+        if owner:
+            rv = owner.get("review_terminal") or ""
+            if rv and is_live(rv):
+                skipped.append(f"Worktree {wt}: Reviewer {rv} läuft; bleibt")
+                continue
+        where = f"Prüfstation von {owner['id']}" if owner else "ohne Ticket"
+        action = f"Worktree {wt} entfernen ({where})"
         main, why = worktree_state({"id": "", "worktree": wt}, [], None)
         if why:
             skipped.append(f"{action}: {why}")

@@ -176,11 +176,12 @@ Was beim Review und bei der Abnahme gelernt wurde, landet automatisch im nächst
 
 ## Aufräumen
 
-Nach der Abnahme bleibt nichts liegen: `hub done <id>` setzt `done` und räumt auf, `hub land <id> --merge|--pr` ruft dieselbe Routine nach dem Landen. Beendet wird der Agent (`hc kill`), entfernt der Worktree — nur wenn er sauber ist — und geschlossen der Space bzw. das Tab, das `hub dispatch` über die Labels `herdr.space`, `herdr.tab` und `hub.ticket` angelegt hat. Der Branch bleibt bei `hub done` und bei `--pr`; nur `--merge` löscht ihn nach dem Merge. `--keep-worktree` lässt den Worktree stehen; `--keep-space` lässt Space, Tab und Agent-Terminal laufen, weil Herdr einen Space ohne Terminal schließt.
+Nach der Abnahme bleibt nichts liegen: `hub done <id>` setzt `done` und räumt auf, `hub land <id> --merge|--pr` ruft dieselbe Routine nach dem Landen. Beendet wird der Agent (`hc kill`), entfernt der Worktree und der Prüf-Worktree `review-<id>` der Prüfstation — nur wenn sie sauber sind und kein Reviewer mehr läuft — und geschlossen der Space bzw. das Tab, das `hub dispatch` über die Labels `herdr.space`, `herdr.tab` und `hub.ticket` angelegt hat. Der Branch bleibt bei `hub done` und bei `--pr`; nur `--merge` löscht ihn nach dem Merge. `--keep-worktree` lässt Worktree und Prüf-Worktree stehen; `--keep-space` lässt Space, Tab und Agent-Terminal laufen, weil Herdr einen Space ohne Terminal schließt.
 
 - **Sicher:** Ein Space mit einem fremden lebenden Terminal bleibt offen; geschlossen wird dann höchstens das eigene Tab. Ein Worktree, den ein anderes Ticket beansprucht, wird nie angefasst. Hat der Worktree uncommittete Änderungen, bricht das Aufräumen ab und nennt den Grund im Klartext; Ticket und Dateien bleiben, wo sie sind.
 - **`hub cleanup [--dry-run]`** findet, was keiner mehr braucht, und meldet jede Aktion:
   - Worktrees unter `~/.herdr/worktrees/`, die kein Ticket nennt (nur saubere; fremde Pfade werden nicht betreten),
+  - Prüf-Worktrees `review-<id>` nach `done` (nicht bei offenem Ticket und nicht, solange der Reviewer läuft),
   - Spaces, die über ein Ticket-Label gehören und kein lebendes Terminal mehr haben,
   - beendete Agents (`done`/`idle`/`error` oder beendetes Terminal), die seit über einer Stunde stehen.
   `--dry-run` zeigt dieselbe Liste und ändert nichts; ohne das Flag wird in der Reihenfolge Agents → Spaces → Worktrees aufgeräumt.
