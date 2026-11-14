@@ -6,6 +6,8 @@ import { spaces, panes, agents, terminals, shared, run, openOverlay, theme, wind
 const GAP_XS = 4, GAP_S = 6, GAP_M = 8;
 const H_BTN = 26, H_BTN_S = 22, H_ROW_TAB = 28, H_SEG_ITEM = 22, H_BADGE = 16;
 const T_XS = 10.5, T_S = 11, T_M = 12;
+// Room the strip leaves for "+" (26), the overflow chip (40) and their gaps.
+const RESERVED = 26 + 40 + 2 * 4;
 
 // Panel group by factory role: Fabrik (Quests, Team) ‖ Werkzeuge. Keys stay ⌘⌥1 … ⌘⌥7.
 const FABRIK = [
@@ -173,7 +175,7 @@ export default class Tabs extends View {
     this.syncPanel(space, panel, body, PANELS);
     // Segments (5.6): both groups the same — icon only in a narrow bar, icon and name when
     // there is room; the open panel always says its name.
-    const wide = (this.barW ?? 0) >= 1400;
+    const wide = (this.barW ?? 0) / (settings().zoom || 1) >= 1400;
     const segEntry = p => {
       const on = panel && !panel.hidden && body?.active === p.id;
       const labeled = on || wide;
@@ -202,13 +204,32 @@ export default class Tabs extends View {
       .child(svg("mods/inbox/icon.svg").size(14).flex_none()).child("Inbox")
       .when(Boolean(count), el => el.child(div().h(H_BADGE).px(5).flex().items_center().rounded(8).bg(t[count.color])
         .text_size(T_XS).font_semibold().text_color(t.background).child(String(count.n))));
+    // The fixed right side, measured so the strip knows what it may take.
+    const winButtons = w?.buttons ? [iconButton("minimize", w.platform === "windows" ? svg("mods/tabs-graph/win-min.svg").size(14) : "−", "Minimieren", () => run("window.minimize")),
+      iconButton("maximize", w.platform === "windows" ? svg(`mods/tabs-graph/${w.maximized ? "win-restore" : "win-max"}.svg`).size(14) : "□", "Maximieren", () => run("window.maximize")),
+      iconButton("close-window", w.platform === "windows" ? svg("mods/tabs-graph/win-close.svg").size(14) : svg("mods/pane/close.svg").size(14), "Fenster schließen", () => run("window.close"))] : [];
+    const right = h_flex().id("tab-right").flex_none().gap(GAP_M).items_center()
+      .on_size_change((s, cx) => {
+        if (Math.abs((this.rightW ?? 0) - s.width) < 1) return;
+        this.rightW = s.width;
+        cx.notify();
+      })
+      .children([auftrag, inbox,
+        iconButton("hub-review", svg("mods/review/icon.svg").size(14), "Review des fokussierten Terminals (⌘⇧R)", () => run("mod.open", { name: "review" })),
+        segment("panels-fabrik", FABRIK), segment("panels-werkzeuge", WERKZEUGE)])
+      .when(winButtons.length > 0, el => el.child(h_flex().flex_none().gap(GAP_XS).children(winButtons)));
+    const zoom = settings().zoom || 1;
+    // Room for the strip: the bar minus everything right of it (measured, real px ÷ zoom).
+    // A cap keeps the strip from eating the fixed buttons when its tabs don't fit.
+    const stripMax = (this.barW ?? 0) > 0
+      ? Math.max(120, (this.barW - (this.rightW ?? 0)) / zoom - RESERVED - lightsPadding - 10 - 2 * GAP_M)
+      : 0;
     return h_flex().size_full().min_w(0).px(10).pl(lightsPadding).gap(GAP_M).items_center().bg(t.chrome).border_b(1).border_color(t.border)
       .on_mouse_up("left", () => { this.pressed = null; })
       .on_size_change((s, cx) => {
-        // Layout px, like every other size here: at a zoom the bar is not "narrower".
-        const w = s.width / (settings().zoom || 1);
-        if (Math.abs((this.barW ?? 0) - w) < 20) return;
-        this.barW = w;
+        // Real px here; dividing by the zoom gives the layout px the rest of the bar uses.
+        if (Math.abs((this.barW ?? 0) - s.width) < 20) return;
+        this.barW = s.width;
         cx.notify();
       })
       .on_scroll_wheel(e => { if (Math.abs(e.delta.y) >= 1) run(e.delta.y > 0 ? "tab.prev" : "tab.next"); })
@@ -216,6 +237,7 @@ export default class Tabs extends View {
       // reachable with any number of tabs (the rest of the bar drags the window).
       .child(h_flex().flex_shrink_1().min_w(0).h_full().items_center().gap(GAP_XS)
         .child(h_flex().id("tab-scroll").flex_shrink_1().min_w(0).h_full().items_center().gap(GAP_XS).overflow_x_scrollbar()
+          .when(stripMax > 0, el => el.max_w(Math.floor(stripMax)))
           .on_size_change((s, cx) => {
             if (this.stripW === s.width) return;
             this.stripW = s.width;
@@ -230,14 +252,7 @@ export default class Tabs extends View {
         .child(iconButton("tab-new", svg("mods/workspace-chrome/plus.svg").size(14), "Neuer Tab: Terminal oder Agent (⌘T)",
           () => openOverlay({ mod: "new-menu", kind: "popup", width: 250, height: 512 }))))
       .child(div().flex_1().min_w(0))
-      .child(auftrag)
-      .child(inbox)
-      .child(iconButton("hub-review", svg("mods/review/icon.svg").size(14), "Review des fokussierten Terminals (⌘⇧R)", () => run("mod.open", { name: "review" })))
-      .child(segment("panels-fabrik", FABRIK))
-      .child(segment("panels-werkzeuge", WERKZEUGE))
-      .when(w?.buttons, el => el.child(h_flex().flex_none().gap(GAP_XS)
-        .child(iconButton("minimize", w.platform === "windows" ? svg("mods/tabs-graph/win-min.svg").size(14) : "−", "Minimieren", () => run("window.minimize")))
-        .child(iconButton("maximize", w.platform === "windows" ? svg(`mods/tabs-graph/${w.maximized ? "win-restore" : "win-max"}.svg`).size(14) : "□", "Maximieren", () => run("window.maximize")))
-        .child(iconButton("close-window", w.platform === "windows" ? svg("mods/tabs-graph/win-close.svg").size(14) : svg("mods/pane/close.svg").size(14), "Fenster schließen", () => run("window.close")))));
+      // Everything right of the strip: measured so the strip knows what it may take.
+      .child(right);
   }
 }
