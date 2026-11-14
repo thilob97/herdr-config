@@ -66,7 +66,7 @@ export async function probe(m) {
     for (const h of HOSTS) {
       const found = lines.filter((l) => l.replace(/^.*[\\/]/, "").replace(/\.[^.]*$/, "").toLowerCase() === h.bin);
       const path = found.find((l) => /\.exe$/i.test(l)) ?? found.find((l) => /\.(cmd|bat)$/i.test(l));
-      bins[h.key] = path ? { path } : { missing: `${h.name} is not installed here` };
+      bins[h.key] = path ? { path } : { missing: `${h.name} ist hier nicht installiert` };
     }
     return { home: home(), bins };
   }
@@ -78,7 +78,7 @@ export async function probe(m) {
     const path = vars[h.bin];
     // WSL sees Windows' PATH: a /mnt/c shim is the Windows install, not one of this machine's.
     if (path && !path.startsWith("/mnt/")) bins[h.key] = { path };
-    else bins[h.key] = { missing: path ? `only the Windows ${h.name} is visible (${path})` : `${h.name} is not installed here` };
+    else bins[h.key] = { missing: path ? `nur das Windows-${h.name} ist sichtbar (${path})` : `${h.name} ist hier nicht installiert` };
   }
   return { home: vars.HOME, bins };
 }
