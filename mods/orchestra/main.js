@@ -12,6 +12,7 @@ import { v_flex, h_flex, ScrollHandle } from "gpui-base";
 import { agents, theme, shared, setShared, props } from "herdr";
 import { HubDaemon, HubSection, STAGES, stageOf } from "./hubview.js";
 import * as ui from "./ui.js";
+import { T_XS, T_S, T_L } from "./ui.js";
 
 export default class Orchestra extends View {
   init(_props, cx) {
@@ -34,8 +35,8 @@ export default class Orchestra extends View {
     const parts = [];
     STAGES.forEach((s, i) => {
       const n = counts[s.key], waits = s.key === "review" && n > 0;
-      if (i) parts.push(div().flex_none().text_size(11).text_color(t.dim).child("›"));
-      parts.push(div().id(`stage-${s.key}`).flex_none().h(22).px(4).gap(ui.GAP_XS).flex().items_center().rounded(6).text_size(11)
+      if (i) parts.push(div().flex_none().text_size(T_S).text_color(t.dim).child("›"));
+      parts.push(div().id(`stage-${s.key}`).flex_none().h(22).px(4).gap(ui.GAP_XS).flex().items_center().rounded(6).text_size(T_S)
         .text_color(waits ? t.blocked : n ? t.muted : t.dim)
         .tooltip(waits ? `${s.label}: ${n} wartet auf dich` : `${s.label}: ${n}`)
         .when(n > 0, (el) => el.cursor_pointer().hover((x) => x.bg(t.hover).text_color(waits ? t.blocked : t.foreground))
@@ -54,8 +55,8 @@ export default class Orchestra extends View {
     const patch = (p) => this.setGroups(this.groups().map((x) => (x.id === g.id ? { ...x, ...p } : x)));
     return ui.card(t, `grp-${g.id}`)
       .child(h_flex().h(ui.H_BTN_S).gap(ui.GAP_S).items_center()
-        .child(div().flex_1().min_w(0).truncate().text_size(13).font_semibold().text_color(t.foreground).child(g.name))
-        .child(div().flex_none().text_size(10.5).text_color(finished ? t.done : waiting ? t.blocked : t.dim)
+        .child(div().flex_1().min_w(0).truncate().text_size(T_L).font_semibold().text_color(t.foreground).child(g.name))
+        .child(div().flex_none().text_size(T_XS).text_color(finished ? t.done : waiting ? t.blocked : t.dim)
           .child(finished ? "alle fertig" : `${members.length - active}/${members.length} fertig${waiting ? ` · ${waiting} wartet` : ""}`))
         .child(ui.iconButton(t, `grp-watch-${g.id}`, `mods/workspace-chrome/${g.watch ? "pin" : "pin-off"}.svg`,
           g.watch ? "Wird beobachtet: Meldung, wenn alle fertig sind (klicken: aus)" : "Beobachten: Meldung, wenn alle fertig sind",
@@ -88,7 +89,7 @@ export default class Orchestra extends View {
     } else {
       if (by.review.length) {
         add(ui.sectionHeader(t, "Prüfung", { count: by.review.length, color: t.blocked,
-          right: div().text_size(11).text_color(t.blocked).child("wartet auf dich") }), "review");
+          right: div().text_size(T_S).text_color(t.blocked).child("wartet auf dich") }), "review");
         for (const tk of by.review) add(this.hub.ticketRow(t, tk));
       }
       add(ui.sectionHeader(t, "In Arbeit", { count: by.doing.length, color: t.working }), "doing");
