@@ -5,7 +5,8 @@ import { appHome, shared, setShared } from "herdr";
 
 export const ticketsDir = () => `${appHome()}/data/quests/tickets`;
 const FIELDS = ["title", "status", "repo", "labels", "due", "machine", "agent", "branch", "base", "worktree", "terminal",
-  "source", "checks", "evidence", "merged", "pr", "assignee", "blocked_by", "tags", "waiting", "by", "updated"];
+  "source", "checks", "checks_head", "checks_at", "checks_duration", "checks_exit", "checks_cmd", "verify", "evidence",
+  "merged", "pr", "assignee", "blocked_by", "tags", "waiting", "by", "updated"];
 
 export function parse(id, text) {
   const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(text);
@@ -44,8 +45,8 @@ export async function setStatus(id, status) {
   await fs.writeFile(path, serialize(t));
 }
 
-// The orchestrator's summary section that `hub review` appends; it ends where the
-// ticket's `## Verlauf` begins.
+// The orchestrator's summary section that `hub review` appends; it ends where the next
+// `##` section begins (## Prüfung or the ticket's `## Verlauf`).
 export const summaryOf = (t) => /\n## Zusammenfassung \(Orchestrator\)\n([\s\S]*?)(?=\n## |$)/.exec(t.body ?? "")?.[1]?.trim() ?? "";
 
 // `hub ticket comment` lines under `## Verlauf`: `- 2026-11-14 22:04 · rolle · text`,
@@ -70,16 +71,53 @@ export function questionOf(t) {
   return mentionsOf(last.text).includes("mensch") || waiting.includes("mensch") ? last : null;
 }
 
+// The head line of ## Prüfung, as fields. The body survives a Quests edit that drops
+// the extra frontmatter, so the gate and the chips fall back to it.
+const metaFields = (meta) => {
+  const parts = String(meta ?? "").split(" · ").map((s) => s.trim()).filter(Boolean);
+  const out = {};
+  if (/^\d{4}-\d{2}-\d{2}/.test(parts[0] ?? "")) out.at = parts.shift();
+  if (parts[0] === "pass" || parts[0] === "fail") out.checks = parts.shift();
+  if (/^\d+(?:\.\d+)?\s*s$/.test(parts[0] ?? "")) out.duration = parts.shift().replace(/\s*s$/, "");
+  if ((parts[0] ?? "").startsWith("exit ")) out.exit = parts.shift().slice(5).trim();
+  if ((parts[0] ?? "").startsWith("HEAD ")) out.head = parts.shift().slice(5).trim();
+  if (parts.length) out.cmd = parts.join(" · ");
+  return out;
+};
+
+// The ## Prüfung section `hub verify` writes: its meta line and the captured output
+// (the last 20 lines, in a fence).
+export function verifyOf(t) {
+  const body = t.body ?? "";
+  const m = /^## Prüfung[ \t]*\n([\s\S]*?)(?=^## |$(?![\s\S]))/m.exec(body);
+  if (!m || !m[1].trim()) return null;
+  const lines = m[1].replace(/\n+$/, "").split("\n");
+  const meta = /^-\s*(.*)$/.exec(lines[0] ?? "")?.[1] ?? "";
+  const tail = [];
+  let fenced = false;
+  for (const line of lines) {
+    if (line.trimStart().startsWith("```")) { fenced = !fenced; continue; }
+    if (fenced) tail.push(line);
+  }
+  return { meta, tail, fields: metaFields(meta) };
+}
+
 // The orchestrator's tickets as shared("orchestra.tickets") carries them: no body, but its
-// summary, its Verlauf, an open question to the human, `checks` (pass|fail|null) and
+// summary, its Verlauf, an open question to the human, `checks` (pass|fail|null), the
+// check's run (HEAD, duration, exit, command) with its output tail in `verify`, and
 // `evidence` (paths), newest first.
 export async function published() {
   return (await list()).filter((t) => t.by === "orchestrator")
-    .map(({ body, checks, evidence, ...t }) => ({
-      ...t, summary: summaryOf({ body }), verlauf: verlaufOf({ body }), question: questionOf({ body, waiting: t.waiting }),
-      checks: checks || null,
-      evidence: (evidence ?? "").split(",").map((p) => p.trim()).filter(Boolean),
-    }))
+    .map(({ body, checks, evidence, ...t }) => {
+      const verify = verifyOf({ body }), v = verify?.fields ?? {};
+      for (const [k, val] of Object.entries({ checks_head: v.head, checks_at: v.at, checks_duration: v.duration,
+        checks_exit: v.exit, checks_cmd: v.cmd })) if (!t[k] && val) t[k] = val;
+      return {
+        ...t, summary: summaryOf({ body }), verlauf: verlaufOf({ body }), question: questionOf({ body, waiting: t.waiting }),
+        checks: checks || v.checks || null, verify,
+        evidence: (evidence ?? "").split(",").map((p) => p.trim()).filter(Boolean),
+      };
+    })
     .sort((a, b) => (b.updated ?? "").localeCompare(a.updated ?? ""));
 }
 

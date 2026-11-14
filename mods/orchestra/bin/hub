@@ -17,9 +17,16 @@ reports into it) and show in the Team-Panel under it.
   hub ticket inbox AGENT [--json]           tickets naming (@), assigning or waiting on AGENT
   hub ticket watch ID --on AGENT            "waiting for an answer from @AGENT"
   hub dispatch ID [--agent omp|claude|codex|"cmd args"] [--no-worktree] [--branch B]
-  hub review ID --summary TEXT [--checks pass|fail] [--evidence PATH]...
-                                            ready for the human: status review + summary; --checks sets the
-                                            gate, --evidence replaces the evidence files (omitted: unchanged)
+  hub verify ID [--or-command CMD]     run the repo's check in the ticket's worktree, on its machine:
+                                            .herdr/verify.sh (else the ticket's `verify` command, --or-command);
+                                            records checks pass|fail, exit code, duration, checks_head
+                                            and the last 20 lines under ## Prüfung
+  hub gate ID [--json]                 does the recorded check still count? pass and checks_head = HEAD
+  hub gates [--json]                   the same for every open ticket (Team panel)
+  hub review ID --summary TEXT [--evidence PATH]... [--force --reason TEXT]
+                                            ready for the human: status review + summary; refuses unless
+                                            `hub verify` passed on the worktree's HEAD; --force needs --reason
+                                            and writes it to the Verlauf; --evidence replaces the files
   hub land ID --merge | --pr                after acceptance: merge into its base branch, or push and open a
                                             pull request (gh); then end its agent and remove its worktree
   hub done ID                               accepted without landing
@@ -31,8 +38,9 @@ import argparse, json, os, pwd, re, secrets, shlex, subprocess, sys, time, unico
 APP = os.environ.get("HERDR_APP_HOME") or os.path.expanduser("~/.config/herdr-app")
 TICKETS = os.path.join(APP, "data", "quests", "tickets")
 FIELDS = ["title", "status", "repo", "labels", "due", "machine", "agent", "branch", "base", "worktree", "terminal",
-          "source", "checks", "evidence", "merged", "pr", "assignee", "blocked_by", "tags", "waiting", "by",
-          "updated"]
+          "source", "checks", "checks_head", "checks_at", "checks_duration", "checks_exit", "checks_cmd", "verify",
+          "evidence",
+          "merged", "pr", "assignee", "blocked_by", "tags", "waiting", "by", "updated"]
 COSTS = os.path.join(APP, "data", "orchestra", "costs.json")  # written by the Team panel's watcher
 AGENTS = {"omp": ["omp"], "claude": ["claude"], "codex": ["codex", "--no-daemon"], "pi": ["pi"]}
 
@@ -138,6 +146,106 @@ def add_comment(t, who, text):
     t["body"] = (rest + "\n\n" if rest else "") + section + "\n"
     t["tags"] = ", ".join(sorted(set(names(t.get("tags"))) | set(mentions(text))))
     return line
+
+
+# ---- Prüfung: the repo's check runs in the worktree, the gate only trusts that run
+
+PRUEFUNG = "## Prüfung"
+
+
+def prufung(t):
+    """The ## Prüfung section: its meta line and the captured output lines."""
+    m = re.search(r"(?ms)^## Prüfung[ \t]*\n(.*?)(?=\n## |\Z)", t.get("body") or "")
+    if not m:
+        return {"meta": "", "tail": []}
+    lines = m.group(1).strip("\n").splitlines()
+    meta = lines[0][2:].strip() if lines and lines[0].startswith("- ") else ""
+    tail, fenced = [], False
+    for line in lines:
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            continue
+        if fenced:
+            tail.append(line)
+    return {"meta": meta, "tail": tail}
+
+
+def set_prufung(t, text):
+    """Replace ## Prüfung in the body, keeping it just before ## Verlauf."""
+    body = re.sub(r"(?ms)^## Prüfung[ \t]*\n.*?(?=\n## |\Z)", "", t.get("body") or "").strip("\n")
+    block = f"{PRUEFUNG}\n{text}".rstrip("\n")
+    m = re.search(r"(?m)^## Verlauf[ \t]*$", body)
+    body = (body[:m.start()].rstrip("\n") + "\n\n" + block + "\n\n" + body[m.start():]) if m else \
+        (body + "\n\n" + block if body else block)
+    t["body"] = body.strip("\n") + "\n"
+
+
+def meta_fields(meta):
+    """The ## Prüfung head line, as fields — the record survives a Quests edit that drops
+    the frontmatter fields (Quests keeps the body)."""
+    parts = [p.strip() for p in (meta or "").split(" · ") if p.strip()]
+    out = {}
+    if parts and re.match(r"\d{4}-\d{2}-\d{2}", parts[0]):
+        out["at"] = parts.pop(0)
+    if parts and parts[0] in ("pass", "fail"):
+        out["checks"] = parts.pop(0)
+    if parts and re.fullmatch(r"\d+(?:\.\d+)?\s*s", parts[0]):
+        out["duration"] = parts.pop(0)[:-1].strip()
+    if parts and parts[0].startswith("exit "):
+        out["exit"] = parts.pop(0)[5:].strip()
+    if parts and parts[0].startswith("HEAD "):
+        out["head"] = parts.pop(0)[5:].strip()
+    if parts:
+        out["cmd"] = " · ".join(parts)
+    return out
+
+
+def target_of(t, on=None):
+    """The ticket's worktree, else its repo; None when neither exists here."""
+    for p in (t.get("worktree"), t.get("repo")):
+        if p and run(["test", "-d", p], on, check=False).returncode == 0:
+            return p
+    return None
+
+
+def head_of(t, on=None):
+    """(HEAD of the worktree, error). The checks must belong to this state."""
+    folder = target_of(t, on)
+    if not folder:
+        return None, "Worktree und Repo fehlen"
+    r = run(["git", "rev-parse", "HEAD"], on, folder, check=False)
+    if r.returncode != 0:
+        return None, f"HEAD nicht lesbar in {folder}: {(r.stderr or r.stdout).strip()}"
+    return r.stdout.strip(), None
+
+
+def gate(t):
+    """Whether the recorded check counts: pass, and run on the worktree's current HEAD."""
+    on = t.get("machine") or None
+    head, err = head_of(t, on)
+    section = prufung(t)
+    meta = meta_fields(section["meta"])
+    checks = t.get("checks") or meta.get("checks")
+    checked = t.get("checks_head") or meta.get("head") or ""
+    g = {"id": t["id"], "checks": checks, "checked_head": checked or None,
+         "head": head, "duration": t.get("checks_duration") or meta.get("duration"),
+         "at": t.get("checks_at") or meta.get("at"), "exit": t.get("checks_exit") or meta.get("exit"),
+         "cmd": t.get("checks_cmd") or meta.get("cmd"),
+         "meta": section["meta"], "tail": section["tail"]}
+    if checks != "pass":
+        why = (f"Checks rot (Exit {g['exit'] or '?'}): hub verify {t['id']} erneut ausführen"
+               if checks == "fail" else f"Noch keine Prüfung: hub verify {t['id']} ausführen")
+        g.update(ok=False, reason=why)
+    elif err:
+        g.update(ok=False, reason=f"{err}; hub verify {t['id']} prüft im Worktree")
+    elif not checked:
+        g.update(ok=False, reason=f"Prüfung ohne HEAD aufgezeichnet: hub verify {t['id']} erneut ausführen")
+    elif head != checked and not (head and head.startswith(checked)):
+        g.update(ok=False, reason=(f"Checks älter als der letzte Commit (geprüft {checked[:7]}, "
+                                   f"jetzt {head[:7]}): hub verify {t['id']} erneut ausführen"))
+    else:
+        g.update(ok=True, reason="")
+    return g
 
 
 def open_blockers(t):
@@ -411,18 +519,88 @@ def cmd_dispatch(a):
     print(json.dumps({"ticket": a.id, "terminal": out["address"], "name": name, "folder": folder, "branch": branch}, ensure_ascii=False))
 
 
+def cmd_verify(a):
+    t = read(a.id)
+    on = t.get("machine") or None
+    folder = target_of(t, on)
+    if not folder:
+        die(f"{a.id}: weder Worktree noch Repo vorhanden; hub ticket set {a.id} repo=/pfad")
+    top = run(["git", "rev-parse", "--show-toplevel"], on, folder, check=False)
+    if top.returncode != 0:
+        die(f"{a.id}: kein Git-Repository in {folder}: {(top.stderr or top.stdout).strip()}")
+    root = top.stdout.strip()
+    script = f"{root}/.herdr/verify.sh"
+    fallback = (a.or_command or t.get("verify") or "").strip()
+    if run(["test", "-f", script], on, check=False).returncode == 0:
+        argv, label = ["sh", script], ".herdr/verify.sh"
+    elif fallback:
+        argv, label = ["sh", "-c", fallback], " ".join(fallback.split())
+    else:
+        die(f"{a.id}: kein Prüfbefehl: {script} fehlt. Der Agent legt es beim ersten Ticket an und committet es; "
+            f"ersatzweise hub ticket set {a.id} verify=\"<befehl>\".")
+    started = time.monotonic()
+    r = run(argv, on, root, check=False)
+    duration = time.monotonic() - started
+    output = "\n".join(part.rstrip("\n") for part in (r.stdout or "", r.stderr or "") if part)
+    tail = output.splitlines()[-20:]
+    head, _ = head_of(t, on)
+    ok = r.returncode == 0
+    t.update(checks="pass" if ok else "fail", checks_head=head or "",
+             checks_at=time.strftime("%Y-%m-%d %H:%M"), checks_duration=f"{duration:.1f}",
+             checks_exit=str(r.returncode), checks_cmd=label)
+    fence = "`" * (max([len(m) for line in tail for m in re.findall(r"`+", line)] + [2]) + 1)
+    set_prufung(t, f"- {t['checks_at']} · {'pass' if ok else 'fail'} · {duration:.1f} s · exit {r.returncode} · "
+                   f"HEAD {(head or '?')[:7]} · {label}\n\n{fence}text\n{chr(10).join(tail)}\n{fence}")
+    write(t)
+    print(f"{a.id}: Checks {'pass' if ok else 'fail'} · {duration:.1f} s · exit {r.returncode} · "
+          f"HEAD {(head or '?')[:7]} ({len(tail)} Zeilen Ausgabe unter ## Prüfung)")
+
+
+def cmd_gate(a):
+    g = gate(read(a.id))
+    if a.json:
+        print(json.dumps(g, ensure_ascii=False))
+        return
+    print(f"{a.id}: {'frei' if g['ok'] else 'gesperrt'} · {g['reason'] or 'Checks grün auf dem HEAD des Worktrees'}")
+
+
+def cmd_gates(_a):
+    """Every open ticket's gate, for the Team panel (without the output tail)."""
+    rows = []
+    for t in all_tickets():
+        if t["status"] == "done":
+            continue
+        g = gate(t)
+        g.pop("tail", None)
+        rows.append(g)
+    print(json.dumps(rows, ensure_ascii=False))
+
+
 def cmd_review(a):
     t = read(a.id)
+    if a.force:
+        if not a.reason.strip():
+            die("--force verlangt --reason \"…\": der Grund gehört in den Verlauf")
+        g = gate(t)
+        add_comment(t, "hub", f"Gate überfahren ({'frei' if g['ok'] else g['reason']}): {a.reason.strip()}")
+    else:
+        g = gate(t)
+        if not g["ok"]:
+            die(f"{a.id}: {g['reason']}. Übergang nach review verweigert; nur mit --force --reason \"…\".")
     body, verlauf = split_verlauf(t["body"])
-    body = re.sub(r"\n?## Zusammenfassung \(Orchestrator\)\n.*\Z", "", body, flags=re.S).strip("\n")
+    # Only the old summary goes; the check record keeps its place right after it.
+    m = re.search(r"(?ms)^## Prüfung[ \t]*\n.*?(?=\n## |\Z)", body)
+    pru = m.group(0).rstrip("\n") if m else ""
+    if m:
+        body = (body[:m.start()] + body[m.end():]).strip("\n")
+    body = re.sub(r"(?ms)^## Zusammenfassung \(Orchestrator\)\n.*?(?=\n## |\Z)", "", body).strip("\n")
     t["body"] = (f"{body}\n\n" if body else "") + f"## Zusammenfassung (Orchestrator)\n{a.summary.strip()}\n"
+    if pru:
+        t["body"] += f"\n{pru}\n"
     if verlauf:
         t["body"] += f"\n{verlauf}\n"
     t["status"] = "review"
-    # Gates stay as they were unless this round states them: --checks overwrites the check
-    # status, --evidence replaces the list.
-    if a.checks is not None:
-        t["checks"] = a.checks
+    # The gate (above) comes from `hub verify` only; --evidence replaces the list.
     if a.evidence:
         t["evidence"] = ", ".join(e.strip() for e in a.evidence if e.strip())
     write(t)
@@ -467,7 +645,7 @@ def cmd_land(a):
         if run(["git", "remote", "get-url", "origin"], on, wt, check=False).returncode != 0:
             die("no remote 'origin' to push to")
         run(["git", "push", "-u", "origin", branch], on, wt)
-        summary = re.search(r"\n## Zusammenfassung \(Orchestrator\)\n(.*?)(?=\n## Verlauf|\Z)", t["body"], re.S)
+        summary = re.search(r"(?ms)^## Zusammenfassung \(Orchestrator\)\n(.*?)(?=\n## |\Z)", t["body"])
         body = (summary.group(1).strip() if summary else t["body"].strip()) + f"\n\n---\nTicket `{a.id}`, über den Herdr-Orchestrator umgesetzt."
         r = run(["gh", "pr", "create", "--base", base, "--head", branch, "--title", t["title"], "--body", body], on, wt, check=False)
         if r.returncode != 0:
@@ -567,11 +745,23 @@ def main():
     d.add_argument("--no-worktree", action="store_true")
     d.add_argument("--branch")
     d.set_defaults(fn=cmd_dispatch)
+    vf = sub.add_parser("verify")
+    vf.add_argument("id")
+    vf.add_argument("--or-command", metavar="CMD", help="falls .herdr/verify.sh fehlt (vor dem Ticket-Feld verify)")
+    vf.set_defaults(fn=cmd_verify)
+    gt = sub.add_parser("gate")
+    gt.add_argument("id")
+    gt.add_argument("--json", action="store_true")
+    gt.set_defaults(fn=cmd_gate)
+    gts = sub.add_parser("gates")
+    gts.add_argument("--json", action="store_true", help="JSON (Standard)")
+    gts.set_defaults(fn=cmd_gates)
     rv = sub.add_parser("review")
     rv.add_argument("id")
     rv.add_argument("--summary", required=True)
-    rv.add_argument("--checks", choices=["pass", "fail"])
     rv.add_argument("--evidence", action="append", default=[], metavar="PATH")
+    rv.add_argument("--force", action="store_true")
+    rv.add_argument("--reason", default="", metavar="TEXT")
     rv.set_defaults(fn=cmd_review)
     dn = sub.add_parser("done")
     dn.add_argument("id")
