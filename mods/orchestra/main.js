@@ -94,6 +94,7 @@ export default class Orchestra extends View {
     const at = {};
     let n = 0;
     const add = (el, key) => { if (key) at[key] = n; body.child(el); n++; };
+    add(this.hub.statsRow(t));
     add(this.hub.card(t));
     if (!all.length) {
       add(div().h(200).flex_none().child(ui.empty(t, "Noch keine Tickets. Gib dem Team einen Auftrag (⌘⇧N).", { icon: "mods/orchestra/icons/tray.svg" })));

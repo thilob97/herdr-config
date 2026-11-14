@@ -8,7 +8,7 @@ const FIELDS = ["title", "status", "repo", "labels", "due", "machine", "agent", 
   "space", "tab", "source", "checks", "checks_head", "checks_at", "checks_duration", "checks_exit", "checks_cmd", "verify", "evidence",
   "merged", "pr", "ci", "ci_at", "ci_url", "ci_details",
   "review", "review_head", "review_at", "review_summary", "review_rounds", "reviewer", "review_terminal",
-  "assignee", "blocked_by", "tags", "waiting", "by", "updated"];
+  "assignee", "blocked_by", "tags", "waiting", "by", "updated", "created", "status_at", "status_log"];
 
 export function parse(id, text) {
   const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(text);
@@ -41,9 +41,16 @@ export async function list() {
 export async function setStatus(id, status) {
   const path = `${ticketsDir()}/${id}.md`;
   const t = parse(id, await fs.readFile(path, "utf8"));
-  t.status = status;
   const d = new Date(), p = (n) => String(n).padStart(2, "0");
-  t.updated = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  const stamp = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  // The same status log `hub` keeps: `hub stats` counts lead time and rework from it.
+  const log = String(t.status_log ?? "").split("|").filter(Boolean);
+  if (status !== t.status || !log.length) {
+    t.status = status;
+    t.status_at = stamp;
+    if (log.at(-1)?.split("@")[0] !== status) t.status_log = [...log, `${status}@${stamp}`].join("|");
+  }
+  t.updated = stamp;
   await fs.writeFile(path, serialize(t));
 }
 

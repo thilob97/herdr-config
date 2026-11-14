@@ -62,11 +62,15 @@ reports into it) and show in the Team-Panel under it.
   hub cleanup [--dry-run]                   remove leftovers: worktrees without a ticket, spaces
                                             without live terminals that belong to a ticket, finished
                                             agents older than an hour
-  hub status                                tickets with their agents' live status, CI and cost so far;
-                                            done tickets are listed only while something is left
+  hub status                                tickets with their agents' live status, CI, age (since the
+                                            last status change) and cost so far; done tickets are
+                                            listed only while something is left
+  hub stats [--json] [--days 14]      throughput per ticket, station and repo: lead time (todo→done),
+                                            review rounds, rework (back to doing after review) and cost,
+                                            with today's numbers and the last 7 days for the UI
 Python 3, standard library only.
 """
-import argparse, json, os, pwd, re, secrets, shlex, subprocess, sys, time, unicodedata
+import argparse, datetime, json, os, pwd, re, secrets, shlex, subprocess, sys, time, unicodedata
 
 APP = os.environ.get("HERDR_APP_HOME") or os.path.expanduser("~/.config/herdr-app")
 TICKETS = os.path.join(APP, "data", "quests", "tickets")
@@ -74,7 +78,7 @@ FIELDS = ["title", "status", "repo", "labels", "due", "machine", "agent", "branc
           "space", "tab", "source", "checks", "checks_head", "checks_at", "checks_duration", "checks_exit", "checks_cmd", "verify",
           "evidence", "merged", "pr", "ci", "ci_at", "ci_url", "ci_details",
           "review", "review_head", "review_at", "review_summary", "review_rounds", "reviewer", "review_terminal",
-          "assignee", "blocked_by", "tags", "waiting", "by", "updated"]
+          "assignee", "blocked_by", "tags", "waiting", "by", "updated", "created", "status_at", "status_log"]
 COSTS = os.path.join(APP, "data", "orchestra", "costs.json")  # written by the Team panel's watcher
 AGENTS = {"omp": ["omp"], "claude": ["claude"], "codex": ["codex", "--no-daemon"], "pi": ["pi"]}
 LESSON_MAX = 40   # the file never grows past this; the oldest lines fall out
@@ -147,6 +151,59 @@ def all_tickets():
     except OSError:
         return []
     return [read(n[:-3]) for n in names]
+
+
+# ---- Messwerte: every move is recorded, so throughput and rework can be counted
+
+STAMP = "%Y-%m-%d %H:%M"
+
+
+def now_stamp():
+    return time.strftime(STAMP)
+
+
+def epoch(ts):
+    """Local seconds for a ticket stamp ("JJJJ-MM-TT HH:MM"), None when unreadable."""
+    try:
+        return time.mktime(time.strptime(str(ts).strip(), STAMP))
+    except (TypeError, ValueError):
+        return None
+
+
+def log_status(t, status, ts):
+    """Append a move to `status_log` (`state@stamp|state@stamp`), never the same state twice in a row."""
+    parts = [p for p in (t.get("status_log") or "").split("|") if p.strip()]
+    if parts and parts[-1].rsplit("@", 1)[0].strip() == status:
+        return
+    parts.append(f"{status}@{ts}")
+    t["status_log"] = "|".join(parts)
+
+
+def set_status(t, status, ts=None):
+    """The one place a status changes: `status`, `status_at` and the append-only log stay in step."""
+    ts = ts or now_stamp()
+    if status == t.get("status") and t.get("status_log"):
+        return
+    t["status"] = status
+    t["status_at"] = ts
+    log_status(t, status, ts)
+
+
+def timeline(t):
+    """[(seconds, state)] oldest first, from the recorded status log only.
+
+    A ticket from before the log has no path to measure: its next status change starts
+    the log. Inventing stages from `updated` would put made-up minutes into the median."""
+    ev = []
+    for part in (t.get("status_log") or "").split("|"):
+        if "@" not in part:
+            continue
+        state, ts = part.strip().rsplit("@", 1)
+        at = epoch(ts)
+        if at is not None and state.strip():
+            ev.append((at, state.strip()))
+    ev.sort(key=lambda e: e[0])
+    return ev
 
 
 # ---- verlauf: the ticket's comment history, the only channel between agents
@@ -517,8 +574,10 @@ def cmd_new(a):
     tid, n = base, 2
     while os.path.exists(path_of(tid)):
         tid, n = f"{base}-{n}", n + 1
-    t = {"id": tid, "title": a.title, "status": "todo", "repo": a.repo or "", "labels": a.labels or "",
+    t = {"id": tid, "title": a.title, "repo": a.repo or "", "labels": a.labels or "",
          "machine": a.on or "", "source": a.source or "", "by": "orchestrator", "body": (body or "").strip() + "\n"}
+    t["created"] = now_stamp()
+    set_status(t, "todo", t["created"])
     write(t)
     print(tid)
 
@@ -650,13 +709,19 @@ def cmd_watch(a):
 
 def cmd_set(a):
     t = read(a.id)
+    moved = None
     for kv in a.pairs:
         if "=" not in kv:
             die(f"expected key=value, got {kv!r}")
         k, v = kv.split("=", 1)
         if k not in FIELDS:
             die(f"unknown field {k} (known: {', '.join(FIELDS)})")
-        t[k] = v
+        if k == "status":
+            moved = v
+        else:
+            t[k] = v
+    if moved is not None:
+        set_status(t, moved)
     write(t)
 
 
@@ -732,8 +797,9 @@ def cmd_dispatch(a):
     if r.returncode != 0:
         die(f"hc run: {(r.stderr or r.stdout).strip()}")
     out = json.loads(r.stdout)
-    t.update(status="doing", agent=a.agent, branch=branch or "", worktree=folder if branch else "",
+    t.update(agent=a.agent, branch=branch or "", worktree=folder if branch else "",
              terminal=out["address"], space=space, tab=tab)
+    set_status(t, "doing")
     write(t)
     print(json.dumps({"ticket": a.id, "terminal": out["address"], "name": name, "folder": folder, "branch": branch}, ensure_ascii=False))
 
@@ -843,7 +909,7 @@ def cmd_review_verdict(a):
     set_review(t, f"- {at} · {a.verdict} · Runde {n} · HEAD {head[:7]} · {t.get('reviewer') or 'review'}\n\n{summary}")
     add_comment(t, "review", f"Urteil: {a.verdict} (Runde {n}) · {summary}")
     if a.verdict == "fail":
-        t["status"] = "doing"
+        set_status(t, "doing")
     write(t)
     notified = False
     if a.verdict == "fail" and t.get("terminal") and is_live(t["terminal"]):
@@ -945,7 +1011,7 @@ def cmd_review(a):
         t["body"] += f"\n{rev}\n"
     if verlauf:
         t["body"] += f"\n{verlauf}\n"
-    t["status"] = "review"
+    set_status(t, "review")
     # The gate (above) comes from `hub verify` and the reviewer's verdict; --evidence replaces the list.
     if a.evidence:
         t["evidence"] = ", ".join(e.strip() for e in a.evidence if e.strip())
@@ -956,7 +1022,7 @@ def cmd_review(a):
 def cmd_done(a):
     t = read(a.id)
     res = cleanup_ticket(t, keep_worktree=a.keep_worktree, keep_space=a.keep_space)
-    t["status"] = "done"
+    set_status(t, "done")
     write(t)
     print(f"{a.id}: done")
     for n in res["notes"]:
@@ -1476,7 +1542,7 @@ def apply_ci(t, res, feedback=True):
             add_comment(t, "ci", text)
         if feedback and t.get("terminal") and is_live(t["terminal"]):
             send_agent(t["terminal"], f"{t['id']}: CI rot, siehe Kommentar")
-        t["status"] = "doing"
+        set_status(t, "doing")
     else:
         t.pop("ci_details", None)
     return state
@@ -1639,7 +1705,8 @@ def cmd_land(a):
             result.update(ci=t["ci"], ci_at=t.get("ci_at"))
             if res["state"] != "pass":
                 # Not green: the agent and its checkout stay, so the failure can be fixed.
-                t.setdefault("status", "review")
+                if not t.get("status"):
+                    set_status(t, "review")
                 write(t)
                 why = {"fail": f"CI rot: {', '.join(c.get('name') or '?' for c in res['checks'])}",
                        "unknown": f"CI nicht prüfbar: {res.get('error') or 'keine Antwort'}",
@@ -1652,7 +1719,7 @@ def cmd_land(a):
     result["cleanup"] = res["notes"] + res["skipped"]
     if a.merge and not a.keep_worktree and not res.get("aborted"):
         run(["git", "branch", "-d", branch], on, main, check=False)
-    t["status"] = "done"
+    set_status(t, "done")
     write(t)
     # The lesson comes last: the work is landed even when writing the file fails (it is
     # reported then, but the ticket stays accepted and its Verlauf is not half-written).
@@ -1685,13 +1752,15 @@ def cmd_status(_a):
     tickets = all_tickets()
     open = [t for t in tickets if t["status"] != "done"]
     if open:
-        print(f"{'Ticket':<40} {'Status':<7} {'Urteil':<7} {'Runden':>6} {'CI':<5} {'Terminal':<16} {'Live':<9} {'Kosten':>7} {'Verlauf':>7}  Titel")
+        print(f"{'Ticket':<40} {'Status':<7} {'Urteil':<7} {'Runden':>6} {'CI':<5} {'Terminal':<16} {'Live':<9} {'Alter':>6} {'Kosten':>7} {'Verlauf':>7}  Titel")
     for t in open:
         term = t.get("terminal", "")
         ci = f"CI {CI_MARK.get(t.get('ci'), '–')}"
         cost = f"${per[t['id']]:.2f}" if t["id"] in per else "-"
+        # Age since the last status change (tickets from before the log fall back to `updated`).
+        age_t = age(t.get("status_at") or t.get("updated") or "")
         print(f"{t['id']:<40} {t['status']:<7} {(t.get('review') or '–'):<7} {(t.get('review_rounds') or '–'):>6} "
-              f"{ci:<5} {term:<16} {live.get(term, '-' if not term else 'beendet'):<9} {cost:>7} "
+              f"{ci:<5} {term:<16} {live.get(term, '-' if not term else 'beendet'):<9} {age_t:>6} {cost:>7} "
               f"{len(entries(t)):>7}  {t['title']}")
     rests, spaces = [], None
     for t in (x for x in tickets if x["status"] == "done"):
@@ -1715,6 +1784,136 @@ def cmd_status(_a):
             print(f"  {t['id']}: {', '.join(left)}")
     if c:
         print(f"\nBudget pro Ticket ${c.get('ticketBudget', 0):.0f}, Team ${c.get('teamBudget', 0):.0f}; offen bisher ${c.get('teamCost', 0):.2f}")
+
+
+# ---- Messwerte: throughput, rework and cost, per ticket, station and repo
+
+STATIONS = [("todo", "Geplant"), ("doing", "In Arbeit"), ("review", "Prüfung")]
+
+
+def median(values):
+    vals = sorted(v for v in values if v is not None)
+    if not vals:
+        return None
+    mid = len(vals) // 2
+    return vals[mid] if len(vals) % 2 else (vals[mid - 1] + vals[mid]) / 2
+
+
+def dur(minutes):
+    if minutes is None:
+        return "—"
+    m = int(round(minutes))
+    return f"{m} min" if m < 60 else f"{m // 60} h {m % 60:02d}"
+
+
+def measure(t, now, spent):
+    """One ticket: minutes per station, lead time (todo→done), review rounds, rework, cost."""
+    ev = timeline(t)
+    stages = {}
+    for (ts, state), (nts, _nxt) in zip(ev, ev[1:]):
+        stages.setdefault(state, []).append(max(0.0, (nts - ts) / 60))
+    if ev and ev[-1][1] != "done":
+        stages.setdefault(ev[-1][1], []).append(max(0.0, (now - ev[-1][0]) / 60))
+    done_ts = next((ts for ts, state in reversed(ev) if state == "done"), None)
+    # Rework: back in work after it had been in review (a fail sends it there too).
+    rework = [ts for i, (ts, state) in enumerate(ev) if i and state == "doing" and ev[i - 1][1] == "review"]
+    # Rounds: entries into review from the log, plus the Prüfstation's own counter.
+    try:
+        recorded = int(t.get("review_rounds") or 0)
+    except (TypeError, ValueError):
+        recorded = 0
+    rounds = max(sum(1 for _ts, state in ev if state == "review"), recorded)
+    return {"id": t["id"], "title": t.get("title") or "", "repo": t.get("repo") or "",
+            "status": t.get("status") or "todo",
+            "created": int(ev[0][0]) if ev else None, "done_at": int(done_ts) if done_ts else None,
+            "lead_min": round((done_ts - ev[0][0]) / 60, 1) if done_ts and ev else None,
+            "stages": {k: [round(x, 1) for x in v] for k, v in stages.items()},
+            "rounds": rounds,
+            "rework": len(rework), "rework_at": [int(x) for x in rework],
+            "cost": round(float(spent or 0), 2)}
+
+
+def aggregate(rows):
+    """The same numbers for a set of tickets: done, median lead, rounds, rework, cost, per station."""
+    done = [r for r in rows if r["status"] == "done"]
+    leads = [r["lead_min"] for r in done if r["lead_min"] is not None]
+    stations = []
+    for key, label in STATIONS:
+        vals = [x for r in rows for x in r["stages"].get(key, [])]
+        stations.append({"key": key, "label": label, "count": len(vals), "sum_min": round(sum(vals), 1),
+                         "median_min": round(median(vals), 1) if vals else None})
+    return {"tickets": len(rows), "done": len(done),
+            "median_min": round(median(leads), 1) if leads else None,
+            "rounds": sum(r["rounds"] for r in rows), "rework": sum(r["rework"] for r in rows),
+            "cost": round(sum(r["cost"] for r in rows), 2), "stations": stations}
+
+
+def day_of(ts):
+    return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+
+
+def cmd_stats(a):
+    days = max(1, a.days)
+    now = time.time()
+    per_ticket = costs().get("tickets", {})
+    tickets = all_tickets()
+    rows = [measure(t, now, per_ticket.get(t["id"])) for t in tickets]
+    events = {t["id"]: timeline(t) for t in tickets}
+    # The days a ticket moved: its transitions plus the day it was created or done.
+    touched = {r["id"]: {day_of(ts) for ts, _state in events[r["id"]]}
+                      | ({day_of(r["done_at"])} if r["done_at"] else set()) for r in rows}
+    today = datetime.date.today()
+    today_s = today.isoformat()
+    start = epoch((today - datetime.timedelta(days=days - 1)).isoformat() + " 00:00") or 0
+    # Active in the window by its last recorded move; a ticket without a log by its last write.
+    last_seen = {r["id"]: (events[r["id"]][-1][0] if events[r["id"]] else epoch((t or {}).get("updated")) or 0)
+                 for r, t in zip(rows, tickets)}
+    active = [r for r in rows if last_seen[r["id"]] >= start]
+    agg = aggregate(active)
+    done_today = [r for r in rows if r["done_at"] and day_of(r["done_at"]) == today_s]
+    today_row = {"date": today_s, "done": len(done_today),
+                 "median_min": round(median([r["lead_min"] for r in done_today]), 1) if done_today else None,
+                 "rework": sum(1 for r in rows for ts in r["rework_at"] if day_of(ts) == today_s),
+                 "cost": round(sum(r["cost"] for r in rows if today_s in touched[r["id"]]), 2)}
+    history = []
+    for i in range(6, -1, -1):
+        d = (today - datetime.timedelta(days=i)).isoformat()
+        done_d = [r for r in rows if r["done_at"] and day_of(r["done_at"]) == d]
+        history.append({"date": d, "done": len(done_d),
+                        "median_min": round(median([r["lead_min"] for r in done_d]), 1) if done_d else None,
+                        "rework": sum(1 for r in rows for ts in r["rework_at"] if day_of(ts) == d),
+                        "cost": round(sum(r["cost"] for r in rows if d in touched[r["id"]]), 2)})
+    repos = []
+    for repo in sorted({r["repo"] or "ohne Repo" for r in active}):
+        repos.append({"repo": repo, **aggregate([r for r in active if (r["repo"] or "ohne Repo") == repo])})
+    out = {"days": days, "at": int(now * 1000), "today": today_row, "history": history,
+           "summary": {k: agg[k] for k in ("tickets", "done", "median_min", "rounds", "rework", "cost")},
+           "stations": agg["stations"], "repos": repos, "tickets": active}
+    if a.json:
+        print(json.dumps(out, ensure_ascii=False))
+        return
+    print(f"Fenster: letzte {days} Tage · {agg['tickets']} Tickets · Stand {time.strftime('%d.%m. %H:%M')}")
+    print(f"{'Ticket':<40} {'Status':<7} {'Durchlauf':>9} {'Runden':>6} {'Nacharbeit':>10} {'Kosten':>7}  Titel")
+    for r in active:
+        print(f"{r['id']:<40} {r['status']:<7} {dur(r['lead_min']):>9} {r['rounds']:>6} {r['rework']:>10} "
+              f"{'$%.2f' % r['cost']:>7}  {r['title']}")
+    print("\nStationen (Zeit in der Station)")
+    for s in agg["stations"]:
+        print(f"  {s['label']:<10} {s['count']:>4}×  Summe {dur(s['sum_min']):>8}  Median {dur(s['median_min'])}")
+    print("\nRepos")
+    for r in repos:
+        print(f"  {r['repo']}")
+        print(f"    {r['tickets']} Tickets · {r['done']} erledigt · Median {dur(r['median_min'])} · "
+              f"{r['rounds']} Prüfrunden · {r['rework']} Nacharbeit · ${r['cost']:.2f}")
+        stations = " · ".join(f"{s['label']} Σ {dur(s['sum_min'])} / Median {dur(s['median_min'])}"
+                              for s in r["stations"] if s["count"])
+        print(f"    {stations or 'keine Station belegt'}")
+    if not repos:
+        print("  keine")
+    print(f"\nHeute: {today_row['done']} erledigt · Median {dur(today_row['median_min'])} · "
+          f"{today_row['rework']} Nacharbeit · ${today_row['cost']:.2f}")
+    print("Letzte 7 Tage: " + " · ".join(f"{h['date'][5:]} {h['done']}/{h['rework']}" for h in history)
+          + " (erledigt/Nacharbeit)")
 
 
 def main():
@@ -1847,6 +2046,10 @@ def main():
     cl.add_argument("--dry-run", action="store_true", help="nur zeigen, was aufgeräumt würde")
     cl.set_defaults(fn=cmd_cleanup)
     sub.add_parser("status").set_defaults(fn=cmd_status)
+    stt = sub.add_parser("stats")
+    stt.add_argument("--json", action="store_true")
+    stt.add_argument("--days", type=int, default=14, metavar="N")
+    stt.set_defaults(fn=cmd_stats)
     a = p.parse_args()
     a.fn(a)
 
