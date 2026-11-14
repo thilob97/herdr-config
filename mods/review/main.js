@@ -652,6 +652,8 @@ export default class Review extends View {
         .child(div().flex_1().min_w(0).truncate().text_size(T_L).font_semibold().text_color(t.foreground).child(tk.title))
         .when(Boolean(tk.terminal), (el) => el.child(div().flex_none().max_w(180).child(ui.identityChip(t, "rv-who", tk.terminal))))
         .children(ui.gateChips(t, tk, tk.status === "done" ? null : this.gate)))
+      .when(this.gate?.base?.ok === false, (el) => el.child(div().id("rv-base-drift").text_size(T_S).text_color(t.blocked)
+        .child(`Basis veraltet: im Worktree \`git rebase ${this.gate.base.base || tk.base}\` ausführen, dann erneut prüfen (oder hub rebase ${tk.id}).`)))
       .when(Boolean(tk.pr) || Boolean(tk.ci), (el) => el.child(this.ciRow(t, tk, cx)))
       .child(this.reviewRow(t, tk, cx))
       .child(div().id("rv-summary").max_h(90).overflow_y_scroll().text_size(T_S).text_color(tk.summary ? t.muted : t.dim)
