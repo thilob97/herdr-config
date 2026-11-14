@@ -13,11 +13,10 @@ import * as orch from "./orchestrator.js";
 import * as tickets from "./tickets.js";
 import * as costs from "./costs.js";
 import * as ui from "./ui.js";
-import { T_XS, T_S, T_M, T_L } from "./ui.js";
+import { T_XS, T_S, T_M, T_L, usd } from "./ui.js";
 
 const errorText = (e) => String(e?.message ?? e ?? "fehlgeschlagen").replace(/^Error: /, "");
-// Whole dollars without cents ($3), small amounts with them ($0.26).
-const usd = (n) => `$${Number.isInteger(n) ? n : (n ?? 0).toFixed(2)}`;
+const WC = "mods/workspace-chrome";
 // At most two lines of T_S text in the panel's width.
 const clip = (s, n = 140) => (s.length > n ? `${s.slice(0, n - 1).trimEnd()}…` : s);
 
@@ -102,6 +101,8 @@ export class HubSection {
     this.known = [];
     this.reply = InputState.new({ placeholder: "Antwort an den Orchestrator… (↵ senden)" });
     this.reply.on("submit", (_e, cx) => this.sendReply(cx));
+    this.focus = ui.focusFields();
+    this.focus.track(this.reply, "hub-reply");
     cx.spawn(async (cx) => { this.known = (await knownAgents().catch(() => [])).filter((a) => a.installed); cx.notify(); });
     this.poll(cx);
     cx.timer.every(3000, (cx) => this.poll(cx));
@@ -160,7 +161,7 @@ export class HubSection {
     const { step, message } = this.digest;
     const blocked = st === "blocked";
     const restart = (cx) => this.act(cx, "neu gestartet", async () => { await orch.stop(); await orch.start(); });
-    const chip = !o ? ui.chip(t, orch.autostart() ? "startet gleich" : "aus", t.dim)
+    const chip = !o ? ui.chip(t, orch.autostart() ? "startet gleich" : "aus", t.muted)
       : ui.statusChip(t, st ?? "idle", st === "working" ? "arbeitet" : blocked ? "wartet" : "bereit");
     const line = !o
       ? (orch.autostart() ? "Startet in wenigen Sekunden …" : "Angehalten. Starte ihn, damit er Aufträge annimmt.")
@@ -187,16 +188,18 @@ export class HubSection {
           .text_color(blocked ? t.foreground : t.muted)
           .when(Boolean(o), (el) => el.cursor_pointer().tooltip("Klicken: Terminal öffnen").on_click(() => run("terminal.peek", { terminal: o.address })))
           .child(clip(line, 110)))
-        .child(h_flex().flex_none().gap(ui.GAP_XS).items_center().text_size(T_S).text_color(t.dim)
-          .child(div().id("hub-agent").cursor_pointer().hover((s) => s.text_color(t.foreground))
+        .child(h_flex().flex_none().gap(ui.GAP_XS).items_center().text_size(T_S).text_color(t.muted)
+          .child(div().id("hub-agent").h(ui.H_BTN_S).px(6).rounded(6).flex().items_center().bg(t.raised).cursor_pointer()
+            .hover((s) => s.text_color(t.foreground))
             .tooltip("Agent des Orchestrators wechseln (gilt beim nächsten Start)").on_click((_e, cx) => { this.cycleAgent(); cx.notify(); })
             .child(`${name} ▾`))
           .when(Boolean(o) && cost > 0, (el) => el.child(div().child("·"))
             .child(div().text_size(T_XS).tooltip("Kosten der aktuellen Orchestrator-Sitzung").child(usd(cost))))))
       .when(blocked, (el) => el.child(ui.inputBox(t, "hub-reply", Input.new(this.reply), {
+        focused: this.focus.has("hub-reply"),
         send: ui.sendButton(t, "hub-send", "mods/orchestra/icons/send.svg", "Antwort senden (↵)", (cx) => this.sendReply(cx), { enabled: !this.busy }),
       })))
-      .when(Boolean(this.note), (el) => el.child(div().text_size(T_XS).text_color(this.note.ok ? t.dim : t.blocked).child(this.note.text)));
+      .when(Boolean(this.note), (el) => el.child(div().text_size(T_XS).text_color(this.note.ok ? t.muted : t.blocked).child(this.note.text)));
   }
 
   // ---------- tickets ----------
@@ -206,7 +209,7 @@ export class HubSection {
       props: { ticket: tk.id, terminal: tk.terminal || null, folder: tk.worktree || tk.repo, on: tk.machine || null } });
   }
 
-  ticketRow(t, tk) {
+  ticketRow(t, tk, { primary = false } = {}) {
     const stage = stageOf(tk);
     const live = tk.terminal ? terminals().find((x) => x.address === tk.terminal && x.state === "live") : null;
     const c = costs.costs();
@@ -223,18 +226,18 @@ export class HubSection {
       .child(h_flex().gap(ui.GAP_M).items_center()
         .child(ui.statusIcon(t, status))
         .child(div().flex_1().min_w(0).truncate().text_size(T_M).text_color(done ? t.muted : t.foreground).child(tk.title))
-        .when(spent != null, (el) => el.child(div().flex_none().text_size(T_XS).text_color(over ? t.blocked : t.dim)
+        .when(spent != null, (el) => el.child(div().flex_none().text_size(T_XS).text_color(over ? t.blocked : t.muted)
           .tooltip(`Kosten dieses Tickets / Budget (${tk.agent || "Agent"}; nur omp meldet Kosten)`).child(`${usd(spent)} / ${usd(limit)}`))))
       .child(h_flex().gap(ui.GAP_S).items_center().min_w(0)
         .when(Boolean(tk.terminal), (el) => el.child(div().flex_none().max_w(130).child(ui.identityChip(t, `tk-who-${tk.id}`, tk.terminal))))
-        .child(div().flex_1().min_w(0).truncate().text_size(T_S).text_color(t.dim).tooltip(where).child(where))
+        .child(div().flex_1().min_w(0).truncate().text_size(T_S).text_color(t.muted).tooltip(where).child(where))
         .when(Boolean(landed), (el) => el.child(div().flex_none().text_size(T_XS).text_color(t.done).when(Boolean(tk.pr), (x) => x.tooltip(tk.pr)).child(landed)))
         .when(stage !== "todo", (el) => el.children(ui.gateChips(t, tk))))
       .when(stage === "review" && Boolean(tk.summary), (el) => el.child(div().max_h(36).overflow_hidden().text_size(T_S).text_color(t.muted).child(clip(tk.summary))))
       .when(stage === "review", (el) => el.child(h_flex().gap(ui.GAP_M).items_center()
         .child(ui.button(t, `tk-rv-${tk.id}`, "Prüfen", () => this.openReview(tk),
-          { kind: "primary", small: true, tip: "Zusammenfassung, Nachweise und Diff prüfen; dort Mergen, PR oder Abnehmen" }))
-        .when((tk.evidence ?? []).length > 0, (r) => r.child(div().text_size(T_XS).text_color(t.dim)
+          { kind: primary ? "primary" : "secondary", small: true, tip: "Zusammenfassung, Nachweise und Diff prüfen; dort Mergen, PR oder Abnehmen" }))
+        .when((tk.evidence ?? []).length > 0, (r) => r.child(div().text_size(T_XS).text_color(t.muted)
           .child(`${tk.evidence.length} ${tk.evidence.length === 1 ? "Nachweis" : "Nachweise"}`)))))
       .when(stopped, (el) => el.child(h_flex().gap(ui.GAP_M).items_center()
         .child(div().flex_1().min_w(0).text_size(T_S).text_color(t.blocked).child("Budget erreicht, Agent angehalten."))
@@ -246,10 +249,11 @@ export class HubSection {
   budgetChips(t) {
     const b = costs.budget(), c = costs.costs();
     const over = (c.teamCost ?? 0) > b.team;
-    const chip = (id, text, tip, kind) => div().id(id).flex_none().h(ui.H_CHIP).px(6).flex().items_center().rounded(4).bg(t.raised).text_size(T_XS).text_color(over && kind === "team" ? t.blocked : t.muted).cursor_pointer().hover((s) => s.text_color(t.foreground)).tooltip(tip)
-      .on_click((_e, cx) => { costs.cycle(kind); cx.notify(); }).child(text);
+    const chip = (id, text, tip, kind) => div().id(id).flex_none().h(ui.H_CHIP).px(6).gap(ui.GAP_XS).flex().items_center().rounded(4).bg(t.raised).text_size(T_XS).text_color(over && kind === "team" ? t.blocked : t.muted).cursor_pointer().hover((s) => s.text_color(t.foreground)).tooltip(tip)
+      .on_click((_e, cx) => { costs.cycle(kind); cx.notify(); })
+      .child(svg(`${WC}/square-pen.svg`).size(12).flex_none()).child(text);
     return h_flex().id("bud").h(ui.H_ROW).flex_none().gap(ui.GAP_XS).items_center()
-      .child(chip("bud-ticket", `${usd(b.ticket)}/Ticket`, "Budget pro Ticket (klicken zum Ändern). Darüber wird der Agent angehalten.", "ticket"))
-      .child(chip("bud-team", `Team ${usd(c.teamCost ?? 0)} / ${usd(b.team)}`, "Kosten offener Tickets + Orchestrator / Team-Budget (klicken zum Ändern). Darüber wird alles angehalten.", "team"));
+      .child(chip("bud-ticket", `${usd(b.ticket)}/Ticket`, "Klicken: erhöhen. Budget pro Ticket; darüber wird der Agent angehalten.", "ticket"))
+      .child(chip("bud-team", `Team ${usd(c.teamCost ?? 0)} / ${usd(b.team)}`, "Klicken: erhöhen. Kosten offener Tickets + Orchestrator / Team-Budget; darüber wird alles angehalten.", "team"));
   }
 }
