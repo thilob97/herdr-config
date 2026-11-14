@@ -1,7 +1,8 @@
 // Review: the one place to check and accept work. Opened as a window with
 // props { terminal?, folder?, on?, ticket? }:
 // - ticket mode (props.ticket, an id from shared "orchestra.tickets"; the Team
-//   panel's and the inbox's "Prüfen"): the ticket's title, gate chips, the
+//   panel's and the inbox's "Prüfen", or props.terminal of an agent whose ticket
+//   waits for review, e.g. the sidebar card's Review): the ticket's title, gate chips, the
 //   orchestrator's summary and the evidence files above the diff of its branch,
 //   and the acceptance below: Mergen, PR, Änderungen … (to the orchestrator) or
 //   Nur abnehmen, all through mods/orchestra/bin/hub.
@@ -60,7 +61,8 @@ async function hub(args, timeout = 30000) {
 export default class Review extends View {
   init(_props, cx) {
     const p = props() ?? {};
-    this.ticketId = p.ticket ?? null;
+    // An agent whose ticket waits for your acceptance: its review is that acceptance.
+    this.ticketId = p.ticket ?? (p.terminal ? (shared("orchestra.tickets") ?? []).find((t) => t.terminal === p.terminal && t.status === "review")?.id ?? null : null);
     this.address = p.terminal ?? (p.folder || p.ticket ? null : focused()?.terminal ?? focused()?.agent ?? null);
     this.files = []; this.rows = []; this.open = null; this.diffWidth = 300;
     this.repo = null; this.error = null; this.note = null; this.busy = null; this.loading = false;
@@ -167,7 +169,13 @@ export default class Review extends View {
         if (this.open) await this.load(this.open);
         else this.rows = [];
         if (!this.commitInput.value() && dirty) this.commitInput.set_value(this.suggestion());
-      } catch (e) { this.error = errorText(e); }
+      } catch (e) {
+        // A landed ticket's worktree is gone: say so instead of git's complaint.
+        const tk = this.ticket();
+        this.error = tk?.status === "done" && (tk.merged || tk.pr)
+          ? `Abgenommen und gelandet (${tk.merged ? `gemergt in ${tk.merged}` : `PR ${tk.pr}`}); der Worktree ist entfernt.`
+          : errorText(e);
+      }
       finally { this.loading = false; cx.notify(); }
     });
   }
