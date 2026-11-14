@@ -8,6 +8,10 @@ import { dialogFor, initialValues, validate } from "./git.js";
 import { perform } from "./act.js";
 import { icon } from "./menu.js";
 
+// Tokens (docs/ui-spec.md, 5).
+const T_S = 11, T_M = 12, T_XL = 15;
+const H_INPUT = 30, H_BTN = 26;
+
 export class Dialog {
   init(cx) {
     const { action, ctx } = props();
@@ -53,32 +57,33 @@ export class Dialog {
 
   render() {
     const t = theme(), s = this.spec, danger = this.danger();
-    const label = (text) => div().pt(14).pb(7).text_size(11.5).text_color(t.dim).child(text);
-    const button = (id, text, primary, action) => h_flex().id(id).h(32).px(14).items_center().rounded(8).border_1()
-      .border_color(primary ? (danger ? t.ansi1 : t.solid) : t.input).bg(primary ? (danger ? t.ansi1 : t.solid) : t.raised)
-      .text_color(primary ? (danger ? t.background : t.solid_foreground) : t.foreground).text_size(12.5).font_medium().cursor_pointer()
-      .hover((st) => st.opacity(0.88)).on_click(action).child(text);
-    return v_flex().id("git-graph-dialog").track_focus(this.handle).size_full().min_h(0).p(18).bg(t.popover).text_color(t.foreground).text_size(12.8)
+    const label = (text) => div().pt(14).pb(7).text_size(T_S).text_color(t.muted).child(text);
+    // Buttons per 5.6: h 26, px 10, radius 6, T_M medium; primary solid, secondary raised.
+    const button = (id, text, primary, action) => h_flex().id(id).h(H_BTN).px(10).items_center().rounded(6)
+      .bg(primary ? (danger ? t.ansi1 : t.solid) : t.raised)
+      .text_color(primary ? (danger ? t.background : t.solid_foreground) : t.foreground).text_size(T_M).font_medium().cursor_pointer()
+      .hover((st) => (primary ? st.opacity(0.85) : st.bg(t.hover))).on_click(action).child(text);
+    return v_flex().id("git-graph-dialog").track_focus(this.handle).size_full().min_h(0).p(16).bg(t.popover).text_color(t.foreground).text_size(T_M)
       .on_key_down((e, cx) => {
         if (e.key === "escape") closeOverlay(props().overlay);
         else if (e.key === "enter" && this.focusedInput < 0) this.confirm(cx);
         else return;
         cx.stop_propagation();
       })
-      .child(h_flex().items_center().child(div().flex_1().text_size(15).font_semibold().child(s.title)).child(div().text_size(11).text_color(t.dim).child("Esc")))
+      .child(h_flex().items_center().child(div().flex_1().text_size(T_XL).font_semibold().child(s.title)).child(div().text_size(T_S).text_color(t.dim).child("Esc")))
       .when(Boolean(s.detail), (el) => el.child(div().pt(8).text_color(t.muted).child(s.detail)))
       .children(this.inputs.map(({ field, state }, i) => v_flex()
         .child(label(field.label))
-        .child(Input.new(state).h(36).px(10).rounded(9).border_1().border_color(this.focusedInput === i ? t.accent : t.input).bg(t.background).text_size(12.8).text_color(t.foreground))))
+        .child(Input.new(state).h(H_INPUT).px(10).rounded(6).border_1().border_color(this.focusedInput === i ? t.accent : t.input).bg(t.background).text_size(T_M).text_color(t.foreground))))
       .when(Boolean(s.choice), (el) => el.child(label(s.choice.label)).children(s.choice.options.map((o) => {
         const on = this.values[s.choice.id] === o.value;
         return h_flex().id(`gd-choice-${o.value}`).h(38).mb(4).px(10).gap(10).items_center().rounded(8).border_1().cursor_pointer()
           .border_color(on ? (o.danger ? t.ansi1 : t.accent) : t.border).when(on, (e) => e.bg(t.selected)).hover((st) => st.bg(t.hover))
           .on_click((_e, cx) => { this.values[s.choice.id] = o.value; this.error = null; cx.notify(); })
-          .child(div().size(14).flex_none().rounded(7).border_1().border_color(on ? (o.danger ? t.ansi1 : t.accent) : t.input).flex().items_center().justify_center()
-            .when(on, (e) => e.child(div().size(6).rounded(3).bg(o.danger ? t.ansi1 : t.accent))))
+          .child(div().size(14).flex_none().rounded_full().border_1().border_color(on ? (o.danger ? t.ansi1 : t.accent) : t.input).flex().items_center().justify_center()
+            .when(on, (e) => e.child(div().size(6).rounded_full().bg(o.danger ? t.ansi1 : t.accent))))
           .child(div().font_medium().child(o.label))
-          .when(Boolean(o.detail), (e) => e.child(div().text_size(11.5).text_color(o.danger ? t.ansi1 : t.dim).child(o.detail)));
+          .when(Boolean(o.detail), (e) => e.child(div().text_size(T_S).text_color(o.danger ? t.ansi1 : t.muted).child(o.detail)));
       })))
       .children((s.checks ?? []).map((c) => {
         const on = Boolean(this.values[c.id]);
@@ -91,7 +96,7 @@ export class Dialog {
       .when(Boolean(this.error), (el) => el.child(div().pt(12).text_size(12).text_color(t.ansi1).child(this.error)))
       .child(div().flex_1())
       .child(h_flex().pt(16).gap(8).justify_end()
-        .child(button("gd-cancel", "Cancel", false, () => closeOverlay(props().overlay)))
-        .child(button("gd-ok", this.busy ? "Working…" : s.confirm, true, (_e, cx) => this.confirm(cx))));
+        .child(button("gd-cancel", "Abbrechen", false, () => closeOverlay(props().overlay)))
+        .child(button("gd-ok", this.busy ? "läuft …" : s.confirm, true, (_e, cx) => this.confirm(cx))));
   }
 }

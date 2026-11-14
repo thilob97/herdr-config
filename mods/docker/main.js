@@ -272,10 +272,14 @@ export default class Docker extends View {
       .child(div().child(label))
       .when(!host.error, (el) => el.child(div().font_normal().text_color(t.muted).child(`${running} laufen · ${host.list.length}`)));
     if (host.error) {
+      // The next step is part of the message: the reason alone leaves the person stuck.
+      const off = /daemon|connect|pipe|socket/i.test(host.error);
       return [head, h_flex().id(`err-${host.key}`).mb(GAP_S).p(INSET_CARD).gap(GAP_M).items_center().rounded(8).border_1().border_color(t.border).bg(t.surface)
         .text_size(T_S).text_color(t.muted).tooltip(host.error)
         .child(div().size(12).flex_none().flex().items_center().justify_center().child(div().size(7).rounded_full().border(1.5).border_color(t.idle)))
-        .child(div().flex_1().min_w(0).truncate().child(/daemon|connect|pipe|socket/i.test(host.error) ? "Docker läuft nicht." : host.error))];
+        .child(v_flex().flex_1().min_w(0).gap(2)
+          .child(div().truncate().child(off ? "Docker läuft nicht." : host.error))
+          .when(off, (el) => el.child(div().text_size(T_XS).text_color(t.muted).truncate().child("Docker Desktop starten, dann oben ↻."))))];
     }
     const match = (c) => (this.all || c.state === "running" || c.state === "restarting")
       && (!this.filter || [c.name, c.image, c.project].some((s) => (s ?? "").toLowerCase().includes(this.filter)));
@@ -329,6 +333,10 @@ export default class Docker extends View {
           .child(loading
             ? svg("mods/workspace-chrome/spinner.svg").size(12).text_color(t.dim).spin(900)
             : svg("mods/docker/icon.svg").size(16).text_color(t.dim))
-          .child(loading ? "lädt …" : "Keine Maschine mit Docker gefunden."))));
+          .child(loading ? "lädt …" : "Keine Maschine mit Docker gefunden.")
+          // The way out: Docker runs where this list reads, so a machine with Docker must exist.
+          .when(!loading, (el) => el.child(div().id("docker-add-machine").text_size(T_S).text_color(t.muted).cursor_pointer()
+            .hover((s) => s.text_color(t.foreground)).tooltip("Dort muss Docker laufen")
+            .on_click(() => run("mod.open", { name: "machine-add" })).child("Maschine hinzufügen"))))));
   }
 }
