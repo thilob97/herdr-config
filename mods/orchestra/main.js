@@ -21,6 +21,7 @@ export default class Orchestra extends View {
     this.showDone = false;
     this.scroll = ScrollHandle.new();
     this.jump = null;
+    this.width = 0;
     // Statuses move on their own: redraw once a minute.
     cx.timer.every(60000, (cx) => cx.notify());
   }
@@ -30,18 +31,31 @@ export default class Orchestra extends View {
 
   // ---------- view ----------
 
-  // The pipeline as a segment: display and jump only.
+  // The pipeline as a segment: display and jump only. Counts stay two characters
+  // (`99+`); when the panel is too narrow for all four stages, only the stages that
+  // hold tickets stay and the tooltip carries the whole pipeline.
   stages(t, counts) {
+    const count = (n) => (n > 99 ? "99+" : String(n));
+    const all = STAGES.map((s) => ({ ...s, n: counts[s.key] ?? 0 }));
+    const est = (s) => s.label.length * 6.6 + count(s.n).length * 6.6 + 12;
+    const room = Math.max(120, (this.width || 368) - 14 * 2 - 32 - 8);
+    const fits = (list) => list.reduce((w, s) => w + est(s), 0) + Math.max(0, list.length - 1) * 10 <= room;
+    let list = all;
+    if (!fits(list)) list = all.filter((s) => s.n > 0);
+    if (!list.length) list = [all[0]];
+    while (list.length > 1 && !fits(list)) list = list.slice(0, -1);
+    const compact = list.length < all.length;
+    const sum = all.map((s) => `${s.label} ${s.n}`).join(" · ");
     const parts = [];
-    STAGES.forEach((s, i) => {
-      const n = counts[s.key], waits = s.key === "review" && n > 0;
+    list.forEach((s, i) => {
+      const waits = s.key === "review" && s.n > 0;
       if (i) parts.push(div().flex_none().text_size(T_S).text_color(t.dim).child("›"));
       parts.push(div().id(`stage-${s.key}`).flex_none().h(22).px(4).gap(ui.GAP_XS).flex().items_center().rounded(6).text_size(T_S)
-        .text_color(waits ? t.blocked : n ? t.muted : t.dim)
-        .tooltip(waits ? `${s.label}: ${n} wartet auf dich` : `${s.label}: ${n}`)
-        .when(n > 0, (el) => el.cursor_pointer().hover((x) => x.bg(t.hover).text_color(waits ? t.blocked : t.foreground))
+        .text_color(waits ? t.blocked : s.n ? t.muted : t.dim)
+        .tooltip(compact ? sum : waits ? `${s.label}: ${s.n} wartet auf dich` : `${s.label}: ${s.n}`)
+        .when(s.n > 0, (el) => el.cursor_pointer().hover((x) => x.bg(t.hover).text_color(waits ? t.blocked : t.foreground))
           .on_click((_e, cx) => { this.jump = s.key; if (s.key === "done") this.showDone = true; cx.notify(); }))
-        .child(s.label).child(div().font_medium().child(String(n))));
+        .child(s.label).child(div().font_medium().child(count(s.n))));
     });
     return h_flex().id("stages").flex_none().min_w(0).h(ui.H_BTN).p(2).gap(0).items_center().overflow_hidden().rounded(8).bg(t.background).border_1().border_color(t.border).children(parts);
   }
@@ -56,7 +70,7 @@ export default class Orchestra extends View {
     return ui.card(t, `grp-${g.id}`)
       .child(h_flex().h(ui.H_BTN_S).gap(ui.GAP_S).items_center()
         .child(div().flex_1().min_w(0).truncate().text_size(T_L).font_semibold().text_color(t.foreground).child(g.name))
-        .child(div().flex_none().text_size(T_XS).text_color(finished ? t.done : waiting ? t.blocked : t.dim)
+        .child(div().flex_none().text_size(T_XS).text_color(finished ? t.done : waiting ? t.blocked : t.muted)
           .child(finished ? "alle fertig" : `${members.length - active}/${members.length} fertig${waiting ? ` · ${waiting} wartet` : ""}`))
         .child(ui.iconButton(t, `grp-watch-${g.id}`, `mods/workspace-chrome/${g.watch ? "pin" : "pin-off"}.svg`,
           g.watch ? "Wird beobachtet: Meldung, wenn alle fertig sind (klicken: aus)" : "Beobachten: Meldung, wenn alle fertig sind",
@@ -87,32 +101,37 @@ export default class Orchestra extends View {
     if (!all.length) {
       add(div().h(200).flex_none().child(ui.empty(t, "Noch keine Tickets. Gib dem Team einen Auftrag (⌘⇧N).", { icon: "mods/orchestra/icons/tray.svg" })));
     } else {
-      if (by.review.length) {
-        add(ui.sectionHeader(t, "Prüfung", { count: by.review.length, color: t.blocked,
-          right: div().text_size(T_S).text_color(t.blocked).child("wartet auf dich") }), "review");
-        for (const tk of by.review) add(this.hub.ticketRow(t, tk));
-      }
+      // Every stage stays visible: an empty one says so instead of disappearing (B6).
+      add(ui.sectionHeader(t, "Prüfung", { count: by.review.length, color: t.blocked,
+        right: by.review.length ? div().text_size(T_S).text_color(t.blocked).child("wartet auf dich") : null }), "review");
+      if (!by.review.length) add(ui.empty(t, "Nichts in Prüfung.", { row: true }));
+      // One primary button per area: the oldest ticket waiting for you (B7).
+      const oldest = by.review[by.review.length - 1];
+      for (const tk of by.review) add(this.hub.ticketRow(t, tk, { primary: tk === oldest }));
       add(ui.sectionHeader(t, "In Arbeit", { count: by.doing.length, color: t.working }), "doing");
       if (!by.doing.length) add(ui.empty(t, "Nichts in Arbeit.", { row: true }));
       for (const tk of by.doing) add(this.hub.ticketRow(t, tk));
       add(this.hub.budgetChips(t));
-      if (by.todo.length) {
-        add(ui.sectionHeader(t, "Geplant", { count: by.todo.length }), "todo");
-        for (const tk of by.todo) add(this.hub.ticketRow(t, tk));
-      }
+      add(ui.sectionHeader(t, "Geplant", { count: by.todo.length }), "todo");
+      if (!by.todo.length) add(ui.empty(t, "Nichts geplant.", { row: true }));
+      for (const tk of by.todo) add(this.hub.ticketRow(t, tk));
     }
     if (groups.length) {
       add(ui.sectionHeader(t, "Teams", { count: groups.length }));
       for (const g of groups) add(this.groupCard(t, g));
     }
-    if (by.done.length) {
+    if (all.length) {
       add(ui.sectionHeader(t, "Fertig", { count: by.done.length, id: "sec-done", open: this.showDone,
         onClick: (cx) => { this.showDone = !this.showDone; cx.notify(); } }), "done");
-      if (this.showDone) for (const tk of by.done) add(this.hub.ticketRow(t, tk));
+      if (this.showDone) {
+        if (!by.done.length) add(ui.empty(t, "Nichts fertig.", { row: true }));
+        for (const tk of by.done) add(this.hub.ticketRow(t, tk));
+      }
     }
     if (this.jump && at[this.jump] != null) { this.scroll.scroll_to_item(at[this.jump]); this.jump = null; }
 
     return v_flex().id("orchestra").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground)
+      .on_size_change((size, cx) => { const w = Math.round(size.width); if (w !== this.width) { this.width = w; cx.notify(); } })
       .child(ui.panelHeader(t, "Team", [this.stages(t, counts)]))
       .child(body);
   }

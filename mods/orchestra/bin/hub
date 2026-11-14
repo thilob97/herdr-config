@@ -3,7 +3,7 @@
 (~/.config/herdr-app/data/quests/tickets/<id>.md, `---` frontmatter + markdown body);
 team agents run in their own git worktree and Herdr space, started with `hc run`
 from the orchestrator's terminal, so they are its children (hc types their
-reports into it) and show in the Team graph under it.
+reports into it) and show in the Team-Panel under it.
 
   hub ticket new --title T --repo PATH [--on MACHINE] [--labels a,b] [--source URL] [--body TEXT | --body-file F | -]
   hub ticket list [--all] [--json] [--agent NAME]   open tickets (--all: done too)

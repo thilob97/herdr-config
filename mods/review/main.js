@@ -11,7 +11,7 @@
 //   folder (on its own machine), and commit, feedback to it, go to it, the Changes
 //   panel there, or remove its worktree.
 
-import { View, div, svg } from "gpui-kit";
+import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, v_virtual_list } from "gpui-base";
 import { agents, panes, terminals, spaces, focused, exec, hc, readTextFile, run, openOverlay, closeOverlay, props, theme, settings, shared, appHome } from "herdr";
 import * as ui from "./ui.js";
@@ -67,6 +67,8 @@ export default class Review extends View {
     this.files = []; this.rows = []; this.open = null; this.diffWidth = 300;
     this.repo = null; this.error = null; this.note = null; this.busy = null; this.loading = false;
     this.snapshot = null;   // the ticket as last seen (it stays readable after landing)
+    this.previews = {};     // evidence path → app-home-relative copy for the 48-px preview
+    this.copying = new Set();
     this.settled = false;   // the ticket was landed or accepted here: nothing more to do
     this.asking = false;    // the "Änderungen …" field is open
     this.commitInput = InputState.new({ placeholder: "Commit-Nachricht" });
@@ -75,8 +77,29 @@ export default class Review extends View {
     this.feedbackInput.on("submit", (_e, cx) => this.feedback(cx));
     this.changesInput = InputState.new({ placeholder: "Was soll anders werden? (↵ an den Orchestrator)" });
     this.changesInput.on("submit", (_e, cx) => this.requestChanges(cx));
+    this.focus = ui.focusFields();
+    this.focus.track(this.commitInput, "rv-commit-msg");
+    this.focus.track(this.feedbackInput, "rv-feedback");
+    this.focus.track(this.changesInput, "rv-changes");
     this.refresh(cx);
     cx.timer.every(REFRESH, (cx) => this.refresh(cx));
+  }
+
+  // `image(path)` resolves against the application root (the app home), not the file
+  // system, so an evidence screenshot elsewhere is copied there once for its preview.
+  previewEvidence(tk, cx) {
+    for (const p of (tk.evidence ?? []).filter((x) => /\.(png|jpe?g|gif|webp)$/i.test(x) && !tk.machine)) {
+      if (this.previews[p] || this.copying.has(p)) continue;
+      this.copying.add(p);
+      const rel = `data/review/previews/${p.replace(/[^a-zA-Z0-9._-]+/g, "_")}`;
+      cx.spawn(async (cx) => {
+        try {
+          await exec("mkdir", ["-p", `${appHome()}/data/review/previews`]);
+          const r = await exec("cp", ["-f", p, `${appHome()}/${rel}`]);
+          if (r.code === 0) this.previews[p] = rel;
+        } finally { this.copying.delete(p); cx.notify(); }
+      });
+    }
   }
 
   ticket() {
@@ -350,9 +373,9 @@ export default class Review extends View {
 
   // ---------- view ----------
 
-  field(t, id, input, send) {
+  field(t, id, input, { send, focused = false } = {}) {
     return div().flex_1().min_w(0).cursor_text().on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-      .child(ui.inputBox(t, id, Input.new(input), { send }));
+      .child(ui.inputBox(t, id, Input.new(input), { focused, send }));
   }
 
   diffRow({ kind, number, text }, t) {
@@ -391,7 +414,8 @@ export default class Review extends View {
   }
 
   // Ticket mode: what was ordered, the gates and the orchestrator's evidence.
-  ticketHead(t, tk) {
+  ticketHead(t, tk, cx) {
+    this.previewEvidence(tk, cx);
     const evidence = tk.evidence ?? [];
     const local = !tk.machine;
     return v_flex().flex_none().px(ui.INSET_PANEL).py(ui.GAP_L).gap(ui.GAP_M).border_b(1).border_color(t.border)
@@ -404,25 +428,43 @@ export default class Review extends View {
         .child(tk.summary || "Keine Zusammenfassung des Orchestrators."))
       .child(h_flex().flex_wrap().gap(ui.GAP_S).items_center()
         .child(div().flex_none().text_size(T_S).font_medium().text_color(t.muted).child("Nachweise"))
-        .when(!evidence.length, (el) => el.child(div().text_size(T_S).text_color(t.dim).child("keine angegeben")))
-        .children(evidence.map((p, i) => local
-          ? ui.link(t, `rv-ev-${i}`, baseName(p), () => exec("open", [p]).catch(() => null), { tip: `Öffnen: ${p}` })
-          : div().text_size(T_S).text_color(t.dim).tooltip(`${p} (auf ${tk.machine}; hier nicht zu öffnen)`).child(baseName(p))))
-        .when(!local && evidence.length > 0, (el) => el.child(div().text_size(T_XS).text_color(t.dim).child(`auf ${tk.machine}`))));
+        .when(!evidence.length, (el) => el.child(div().text_size(T_S).text_color(t.muted).child("keine angegeben")))
+        .children(evidence.map((p, i) => {
+          const pic = /\.(png|jpe?g|gif|webp|svg)$/i.test(p);
+          if (!local) return div().flex_none().text_size(T_S).text_color(t.muted).tooltip(`${p} (auf ${tk.machine}; hier nicht zu öffnen)`).child(baseName(p));
+          return div().id(`rv-ev-${i}`).flex_none().cursor_pointer().tooltip(`Öffnen: ${p}`)
+            .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+            .on_click(() => exec("open", [p]).catch(() => null))
+            .when(pic && Boolean(this.previews[p]), (el) => el.child(image(this.previews[p]).w(48).h(48).flex_none().rounded(4).border_1().border_color(t.border)))
+            .when(pic && !this.previews[p], (el) => el.child(svg("mods/review/icon.svg").size(16).text_color(t.muted)))
+            .when(!pic, (el) => el.child(div().text_size(T_S).text_color(t.muted).hover((x) => x.text_color(t.foreground)).child(baseName(p))));
+        }))
+        .when(!local && evidence.length > 0, (el) => el.child(div().text_size(T_XS).text_color(t.muted).child(`auf ${tk.machine}`))));
   }
 
   ticketFooter(t, tk) {
     const open = tk.status === "review" && !this.settled;
     const canLand = open && !this.busy && Boolean(tk.worktree);
     const label = (key, idle, doing) => (this.busy === key ? doing : idle);
+    if (!open) {
+      // Landed or accepted: the result, and one way out. No greyed buttons (B13).
+      const result = this.note?.text
+        ?? (tk.status === "done"
+          ? (tk.merged ? `Abgenommen und gemergt in ${tk.merged}` : tk.pr ? `Abgenommen und als Pull Request eingereicht: ${tk.pr}` : "Abgenommen.")
+          : "Dieses Ticket wartet gerade nicht auf deine Abnahme.");
+      return v_flex().flex_none().px(ui.INSET_PANEL).py(ui.GAP_M).gap(ui.GAP_M).border_t(1).border_color(t.border).bg(t.chrome)
+        .child(h_flex().h(ui.H_BTN).gap(ui.GAP_M).items_center()
+          .child(div().flex_1().min_w(0).truncate().text_size(T_S).text_color(this.note && !this.note.ok ? t.blocked : t.foreground).tooltip(result).child(result))
+          .child(ui.button(t, "rv-close-footer", "Schließen", () => this.close(), { kind: "primary", tip: "Fenster schließen" })));
+    }
     return v_flex().flex_none().px(ui.INSET_PANEL).py(ui.GAP_M).gap(ui.GAP_M).border_t(1).border_color(t.border).bg(t.chrome)
-      .when(Boolean(this.note), (e) => e.child(div().text_size(T_S).text_color(this.note.ok ? t.done : t.blocked).child(this.note.text)))
-      .when(!open && !this.note, (e) => e.child(div().text_size(T_S).text_color(t.dim)
-        .child(tk.status === "done" ? "Dieses Ticket ist schon abgenommen." : "Dieses Ticket wartet gerade nicht auf deine Abnahme.")))
+      .when(Boolean(this.note), (e) => e.child(div().text_size(T_S).text_color(this.note.ok ? t.foreground : t.blocked).child(this.note.text)))
       .when(open && this.asking, (e) => e.child(h_flex().gap(ui.GAP_M).items_center()
-        .child(this.field(t, "rv-changes", this.changesInput, ui.sendButton(t, "rv-changes-send", "mods/orchestra/icons/send.svg",
-          "An den Orchestrator senden (↵)", (cx) => this.requestChanges(cx), { enabled: !this.busy })))))
+        .child(this.field(t, "rv-changes", this.changesInput, { focused: this.focus.has("rv-changes"),
+          send: ui.sendButton(t, "rv-changes-send", "mods/orchestra/icons/send.svg",
+            "An den Orchestrator senden (↵)", (cx) => this.requestChanges(cx), { enabled: !this.busy }) }))))
       .child(h_flex().h(ui.H_BTN).gap(ui.GAP_M).items_center()
+        .child(div().flex_none().text_size(T_S).text_color(t.muted).child("Abnahme"))
         .child(ui.button(t, "rv-merge", label("merge", "Mergen", "Mergt …"), (cx) => this.land(cx, "merge"),
           { kind: "primary", enabled: canLand, tip: `In ${tk.base || "die Basis"} mergen (--no-ff); beendet den Agent und entfernt Worktree und Branch` }))
         .child(ui.button(t, "rv-pr", label("pr", "PR", "PR …"), (cx) => this.land(cx, "pr"),
@@ -433,8 +475,9 @@ export default class Review extends View {
           cx.notify();
         }, { enabled: open && !this.busy, tip: "Feedback an den Orchestrator; er gibt es an den Agent weiter" }))
         .child(div().flex_1())
-        .when(open && !this.busy, (e) => e.child(ui.link(t, "rv-accept", "Nur abnehmen", (cx) => this.accept(cx),
-          { tip: "Abnehmen, ohne zu mergen (Branch und Worktree bleiben)" }))));
+        .when(open && !this.busy, (e) => e.child(div().id("rv-accept").flex_none().text_size(T_S).text_color(t.muted).cursor_pointer()
+          .hover((s2) => s2.text_color(t.foreground)).tooltip("Abnehmen, ohne zu mergen (Branch und Worktree bleiben)")
+          .on_mouse_down("left", (_ev, cx) => cx.stop_propagation()).on_click((_ev, cx) => this.accept(cx)).child("Nur abnehmen"))));
   }
 
   terminalFooter(t, tg) {
@@ -443,12 +486,14 @@ export default class Review extends View {
     const canSend = Boolean(tg?.live && !this.busy);
     return v_flex().flex_none().px(ui.INSET_PANEL).py(ui.GAP_M).gap(ui.GAP_M).border_t(1).border_color(t.border).bg(t.chrome)
       .when(Boolean(this.note), (e) => e.child(div().truncate().text_size(T_S).text_color(this.note.ok ? t.done : t.blocked).child(this.note.text)))
+      .child(h_flex().h(ui.H_BTN).gap(ui.GAP_M).items_center()
+        .child(div().flex_none().text_size(T_S).text_color(t.muted).child("Arbeit am Agent")))
       .child(h_flex().gap(ui.GAP_M).items_center()
-        .child(this.field(t, "rv-commit-msg", this.commitInput))
+        .child(this.field(t, "rv-commit-msg", this.commitInput, { focused: this.focus.has("rv-commit-msg") }))
         .child(div().w(132).flex_none().child(ui.button(t, "rv-commit", this.busy === "commit" ? "Committe …" : "Commit", (cx) => this.commit(cx),
           { kind: "primary", enabled: canCommit, tip: "git add -A und git commit im Ordner des Agents" }).w_full())))
       .child(h_flex().gap(ui.GAP_M).items_center()
-        .child(this.field(t, "rv-feedback", this.feedbackInput))
+        .child(this.field(t, "rv-feedback", this.feedbackInput, { focused: this.focus.has("rv-feedback") }))
         .child(div().w(132).flex_none().child(ui.button(t, "rv-send", this.busy === "send" ? "Sende …" : "Feedback senden", (cx) => this.feedback(cx),
           { enabled: canSend, tip: "Per hc send an den Agent (wartet er, beantwortet es seine Frage)" }).w_full())))
       .child(h_flex().gap(ui.GAP_S).items_center()
@@ -467,7 +512,13 @@ export default class Review extends View {
       div().flex_none().text_size(T_S).text_color(t.ansi1).child(`−${del}`),
     ];
     const who = !tk && tg?.address ? [div().flex_none().max_w(200).child(ui.identityChip(t, "rv-agent", tg.address))] : [];
-    const header = ui.windowHeader(t, "Review", [...who, ...stats], () => this.close(), { meta: this.meta() });
+    // Terminal mode names the ticket its agent works on (B15).
+    const linked = tk || !tg?.address ? null : (shared("orchestra.tickets") ?? []).find((x) => x.terminal === tg.address) ?? null;
+    const ticketTag = linked
+      ? [div().id("rv-ticket").flex_none().max_w(260).truncate().text_size(T_S).text_color(t.muted)
+        .tooltip(`Ticket ${linked.id}: ${linked.title}`).child(`Ticket ${linked.id} · ${linked.title}`)]
+      : [];
+    const header = ui.windowHeader(t, "Review", [...ticketTag, ...who, ...stats], () => this.close(), { meta: this.meta() });
 
     const body = this.error
       ? ui.empty(t, this.error)
@@ -487,7 +538,7 @@ export default class Review extends View {
 
     return v_flex().id("review").size_full().min_h(0).overflow_hidden().bg(t.popover).text_size(T_M).text_color(t.foreground)
       .child(header)
-      .when(Boolean(tk), (el) => el.child(this.ticketHead(t, tk)))
+      .when(Boolean(tk), (el) => el.child(this.ticketHead(t, tk, cx)))
       .child(body)
       .child(tk ? this.ticketFooter(t, tk) : this.terminalFooter(t, tg));
   }

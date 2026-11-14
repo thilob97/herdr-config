@@ -26,6 +26,20 @@ export const plain = (s) => (s ?? "").replace(/[\uE000-\uF8FF\u{10000}-\u{10FFFF
 export const STATUS_WORD = { working: "arbeitet", blocked: "wartet", done: "fertig", idle: "ruhig", error: "Fehler" };
 export const statusColor = (t, st) => (st === "error" ? t.blocked : t[st] ?? t.dim);
 
+/** Ein Zahlenformat für Kosten (B9): Cent unter $10, sonst ganze Dollar. */
+export const usd = (n) => { const v = Number(n ?? 0); return `$${Math.abs(v) < 10 && v % 1 !== 0 ? v.toFixed(2) : Math.round(v)}`; };
+
+/** Fokus je Eingabe (5.6: mit Fokus `border(accent)`): in init `this.focus = ui.focusFields()`,
+ *  je Feld `this.focus.track(state, "id")`, im Rendern `focused: this.focus.has("id")`. */
+export function focusFields() {
+  const on = new Set();
+  const set = (id, value) => (_e, cx) => { if (value) on.add(id); else on.delete(id); cx.notify(); };
+  return {
+    track(state, id) { state.on("focus", set(id, true)); state.on("blur", set(id, false)); },
+    has: (id) => on.has(id),
+  };
+}
+
 /** Die eine Statusanzeige, Box 12×12. */
 export function statusIcon(t, st) {
   const box = () => div().size(12).flex_none().flex().items_center().justify_center();
@@ -55,7 +69,7 @@ export function gateChips(t, tk) {
   const out = [];
   if (tk.checks === "pass") out.push(chip(t, "Checks ✓", t.done, { tip: "Checks grün (hub review --checks pass)" }));
   else if (tk.checks === "fail") out.push(chip(t, "Checks ✗", t.blocked, { tip: "Checks rot (hub review --checks fail)" }));
-  else out.push(chip(t, "Checks –", t.dim, { tip: "Keine Angabe zu den Checks" }));
+  else out.push(chip(t, "Checks –", t.muted, { tip: "Keine Angabe zu den Checks" }));
   if (tk.status === "review") out.push(chip(t, "Review offen", t.working, { tip: "Wartet auf deine Abnahme" }));
   else if (tk.status === "done") out.push(chip(t, "abgenommen", t.done));
   return out;
