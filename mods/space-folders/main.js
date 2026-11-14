@@ -163,7 +163,7 @@ export function tone(t, status) {
   return t[status] ?? t.unknown;
 }
 
-const NEW_FOLDER = "New folder";
+const NEW_FOLDER = "Neuer Ordner";
 
 // A path's last folder name: "~/Projects/herdr/" gives "herdr"; "~" or "/" give "".
 const lastPart = (p) => {
@@ -180,8 +180,8 @@ export default class Spaces extends View {
       const f = folders(machine).list.find((x) => x.id === edit) ?? { name: NEW_FOLDER };
       this.editing = { id: edit, machine, fresh, overlay };
       this.name = InputState.new({ value: f.name ?? "" });
-      this.path = InputState.new({ value: f.path ?? "", placeholder: "e.g. ~/Documents/github.com/owner/repo" });
-      this.match = InputState.new({ value: f.match ?? "", placeholder: "e.g. wbso-ai, ~/code/client-*" });
+      this.path = InputState.new({ value: f.path ?? "", placeholder: "z. B. ~/Documents/github.com/owner/repo" });
+      this.match = InputState.new({ value: f.match ?? "", placeholder: "z. B. wbso-ai, ~/code/client-*" });
       // The rules follow the start folder until they're given rules of their own.
       this.mirror = !f.match || f.match === f.path;
       this.path.on("change", (_e, cx) => { if (this.mirror) { this.match.set_value(this.path.value()); cx.notify(); } });
@@ -523,7 +523,7 @@ export default class Spaces extends View {
   // The system's folder picker, for this computer: home written as "~".
   choose(cx) {
     cx.spawn(async (cx) => {
-      const picked = await pickFolder({ prompt: "Start new spaces in" });
+      const picked = await pickFolder({ prompt: "Neue Spaces starten in" });
       if (!picked) return;
       this.path.set_value(picked.startsWith(home()) ? `~${picked.slice(home().length)}` : picked);
       if (this.mirror) this.match.set_value(this.path.value());
@@ -615,9 +615,9 @@ export default class Spaces extends View {
       .hover((s) => s.border_color(t.muted)).on_click(() => { this.paint(machine, id, color); closeOverlay(overlay); });
     return v_flex().id("folder-menu").size_full().p(4).gap(2).bg(t.popover).text_color(t.foreground).text_size(T_M)
       .child(h_flex().px(8).pt(6).pb(8).gap(6).items_center().children([null, ...MARKS].map(swatch)))
-      .child(item("folder-space", "New space here", () => newSpaceIn(machine, id)))
-      .child(item("folder-edit", "Edit folder…", () => openOverlay({ mod: "space-folders", kind: "dialog", width: 460, props: { edit: id, machine } })))
-      .child(item("folder-delete", "Delete folder", () => {
+      .child(item("folder-space", "Neuer Space hier", () => newSpaceIn(machine, id)))
+      .child(item("folder-edit", "Ordner bearbeiten …", () => openOverlay({ mod: "space-folders", kind: "dialog", width: 460, props: { edit: id, machine } })))
+      .child(item("folder-delete", "Ordner löschen", () => {
         const f = folders(machine);
         saveFolders(machine, { list: f.list.filter((x) => x.id !== id), of: Object.fromEntries(Object.entries(f.of).filter(([, v]) => v !== id)) });
       }));
@@ -637,15 +637,15 @@ export default class Spaces extends View {
       .when(Boolean(hint), (el) => el.child(div().text_size(T_S).text_color(t.dim).child(hint)));
     return v_flex().id("folder-edit").w_full().p(16).gap(12).bg(t.popover).text_color(t.foreground)
       .on_key_down((e, cx) => { if (e.key === "escape") { closeOverlay(overlay); cx.stop_propagation(); } })
-      .child(div().text_size(15).font_semibold().child("Edit folder"))
+      .child(div().text_size(15).font_semibold().child("Ordner bearbeiten"))
       .child(field("Name", this.name, null))
-      .child(field("Start new spaces in", this.path, "Its + and New space here open a space there.",
-        machine ? null : button("folder-choose", "Choose…", false, (_e, cx) => this.choose(cx))))
-      .child(field("Collect spaces from", this.match,
-        "Spaces working in these folders join this one. Comma-separated: a folder name like wbso-ai, or a path like ~/code/client-*."))
+      .child(field("Neue Spaces starten in", this.path, "Das + und „Neuer Space hier“ öffnen einen Space dort.",
+        machine ? null : button("folder-choose", "Wählen …", false, (_e, cx) => this.choose(cx))))
+      .child(field("Spaces sammeln aus", this.match,
+        "Spaces in diesen Ordnern kommen in diesen. Kommagetrennt: ein Ordnername wie wbso-ai oder ein Pfad wie ~/code/client-*."))
       .child(h_flex().pt(4).gap(8).justify_end()
-        .child(button("folder-cancel", "Cancel", false, () => closeOverlay(overlay)))
-        .child(button("folder-save", "Save", true, () => this.saveFolder())));
+        .child(button("folder-cancel", "Abbrechen", false, () => closeOverlay(overlay)))
+        .child(button("folder-save", "Sichern", true, () => this.saveFolder())));
   }
 
   // Spaces in order, each worktree space moved under its main checkout's.
@@ -677,7 +677,7 @@ export default class Spaces extends View {
   }
 
   loadingRow(m, t, collapsed) {
-    return div().id(`machine-loading-${m ?? "local"}`).h(28).flex_none().px(8).text_size(12).text_color(t.dim).child(collapsed ? "…" : "Loading…");
+    return div().id(`machine-loading-${m ?? "local"}`).h(28).flex_none().px(8).text_size(12).text_color(t.dim).child(collapsed ? "…" : "lädt …");
   }
 
   // A machine's header and, unless it's folded, its folders and spaces. In a
@@ -696,7 +696,7 @@ export default class Spaces extends View {
         cx.notify();
       })
       .child(svg(`mods/workspace-chrome/${m ? "server" : "monitor"}.svg`).size(12).flex_none())
-      .when(!collapsed, el => el.child(div().flex_1().truncate().child(m ?? "This computer"))
+      .when(!collapsed, el => el.child(div().flex_1().truncate().child(m ?? "Dieser Computer"))
         .when(!connected, el => el.child(div().flex_none().text_color(t.dim).child((machine?.state ?? "asleep").replace(/_/g, " "))))
         .when(connected, el => el.child(iconBtn(t, `machine-folder-${m ?? "local"}`, "folder-plus", "Neuer Ordner", () => this.newFolder(m))))
         .when(connected, el => el.child(iconBtn(t, `machine-add-${m ?? "local"}`, "plus", "Neuer Space auf dieser Maschine", () => newSpaceIn(m, null))))
@@ -705,7 +705,7 @@ export default class Spaces extends View {
     const empty = h_flex().id(`machine-new-${m ?? "local"}`).h(H_ROW).flex_none().pl(indent(null, nested)).pr(8).gap(6).items_center().rounded(6)
       .text_size(12).text_color(t.dim).hover(s => s.bg(t.hover).text_color(t.foreground))
       .on_click(() => newSpaceIn(m, null))
-      .child(svg("mods/workspace-chrome/plus.svg").size(12)).when(!collapsed, el => el.child("New space there"));
+      .child(svg("mods/workspace-chrome/plus.svg").size(12)).when(!collapsed, el => el.child("Neuer Space dort"));
     const body = mine.length || guests.length ? this.foldered(mine, m, t, collapsed, { guests, nested, hidden: hidden || folded, seen })
       : [this.machineLoading(m) ? this.loadingRow(m, t, collapsed) : empty];
     return hidden ? [] : [head, ...(folded ? [] : body)];
@@ -807,7 +807,7 @@ export default class Spaces extends View {
           .items_center()
           .when(Boolean(tree), el => el.pl(22).child(svg("mods/workspace-chrome/branch.svg").size(12).text_color(t.dim)))
           .when(!tree, el => el.child(h_flex().size(18).flex_none().rounded(4).bg(fill).items_center().justify_center().text_size(T_XS).font_semibold().text_color(t.background).child([...w.name][0]?.toUpperCase() ?? "?")))
-          .child(div().flex_shrink(0).max_w(150).truncate().text_color(t.foreground).child(w.name))
+          .child(div().flex_shrink(0).max_w(150).truncate().text_color(t.foreground).tooltip(w.name).child(w.name))
           .child(g ? this.gitTail(g, tree, w.name, t) : div().flex_1()),
       );
   }
@@ -891,6 +891,6 @@ export default class Spaces extends View {
           .rounded(6).border_1().border_dashed().border_color(this.overFolder === "out" ? t.accent : t.border)
           .text_size(T_M).text_color(this.overFolder === "out" ? t.foreground : t.dim)
           .on_mouse_move((_e, cx) => { if (this.overFolder !== "out") { this.overFolder = "out"; this.over = null; cx.notify(); } })
-          .child("Drop here to take it out of its folder"))));
+          .child("Hier ablegen, um den Space aus dem Ordner zu nehmen"))));
   }
 }
