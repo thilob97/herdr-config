@@ -78,7 +78,7 @@ const HEADER_H = 42, TABS_H = 38, FOOTER_H = 40;
 // Herdr UI tokens (docs/ui-spec.md, 5), for the panel head, its chips and buttons.
 const GAP_XS = 4, GAP_M = 8, INSET_PANEL = 14;
 const H_BTN = 26, H_BTN_S = 22, H_CHIP = 18;
-const T_XS = 10.5, T_S = 11, T_L = 13;
+const T_XS = 10.5, T_S = 11, T_M = 12, T_L = 13;
 const COMPOSE_H = 136;
 const TAB_MIN = 72, TAB_MAX = 200; // diagram tabs, px // the request box, as drawn 12px above the canvas bottom
 const TITLE = 12.5, SUB = 10.5, LABEL = 11; // text px at 100%
@@ -1279,7 +1279,7 @@ export default class Blueprint extends View {
   broken(err) {
     const t = theme();
     return v_flex().id("bp-root").size_full().bg(t.background).items_center().justify_center().gap(10).p(16)
-      .child(div().text_size(12.5).text_color(t.muted).child(this.T.broken))
+      .child(div().text_size(T_M).text_color(t.muted).child(this.T.broken))
       .child(div().max_w(420).text_size(11).text_color(t.muted).child(String(err?.message ?? err)))
       .child(this.refreshButton(t));
   }
@@ -1594,20 +1594,20 @@ export default class Blueprint extends View {
   emptyCard(t) {
     const T = this.T, p = this.project, list = this.targetList ?? [];
     const W = this.size.width, cw = Math.min(440, W - 32);
-    const body = v_flex().w(cw).gap(10).p(18).rounded(12).bg(t.background).border(1).border_color(t.border)
-      .child(div().text_size(14).font_semibold().text_color(t.foreground).child(p ? T.emptyTitle : T.noProject));
+    const body = v_flex().w(cw).gap(10).p(18).rounded(10).bg(t.background).border(1).border_color(t.border)
+      .child(div().text_size(T_L).font_semibold().text_color(t.foreground).child(p ? T.emptyTitle : T.noProject));
     if (!p) {
       return div().absolute().inset_0().flex().items_center().justify_center()
-        .child(body.child(div().text_size(12.5).text_color(t.muted).child(T.noAgentHere)));
+        .child(body.child(div().text_size(T_M).text_color(t.muted).child(T.noAgentHere)));
     }
     const where = [p.path, this.ctxBranch].filter(Boolean).join(" · ");
     let out = body.child(div().text_size(11).font_family(this.mono).text_color(t.muted).truncate().child(where));
     const asked = this.pending(list);
     if (asked) {
-      out = out.child(div().pt(4).text_size(12.5).text_color(t.accent).child(T.asked(asked.name)))
+      out = out.child(div().pt(4).text_size(T_M).text_color(t.accent).child(T.asked(asked.name)))
         .child(div().text_size(12).text_color(t.muted).child(T.waitingBody));
     } else if (list.length) {
-      out = out.child(div().pt(4).text_size(12.5).text_color(t.muted).child(T.pickAgent))
+      out = out.child(div().pt(4).text_size(T_M).text_color(t.muted).child(T.pickAgent))
         .child(v_flex().gap(6).children(list.map((a, i) => h_flex().id(`bp-agent-${i}`).h(34).px(12).gap(8).items_center().rounded(8)
           .border(1).border_color(t.input).bg(t.raised).cursor_pointer().hover((s) => s.border_color(t.accent))
           .on_click((_e, cx) => {
@@ -1617,7 +1617,7 @@ export default class Blueprint extends View {
           .child(div().flex_1().text_size(13).text_color(t.foreground).child(a.name))
           .child(div().text_size(11).font_family(this.mono).text_color(t.dim).child(a.address)))));
     } else {
-      out = out.child(div().pt(4).text_size(12.5).text_color(t.muted).child(T.noAgentHere));
+      out = out.child(div().pt(4).text_size(T_M).text_color(t.muted).child(T.noAgentHere));
     }
     out = out.child(div().pt(6).text_size(11).text_color(t.dim).child(`${T.emptyHint} · ${T.keepHint}`));
     return div().absolute().inset_0().flex().items_center().justify_center().child(out);
@@ -1631,7 +1631,7 @@ export default class Blueprint extends View {
     const list = this.targetList ?? [], target = this.pickTarget(list);
     const W = this.size.width, cw = Math.min(560, W - 24);
     const button = (id, label, primary, enabled, onClick) =>
-      div().id(id).h(28).px(12).flex().items_center().rounded(7).text_size(12).font_medium()
+      div().id(id).h(28).px(12).flex().items_center().rounded(6).text_size(12).font_medium()
         .border(1).border_color(primary ? t.solid : t.input).bg(primary ? t.solid : t.raised)
         .text_color(primary ? t.solid_foreground : t.foreground)
         .when(!enabled, (el) => el.opacity(0.45))
@@ -1651,10 +1651,10 @@ export default class Blueprint extends View {
       .bg(t.popover).border(1).border_color(alpha(t.accent, 0.6)).shadow_lg().cursor_default()
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .child(h_flex().gap(8).items_center()
-        .child(div().flex_none().text_size(12.5).font_semibold().text_color(t.foreground).child(fresh ? this.T.newDiagram : n.title))
+        .child(div().flex_none().text_size(T_M).font_semibold().text_color(t.foreground).child(fresh ? this.T.newDiagram : n.title))
         .when(!!n?.ref, (el) => el.child(div().min_w(0).truncate().text_size(11).font_family(this.mono).text_color(t.muted).child(n.ref)))
         .child(div().flex_1())
-        .child(div().id("bp-target").flex_none().px(8).h(22).flex().items_center().rounded(6).text_size(11.5)
+        .child(div().id("bp-target").flex_none().px(8).h(22).flex().items_center().rounded(6).text_size(T_S)
           .bg(alpha(target ? t.accent : t.blocked, 0.12)).text_color(target ? t.accent : t.blocked)
           .when(list.length > 1, (el) => el.cursor_pointer().on_click((_e, cx) => { next(); this.redraw(cx); }))
           .child(target ? `→ ${target.name}${list.length > 1 ? " ⇄" : ""}` : this.T.noTarget)))
@@ -1666,7 +1666,7 @@ export default class Blueprint extends View {
       // Starting points for a new diagram; a click fills the box.
       .when(fresh, (el) => el.child(h_flex().gap(6).flex_wrap().children(this.T.suggest.map((x, i) =>
         div().id(`bp-suggest-${i}`).px(8).h(24).flex().items_center().rounded(6).border(1).border_color(t.input)
-          .text_size(11.5).text_color(t.muted).cursor_pointer().hover((s) => s.border_color(t.accent).text_color(t.foreground))
+          .text_size(T_S).text_color(t.muted).cursor_pointer().hover((s) => s.border_color(t.accent).text_color(t.foreground))
           .on_click((_e, cx) => {
             this.input.set_value(x);
             this.noteEmpty = false;
@@ -1806,7 +1806,7 @@ export default class Blueprint extends View {
           built.add(key);
           const frames = Array.from({ length: cycle }, (_, i) => (i === tick ? "●" : ""));
           els.push(div().absolute().left(p.x - 6).top(p.y - 7).w(12).h(14).flex().items_center().justify_center()
-            .text_size(10).text_color(pal.active).frames(frames, FLOW_MS));
+            .text_size(T_XS).text_color(pal.active).frames(frames, FLOW_MS));
         }
       }
     }
