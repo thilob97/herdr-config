@@ -9,7 +9,7 @@ Nach **jeder** Änderung an dieser Config sofort committen und pushen (`git add 
 Neue Panel-Mods (Seitenleisten wie Git-Graph, Timeline) **nicht** als eigene Spalte andocken, sondern in die Leiste oben neben Files/Changes:
 
 1. In `layouts/elric.json` dem Stack `panel-body` ein Kind geben: `{ "id": "<id>", "type": "block", "content": { "mod": "<mod>" } }`.
-2. In `mods/tabs-graph/main.js` die ID in die Konstante `PANELS` aufnehmen und eine Zeile `.child(panelButton("<id>", "<Label>", "mods/<mod>/<icon>.svg"))` nach den bestehenden Buttons ergänzen. Damit gibt es auch das Kommando `tabs-graph.panel-<id>`; in `keys.json` unter `layout:elric` die nächste freie `cmd-alt-<n>`-Taste darauf legen.
+2. In `mods/tabs-graph/main.js` einen Eintrag `{ id, label, icon, key, tip }` in `WERKZEUGE` (Werkzeuge) bzw. `FABRIK` (Fabrik-Flächen) ergänzen. Damit gibt es den Knopf in der passenden Panel-Gruppe und das Kommando `tabs-graph.panel-<id>`; in `keys.json` unter `layout:elric` die nächste freie `cmd-alt-<n>`-Taste darauf legen (`key` = `<n>`).
 3. In der `mod.json` des Mods `"place": "none"` setzen, und einen Block, den Herdr selbst angedockt hat, aus dem Layout entfernen.
 
 Forge, `open-with`, die `over9k*`-Mods und `usage-limits` sind entfernt (keine Mods, Layouts oder Tasten mehr). Laufzeitdaten unter `data/` bleiben liegen.
@@ -46,10 +46,10 @@ Aktiv ist das Layout `elric` (Klon von `main`), daneben `quests`. Eigene Mods:
 | Mod | Zweck |
 |---|---|
 | `space-folders` | Spaces nach Maschine und Ordner in der Seitenleiste (extern, siehe unten) |
-| `agent-cards` | Agents als Karten (Klon von `agents`): Avatar, OMP-Modell, Kontext, Kosten, Sub-Agents |
-| `sidebar-footer` | Fuß der Seitenleiste: Settings, Marketplaces, MCP servers, Tastenkürzel, Add machine (Klon von `workspace-chrome`) |
-| `tabs-graph` | Tab-Leiste mit Buttons Starten, Inbox (mit Zähler) und Review, dann die Panels Changes, Git, Tree, Blueprint, Docker, Quests, Team als Icon-Gruppe (das offene zeigt seinen Namen, Tooltip mit Taste) (Klon von `tabs`) |
-| `status-bar` | Statusleiste (Klon von `workspace-status`): Maschine, Branch, Agents, Attention-Badge, Limits und Kosten |
+| `agent-cards` | Die eine Agent-Darstellung (Klon von `agents`): Karten mit Avatar, Status, OMP-Modell, Kontext, Kosten, Sub-Agents; Mehrfachauswahl mit Auswahlleiste; veröffentlicht `shared("agents.identity")`, siehe Seitenleiste |
+| `sidebar-footer` | Kopf der Seitenleiste (Logo, Suche, ein-/ausklappen) und ihr Fuß als eine Icon-Zeile: Einstellungen, Marketplaces, MCP-Server, Maschine hinzufügen, Tastenkürzel (Klon von `workspace-chrome`), siehe Seitenleiste |
+| `tabs-graph` | Tab-Leiste (Klon von `tabs`): Tabs, „+“ direkt dahinter, rechts **Auftrag**, **Inbox** mit Zähler, **Review**, dann die Panels als zwei Gruppen *Fabrik* (Quests, Team) und *Werkzeuge* (Changes, Git, Tree, Blueprint, Docker); das offene zeigt seinen Namen, Tooltip mit Taste |
+| `status-bar` | Statusleiste (Klon von `workspace-status`): Maschine und Branch, Limits, Kosten heute, Team-Budget-Chip |
 | `inbox` | Freigabe-Stelle (Popup): Rückfragen, Abnahmen, Fertiges, siehe Agent-Zentrale |
 | `review` | Review-Fenster: Abnahme eines Tickets (Ticket-Modus) oder Änderungen eines Agents, siehe Agent-Zentrale |
 | `toast-review` | Benachrichtigungen (Klon von `toast`, im Layout-Root als `"toast"` gesetzt) mit Review-Knopf bei fertigen Agents |
@@ -63,7 +63,7 @@ Aktiv ist das Layout `elric` (Klon von `main`), daneben `quests`. Eigene Mods:
 
 ## Agent-Zentrale
 
-**Attention:** `status-bar` merkt sich, seit wann jeder Agent in seinem Status ist (`shared("attention.since")`), und zeigt ein Badge `● 2 wartet · 1 fertig` (Klick öffnet die Inbox). `cmd-j` springt zum nächsten Agent, der wartet: erst *blocked*, dann *done*, jeweils der älteste zuerst; erneut drücken geht weiter. Funktioniert über alle Spaces und Maschinen, aber nur in Layouts mit `status-bar` (`elric`, `quests`).
+**Wartende Agents:** `status-bar` merkt sich, seit wann jeder Agent in seinem Status ist (`shared("attention.since")`). `cmd-j` springt zum nächsten Agent, der wartet: erst *blocked*, dann *done*, jeweils der älteste zuerst; erneut drücken geht weiter. Funktioniert über alle Spaces und Maschinen, aber nur in Layouts mit `status-bar` (`elric`, `quests`). Die einzige Wartet-Zahl außerhalb der Inbox ist der Zähler am Inbox-Knopf der Tab-Leiste.
 
 Die Oberfläche folgt einer Fabrik: **Eingang** (Auftrag-Dialog, Quests) → **Stationen** (Team-Panel: Geplant › In Arbeit › Prüfung › Fertig) → **Gates** (Checks, Review-Fenster) → **Output mit Nachweisen** (Review-Fenster: Mergen, PR, Abnehmen). Was auf dich wartet, sammelt die **Inbox**. Agents selbst stehen nur in der Seitenleiste; alle anderen Stellen zeigen sie als Chip (Avatar und Name aus `shared("agents.identity")`, Status), ein Klick geht hin.
 
@@ -103,6 +103,10 @@ Das Review-Fenster vergleicht Branches mit ihrem Abzweig von der Ticket-Basis, `
 | Taste | Wirkung |
 |---|---|
 | `cmd-j` | nächster wartender Agent |
+| `cmd-p` | Suche (Picker) |
+| `cmd-,` | Einstellungen |
+| `ctrl-shift-m` | Marketplaces |
+| `ctrl-shift-y` | MCP-Server |
 | `cmd-shift-j` | Inbox |
 | `cmd-shift-r` | Review für das fokussierte Terminal |
 | `cmd-shift-t` | neuer Tab mit `omp` |
@@ -111,17 +115,31 @@ Das Review-Fenster vergleicht Branches mit ihrem Abzweig von der Ticket-Basis, `
 | `cmd-shift-b` | rechtes Panel ein/aus (`elric`) |
 | `cmd-alt-1` … `cmd-alt-7` | Panel Changes, Git, Tree, Blueprint, Docker, Quests, Team (`elric`; erneut drücken schließt) |
 
+## Rahmen: Seitenleiste, Tab-Leiste, Statusleiste
+
+**Seitenleiste.** Der **Kopf** (42 px, bündig mit der Tab-Leiste) zeigt Logo, „Herdr“, Suche (`cmd-p`) und Ein-/Ausklappen; er kommt aus dem eigenen Mod `sidebar-footer` statt aus dem ausgelieferten `workspace-chrome`. Der **Fuß** ist eine 28-px-Zeile (bündig mit der Statusleiste) mit Icon-Knöpfen für Einstellungen (`cmd-,`, mit Punkt, wenn ein Update bereitliegt), Marketplaces (`ctrl-shift-m`), MCP-Server (`ctrl-shift-y`), Maschine hinzufügen und Tastenkürzel (`cmd-/`); eingeklappt (Rail) bleiben Einstellungen und „…“ mit den übrigen vier. **Spaces** nehmen nur so viel Höhe, wie sie brauchen (Kopf, eine 28-px-Zeile je Space, Ordner oder Maschine), höchstens 40 % der Listenhöhe, darüber scrollen sie; den Rest bekommen die Agents. Kopf „Spaces n“ mit „Neuer Ordner“ und „Neuer Space (⌘N)“; Maschinen-Zeilen sind Sektionsköpfe; Kachelfarben kommen aus dem Theme.
+
+**Agent-Karten** sind die eine Agent-Darstellung: Avatar · Name · Space · Statusanzeige, darunter Tab bzw. Titel und seit wann der Status gilt, bei omp eine dritte Zeile mit Modell, ctx (mit Balken) und Kosten. Der fokussierte Agent hat den pinken Rahmen. Statusanzeige wie überall: Spinner = arbeitet, pulsierender Punkt = wartet, Punkt = fertig, Ring = ruhig. Sektionen „Wartet auf dich“, „Arbeitet“, „Fertig“, „Ruhig“, „Angeheftet“; der Uhr-Knopf im Kopf sortiert „Nach Dringlichkeit“ oder „Nach Space“. Beim Drüberfahren: **Review** (Änderungen dieses Agents im Review-Fenster), **Unterbrechen** und **Mehr (…)** mit Plugins, MCP-Server, Anheften/Lösen und Umbenennen (dasselbe Menü per Rechtsklick). **Mehrfachauswahl:** ⌘-Klick wählt Karten aus (Häkchen statt Avatar); darunter erscheint die Auswahlleiste: „n ausgewählt · aufheben“, Nachricht an die Auswahl (wartende nur mit „auch wartende“, das beantwortet ihre Frage), **Unterbrechen** und **Als Team beobachten** (legt „Team HH:MM“ an, sichtbar im Team-Panel unter Teams). `agent-cards` veröffentlicht Name, Avatar und Programm jedes Agents in `shared("agents.identity")` (`{ "<adresse>": { name, avatar, program } }`); Team-Panel, Inbox, Review und Toasts zeigen damit denselben Namen, Umbenennen ändert ihn überall.
+
+**Tab-Leiste.** „+“ steht direkt hinter dem letzten Tab und öffnet einen Tab (Terminal oder Agent), wie im Browser. Rechts: der Primärknopf **Auftrag** (`cmd-shift-n`, der eine Eingang für neue Arbeit), **Inbox** mit Zähler (Rückfragen plus Tickets in Prüfung; wartet nichts, die fertigen Agents in deren Farbe), **Review** als Icon (`cmd-shift-r`), dann die Panel-Gruppen *Fabrik* (Quests, Team) und *Werkzeuge* (Changes, Git, Tree, Blueprint, Docker). Tabs sind 28 px hoch und zeigen den Status wie überall.
+
+**Statusleiste.** Links Ort (Maschine) und Branch, rechts Limits als Chips, „$x heute“ und der Chip **Team $x / $y** (Kosten offener Tickets + Orchestrator gegen das Team-Budget, darüber in Wartet-Farbe); ein Klick darauf öffnet das Team-Panel, dort änderst du das Budget. Die Hover-Karte heißt „Kosten und Limits“. Die Team-Beobachtung („Team … ist fertig“) läuft hier, auch wenn das Team-Panel zu ist.
+
+**Werkzeug-Panels und Fenster.** Alle Panel-Köpfe sehen aus wie bei Changes (42 px, Titel links, rechts höchstens drei Icon-Knöpfe mit Tooltip); Umschalter sind einheitliche Segmente (Git: Alle Zweige/Aktueller Zweig, Tree: Tree/Zuletzt, Docker: Laufend/Alle, Quests: Offen/In Arbeit/Alle). Git zeigt Branch und Update-Hinweis als Chips, Blueprint Projekt, Agent und Update als Chips („Neu laden“ in der Diagramm-Zeile). Marketplaces und MCP-Server haben dieselbe Titelzeile wie das Review-Fenster und einen Scope-Umschalter „Benutzer | Projekt“; der Tastenkürzel-Dialog hat eine Titelzeile mit Esc-Chip und Gruppen ohne Großbuchstaben.
+
+Gestaltung nach `docs/ui-spec.md` (Tokens, Bausteine, Verträge zwischen den Mods); `docs/ui-preview.sh` startet ein isoliertes Vorschau-Fenster pro Worktree.
+
 ## Externe Addons
 
 Sauber aus folgenden Quellen installiert; vorhandene Lizenzen liegen bei den Mods. Nicht angegebene Release-Versionen sind durch den vollständigen Commit gepinnt.
 
-| Addon | Quelle | Version / Commit |
-|---|---|---|
-| `blueprint` | [chappse6/herdr-blueprint-app](https://github.com/chappse6/herdr-blueprint-app), `mods/blueprint` | 0.3.5 · `9e6533ace80e392a14311ad05c1dbda10696deda` |
-| `filetree` | [cybertron288/herdr-mods](https://github.com/cybertron288/herdr-mods), `filetree/mods/filetree` | `34e7c3348e954fd0a1147b846898db8c3e37e526` |
-| `file-icons` | [cybertron288/herdr-mods](https://github.com/cybertron288/herdr-mods), `file-icons/mods/file-icons` | `34e7c3348e954fd0a1147b846898db8c3e37e526` |
-| `git-graph` | [rabeeh-ta/herdr-git-graph](https://github.com/rabeeh-ta/herdr-git-graph), `mods/git-graph` | 0.3.2 · `2f4fe0fc22e7cc726f3c1a2a654887c96227c37b` |
-| `space-folders` | [jankeesvw/herdr-space-folders](https://github.com/jankeesvw/herdr-space-folders), `mods/space-folders` | `63a78b20d5ed30d57166a3c7165a6eb558c3ef84` |
+| Addon | Quelle | Version / Commit | lokal angepasst |
+|---|---|---|---|
+| `blueprint` | [chappse6/herdr-blueprint-app](https://github.com/chappse6/herdr-blueprint-app), `mods/blueprint` | 0.3.5 · `9e6533ace80e392a14311ad05c1dbda10696deda` | `main.js`: Panel-Kopf (Titel „Blueprint“, Projekt als Meta, Agent- und Update-Chip, Icon-Knöpfe 26, „Neu laden“ in der Diagramm-Zeile), Kopfhöhe 42. Diagramme, Sprachen (`i18n.js`) und Abläufe unverändert. Erkennt sich als Panel über `props.panel` im Layout-Block `blueprint`. |
+| `filetree` | [cybertron288/herdr-mods](https://github.com/cybertron288/herdr-mods), `filetree/mods/filetree` | `34e7c3348e954fd0a1147b846898db8c3e37e526` | `main.js`: Panel-Rahmen, Kopf mit Titel „Tree“ und Segment „Tree/Zuletzt“, Werkzeug-Knöpfe, Filterfeld, Leerzustände (deutsch). Baum, Git-Zusammenfassung und Vorschau unverändert. |
+| `file-icons` | [cybertron288/herdr-mods](https://github.com/cybertron288/herdr-mods), `file-icons/mods/file-icons` | `34e7c3348e954fd0a1147b846898db8c3e37e526` | — |
+| `git-graph` | [rabeeh-ta/herdr-git-graph](https://github.com/rabeeh-ta/herdr-git-graph), `mods/git-graph` | 0.3.2 · `2f4fe0fc22e7cc726f3c1a2a654887c96227c37b` | `graph.js`: Panel-Kopf (Titel, Branch- und Update-Chip, Icon-Knöpfe 26 mit Tooltips), Segment „Alle Zweige/Aktueller Zweig“, Checkbox „Remotes“, Leerzustände (deutsch). Graph, Details und Dialoge unverändert. |
+| `space-folders` | [jankeesvw/herdr-space-folders](https://github.com/jankeesvw/herdr-space-folders), `mods/space-folders` | `63a78b20d5ed30d57166a3c7165a6eb558c3ef84` | Kopf, Zeilenhöhen (28), Radien, Knöpfe (22 px mit Tooltip), Schriftgrößen und Theme-Farben; die Höhe des Spaces-Blocks folgt dem Inhalt (`layout.resize`, nur wenn sich die Zeilenzahl ändert, nie im Rail; Grenze 40 % mit `shared("agent-cards.height")`). Inhalte und Texte der Ordner-Dialoge unverändert. |
 
 **Plattformgrenzen:** SpaceFolders benötigt POSIX-`sh` für die Ordnerpersistenz. Git-Graph benötigt Git. Git-Graph und Blueprint können upstream automatisch öffentliche Versionsmetadaten abfragen; das ist keine automatische Neuinstallation.
 
