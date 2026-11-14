@@ -72,7 +72,7 @@ export const fill = (text, vars) => text.replace(/\{(\w+)\}/g, (m, k) => (k in v
 // ---- Plain tickets: tickets/<id>.md, `---` frontmatter of `key: value` lines, then the markdown body.
 
 const FIELDS = ["title", "status", "repo", "labels", "due"];
-const EXTRA = ["machine", "agent", "branch", "base", "worktree", "terminal", "source", "merged", "pr", "by", "updated"];
+const EXTRA = ["machine", "agent", "branch", "base", "worktree", "terminal", "source", "checks", "evidence", "merged", "pr", "by", "updated"];
 
 export function parseTicket(id, text) {
   const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(text);

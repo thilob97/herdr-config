@@ -1,6 +1,6 @@
 // Ticket sources (GitHub issues, Asana tasks, Trilium notes, plain local tickets), one ticket shape for all:
 // { source, id, title, body (markdown), url, status, assignee, labels, due, project } (+ repo/number for GitHub),
-// the writeback after a quest starts, and the git helpers the start form needs.
+// and the writeback after a quest starts.
 
 import { exec, spaces, panes } from "herdr";
 import * as store from "./store.js";
@@ -9,7 +9,7 @@ export const SOURCES = [
   { key: "github", label: "GitHub" },
   { key: "asana", label: "Asana" },
   { key: "trilium", label: "Trilium" },
-  { key: "plain", label: "Local" },
+  { key: "plain", label: "Lokal" },
 ];
 export const label = (key) => SOURCES.find((s) => s.key === key)?.label ?? key;
 
@@ -22,9 +22,9 @@ export function stage(t) {
 }
 
 const split = (s) => String(s ?? "").split(/[\s,]+/).filter(Boolean);
-export const errorText = (e) => String(e?.message ?? e ?? "failed").replace(/^Error: /, "");
+export const errorText = (e) => String(e?.message ?? e ?? "fehlgeschlagen").replace(/^Error: /, "");
 
-// ---- git, as the shipped worktree mod does it
+// ---- git and places, as the shipped worktree mod does it
 
 // Where a space is now: its first terminal's live folder, else where it was made.
 export function place(s, all = panes()) {
@@ -36,25 +36,6 @@ export function place(s, all = panes()) {
 export async function git(cwd, args, on, timeout) {
   const r = await exec("git", args, { cwd, on, ...(timeout === undefined ? {} : { timeout }) });
   return { ok: r.code === 0, out: (r.stdout ?? "").trim(), err: (r.stderr || r.stdout || "").trim() };
-}
-
-// The repo a folder belongs to: its top, main checkout and name. null outside git.
-export async function repoOf(folder, on) {
-  const top = await git(folder, ["rev-parse", "--show-toplevel"], on);
-  const common = await git(folder, ["rev-parse", "--path-format=absolute", "--git-common-dir"], on);
-  if (!top.ok || !common.ok) return null;
-  const main = common.out.endsWith("/.git") ? common.out.slice(0, -5) : common.out;
-  return { top: top.out, main, name: main.split("/").pop() };
-}
-
-// The machine's home folder (a remote one asks its shell, Windows or not).
-export async function homeOn(on, localHome) {
-  if (!on) return localHome.replace(/\\/g, "/");
-  let r;
-  try { r = await exec("sh", ["-c", 'printf %s "$HOME"'], { on }); } catch {}
-  if (!r || r.code !== 0 || !r.stdout.trim()) r = await exec("powershell.exe", ["-NoProfile", "-Command", "[Console]::Write($HOME)"], { on });
-  if (r.code !== 0 || !r.stdout.trim()) throw new Error("Could not find the home folder there.");
-  return r.stdout.trim().replace(/\\/g, "/");
 }
 
 // "owner/name" of every space whose folder has a GitHub origin: [{ repo, space }].
@@ -89,7 +70,7 @@ async function github(cfg) {
       }));
     } catch (e) { errors.push(`${repo}: ${errorText(e)}`); return []; }
   }));
-  return { tickets: lists.flat(), repos, error: errors.join("\n") || null, note: names.length ? null : "No repository: add one in settings or open a space in a GitHub checkout." };
+  return { tickets: lists.flat(), repos, error: errors.join("\n") || null, note: names.length ? null : "Kein Repository: trag eins in den Einstellungen ein oder öffne einen Space in einem GitHub-Checkout." };
 }
 
 const asanaBase = (cfg) => (cfg.api || store.DEFAULTS.asana.api).replace(/\/+$/, "");
@@ -103,21 +84,21 @@ async function asanaCall(cfg, path, body) {
   const text = await r.text();
   let j = null;
   try { j = JSON.parse(text); } catch {}
-  if (!r.ok) throw new Error(j?.errors?.[0]?.message ?? `Asana answered HTTP ${r.status}`);
+  if (!r.ok) throw new Error(j?.errors?.[0]?.message ?? `Asana antwortet mit HTTP ${r.status}`);
   return j?.data;
 }
 
 const ASANA_FIELDS = "name,notes,permalink_url,completed,assignee.name,due_on,tags.name,projects.name,memberships.section.name";
 
 async function asana(cfg) {
-  if (!cfg.token) throw new Error("No Asana token: add one in settings.");
+  if (!cfg.token) throw new Error("Kein Asana-Token: trag eins in den Einstellungen ein.");
   const projects = split(cfg.projects);
   let lists;
   if (projects.length) {
     lists = await Promise.all(projects.map((p) => asanaCall(cfg, `/projects/${encodeURIComponent(p)}/tasks?completed_since=now&limit=100&opt_fields=${ASANA_FIELDS}`)));
   } else {
     const ws = cfg.workspace || (await asanaCall(cfg, "/users/me?opt_fields=workspaces.name"))?.workspaces?.[0]?.gid;
-    if (!ws) throw new Error("No Asana workspace found.");
+    if (!ws) throw new Error("Kein Asana-Workspace gefunden.");
     lists = [await asanaCall(cfg, `/tasks?assignee=me&workspace=${encodeURIComponent(ws)}&completed_since=now&limit=100&opt_fields=${ASANA_FIELDS}`)];
   }
   const seen = new Map();
@@ -144,7 +125,7 @@ async function triliumCall(cfg, path, method = "GET", body) {
   if (!r.ok) {
     let m = null;
     try { m = JSON.parse(text).message; } catch {}
-    throw new Error(m ?? `Trilium answered HTTP ${r.status}`);
+    throw new Error(m ?? `Trilium antwortet mit HTTP ${r.status}`);
   }
   return text;
 }
@@ -162,8 +143,8 @@ export function htmlToText(html) {
 const OWN_LABELS = ["questStatus", "questBranch", "quest", "assignee", "due", "project"];
 
 async function trilium(cfg) {
-  if (!cfg.url) throw new Error("No Trilium URL: add it in settings.");
-  if (!cfg.token) throw new Error("No Trilium ETAPI token: add one in settings.");
+  if (!cfg.url) throw new Error("Keine Trilium-URL: trag sie in den Einstellungen ein.");
+  if (!cfg.token) throw new Error("Kein Trilium-ETAPI-Token: trag eins in den Einstellungen ein.");
   const found = JSON.parse(await triliumCall(cfg, `/notes?search=${encodeURIComponent(cfg.query || "#quest")}&limit=100`));
   // shortcut: one content request per note (≤100); fetch lazily on selection if lists get big.
   const tickets = await Promise.all((found.results ?? []).map(async (n) => {
@@ -202,8 +183,8 @@ export async function writeback(t, q, settings) {
     if (dry) {
       // A read-only call proves the issue is reachable with this gh login.
       const v = await exec("gh", ["issue", "view", String(t.number), "--repo", t.repo, "--json", "number,state"], { timeout: 30000 });
-      if (v.code !== 0) throw new Error((v.stderr || v.stdout).trim() || "gh issue view failed");
-      return [`gh issue view ok (${v.stdout.trim()})`, ...steps.map((a) => `would run: gh ${a.map((x) => (/\s/.test(x) ? JSON.stringify(x) : x)).join(" ")}`)];
+      if (v.code !== 0) throw new Error((v.stderr || v.stdout).trim() || "gh issue view fehlgeschlagen");
+      return [`gh issue view ok (${v.stdout.trim()})`, ...steps.map((a) => `würde ausführen: gh ${a.map((x) => (/\s/.test(x) ? JSON.stringify(x) : x)).join(" ")}`)];
     }
     for (const a of steps) {
       const r = await exec("gh", a, { timeout: 30000 });
@@ -211,13 +192,13 @@ export async function writeback(t, q, settings) {
       out.push(`gh issue ${a[1]} ✓`);
     }
   } else if (t.source === "asana") {
-    if (dry) return [`would POST ${asanaBase(settings.asana)}/tasks/${t.id}/stories: ${text}`];
+    if (dry) return [`würde senden: POST ${asanaBase(settings.asana)}/tasks/${t.id}/stories: ${text}`];
     await asanaCall(settings.asana, `/tasks/${encodeURIComponent(t.id)}/stories`, { data: { text } });
-    out.push("Asana comment ✓");
+    out.push("Asana-Kommentar ✓");
   } else if (t.source === "trilium") {
     const cfg = settings.trilium;
     const labels = [["questStatus", "doing"], ["questBranch", q.branch]];
-    if (dry) return labels.map(([n, v]) => `would set label ${n}=${v} on ${t.id}`);
+    if (dry) return labels.map(([n, v]) => `würde Label ${n}=${v} an ${t.id} setzen`);
     const note = JSON.parse(await triliumCall(cfg, `/notes/${encodeURIComponent(t.id)}`));
     for (const [name, value] of labels) {
       const have = (note.attributes ?? []).find((a) => a.type === "label" && a.name === name && a.noteId === t.id);
@@ -226,7 +207,7 @@ export async function writeback(t, q, settings) {
       out.push(`label ${name}=${value} ✓`);
     }
   } else if (t.source === "plain") {
-    if (dry) return ["would set status: doing"];
+    if (dry) return ["würde den Status auf doing setzen"];
     await store.setPlainStatus(t.id, "doing");
     out.push("status doing ✓");
   }
