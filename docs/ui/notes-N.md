@@ -74,3 +74,8 @@ haben):
   und `demo-2`, `–` für das ungestartete `demo-3`.
 - `docs/ui-preview.sh check orchestra` und `check review`: `check passed`;
   Testfenster mit `docs/ui-preview.sh down` beendet, kein Push.
+
+Nach dem Rebase auf `main` (Messwerte-Merge `e32b4e7`): Konflikt in `FIELDS` und
+`hub status` beidseitig zusammengeführt (`Basis` und `Alter` stehen jetzt
+nebeneinander); `python3 -m py_compile`, `herdr-app check` orchestra/review,
+`hub stats` und der Selbsttest (Drift, Rebase, Konflikt) erneut grün.
