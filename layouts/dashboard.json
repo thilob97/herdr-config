@@ -1,0 +1,13 @@
+{
+  "id": "root",
+  "type": "column",
+  "background": "surface",
+  "theme": { "light": "paper", "dark": "elric" },
+  "children": [
+    {
+      "id": "dashboard",
+      "type": "block",
+      "content": { "mod": "dashboard" }
+    }
+  ]
+}
