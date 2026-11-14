@@ -11,8 +11,8 @@ reports into it) and show in the Team graph under it.
   hub ticket set ID key=value ...           e.g. status=todo, repo=/path
   hub dispatch ID [--agent omp|claude|codex|"cmd args"] [--no-worktree] [--branch B]
   hub review ID --summary TEXT [--checks pass|fail] [--evidence PATH]...
-                                            ready for the human: status review + summary, gate status of
-                                            the checks and evidence files (screenshots, logs; repeatable)
+                                            ready for the human: status review + summary; --checks sets the
+                                            gate, --evidence replaces the evidence files (omitted: unchanged)
   hub land ID --merge | --pr                after acceptance: merge into its base branch, or push and open a
                                             pull request (gh); then end its agent and remove its worktree
   hub done ID                               accepted without landing
@@ -222,9 +222,12 @@ def cmd_review(a):
     body = re.sub(r"\n## Zusammenfassung \(Orchestrator\)\n.*\Z", "\n", t["body"], flags=re.S).rstrip()
     t["body"] = f"{body}\n\n## Zusammenfassung (Orchestrator)\n{a.summary.strip()}\n"
     t["status"] = "review"
-    # Each review round states its gates anew: an omitted flag clears the previous round's value.
-    t["checks"] = a.checks or ""
-    t["evidence"] = ", ".join(e.strip() for e in a.evidence if e.strip())
+    # Gates stay as they were unless this round states them: --checks overwrites the check
+    # status, --evidence replaces the list.
+    if a.checks is not None:
+        t["checks"] = a.checks
+    if a.evidence:
+        t["evidence"] = ", ".join(e.strip() for e in a.evidence if e.strip())
     write(t)
     print(f"{a.id}: review")
 
