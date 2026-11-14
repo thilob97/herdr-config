@@ -4,7 +4,7 @@ import { spaces, panes, agents, terminals, shared, run, openOverlay, theme, wind
 
 // Tokens (docs/ui-spec.md, 5).
 const GAP_XS = 4, GAP_S = 6, GAP_M = 8;
-const H_BTN = 26, H_ROW_TAB = 28, H_SEG_ITEM = 22, H_BADGE = 16;
+const H_BTN = 26, H_BTN_S = 22, H_ROW_TAB = 28, H_SEG_ITEM = 22, H_BADGE = 16;
 const T_XS = 10.5, T_S = 11, T_M = 12;
 
 // Panel group by factory role: Fabrik (Quests, Team) ‖ Werkzeuge. Keys stay ⌘⌥1 … ⌘⌥7.
@@ -55,6 +55,10 @@ function find(node, id) {
 export default class Tabs extends View {
   init(_props, cx) {
     this.pressed = null;
+    // Measured widths (real px, from on_size_change): how many tabs the strip can't show.
+    this.tabW = {};
+    this.stripW = 0;
+    this.hidden = 0;
     this.panels = JSON.parse(localStorage.getItem("panels") ?? "{}");
     // Keys: tabs-graph.panel toggles the side panel, tabs-graph.panel-<id> toggles one panel.
     cx.spawn(async () => {
@@ -103,10 +107,32 @@ export default class Tabs extends View {
     localStorage.setItem("panels", JSON.stringify(this.panels));
   }
 
+  // How many tabs the strip can't show at once: their measured widths against its width.
+  // Independent of the scroll offset, so "+n" stays true after scrolling.
+  overflowCount() {
+    const ids = this.shownIds ?? [], strip = this.stripW ?? 0;
+    if (!strip) return 0;
+    let x = 0, n = 0;
+    for (const id of ids) {
+      const w = this.tabW[id];
+      if (w == null) return n;
+      if (x + w > strip + 0.5) n++;
+      x += w + GAP_XS;
+    }
+    return n;
+  }
+
+  // Only a changed count needs a render: measuring happens while laying out.
+  recount(cx) {
+    if (this.overflowCount() !== this.hidden) cx.notify();
+  }
+
   render() {
     const t = theme();
     const space = spaces().find(p => p.active);
     const shown = space?.tabs ?? [];
+    this.shownIds = shown.map(c => c.id);
+    this.hidden = this.overflowCount();
     const stop = (_e, cx) => cx.stop_propagation();
     // Icon button (5.6): 26×26, icon 14, dim; tooltip required.
     const iconButton = (id, icon, tip, action) => div().id(id).size(H_BTN).flex_none().flex().items_center().justify_center().rounded(6)
@@ -116,6 +142,11 @@ export default class Tabs extends View {
       const program = panes().find(p => p.tab === c.id && p.program?.agent)?.program ?? panes().find(p => p.tab === c.id)?.program;
       const name = /^tb\d+$/.test(c.name) ? program?.name ?? "Terminal" : c.name;
       return h_flex().id(`tab-${c.id}`).h(H_ROW_TAB).px(10).gap(GAP_S).rounded(6).items_center().flex_none().text_size(T_M)
+        .on_size_change((s, cx) => {
+          if (this.tabW[c.id] === s.width) return;
+          this.tabW[c.id] = s.width;
+          this.recount(cx);
+        })
         .border_1().border_color(c.active ? t.border : t.chrome).bg(c.active ? t.raised : t.chrome).text_color(c.active ? t.foreground : t.muted)
         .hover(s => s.bg(c.active ? t.raised : t.hover).text_color(t.foreground))
         .on_mouse_down("left", (e, cx) => { cx.stop_propagation(); this.pressed = i; if (e.click_count === 2) run("tab.rename", { id: c.id }); })
@@ -140,16 +171,19 @@ export default class Tabs extends View {
       : 10;
     const panel = find(root, "panel"), body = find(root, "panel-body");
     this.syncPanel(space, panel, body, PANELS);
-    // Segment, icon variant (5.6): entries 22×22, the open panel also says its name.
+    // Segments (5.6): both groups the same — icon only in a narrow bar, icon and name when
+    // there is room; the open panel always says its name.
+    const wide = (this.barW ?? 0) >= 1400;
     const segEntry = p => {
       const on = panel && !panel.hidden && body?.active === p.id;
-      return h_flex().id(`panel-${p.id}`).h(H_SEG_ITEM).when(on, el => el.px(8)).when(!on, el => el.w(H_SEG_ITEM))
+      const labeled = on || wide;
+      return h_flex().id(`panel-${p.id}`).h(H_SEG_ITEM).when(labeled, el => el.px(8)).when(!labeled, el => el.w(H_SEG_ITEM))
         .justify_center().gap(GAP_XS).flex_none().items_center().rounded(6).text_size(T_S)
         .bg(on ? t.selected : t.background).text_color(on ? t.foreground : t.muted)
         .hover(s => s.bg(on ? t.selected : t.hover).text_color(t.foreground)).on_mouse_down("left", stop)
         .tooltip(`${p.tip} (⌘⌥${p.key})`)
         .on_click(() => this.togglePanel(p.id))
-        .child(svg(p.icon).size(14).flex_none()).when(on, el => el.child(p.label));
+        .child(svg(p.icon).size(14).flex_none()).when(labeled, el => el.child(p.label));
     };
     const segment = (id, list) => h_flex().id(id).h(H_BTN).p(2).gap(2).flex_none().items_center().rounded(8)
       .bg(t.background).border_1().border_color(t.border).children(list.map(segEntry));
@@ -170,10 +204,29 @@ export default class Tabs extends View {
         .text_size(T_XS).font_semibold().text_color(t.background).child(String(count.n))));
     return h_flex().size_full().min_w(0).px(10).pl(lightsPadding).gap(GAP_M).items_center().bg(t.chrome).border_b(1).border_color(t.border)
       .on_mouse_up("left", () => { this.pressed = null; })
+      .on_size_change((s, cx) => {
+        // Layout px, like every other size here: at a zoom the bar is not "narrower".
+        const w = s.width / (settings().zoom || 1);
+        if (Math.abs((this.barW ?? 0) - w) < 20) return;
+        this.barW = w;
+        cx.notify();
+      })
       .on_scroll_wheel(e => { if (Math.abs(e.delta.y) >= 1) run(e.delta.y > 0 ? "tab.prev" : "tab.next"); })
-      // Tabs, then "+" right behind the last one (opens a tab, like a browser); the rest of the bar drags the window.
-      .child(h_flex().id("tab-scroll").flex_shrink_1().min_w(0).h_full().items_center().gap(GAP_XS).overflow_x_scrollbar()
-        .children(shown.map(item))
+      // Tabs scroll in their own strip; "+" and the overflow count stay beside it, so they are
+      // reachable with any number of tabs (the rest of the bar drags the window).
+      .child(h_flex().flex_shrink_1().min_w(0).h_full().items_center().gap(GAP_XS)
+        .child(h_flex().id("tab-scroll").flex_shrink_1().min_w(0).h_full().items_center().gap(GAP_XS).overflow_x_scrollbar()
+          .on_size_change((s, cx) => {
+            if (this.stripW === s.width) return;
+            this.stripW = s.width;
+            this.recount(cx);
+          })
+          .children(shown.map(item)))
+        .when(this.hidden > 0, el => el.child(h_flex().id("tab-more").h(H_BTN_S).px(6).flex_none().items_center().rounded(6)
+          .bg(t.raised).text_size(T_XS).font_medium().text_color(t.muted).cursor_pointer()
+          .tooltip(`${this.hidden} Tab${this.hidden === 1 ? "" : "s"} passen nicht in die Leiste: scrollen oder ⌘⇧] (nächster Tab)`)
+          .hover(s => s.bg(t.hover).text_color(t.foreground))
+          .on_mouse_down("left", stop).on_click(() => run("tab.next")).child(`+${this.hidden}`)))
         .child(iconButton("tab-new", svg("mods/workspace-chrome/plus.svg").size(14), "Neuer Tab: Terminal oder Agent (⌘T)",
           () => openOverlay({ mod: "new-menu", kind: "popup", width: 250, height: 512 }))))
       .child(div().flex_1().min_w(0))
