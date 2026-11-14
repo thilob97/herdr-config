@@ -1,22 +1,33 @@
-// Review: what an agent changed, in its own folder (on its own machine), and
-// what to do about it: commit, send it feedback, go to it, open the Changes
-// panel there, or remove its worktree. Opened as a window with
-// props { terminal } (the inbox, the Review button on finished toasts), or
-// with no props for the focused agent / terminal (mod.open:review).
+// Review: the one place to check and accept work. Opened as a window with
+// props { terminal?, folder?, on?, ticket? }:
+// - ticket mode (props.ticket, an id from shared "orchestra.tickets"; the Team
+//   panel's and the inbox's "Prüfen"): the ticket's title, gate chips, the
+//   orchestrator's summary and the evidence files above the diff of its branch,
+//   and the acceptance below: Mergen, PR, Änderungen … (to the orchestrator) or
+//   Nur abnehmen, all through mods/orchestra/bin/hub.
+// - terminal mode (props.terminal from the inbox or a toast, or no props for the
+//   focused agent / terminal, mod.open:review): what that agent changed in its own
+//   folder (on its own machine), and commit, feedback to it, go to it, the Changes
+//   panel there, or remove its worktree.
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, v_virtual_list } from "gpui-base";
-import { agents, panes, terminals, spaces, focused, exec, hc, readTextFile, run, openOverlay, closeOverlay, props, theme, settings } from "herdr";
+import { agents, panes, terminals, spaces, focused, exec, hc, readTextFile, run, openOverlay, closeOverlay, props, theme, settings, shared, appHome } from "herdr";
+import * as ui from "./ui.js";
+import { T_XS, T_S, T_M, T_L } from "./ui.js";
 
 // Reads write nothing under .git (no index refresh or lock), as the Changes panel does.
 const READ = ["--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "diff.autoRefreshIndex=false"];
 const REFRESH = 5000;
 const MAX_LINES = 1500;
+const ORCH = "orchestrator";
+const hubBin = () => `${appHome()}/mods/orchestra/bin/hub`;
 const machineOf = (address) => (address?.includes("/") ? address.slice(0, address.indexOf("/")) : null);
-const plain = (s) => (s ?? "").replace(/[\uE000-\uF8FF\u{10000}-\u{10FFFF}]\s*/gu, "").trim();
 const countLines = (text) => (text ? text.split("\n").length - Number(text.endsWith("\n")) : 0);
 const untab = (text) => text.replace(/[^\t]*\t/g, (s) => s.slice(0, -1).padEnd((s.length - 1) - (s.length - 1) % 4 + 4));
 const lastLine = (r) => (r.stderr || r.stdout || `exit ${r.code}`).trim().split("\n").pop().slice(0, 240);
+const errorText = (e) => String(e?.message ?? e ?? "fehlgeschlagen").replace(/^Error: /, "").replace(/^hub: /, "");
+const baseName = (p) => p.replace(/\/+$/, "").split("/").pop() || p;
 
 function diffRows(lines) {
   let old = 0, next = 0;
@@ -31,41 +42,75 @@ function diffRows(lines) {
   });
 }
 
+// Tells the orchestrator (if it runs); a blocked one waits on a question, so --force.
+async function tellOrchestrator(text) {
+  const o = terminals().find((x) => x.name === ORCH && x.state === "live");
+  if (!o) return false;
+  const r = await hc(["send", ORCH, text, ...(o.status === "blocked" ? ["--force"] : [])]);
+  if (r.code !== 0) throw new Error(lastLine(r));
+  return true;
+}
+
+async function hub(args, timeout = 30000) {
+  const r = await exec(hubBin(), args, { timeout });
+  if (r.code !== 0) throw new Error(lastLine(r));
+  return r.stdout.trim();
+}
+
 export default class Review extends View {
   init(_props, cx) {
     const p = props() ?? {};
-    this.address = p.terminal ?? (p.folder ? null : focused()?.terminal ?? focused()?.agent ?? null);
+    this.ticketId = p.ticket ?? null;
+    this.address = p.terminal ?? (p.folder || p.ticket ? null : focused()?.terminal ?? focused()?.agent ?? null);
     this.files = []; this.rows = []; this.open = null; this.diffWidth = 300;
     this.repo = null; this.error = null; this.note = null; this.busy = null; this.loading = false;
+    this.snapshot = null;   // the ticket as last seen (it stays readable after landing)
+    this.settled = false;   // the ticket was landed or accepted here: nothing more to do
+    this.asking = false;    // the "Änderungen …" field is open
     this.commitInput = InputState.new({ placeholder: "Commit-Nachricht" });
     this.commitInput.on("submit", (_e, cx) => this.commit(cx));
-    this.feedbackInput = InputState.new({ placeholder: "Feedback an den Agent…" });
+    this.feedbackInput = InputState.new({ placeholder: "Feedback an den Agent… (↵ senden)" });
     this.feedbackInput.on("submit", (_e, cx) => this.feedback(cx));
+    this.changesInput = InputState.new({ placeholder: "Was soll anders werden? (↵ an den Orchestrator)" });
+    this.changesInput.on("submit", (_e, cx) => this.requestChanges(cx));
     this.refresh(cx);
     cx.timer.every(REFRESH, (cx) => this.refresh(cx));
   }
 
-  // Where the agent is: its pane's live folder, else what the core reports, else
-  // props { folder, on } (a ticket whose agent has already ended).
+  ticket() {
+    if (!this.ticketId) return null;
+    const tk = (shared("orchestra.tickets") ?? []).find((x) => x.id === this.ticketId);
+    if (tk) this.snapshot = tk;
+    return this.snapshot;
+  }
+
+  // Where the work is: the agent's pane's live folder, else what the core reports, else
+  // props { folder, on } or the ticket's worktree (its agent may have ended already).
   target() {
-    const a = this.address, p = props() ?? {};
-    if (!a && !p.folder) return null;
+    const p = props() ?? {}, tk = this.ticket();
+    const folder = p.folder ?? tk?.worktree ?? tk?.repo ?? null;
+    const a = this.address ?? tk?.terminal ?? null;
+    if (!a && !folder) return null;
     const agent = a ? agents().find((x) => x.address === a) : null;
     const pane = a ? panes().find((x) => x.terminal === a) : null;
     const term = a ? terminals().find((x) => x.address === a) : null;
     const space = spaces().find((s) => s.id === agent?.space) ?? spaces().find((s) => s.tabs?.some((t) => t.id === pane?.tab));
     const live = Boolean(term && term.state !== "finished");
-    return { agent, pane, space, on: a ? machineOf(a) : p.on ?? null, cwd: (live ? pane?.cwd ?? term?.cwd : null) ?? p.folder ?? term?.cwd ?? null, live };
+    const on = a && live ? machineOf(a) : p.on ?? tk?.machine ?? machineOf(a);
+    // A ticket's branch lives in its worktree, whatever folder its agent's shell is in now.
+    const cwd = tk ? folder ?? term?.cwd : (live ? pane?.cwd ?? term?.cwd : null) ?? folder ?? term?.cwd ?? null;
+    return { address: a, agent, pane, space, on: on || null, cwd, live };
   }
 
   git(args, on, cwd) { return exec("git", [...READ, ...args], { cwd, on }); }
 
   refresh(cx) {
-    if (this.loading || this.busy) return;
+    if (this.loading || this.busy || this.settled) return;
     const tg = this.target();
     if (!tg?.cwd) {
       this.repo = null; this.files = []; this.rows = [];
-      this.error = this.address ? "Das Terminal ist beendet oder hat keinen bekannten Ordner." : "Kein Agent ausgewählt.";
+      this.error = this.ticketId && !this.ticket() ? `Ticket ${this.ticketId} nicht gefunden.`
+        : tg?.address ? "Das Terminal ist beendet oder hat keinen bekannten Ordner." : "Kein Agent ausgewählt.";
       cx.notify();
       return;
     }
@@ -122,16 +167,16 @@ export default class Review extends View {
         if (this.open) await this.load(this.open);
         else this.rows = [];
         if (!this.commitInput.value() && dirty) this.commitInput.set_value(this.suggestion());
-      } catch (e) { this.error = String(e?.message ?? e); }
+      } catch (e) { this.error = errorText(e); }
       finally { this.loading = false; cx.notify(); }
     });
   }
 
-  // The main branch this one started from (origin's default, else main or master)
-  // and the merge base with it, when the branch has commits of its own.
+  // The main branch this one started from (the ticket's base, else origin's default,
+  // main or master) and the merge base with it, when the branch has commits of its own.
   async baseOf(on, root, branchName) {
     const head = await this.git(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], on, root);
-    const candidates = [head.code === 0 ? head.stdout.trim() : null, "main", "master"].filter(Boolean);
+    const candidates = [this.ticket()?.base, head.code === 0 ? head.stdout.trim() : null, "main", "master"].filter(Boolean);
     for (const name of candidates) {
       if (name === branchName || name === `origin/${branchName}`) return null;
       const mb = await this.git(["merge-base", "HEAD", name], on, root);
@@ -147,7 +192,7 @@ export default class Review extends View {
   suggestion() {
     const tg = this.target();
     const tab = tg?.agent?.tab_name;
-    return tab && !/^\d+$/.test(tab) ? tab : plain(tg?.agent?.title) || "";
+    return tab && !/^\d+$/.test(tab) ? tab : ui.plain(tg?.agent?.title) || "";
   }
 
   async load(path) {
@@ -176,46 +221,100 @@ export default class Review extends View {
   pick(path, cx) {
     this.open = path; this.rows = [];
     cx.spawn(async (cx) => {
-      try { await this.load(path); } catch (e) { this.note = { ok: false, text: String(e?.message ?? e) }; }
+      try { await this.load(path); } catch (e) { this.note = { ok: false, text: errorText(e) }; }
       cx.notify();
     });
     cx.notify();
   }
 
-  commit(cx) {
-    const message = this.commitInput.value().trim(), repo = this.repo;
-    if (!message || !repo || !this.files.length || this.busy) return;
-    this.busy = "commit"; this.note = null;
+  // One action at a time; its outcome shows in the footer.
+  act(cx, busy, fn) {
+    if (this.busy) return;
+    this.busy = busy; this.note = null;
+    cx.notify();
     cx.spawn(async (cx) => {
-      try {
-        for (const args of [["add", "-A"], ["commit", "-m", message]]) {
-          const r = await exec("git", args, { cwd: repo.root, on: repo.on });
-          if (r.code !== 0) throw new Error(lastLine(r));
-        }
-        this.commitInput.set_value("");
-        this.note = { ok: true, text: `Committet: ${message}` };
-      } catch (e) { this.note = { ok: false, text: `Commit fehlgeschlagen: ${e?.message ?? e}` }; }
+      try { this.note = { ok: true, text: await fn() }; }
+      catch (e) { this.note = { ok: false, text: errorText(e) }; }
       finally { this.busy = null; this.refresh(cx); cx.notify(); }
     });
-    cx.notify();
+  }
+
+  // ---------- ticket mode ----------
+
+  // `hub land` merges (or opens a PR), then ends the agent and removes the worktree.
+  // A merge conflict goes back to the orchestrator, who has the agent rebase.
+  land(cx, how) {
+    const tk = this.ticket();
+    if (!tk) return;
+    this.act(cx, how, async () => {
+      const r = await exec(hubBin(), ["land", tk.id, `--${how}`], { timeout: 180000 });
+      if (r.code !== 0) {
+        const err = errorText(lastLine(r));
+        if (/merge conflict/.test(err)) {
+          await hub(["ticket", "set", tk.id, "status=doing"]);
+          const told = await tellOrchestrator(`Merge-Konflikt bei Ticket ${tk.id} „${tk.title}“: ${err}. Lass den Agent rebasen, prüfe erneut und gib es wieder zum Review.`);
+          this.settled = true;
+          return told ? "Merge-Konflikt: an den Orchestrator zurückgegeben (Rebase)" : "Merge-Konflikt: Ticket zurück auf „in Arbeit“; der Orchestrator läuft nicht";
+        }
+        throw new Error(err);
+      }
+      const out = JSON.parse(r.stdout.trim().split("\n").pop());
+      this.settled = true;
+      await tellOrchestrator(`Ticket ${tk.id} „${tk.title}“ wurde abgenommen und ${out.merged ? `gemergt (${out.merged})` : `als Pull Request eingereicht: ${out.pr}`}. Agent und Worktree sind aufgeräumt.`).catch(() => false);
+      return out.pr ? `PR erstellt: ${out.pr}` : `Gemergt: ${out.merged}`;
+    });
+  }
+
+  accept(cx) {
+    const tk = this.ticket();
+    if (!tk) return;
+    this.act(cx, "accept", async () => {
+      await hub(["done", tk.id]);
+      this.settled = true;
+      await tellOrchestrator(`Ticket ${tk.id} „${tk.title}“ wurde vom Menschen abgenommen (ohne Merge).`).catch(() => false);
+      return "Abgenommen (ohne Merge; Branch und Worktree bleiben)";
+    });
+  }
+
+  requestChanges(cx) {
+    const tk = this.ticket(), text = this.changesInput.value().trim();
+    if (!tk || !text) return;
+    this.act(cx, "changes", async () => {
+      if (!(await tellOrchestrator(`Feedback vom Menschen zu Ticket ${tk.id} „${tk.title}“: ${text}`))) throw new Error("Der Orchestrator läuft nicht (Team-Panel: Starten).");
+      await hub(["ticket", "set", tk.id, "status=doing"]);
+      this.changesInput.set_value("");
+      this.asking = false;
+      this.settled = true;
+      return "Änderungen an den Orchestrator gegeben; das Ticket ist wieder in Arbeit";
+    });
+  }
+
+  // ---------- terminal mode ----------
+
+  commit(cx) {
+    const message = this.commitInput.value().trim(), repo = this.repo;
+    if (!message || !repo || !this.files.length) return;
+    this.act(cx, "commit", async () => {
+      for (const args of [["add", "-A"], ["commit", "-m", message]]) {
+        const r = await exec("git", args, { cwd: repo.root, on: repo.on });
+        if (r.code !== 0) throw new Error(`Commit fehlgeschlagen: ${lastLine(r)}`);
+      }
+      this.commitInput.set_value("");
+      return `Committet: ${message}`;
+    });
   }
 
   feedback(cx) {
     const text = this.feedbackInput.value().trim(), tg = this.target();
-    if (!text || !tg?.live || this.busy) return;
-    this.busy = "send"; this.note = null;
+    if (!text || !tg?.live) return;
     // A blocked agent waits on a question: the feedback is the answer.
-    const args = ["send", this.address, text, ...(tg.agent?.status === "blocked" ? ["--force"] : [])];
-    cx.spawn(async (cx) => {
-      try {
-        const r = await hc(args);
-        if (r.code !== 0) throw new Error(lastLine(r));
-        this.feedbackInput.set_value("");
-        this.note = { ok: true, text: "Feedback gesendet" };
-      } catch (e) { this.note = { ok: false, text: `Senden fehlgeschlagen: ${e?.message ?? e}` }; }
-      finally { this.busy = null; cx.notify(); }
+    const args = ["send", tg.address, text, ...(tg.agent?.status === "blocked" ? ["--force"] : [])];
+    this.act(cx, "send", async () => {
+      const r = await hc(args);
+      if (r.code !== 0) throw new Error(`Senden fehlgeschlagen: ${lastLine(r)}`);
+      this.feedbackInput.set_value("");
+      return "Feedback gesendet";
     });
-    cx.notify();
   }
 
   close() { closeOverlay(props().overlay); }
@@ -223,7 +322,7 @@ export default class Review extends View {
   goToAgent() {
     const tg = this.target();
     if (tg?.pane) run("pane.focus", { pane: tg.pane.pane });
-    else if (this.address) run("agent.focus", { terminal: this.address });
+    else if (tg?.address) run("agent.focus", { terminal: tg.address });
   }
 
   changesPanel() {
@@ -243,24 +342,14 @@ export default class Review extends View {
 
   // ---------- view ----------
 
-  button(t, id, label, action, { strong = false, enabled = true } = {}) {
-    return h_flex().id(id).h(28).px(10).flex_none().items_center().rounded(7).text_size(12)
-      .bg(strong && enabled ? t.solid : t.raised).text_color(!enabled ? t.dim : strong ? t.solid_foreground : t.foreground)
-      .when(enabled, (e) => e.cursor_pointer().hover((s) => s.opacity(0.85)))
-      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-      .on_click((_e, cx) => { if (enabled) action(cx); })
-      .child(label);
-  }
-
-  field(t, id, input) {
-    return div().id(id).flex_1().min_w(0).h(30).px(10).flex().items_center().rounded(7).border_1().border_color(t.input).bg(t.background)
-      .cursor_text().on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-      .child(Input.new(input).h_full().w_full().text_size(12).text_color(t.foreground));
+  field(t, id, input, send) {
+    return div().flex_1().min_w(0).cursor_text().on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .child(ui.inputBox(t, id, Input.new(input), { send }));
   }
 
   diffRow({ kind, number, text }, t) {
     if (kind === "@") return div().w_full().px(12).h(20).flex_none().truncate().bg(t.raised).text_color(t.dim).child(text);
-    return h_flex().w_full().h(20).flex_none().gap(10).when(kind === "+", (e) => e.bg(t.ansi2 + "18")).when(kind === "-", (e) => e.bg(t.ansi1 + "18"))
+    return h_flex().w_full().h(20).flex_none().gap(10).when(kind === "+", (e) => e.bg(t.ansi2 + "26")).when(kind === "-", (e) => e.bg(t.ansi1 + "26"))
       .child(div().w(34).flex_none().text_right().text_color(t.dim).child(number === undefined ? "" : String(number)))
       .child(div().w(10).flex_none().text_color(kind === "+" ? t.ansi2 : kind === "-" ? t.ansi1 : t.dim).child(kind === "+" || kind === "-" ? kind : ""))
       .child(div().flex_1().min_w(0).whitespace_nowrap().child(text));
@@ -269,79 +358,129 @@ export default class Review extends View {
   fileRow(t, f, cx) {
     const parts = f.path.split("/"), name = parts.pop();
     const color = f.status === "A" ? t.ansi2 : f.status === "D" || f.status === "U" ? t.ansi1 : t.working;
-    return h_flex().id(`rv-${f.path}`).h(28).flex_none().px(8).gap(8).items_center().rounded(6).cursor_pointer()
+    return h_flex().id(`rv-${f.path}`).h(ui.H_ROW).flex_none().px(8).gap(ui.GAP_M).items_center().rounded(6).cursor_pointer().text_size(T_M)
       .when(this.open === f.path, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover))
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .on_click((_e, cx) => this.pick(f.path, cx))
-      .child(div().w(12).flex_none().text_size(11).text_color(color).child(f.status))
+      .child(div().w(12).flex_none().text_size(T_S).text_color(color).child(f.status))
       .child(h_flex().flex_1().min_w(0)
         .child(div().min_w(0).truncate().text_color(t.dim).child(parts.length ? `${parts.join("/")}/` : ""))
         .child(div().flex_none().max_w(200).truncate().text_color(t.foreground).child(name)))
-      .when(f.add > 0, (e) => e.child(div().text_size(11).text_color(t.ansi2).child(`+${f.add}`)))
-      .when(f.del > 0, (e) => e.child(div().text_size(11).text_color(t.ansi1).child(`−${f.del}`)));
+      .when(f.add > 0, (e) => e.child(div().text_size(T_XS).text_color(t.ansi2).child(`+${f.add}`)))
+      .when(f.del > 0, (e) => e.child(div().text_size(T_XS).text_color(t.ansi1).child(`−${f.del}`)));
+  }
+
+  // Branch, its base and what is uncommitted: the window's meta line.
+  meta() {
+    const repo = this.repo;
+    if (!repo) return this.target()?.cwd ?? "";
+    const parts = [repo.branch ?? "ohne Branch"];
+    if (repo.base) parts.push(`gegen ${repo.base.name} · ${repo.base.commits} Commit${repo.base.commits === 1 ? "" : "s"}`);
+    if (repo.dirty) parts.push(`${repo.dirty} uncommittet`);
+    if (repo.ahead != null && (repo.ahead || repo.behind)) parts.push(`↑${repo.ahead} ↓${repo.behind}`);
+    if (repo.on) parts.push(repo.on);
+    return parts.join(" · ");
+  }
+
+  // Ticket mode: what was ordered, the gates and the orchestrator's evidence.
+  ticketHead(t, tk) {
+    const evidence = tk.evidence ?? [];
+    const local = !tk.machine;
+    return v_flex().flex_none().px(ui.INSET_PANEL).py(ui.GAP_L).gap(ui.GAP_M).border_b(1).border_color(t.border)
+      .child(h_flex().gap(ui.GAP_M).items_center()
+        .child(ui.statusIcon(t, tk.status === "review" ? "blocked" : tk.status === "done" ? "done" : tk.status === "doing" ? "working" : "idle"))
+        .child(div().flex_1().min_w(0).truncate().text_size(T_L).font_semibold().text_color(t.foreground).child(tk.title))
+        .when(Boolean(tk.terminal), (el) => el.child(div().flex_none().max_w(180).child(ui.identityChip(t, "rv-who", tk.terminal))))
+        .children(ui.gateChips(t, tk)))
+      .child(div().id("rv-summary").max_h(90).overflow_y_scroll().text_size(T_S).text_color(tk.summary ? t.muted : t.dim)
+        .child(tk.summary || "Keine Zusammenfassung des Orchestrators."))
+      .child(h_flex().flex_wrap().gap(ui.GAP_S).items_center()
+        .child(div().flex_none().text_size(T_S).font_medium().text_color(t.muted).child("Nachweise"))
+        .when(!evidence.length, (el) => el.child(div().text_size(T_S).text_color(t.dim).child("keine angegeben")))
+        .children(evidence.map((p, i) => local
+          ? ui.link(t, `rv-ev-${i}`, baseName(p), () => exec("open", [p]).catch(() => null), { tip: `Öffnen: ${p}` })
+          : div().text_size(T_S).text_color(t.dim).tooltip(`${p} (auf ${tk.machine}; hier nicht zu öffnen)`).child(baseName(p))))
+        .when(!local && evidence.length > 0, (el) => el.child(div().text_size(T_XS).text_color(t.dim).child(`auf ${tk.machine}`))));
+  }
+
+  ticketFooter(t, tk) {
+    const open = tk.status === "review" && !this.settled;
+    const canLand = open && !this.busy && Boolean(tk.worktree);
+    const label = (key, idle, doing) => (this.busy === key ? doing : idle);
+    return v_flex().flex_none().px(ui.INSET_PANEL).py(ui.GAP_M).gap(ui.GAP_M).border_t(1).border_color(t.border).bg(t.chrome)
+      .when(Boolean(this.note), (e) => e.child(div().text_size(T_S).text_color(this.note.ok ? t.done : t.blocked).child(this.note.text)))
+      .when(!open && !this.note, (e) => e.child(div().text_size(T_S).text_color(t.dim)
+        .child(tk.status === "done" ? "Dieses Ticket ist schon abgenommen." : "Dieses Ticket wartet gerade nicht auf deine Abnahme.")))
+      .when(open && this.asking, (e) => e.child(h_flex().gap(ui.GAP_M).items_center()
+        .child(this.field(t, "rv-changes", this.changesInput, ui.sendButton(t, "rv-changes-send", "mods/orchestra/icons/send.svg",
+          "An den Orchestrator senden (↵)", (cx) => this.requestChanges(cx), { enabled: !this.busy })))))
+      .child(h_flex().h(ui.H_BTN).gap(ui.GAP_M).items_center()
+        .child(ui.button(t, "rv-merge", label("merge", "Mergen", "Mergt …"), (cx) => this.land(cx, "merge"),
+          { kind: "primary", enabled: canLand, tip: `In ${tk.base || "die Basis"} mergen (--no-ff); beendet den Agent und entfernt Worktree und Branch` }))
+        .child(ui.button(t, "rv-pr", label("pr", "PR", "PR …"), (cx) => this.land(cx, "pr"),
+          { enabled: canLand, tip: "Branch nach origin pushen und einen Pull Request öffnen; beendet den Agent und entfernt den Worktree" }))
+        .child(ui.button(t, "rv-ask", this.asking ? "Abbrechen" : "Änderungen …", (cx) => {
+          this.asking = !this.asking;
+          if (this.asking) this.changesInput.focus();
+          cx.notify();
+        }, { enabled: open && !this.busy, tip: "Feedback an den Orchestrator; er gibt es an den Agent weiter" }))
+        .child(div().flex_1())
+        .when(open && !this.busy, (e) => e.child(ui.link(t, "rv-accept", "Nur abnehmen", (cx) => this.accept(cx),
+          { tip: "Abnehmen, ohne zu mergen (Branch und Worktree bleiben)" }))));
+  }
+
+  terminalFooter(t, tg) {
+    const repo = this.repo;
+    const canCommit = Boolean(repo?.dirty && !this.busy);
+    const canSend = Boolean(tg?.live && !this.busy);
+    return v_flex().flex_none().px(ui.INSET_PANEL).py(ui.GAP_M).gap(ui.GAP_M).border_t(1).border_color(t.border).bg(t.chrome)
+      .when(Boolean(this.note), (e) => e.child(div().truncate().text_size(T_S).text_color(this.note.ok ? t.done : t.blocked).child(this.note.text)))
+      .child(h_flex().gap(ui.GAP_M).items_center()
+        .child(this.field(t, "rv-commit-msg", this.commitInput))
+        .child(div().w(132).flex_none().child(ui.button(t, "rv-commit", this.busy === "commit" ? "Committe …" : "Commit", (cx) => this.commit(cx),
+          { kind: "primary", enabled: canCommit, tip: "git add -A und git commit im Ordner des Agents" }).w_full())))
+      .child(h_flex().gap(ui.GAP_M).items_center()
+        .child(this.field(t, "rv-feedback", this.feedbackInput))
+        .child(div().w(132).flex_none().child(ui.button(t, "rv-send", this.busy === "send" ? "Sende …" : "Feedback senden", (cx) => this.feedback(cx),
+          { enabled: canSend, tip: "Per hc send an den Agent (wartet er, beantwortet es seine Frage)" }).w_full())))
+      .child(h_flex().gap(ui.GAP_S).items_center()
+        .child(ui.button(t, "rv-go", "Zum Agent", () => this.goToAgent(), { enabled: Boolean(tg?.live) }))
+        .child(ui.button(t, "rv-panel", "Changes-Panel", () => this.changesPanel(), { enabled: Boolean(tg?.space), tip: "Space wählen und das Changes-Panel öffnen" }))
+        .when(Boolean(repo?.worktree), (e) => e.child(ui.button(t, "rv-worktree", "Worktree entfernen", () => this.removeWorktree())))
+        .child(div().flex_1())
+        .child(ui.iconButton(t, "rv-refresh", "mods/orchestra/icons/restart.svg", this.loading ? "lädt …" : "Aktualisieren", (cx) => this.refresh(cx))));
   }
 
   render(cx) {
-    const t = theme(), tg = this.target(), a = tg?.agent, repo = this.repo;
+    const t = theme(), tg = this.target(), repo = this.repo, tk = this.ticket();
     const add = this.files.reduce((n, f) => n + f.add, 0), del = this.files.reduce((n, f) => n + f.del, 0);
-    const who = a ? `${a.program?.name ?? "Agent"} · ${a.space_name} / ${a.tab_name}` : this.address ?? "—";
-    const statusColor = t[a?.status] ?? t.dim;
-    const canCommit = Boolean(repo?.dirty && !this.busy);
-    const canSend = Boolean(tg?.live && !this.busy);
+    const stats = [
+      div().flex_none().text_size(T_S).text_color(t.ansi2).child(`+${add}`),
+      div().flex_none().text_size(T_S).text_color(t.ansi1).child(`−${del}`),
+    ];
+    const who = !tk && tg?.address ? [div().flex_none().max_w(200).child(ui.identityChip(t, "rv-agent", tg.address))] : [];
+    const header = ui.windowHeader(t, "Review", [...who, ...stats], () => this.close(), { meta: this.meta() });
 
-    const header = h_flex().h(46).flex_none().px(14).gap(10).items_center().border_b(1).border_color(t.border).bg(t.chrome)
-      .child(div().size(8).flex_none().rounded(4).bg(statusColor))
-      .child(v_flex().flex_1().min_w(0)
-        .child(div().truncate().font_semibold().text_color(t.foreground).child(`Review · ${who}`))
-        .child(div().truncate().text_size(11).text_color(t.dim)
-          .child([tg?.on, repo?.root ?? tg?.cwd].filter(Boolean).join(" · "))))
-      .when(Boolean(repo?.branch), (e) => e.child(h_flex().gap(5).items_center().text_size(11.5).text_color(t.muted)
-        .child(svg("mods/workspace-chrome/branch.svg").size(13))
-        .child(repo.branch)
-        .when(repo.ahead != null && (repo.ahead || repo.behind), (e) => e.child(div().text_color(t.dim).child(`↑${repo.ahead} ↓${repo.behind}`)))
-        .when(Boolean(repo.base), (e) => e.child(div().text_color(t.dim).tooltip(`Änderungen seit dem Abzweig von ${repo.base.name} (Merge-Base), committet und uncommittet`)
-          .child(`gegen ${repo.base.name} · ${repo.base.commits} Commit${repo.base.commits === 1 ? "" : "s"}${repo.dirty ? ` · ${repo.dirty} uncommittet` : ""}`)))))
-      .child(div().text_size(11.5).text_color(t.ansi2).child(`+${add}`))
-      .child(div().text_size(11.5).text_color(t.ansi1).child(`−${del}`))
-      .child(div().id("rv-close").size(26).flex_none().flex().items_center().justify_center().rounded(6).text_color(t.dim).cursor_pointer()
-        .hover((s) => s.bg(t.hover).text_color(t.foreground))
-        .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-        .on_click(() => this.close())
-        .child(svg("mods/pane/close.svg").size(13)));
-
-    const empty = (text) => v_flex().flex_1().items_center().justify_center().gap(6).text_color(t.dim).child(text);
     const body = this.error
-      ? empty(this.error)
+      ? ui.empty(t, this.error)
       : !repo
-        ? empty("lese Änderungen…")
+        ? v_flex().flex_1().items_center().justify_center().child(ui.loading(t, "lese Änderungen …"))
         : !this.files.length
-          ? empty("Keine Änderungen").child(div().text_size(11).child("Der Agent hat hier nichts uncommittet hinterlassen."))
+          ? ui.empty(t, tk ? "Keine Änderungen gegenüber der Basis." : "Keine Änderungen: der Agent hat hier nichts uncommittet hinterlassen.")
           : h_flex().flex_1().min_h(0)
             .child(div().w(300).flex_none().h_full().relative().border_r(1).border_color(t.border)
               .child(v_flex().id("rv-files").absolute().inset_0().overflow_y_scroll().p(6).children(this.files.map((f) => this.fileRow(t, f, cx))))
               .child(Scrollbar.vertical("rv-files").absolute().inset_0()))
-            .child(div().flex_1().min_w(0).h_full().relative().bg(t.background).font_family(settings().font_family ?? "JetBrains Mono").text_size(11).text_color(t.foreground)
+            .child(div().flex_1().min_w(0).h_full().relative().bg(t.background).font_family(settings().font_family ?? "JetBrains Mono").text_size(T_S).text_color(t.foreground)
               .child(div().id("rv-diff-x").size_full().overflow_x_scrollbar()
                 .child(div().w_full().min_w(this.diffWidth).h_full().child(v_virtual_list("rv-diff", this.rows.length, 20, (i) => String(i),
                   (range) => this.rows.slice(range.start, range.end).map((row) => this.diffRow(row, t))).size_full())))
               .child(Scrollbar.vertical("rv-diff").viewport_from_layout().absolute().inset_0()));
 
-    const footer = v_flex().flex_none().p(10).gap(8).border_t(1).border_color(t.border).bg(t.chrome)
-      .when(Boolean(this.note), (e) => e.child(div().text_size(11.5).text_color(this.note.ok ? t.done : t.ansi1).truncate().child(this.note.text)))
-      .child(h_flex().gap(8).items_center()
-        .child(this.field(t, "rv-commit-msg", this.commitInput))
-        .child(this.button(t, "rv-commit", this.busy === "commit" ? "Committe…" : "Commit", (cx) => this.commit(cx), { strong: true, enabled: canCommit })))
-      .child(h_flex().gap(8).items_center()
-        .child(this.field(t, "rv-feedback", this.feedbackInput))
-        .child(this.button(t, "rv-send", this.busy === "send" ? "Sende…" : "Feedback senden", (cx) => this.feedback(cx), { enabled: canSend })))
-      .child(h_flex().gap(6).items_center()
-        .child(this.button(t, "rv-go", "Zum Agent", () => this.goToAgent(), { enabled: Boolean(tg?.live) }))
-        .child(this.button(t, "rv-panel", "Changes-Panel", () => this.changesPanel(), { enabled: Boolean(tg?.space) }))
-        .when(Boolean(repo?.worktree), (e) => e.child(this.button(t, "rv-worktree", "Worktree entfernen", () => this.removeWorktree())))
-        .child(div().flex_1())
-        .child(this.button(t, "rv-refresh", this.loading ? "lädt…" : "Aktualisieren", (cx) => this.refresh(cx))));
-
-    return v_flex().id("review").size_full().min_h(0).overflow_hidden().bg(t.popover).text_size(12.5).text_color(t.foreground)
-      .child(header).child(body).child(footer);
+    return v_flex().id("review").size_full().min_h(0).overflow_hidden().bg(t.popover).text_size(T_M).text_color(t.foreground)
+      .child(header)
+      .when(Boolean(tk), (el) => el.child(this.ticketHead(t, tk)))
+      .child(body)
+      .child(tk ? this.ticketFooter(t, tk) : this.terminalFooter(t, tg));
   }
 }
