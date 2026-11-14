@@ -500,12 +500,14 @@ def cmd_status(_a):
         pass
     c = costs()
     per = c.get("tickets", {})
-    for t in all_tickets():
-        if t["status"] == "done":
-            continue
+    open = [t for t in all_tickets() if t["status"] != "done"]
+    if open:
+        print(f"{'Ticket':<40} {'Status':<7} {'Terminal':<16} {'Live':<9} {'Kosten':>7} {'Verlauf':>7}  Titel")
+    for t in open:
         term = t.get("terminal", "")
         cost = f"${per[t['id']]:.2f}" if t["id"] in per else "-"
-        print(f"{t['id']:<40} {t['status']:<7} {term:<16} {live.get(term, '-' if not term else 'beendet'):<9} {cost:>7} {t['title']}")
+        print(f"{t['id']:<40} {t['status']:<7} {term:<16} {live.get(term, '-' if not term else 'beendet'):<9} {cost:>7} "
+              f"{len(entries(t)):>7}  {t['title']}")
     if c:
         print(f"\nBudget pro Ticket ${c.get('ticketBudget', 0):.0f}, Team ${c.get('teamBudget', 0):.0f}; offen bisher ${c.get('teamCost', 0):.2f}")
 

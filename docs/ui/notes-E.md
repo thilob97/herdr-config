@@ -1,7 +1,7 @@
-# Notizen E: Tickets als einziger Weg (Teil 1)
+# Notizen E: Tickets als einziger Weg
 
-Branch `feat/ui-tickets` (Basis `feat/ui-umbau`). Teil 1 = `hub`, Regeln, Dispatch-Präambel.
-Die UI (Team-Panel, Review, Inbox, `hub status`-Spalte) folgt in Teil 2 nach Paket B.
+Branch `feat/ui-tickets` (Basis `main` nach dem Merge von `feat/ui-umbau`).
+Teil 1 = `hub`, Regeln, Dispatch-Präambel; Teil 2 = Verlauf in der Oberfläche.
 
 ## Neue `hub`-Befehle
 
@@ -33,3 +33,44 @@ verlinken, `next` (Treffer und Exit 1), `dispatch` auf blockiertes Ticket
 (genannt/zugewiesen/wartend), `list --agent --json`, Zyklus- und Feld-Abweisung,
 `review` + `done` mit erhaltenem Verlauf, `dispatch` nach `done` des Vorgängers
 läuft weiter bis zur Repo-Prüfung (Gate frei, nichts gestartet), `--help`.
+`hub status` zeigt die Spalte `Verlauf` (Zahl der Kommentare) samt Kopfzeile.
+
+## Teil 2: Verlauf in der Oberfläche
+
+- **Daten** (`mods/orchestra/tickets.js`): `published()` liefert je Ticket `verlauf`
+  (alle Einträge als `{ts, role, text}`) und `question` (letzter Kommentar von jemand
+  anderem, der `@mensch` nennt oder in `waiting` steht). `summaryOf` endet vor
+  `## Verlauf`. Die neuen Felder (`assignee`, `blocked_by`, `tags`, `waiting`) bleiben
+  beim Umschreiben erhalten.
+- **Team-Panel** (`hubview.js`): jede Ticket-Zeile zeigt unter den Gates die letzten
+  zwei Kommentare (Rolle · HH:MM, Text wortweise umbrochen, `@Tags` in `accent`);
+  „Verlauf n“ mit „alle“/„weniger“ klappt den ganzen Verlauf auf (Scroll bis 150 px).
+- **Review-Fenster** (`mods/review`): im Ticket-Modus steht der Verlauf unter den
+  Nachweisen; darunter das Feld „Kommentar (an @agent)…“, das
+  `hub ticket comment <id> --from mensch` aufruft und den Verlauf danach neu liest.
+- **Inbox** (`mods/inbox`): offene Fragen des Tickets erscheinen als eigene Zeile in
+  **Rückfragen** (Titel, „Ticket <id> · Frage von <rolle>“, Alter). ↵/„Ticket öffnen“
+  öffnet das Review-Fenster; das Antwortfeld schreibt einen Kommentar ins Ticket
+  (`--from mensch`) statt per `hc send` ins Terminal und blendet die Frage aus.
+  Der Zähler bleibt der gemeinsame von Inbox-Kopf und Tab-Leiste.
+
+## Test mit `docs/ui-preview.sh`
+
+Test-Home `~/.herdr/ui-preview/feat-ui-tickets`, eigener Core, Demo-Welt,
+Fenster `UI_PREVIEW_Y=40`; `check orchestra|review|inbox` grün. Demo-Tickets per
+`docs/ui-preview.sh hub ticket comment …` kommentiert (Demo-1 drei Einträge mit
+`@orchestrator`/`@mensch`, Demo-2 eine Frage an `@mensch`). Belegt:
+
+| Screenshot | Inhalt |
+|---|---|
+| `/tmp/ui-ticket/62-team-verlauf.png` | Team-Panel: letzte 2 Kommentare je Zeile, `@Tags` pink, „alle“ |
+| `/tmp/ui-ticket/70-review-verlauf.png` | Review (Ticket-Modus): Verlauf unter den Nachweisen, Feld „Kommentar (an @agent)…“ |
+| `/tmp/ui-ticket/71-inbox-question.png` | Inbox: offene Frage unter **Rückfragen** mit Ticket-Ort |
+| `/tmp/ui-ticket/73-inbox-frage-detail.png` | Inbox: Frage, Antwortfeld „Antwort ins Ticket“, „Ticket öffnen“ |
+| `/tmp/ui-ticket/76-inbox-nach-antwort.png` | nach `--from mensch`-Antwort: Frage weg, Verlauf im Ticket |
+
+Funktional geprüft: `hub ticket comment demo-2 --from mensch "…"` schreibt den
+Eintrag in `## Verlauf`; `hub ticket inbox mensch` meldet danach „nichts offen“.
+Der Screenshot des Review-Fensters nutzt im **Test-Home** einen Ein-Zeilen-Shim
+(`props.ticket ?? "demo-1"`), weil `herdr-app do mod.open` keine Props übergibt;
+der Worktree enthält diesen Shim nicht. Testfenster danach `down`, Test-Cores gestoppt.

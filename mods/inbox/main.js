@@ -11,12 +11,14 @@
 
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, ScrollHandle } from "gpui-base";
-import { agents, terminals, run, hc, exec, theme, props, closeOverlay, openOverlay, shared } from "herdr";
+import { agents, terminals, run, hc, exec, theme, props, closeOverlay, openOverlay, shared, appHome } from "herdr";
 import * as ui from "./ui.js";
 import { T_XS, T_S, T_M, T_L, T_XL } from "./ui.js";
 
 const ORCH = "orchestrator";
 const PENDING = "quests.pending";
+const hubBin = () => `${appHome()}/mods/orchestra/bin/hub`;
+const tsMs = (ts) => { const d = new Date(String(ts ?? "").replace(" ", "T")); return Number.isNaN(d.getTime()) ? null : d.getTime(); };
 const GROUPS = [
   { key: "ask", label: "Rückfragen", color: (t) => t.blocked },
   { key: "review", label: "Abnahmen", color: (t) => t.blocked },
@@ -80,17 +82,20 @@ export default class Inbox extends View {
     this.previews = {};          // address → { at, lines, error }
     this.loading = new Set();
     this.sent = null;            // { key, ok, text }
+    this.answered = new Set();   // ticket ids answered here, until the shared data catches up
     this.handle = cx.focus_handle();
     this.scroll = ScrollHandle.new();
     // One field per addressee, so the placeholder says who gets the answer.
     this.replies = {
       agent: InputState.new({ placeholder: "Antwort an den Agent… (↵ senden)" }),
       orch: InputState.new({ placeholder: "Antwort an den Orchestrator… (↵ senden)" }),
+      question: InputState.new({ placeholder: "Antwort ins Ticket (an @agent)… (↵ senden)" }),
     };
     for (const input of Object.values(this.replies)) input.on("submit", (_e, cx) => this.send(cx));
     this.focus = ui.focusFields();
     this.focus.track(this.replies.agent, "ib-reply-agent");
     this.focus.track(this.replies.orch, "ib-reply-orch");
+    this.focus.track(this.replies.question, "ib-reply-question");
     cx.timer.after(50, () => this.handle.focus());
     cx.timer.every(REFRESH, (cx) => { const e = this.entry(); if (e?.address) this.load(e.address, cx, true); });
   }
@@ -111,6 +116,10 @@ export default class Inbox extends View {
     }
     for (const tk of (shared("orchestra.tickets") ?? []).filter((x) => x.status === "review")) {
       list.push({ kind: "ticket", key: `ticket:${tk.id}`, group: "review", tk, order: tk.updated ?? "" });
+    }
+    // Open questions to the human live in the ticket: one row per ticket, answered there.
+    for (const tk of (shared("orchestra.tickets") ?? []).filter((x) => x.question && x.status !== "done" && !this.answered.has(x.id))) {
+      list.push({ kind: "question", key: `q:${tk.id}`, group: "ask", tk, q: tk.question, order: tk.updated ?? "" });
     }
     for (const p of (shared(PENDING) ?? [])) {
       // A handover line lives at most 15 minutes: after that the crew had its chance.
@@ -146,6 +155,7 @@ export default class Inbox extends View {
   // ↵ on an entry: go to the agent, peek at the orchestrator, check the ticket.
   activate(e) {
     if (!e) return;
+    if (e.kind === "question") return this.check(e.tk);
     if (e.kind === "ticket") return this.check(e.tk);
     if (e.kind === "pending") { this.close(); run("tabs-graph.panel-team"); return; }
     this.close();
@@ -169,6 +179,22 @@ export default class Inbox extends View {
     const e = this.entry(), input = this.replies[e?.kind];
     const text = input?.value().trim();
     if (!text || !e || e.kind === "ticket") return;
+    // A question waits in the ticket: the answer is a comment there, not a terminal keystroke.
+    if (e.kind === "question") {
+      this.sent = { key: e.key, ok: null, text: "schreibe ins Ticket …" };
+      cx.notify();
+      cx.spawn(async (cx) => {
+        try {
+          const r = await exec(hubBin(), ["ticket", "comment", e.tk.id, "--from", "mensch", text], { timeout: 30000 });
+          const ok = r.code === 0;
+          if (ok) { input.set_value(""); this.answered.add(e.tk.id); }
+          this.sent = { key: e.key, ok, text: ok ? `Kommentar im Ticket ${e.tk.id}` : errorLine(r) };
+        } catch (err) { this.sent = { key: e.key, ok: false, text: String(err?.message ?? err) }; }
+        this.handle.focus();
+        cx.notify();
+      });
+      return;
+    }
     // A blocked agent shows a question or dialog: typing into it is the answer.
     const blocked = e.kind === "orch" || e.st === "blocked" || e.a?.status === "blocked";
     const args = ["send", e.address, text, ...(blocked ? ["--force"] : [])];
@@ -235,6 +261,10 @@ export default class Inbox extends View {
     } else if (e.kind === "pending") {
       status = "working"; name = null; title = e.p.title; meta = "beim Orchestrator · unterwegs, bis ein Ticket da ist";
       right = div().flex_none().text_size(T_S).text_color(t.working).child("unterwegs");
+    } else if (e.kind === "question") {
+      status = "blocked"; name = null; title = e.tk.title;
+      meta = `Ticket ${e.tk.id} · Frage von ${e.q.role}`;
+      right = div().flex_none().text_size(T_S).text_color(t.blocked).child(ago(tsMs(e.q.ts)) || "offen");
     } else {
       const tk = e.tk;
       status = "blocked"; name = null; title = tk.title;
@@ -274,11 +304,28 @@ export default class Inbox extends View {
         send: ui.sendButton(t, "ib-send", "mods/orchestra/icons/send.svg", "Senden (↵)", (cx) => this.send(cx)),
       }))
       .child(div().h(16).text_size(T_XS).text_color(sent ? (sent.ok === false ? t.blocked : sent.ok ? t.done : t.dim) : t.dim).truncate()
-        .child(sent ? sent.text : e.kind === "orch" || e.st === "blocked" || e.a?.status === "blocked" ? "Die Antwort beantwortet die offene Frage." : " "));
+        .child(sent ? sent.text : e.kind === "question" ? "Der Kommentar geht in den Verlauf des Tickets."
+          : e.kind === "orch" || e.st === "blocked" || e.a?.status === "blocked" ? "Die Antwort beantwortet die offene Frage." : " "));
   }
 
   detail(t, e) {
     if (!e) return v_flex().flex_1().child(ui.empty(t, "Wähle links einen Eintrag."));
+    if (e.kind === "question") {
+      const tk = e.tk;
+      return v_flex().flex_1().min_w(0).min_h(0).gap(ui.GAP_L)
+        .child(h_flex().gap(ui.GAP_M).items_center()
+          .child(ui.statusIcon(t, "blocked"))
+          .child(div().flex_1().min_w(0).truncate().text_size(T_L).font_semibold().text_color(t.foreground).child(tk.title)))
+        .child(div().text_size(T_S).text_color(t.muted)
+          .child(`Ticket ${tk.id} · Frage von ${e.q.role}${e.q.ts ? ` · ${e.q.ts}` : ""}`))
+        .child(div().id("ib-question").flex_1().min_h(0).overflow_y_scrollbar().p(10).rounded(8).bg(t.background)
+          .border_1().border_color(t.border).text_size(T_M).text_color(t.foreground).child(e.q.text))
+        .child(this.replyField(t, e))
+        .child(h_flex().gap(ui.GAP_M).items_center()
+          .child(ui.button(t, "ib-ticket-open", "Ticket öffnen", () => this.check(tk),
+            { kind: "primary", tip: "Review-Fenster mit Verlauf, Nachweisen und Antwortfeld (↵)" }))
+          .child(div().text_size(T_XS).text_color(t.dim).child("Die Antwort landet als Kommentar im Ticket.")));
+    }
     if (e.kind === "ticket") {
       const tk = e.tk, evidence = tk.evidence ?? [];
       return v_flex().flex_1().min_w(0).min_h(0).gap(ui.GAP_L)

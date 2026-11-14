@@ -101,6 +101,7 @@ export class HubSection {
     this.known = [];
     this.reply = InputState.new({ placeholder: "Antwort an den Orchestrator… (↵ senden)" });
     this.reply.on("submit", (_e, cx) => this.sendReply(cx));
+    this.openVerlauf = new Set();   // ticket ids whose whole Verlauf is unfolded
     this.focus = ui.focusFields();
     this.focus.track(this.reply, "hub-reply");
     cx.spawn(async (cx) => { this.known = (await knownAgents().catch(() => [])).filter((a) => a.installed); cx.notify(); });
@@ -204,6 +205,36 @@ export class HubSection {
 
   // ---------- tickets ----------
 
+  // A Verlauf line: role · time above, the comment below with its @tags highlighted.
+  // Words become spans so the narrow panel wraps between them.
+  verlaufLine(t, v) {
+    return v_flex().min_w(0).gap(0).text_size(T_XS)
+      .child(div().text_color(t.dim).child(`${v.role} · ${v.ts.slice(11)}`))
+      .child(h_flex().min_w(0).flex_wrap().text_color(t.muted)
+        .children(v.text.split(/\s+/).filter(Boolean).map((w) =>
+          div().when(w.startsWith("@"), (e) => e.text_color(t.accent).font_medium()).child(`${w} `))));
+  }
+
+  // The last two comments, or the whole Verlauf on click ("alle").
+  verlaufBlock(t, tk) {
+    const all = tk.verlauf ?? [];
+    const open = this.openVerlauf.has(tk.id), shown = open ? all : all.slice(-2);
+    return v_flex().id(`tk-verlauf-${tk.id}`).gap(2).pt(2).border_t(1).border_color(t.border)
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .child(h_flex().items_center().gap(ui.GAP_S)
+        .child(div().text_size(T_XS).text_color(t.dim).child(`Verlauf ${all.length}`))
+        .child(div().flex_1())
+        .child(div().id(`tk-verlauf-all-${tk.id}`).flex_none().text_size(T_XS).text_color(t.muted).cursor_pointer()
+          .hover((s) => s.text_color(t.foreground))
+          .tooltip(open ? "Nur die letzten zwei Kommentare zeigen" : "Den ganzen Verlauf zeigen")
+          .on_click((_e, cx) => {
+            if (open) this.openVerlauf.delete(tk.id); else this.openVerlauf.add(tk.id);
+            cx.notify();
+          }).child(open ? "weniger" : "alle")))
+      .when(open, (el) => el.child(div().max_h(150).overflow_y_scroll().children(shown.map((v) => this.verlaufLine(t, v)))))
+      .when(!open, (el) => el.children(shown.map((v) => div().max_h(32).overflow_hidden().child(this.verlaufLine(t, v)))));
+  }
+
   openReview(tk) {
     openOverlay({ mod: "review", kind: "window", key: "review", width: 960, height: 680,
       props: { ticket: tk.id, terminal: tk.terminal || null, folder: tk.worktree || tk.repo, on: tk.machine || null } });
@@ -234,6 +265,7 @@ export class HubSection {
         .when(Boolean(landed), (el) => el.child(div().flex_none().text_size(T_XS).text_color(t.done).when(Boolean(tk.pr), (x) => x.tooltip(tk.pr)).child(landed)))
         .when(stage !== "todo", (el) => el.children(ui.gateChips(t, tk))))
       .when(stage === "review" && Boolean(tk.summary), (el) => el.child(div().max_h(36).overflow_hidden().text_size(T_S).text_color(t.muted).child(clip(tk.summary))))
+      .when((tk.verlauf ?? []).length > 0, (el) => el.child(this.verlaufBlock(t, tk)))
       .when(stage === "review", (el) => el.child(h_flex().gap(ui.GAP_M).items_center()
         .child(ui.button(t, `tk-rv-${tk.id}`, "Prüfen", () => this.openReview(tk),
           { kind: primary ? "primary" : "secondary", small: true, tip: "Zusammenfassung, Nachweise und Diff prüfen; dort Mergen, PR oder Abnehmen" }))
