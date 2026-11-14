@@ -153,7 +153,10 @@
                               "id": "blueprint",
                               "type": "block",
                               "content": {
-                                "mod": "blueprint"
+                                "mod": "blueprint",
+                                "props": {
+                                  "panel": true
+                                }
                               }
                             },
                             {
