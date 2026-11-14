@@ -6,7 +6,9 @@ import { appHome, shared, setShared } from "herdr";
 export const ticketsDir = () => `${appHome()}/data/quests/tickets`;
 const FIELDS = ["title", "status", "repo", "labels", "due", "machine", "agent", "branch", "base", "worktree", "terminal",
   "source", "checks", "checks_head", "checks_at", "checks_duration", "checks_exit", "checks_cmd", "verify", "evidence",
-  "merged", "pr", "ci", "ci_at", "ci_url", "ci_details", "assignee", "blocked_by", "tags", "waiting", "by", "updated"];
+  "merged", "pr", "ci", "ci_at", "ci_url", "ci_details",
+  "review", "review_head", "review_at", "review_summary", "review_rounds", "reviewer", "review_terminal",
+  "assignee", "blocked_by", "tags", "waiting", "by", "updated"];
 
 export function parse(id, text) {
   const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(text);
@@ -102,6 +104,24 @@ export function verifyOf(t) {
   return { meta, tail, fields: metaFields(meta) };
 }
 
+// The ## Review section the reviewer's station writes: its meta line
+// (`- <at> · pass|fail · Runde n · HEAD <x> · <reviewer>`) and the summary below.
+export function reviewOf(t) {
+  const body = t.body ?? "";
+  const m = /^## Review[ \t]*\n([\s\S]*?)(?=^## |$(?![\s\S]))/m.exec(body);
+  if (!m || !m[1].trim()) return null;
+  const lines = m[1].replace(/\n+$/, "").split("\n");
+  const meta = /^-\s*(.*)$/.exec(lines[0] ?? "")?.[1] ?? "";
+  const parts = meta.split(" · ").map((s) => s.trim()).filter(Boolean);
+  const out = {};
+  if (/^\d{4}-\d{2}-\d{2}/.test(parts[0] ?? "")) out.at = parts.shift();
+  if (parts[0] === "pass" || parts[0] === "fail") out.verdict = parts.shift();
+  if ((parts[0] ?? "").startsWith("Runde ")) out.rounds = parts.shift().slice(6).trim();
+  if ((parts[0] ?? "").startsWith("HEAD ")) out.head = parts.shift().slice(5).trim();
+  if (parts.length) out.reviewer = parts.join(" · ");
+  return { meta, summary: lines.slice(1).join("\n").trim(), fields: out };
+}
+
 // The last CI comment `hub ci` wrote into ## Verlauf (`--from ci`), for the review window.
 export const ciCommentOf = (t) => {
   const all = [...String(t.body ?? "").matchAll(/^- \d{4}-\d{2}-\d{2} \d{2}:\d{2} · ci · (.*)$/gm)];
@@ -141,9 +161,13 @@ export async function published() {
       const verify = verifyOf({ body }), v = verify?.fields ?? {};
       for (const [k, val] of Object.entries({ checks_head: v.head, checks_at: v.at, checks_duration: v.duration,
         checks_exit: v.exit, checks_cmd: v.cmd })) if (!t[k] && val) t[k] = val;
+      const review = reviewOf({ body }), r = review?.fields ?? {};
+      for (const [k, val] of Object.entries({ review: r.verdict, review_at: r.at, review_head: r.head,
+        review_rounds: r.rounds, reviewer: r.reviewer })) if (!t[k] && val) t[k] = val;
       return {
         ...t, summary: summaryOf({ body }), verlauf: verlaufOf({ body }), question: questionOf({ body, waiting: t.waiting }),
         checks: checks || v.checks || null, verify,
+        review_summary: t.review_summary || review?.summary || "",
         evidence: (evidence ?? "").split(",").map((p) => p.trim()).filter(Boolean),
         ci_comment: ciCommentOf({ body }),
       };

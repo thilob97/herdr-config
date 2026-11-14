@@ -80,9 +80,30 @@ export function gateChip(t, tk, gate) {
   return chip(t, `Checks ✗ · ${short}`, t.blocked, { tip: why });
 }
 
-/** Gate-Chips eines Tickets aus orchestra.tickets: Checks, dazu Review offen bzw. abgenommen. */
+/** Reviewer-Chip der Prüfstation: `gate.review` (aus `hub gate`) überstimmt die Aufzeichnung,
+ *  ein laufender Reviewer-Terminal geht vor (er prüft gerade eine neue Runde). */
+export function reviewChip(t, tk, gate) {
+  const live = tk.review_terminal
+    ? terminals().find((x) => x.address === tk.review_terminal && x.state === "live") : null;
+  if (live) return chip(t, "Review läuft", t.working,
+    { tip: `Prüfstation läuft${tk.reviewer ? ` (${tk.reviewer})` : ""} · ${tk.review_terminal}` });
+  const r = gate?.review ?? null;
+  const verdict = r?.verdict ?? tk.review ?? null;
+  const at = r?.at ?? tk.review_at, by = r?.reviewer || tk.reviewer;
+  if (r ? r.ok : verdict === "pass") return chip(t, "Review grün", t.done,
+    { tip: [r?.summary || tk.review_summary, at, by].filter(Boolean).join(" · ") || "Urteil pass auf dem HEAD" });
+  if (verdict === "fail") return chip(t, "Review rot", t.blocked,
+    { tip: r?.reason ?? (tk.review_summary ? `Review rot: ${tk.review_summary}` : "Review rot; Befunde im Verlauf") });
+  if (verdict === "pass") return chip(t, "Review rot · neuer Commit", t.blocked,
+    { tip: r?.reason ?? "Urteil älter als der letzte Commit: hub review-start" });
+  return chip(t, "Review –", t.muted, { tip: "Noch kein Reviewer-Urteil: hub review-start" });
+}
+
+/** Gate-Chips eines Tickets aus orchestra.tickets: Checks, Reviewer-Urteil, dazu Review offen
+ *  bzw. abgenommen (die Abnahme des Menschen). */
 export function gateChips(t, tk, gate) {
   const out = [gateChip(t, tk, gate)];
+  if (tk.status !== "todo") out.push(reviewChip(t, tk, gate));
   if (tk.status === "review") out.push(chip(t, "Review offen", t.working, { tip: "Wartet auf deine Abnahme" }));
   else if (tk.status === "done") out.push(chip(t, "abgenommen", t.done));
   return out;

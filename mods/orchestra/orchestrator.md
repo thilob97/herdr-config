@@ -56,13 +56,24 @@ Dein Terminal: `$HC_TERMINAL_ID`. Werkzeuge: `hub` (Tickets und Team, siehe
    dann legt der Agent es im Worktree an, committet es und läuft erneut.
    Fehlt etwas fachlich: konkretes Feedback als Kommentar im Ticket
    (`hub ticket comment <id> --from orchestrator "…"`), dann weiter warten.
-   Erst wenn alles erfüllt ist, **immer mit Nachweisen**:
+   Ist der Lauf grün, prüft **nicht du** den Diff, sondern ein zweiter Agent
+   (anderes Modell) in der Prüfstation: `hub review-start <id>` startet ihn in
+   `~/.herdr/worktrees/<repo>/review-<id>` auf dem Branch des Umsetzers. Er
+   liest `<base>...HEAD`, hakt die Abnahmekriterien ab, schreibt Befunde als
+   Kommentar (`--from review`) und sein Urteil `pass`/`fail`
+   (`hub review-verdict`). Warte auf ihn (`hc wait --children any`) und lies
+   danach `hub gate <id>`; `Review grün` heißt: Urteil `pass` auf dem letzten
+   Commit. Erst dann **mit Nachweisen**:
    `hub review <id> --summary "Was geändert, wie geprüft, offene Punkte, Branch" --evidence <pfad> [--evidence <pfad>]…`
-   `hub review` verweigert den Übergang, solange `checks` nicht `pass` ist oder
-   der Lauf älter als der letzte Commit im Worktree ist (`hub gate <id>` zeigt
-   den Grund). Nach einem neuen Commit also erneut `hub verify`. `--checks`
-   gibt es nicht mehr; ein grüner Lauf zählt nur aus `hub verify`. Ein Lauf
-   mit `fail` blockt den Übergang; Ausnahmen nur mit
+   `hub review` verweigert den Übergang, solange `checks` nicht `pass` ist, der
+   Lauf älter als der letzte Commit im Worktree ist oder kein `pass`-Urteil des
+   Reviewers auf diesem Commit vorliegt (`hub gate <id>` zeigt beide Gründe).
+   Nach einem neuen Commit also erneut `hub verify` **und** `hub review-start`;
+   ein neues Urteil braucht es immer. `Review rot` setzt das Ticket selbst auf
+   `doing` und schickt dem Umsetzer den Hinweis; warte auf seine Behebung, dann
+   wieder `hub verify` und `hub review-start`. `--checks` gibt es nicht mehr;
+   ein grüner Lauf zählt nur aus `hub verify`, ein Urteil nur aus der Station.
+   Ausnahmen nur mit
    `--force --reason "…"` (der Grund steht danach im Verlauf), und nur wenn der
    Mensch es ausdrücklich freigibt.
    `--evidence`: Dateien, die die Abnahmekriterien belegen (Screenshots, Test-Logs,
@@ -90,7 +101,8 @@ Dein Terminal: `$HC_TERMINAL_ID`. Werkzeuge: `hub` (Tickets und Team, siehe
    dabei eine Lehre mit, schreibst du sie mit `--lesson "…"` (mehrfach möglich), sie steht
    dann im Verlauf des Tickets.
    **Merge-Konflikt** („Merge-Konflikt bei Ticket …“): lass den Agent den Branch auf
-   die Basis rebasen (Basis steht im Ticket-Feld `base`), prüfe erneut, wieder `hub review`.
+   die Basis rebasen (Basis steht im Ticket-Feld `base`), prüfe erneut
+   (`hub verify` und `hub review-start`), wieder `hub review`.
 
 ## Kommunikation: nur Tickets
 

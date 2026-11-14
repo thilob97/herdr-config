@@ -89,6 +89,7 @@ export default class Review extends View {
     this.asking = false;    // the "Änderungen …" field is open
     this.verlauf = null;    // the ticket's Verlauf after a comment written here
     this.ciOpen = false;    // the CI failures under the ticket head are expanded
+    this.findingsOpen = false; // the reviewer's findings under the ticket head are expanded
     this.ciPatch = null;    // fresh CI fields from `hub ci`, until shared catches up
     this.lessonsOpen = false; // the repo's lessons, unfolded
     this.confirmedLesson = null; // proposal text just confirmed here (hide it until the next publish)
@@ -415,6 +416,16 @@ export default class Review extends View {
     });
   }
 
+  // "Erneut prüfen": the station judges the current HEAD; its verdict is what `hub review` waits for.
+  startReview(cx) {
+    const tk = this.ticket();
+    if (!tk || this.busy) return;
+    this.act(cx, "review-start", async () => {
+      const out = await hub(["review-start", tk.id], 60000);
+      return out.split("\n").pop() || "Prüfstation gestartet";
+    });
+  }
+
   requestChanges(cx) {
     const tk = this.ticket(), text = this.changesInput.value().trim();
     if (!tk || !text) return;
@@ -591,6 +602,42 @@ export default class Review extends View {
       .child(div().flex_none().text_size(T_XS).text_color(t.dim).tooltip(`Ticket ${l.ticket}`).child(source));
   }
 
+  // The reviewer station: verdict from `hub gate` (it knows the HEAD), the `--from review`
+  // comments as findings, and the button for another round.
+  reviewRow(t, tk, cx) {
+    const live = tk.review_terminal
+      ? terminals().find((x) => x.address === tk.review_terminal && x.state === "live") : null;
+    const r = this.gate?.review ?? null;
+    const verdict = r?.verdict ?? tk.review ?? null;
+    const at = r?.at ?? tk.review_at, by = r?.reviewer || tk.reviewer;
+    const [word, color] = live ? ["läuft", t.working]
+      : (r ? r.ok : verdict === "pass") ? ["grün", t.done]
+        : verdict === "fail" ? ["rot", t.blocked]
+          : verdict === "pass" ? ["rot · neuer Commit", t.blocked] : ["noch nicht gestartet", t.muted];
+    const why = r?.reason || tk.review_summary || "";
+    const findings = (this.verlauf ?? tk.verlauf ?? [])
+      .filter((v) => v.role === "review" && !v.text.startsWith("Urteil:"));
+    return v_flex().id("rv-review").flex_none().gap(ui.GAP_XS)
+      .child(h_flex().gap(ui.GAP_S).items_center().min_w(0)
+        .child(div().flex_none().text_size(T_S).font_medium().text_color(t.muted).child("Prüfstation"))
+        .child(div().flex_none().text_size(T_S).text_color(color).when(Boolean(why), (el) => el.tooltip(why)).child(word))
+        .when(Boolean(tk.review_terminal), (el) => el.child(div().flex_none().max_w(160).child(ui.identityChip(t, "rv-reviewer", tk.review_terminal))))
+        .when(!tk.review_terminal && Boolean(by), (el) => el.child(div().flex_none().text_size(T_S).text_color(t.muted).child(by)))
+        .when(Boolean(at) && !live, (el) => el.child(div().text_size(T_XS).text_color(t.dim).child(at)))
+        .when(Boolean(tk.review_rounds), (el) => el.child(div().flex_none().text_size(T_XS).text_color(t.muted).child(`Runde ${tk.review_rounds}`)))
+        .child(div().flex_1())
+        .child(ui.button(t, "rv-review-start", this.busy === "review-start" ? "Startet …" : "Erneut prüfen",
+          (c2) => this.startReview(c2), { small: true, enabled: !this.busy && tk.status !== "done",
+            tip: `hub review-start ${tk.id}: ein zweiter Agent prüft Diff und Abnahmekriterien` })))
+      .when(Boolean(tk.review_summary), (el) => el.child(div().max_h(36).overflow_hidden().text_size(T_S)
+        .text_color(t.muted).tooltip(tk.review_summary).child(tk.review_summary)))
+      .when(findings.length > 0, (el) => el.child(v_flex().gap(2).min_w(0)
+        .child(ui.sectionHeader(t, `Befunde (${findings.length})`, { id: "rv-findings-toggle", open: this.findingsOpen,
+          onClick: (c2) => { this.findingsOpen = !this.findingsOpen; c2.notify(); } }))
+        .when(this.findingsOpen, (x) => x.child(div().id("rv-findings").max_h(140).overflow_y_scroll().gap(2)
+          .children(findings.map((v) => this.verlaufLine(t, v)))))));
+  }
+
   // Ticket mode: what was ordered, the gates and the orchestrator's evidence.
   ticketHead(t, tk, cx) {
     this.previewEvidence(tk, cx);
@@ -606,6 +653,7 @@ export default class Review extends View {
         .when(Boolean(tk.terminal), (el) => el.child(div().flex_none().max_w(180).child(ui.identityChip(t, "rv-who", tk.terminal))))
         .children(ui.gateChips(t, tk, tk.status === "done" ? null : this.gate)))
       .when(Boolean(tk.pr) || Boolean(tk.ci), (el) => el.child(this.ciRow(t, tk, cx)))
+      .child(this.reviewRow(t, tk, cx))
       .child(div().id("rv-summary").max_h(90).overflow_y_scroll().text_size(T_S).text_color(tk.summary ? t.muted : t.dim)
         .child(tk.summary || "Keine Zusammenfassung des Orchestrators."))
       .child(h_flex().flex_wrap().gap(ui.GAP_S).items_start()
