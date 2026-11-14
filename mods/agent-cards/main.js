@@ -893,6 +893,11 @@ export default class Agents extends View {
       .border_t(1)
       .border_color(t.border)
       .text_size(T_L)
+      // Its height, for space-folders: the spaces above may take 40 % of both (docs/ui-spec.md A5).
+      .on_size_change((s) => {
+        const h = Math.round(s.height);
+        if (h !== shared("agent-cards.height")) setShared("agent-cards.height", h);
+      })
       .when(!collapsed, (el) => el.child(h_flex().h(H_SECTION).pl(16).pr(GAP_M).gap(GAP_S).flex_none().items_center()
         .text_size(T_S).font_medium().text_color(t.muted)
         .child("Agents")

@@ -832,11 +832,17 @@ export default class Spaces extends View {
   fit(count) {
     const sidebar = find(layout(), "sidebar");
     const lists = find(sidebar, "sidebar-lists");
-    const height = globalThis.window?.viewport_size?.()?.height;
-    if (!lists || !height) return;
-    // The sidebar's other blocks (head, foot) have fixed heights.
+    if (!lists) return;
+    // The lists' height: this block's and the agents list's below it (agent-cards
+    // measures its own, shared "agent-cards.height"). Before that's known: the
+    // window's height less the sidebar's fixed blocks (head, foot).
+    const own = find(lists, "spaces")?.size?.px;
+    const below = shared("agent-cards.height");
+    const viewport = globalThis.window?.viewport_size?.()?.height;
     const fixed = (sidebar.children ?? []).filter((c) => c.id !== "sidebar-lists").reduce((n, c) => n + (c.size?.px ?? 0), 0);
-    const max = Math.max(90, Math.floor(0.4 * (height - fixed)));
+    const room = own && below ? own + below : viewport ? viewport - fixed : null;
+    if (!room) return;
+    const max = Math.max(90, Math.floor(0.4 * room));
     const px = Math.min(max, Math.max(90, H_SECTION + count * H_ROW + 8));
     const key = `${count}:${max}`;
     if (this.fitted === key) return;
