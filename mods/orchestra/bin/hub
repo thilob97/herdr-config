@@ -28,12 +28,24 @@ reports into it) and show in the Team-Panel under it.
                                             .herdr/verify.sh (else the ticket's `verify` command, --or-command);
                                             records checks pass|fail, exit code, duration, checks_head
                                             and the last 20 lines under ## Prüfung
-  hub gate ID [--json]                 does the recorded check still count? pass and checks_head = HEAD
+  hub gate ID [--json]                 do the recorded check and the reviewer's verdict still count?
+                                            checks pass on checks_head = HEAD, verdict pass on review_head = HEAD
   hub gates [--json]                   the same for every open ticket (Team panel)
+  hub review-start ID [--agent ...]    Prüfstation: startet einen zweiten Agent (Standard: anderes Modell
+                                            als der Umsetzer) im Worktree review-<id> auf dessen Branch;
+                                            er liest <base>...HEAD, prüft die Abnahmekriterien des Tickets
+                                            und schreibt Befunde als Kommentar (--from review) sowie sein
+                                            Urteil (`hub review-verdict`)
+  hub review-verdict ID --verdict pass|fail --summary TEXT
+                                            das Urteil des Reviewers, gültig für den HEAD des Worktrees;
+                                            ein neuer Commit macht es ungültig; fail setzt das Ticket auf
+                                            doing, schickt den Hinweis an den Umsetzer und zählt
+                                            review_rounds
   hub review ID --summary TEXT [--evidence PATH]... [--force --reason TEXT]
                                             ready for the human: status review + summary; refuses unless
-                                            `hub verify` passed on the worktree's HEAD; --force needs --reason
-                                            and writes it to the Verlauf; --evidence replaces the files
+                                            `hub verify` passed and the reviewer's verdict is pass on the
+                                            worktree's HEAD; --force needs --reason and writes it to the
+                                            Verlauf; --evidence replaces the files
   hub land ID --merge | --pr [--wait-ci] [--lesson "text"]...
                                             after acceptance: merge into its base branch, or push and open a
                                             pull request (gh); then end its agent and remove its worktree.
@@ -54,6 +66,7 @@ TICKETS = os.path.join(APP, "data", "quests", "tickets")
 FIELDS = ["title", "status", "repo", "labels", "due", "machine", "agent", "branch", "base", "worktree", "terminal",
           "source", "checks", "checks_head", "checks_at", "checks_duration", "checks_exit", "checks_cmd", "verify",
           "evidence", "merged", "pr", "ci", "ci_at", "ci_url", "ci_details",
+          "review", "review_head", "review_at", "review_summary", "review_rounds", "reviewer", "review_terminal",
           "assignee", "blocked_by", "tags", "waiting", "by", "updated"]
 COSTS = os.path.join(APP, "data", "orchestra", "costs.json")  # written by the Team panel's watcher
 AGENTS = {"omp": ["omp"], "claude": ["claude"], "codex": ["codex", "--no-daemon"], "pi": ["pi"]}
@@ -229,6 +242,48 @@ def meta_fields(meta):
     return out
 
 
+# ---- Review: the station's verdict, valid only for the commit it judged
+
+REVIEW = "## Review"
+
+
+def review_section(t):
+    """The ## Review section: its meta line and the reviewer's summary."""
+    m = re.search(r"(?ms)^## Review[ \t]*\n(.*?)(?=\n## |\Z)", t.get("body") or "")
+    if not m:
+        return {"meta": "", "summary": ""}
+    lines = m.group(1).strip("\n").splitlines()
+    meta = lines[0][2:].strip() if lines and lines[0].startswith("- ") else ""
+    return {"meta": meta, "summary": " ".join(" ".join(lines[1:]).split())}
+
+
+def review_meta_fields(meta):
+    """The ## Review head line, as fields — the record survives a Quests edit."""
+    parts = [p.strip() for p in (meta or "").split(" · ") if p.strip()]
+    out = {}
+    if parts and re.match(r"\d{4}-\d{2}-\d{2}", parts[0]):
+        out["at"] = parts.pop(0)
+    if parts and parts[0] in ("pass", "fail"):
+        out["verdict"] = parts.pop(0)
+    if parts and parts[0].startswith("Runde "):
+        out["rounds"] = parts.pop(0)[6:].strip()
+    if parts and parts[0].startswith("HEAD "):
+        out["head"] = parts.pop(0)[5:].strip()
+    if parts:
+        out["reviewer"] = " · ".join(parts)
+    return out
+
+
+def set_review(t, text):
+    """Replace ## Review in the body, keeping it just before ## Verlauf."""
+    body = re.sub(r"(?ms)^## Review[ \t]*\n.*?(?=\n## |\Z)", "", t.get("body") or "").strip("\n")
+    block = f"{REVIEW}\n{text}".rstrip("\n")
+    m = re.search(r"(?m)^## Verlauf[ \t]*$", body)
+    body = (body[:m.start()].rstrip("\n") + "\n\n" + block + "\n\n" + body[m.start():]) if m else \
+        (body + "\n\n" + block if body else block)
+    t["body"] = body.strip("\n") + "\n"
+
+
 def target_of(t, on=None):
     """The ticket's worktree, else its repo; None when neither exists here."""
     for p in (t.get("worktree"), t.get("repo")):
@@ -274,6 +329,35 @@ def gate(t):
                                    f"jetzt {head[:7]}): hub verify {t['id']} erneut ausführen"))
     else:
         g.update(ok=True, reason="")
+    g["review"] = review_gate(t, head, err)
+    return g
+
+
+def review_gate(t, head=None, err=None):
+    """Whether the reviewer's verdict counts: pass, given on the worktree's current HEAD."""
+    if head is None and err is None:
+        head, err = head_of(t, t.get("machine") or None)
+    section = review_section(t)
+    meta = review_meta_fields(section["meta"])
+    verdict = t.get("review") or meta.get("verdict") or None
+    checked = t.get("review_head") or meta.get("head") or ""
+    summary = t.get("review_summary") or section["summary"] or ""
+    g = {"verdict": verdict, "ok": False, "reason": "", "head": head, "review_head": checked or None,
+         "at": t.get("review_at") or meta.get("at"), "rounds": t.get("review_rounds") or meta.get("rounds"),
+         "summary": summary, "reviewer": t.get("reviewer") or meta.get("reviewer") or ""}
+    if verdict == "fail":
+        g["reason"] = f"Review rot: {summary}; Befunde im Verlauf" if summary else "Review rot; Befunde im Verlauf"
+    elif verdict != "pass":
+        g["reason"] = f"Noch kein Reviewer-Urteil: hub review-start {t['id']}"
+    elif err:
+        g["reason"] = f"{err}; hub review-start {t['id']} prüft im Worktree"
+    elif not checked:
+        g["reason"] = f"Review-Urteil ohne HEAD aufgezeichnet: hub review-verdict {t['id']} erneut ausführen"
+    elif head != checked and not (head and head.startswith(checked)):
+        g["reason"] = (f"Review-Urteil älter als der letzte Commit (geprüft {checked[:7]}, "
+                       f"jetzt {(head or '?')[:7]}): hub review-start {t['id']}")
+    else:
+        g["ok"] = True
     return g
 
 
@@ -645,6 +729,124 @@ def cmd_dispatch(a):
     print(json.dumps({"ticket": a.id, "terminal": out["address"], "name": name, "folder": folder, "branch": branch}, ensure_ascii=False))
 
 
+REVIEW_AGENTS = ["claude", "codex", "pi", "omp"]
+
+
+def review_agent(t, choice):
+    """(key, argv) of the reviewer: --agent wins, else a different program than the implementer."""
+    if choice:
+        return choice, (AGENTS.get(choice) or shlex.split(choice))
+    impl = (t.get("agent") or "").lower()
+    for k in REVIEW_AGENTS:
+        if k != impl:
+            return k, AGENTS[k]
+    return "claude", AGENTS["claude"]
+
+
+def cmd_review_start(a):
+    t = read(a.id)
+    if t["status"] == "done":
+        die(f"{a.id} ist bereits fertig")
+    g = gate(t)
+    if not g["ok"]:
+        die(f"{a.id}: {g['reason']}. Prüfstation erst nach grünem hub verify.")
+    if t.get("review_terminal") and is_live(t["review_terminal"]):
+        die(f"{a.id}: Review läuft schon in {t['review_terminal']}; "
+            f"hc send {t['review_terminal']} \"…\"")
+    repo, on = t.get("repo"), t.get("machine") or None
+    if not repo:
+        die(f"{a.id} has no repo; hub ticket set {a.id} repo=/path/to/checkout")
+    branch = t.get("branch")
+    if not branch:
+        die(f"{a.id} hat keinen Branch (kein hub dispatch); die Prüfstation braucht den Branch des Umsetzers")
+    top = run(["git", "rev-parse", "--show-toplevel"], on, repo).stdout.strip()
+    common = run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], on, top).stdout.strip()
+    main = common[:-5] if common.endswith("/.git") else common
+    base = t.get("base") or ""
+    if not base or base == branch:
+        base = ""
+        for cand in ("main", "master", "origin/main", "origin/master"):
+            if cand != branch and run(["git", "rev-parse", "--verify", "--quiet", cand], on, top,
+                                      check=False).returncode == 0:
+                base = cand
+                break
+    if not base:
+        die(f"{a.id}: Basis unbekannt (Feld base): hub ticket set {a.id} base=main")
+    folder = f"{home_of(on)}/.herdr/worktrees/{os.path.basename(main)}/review-{slug(a.id, 48)}"
+    if run(["test", "-d", folder], on, check=False).returncode != 0:
+        run(["git", "worktree", "add", "--detach", folder, branch], on, top)
+    else:
+        # The branch may have moved since the last round; the station always judges its tip.
+        run(["git", "checkout", "-f", "--detach", branch], on, folder)
+    key, agent = review_agent(t, a.agent)
+    task = (
+        f"Prüfstation Ticket {a.id}: {t['title']}\n\n"
+        "Du bist der unabhängige Reviewer: ein zweites Modell prüft die Arbeit des Umsetzers. "
+        "Du änderst keinen Code, committest und pushst nicht und startest keine weiteren Agents.\n\n"
+        f"Du arbeitest in {folder} (Branch {branch}, Basis {base}). Quelle ist allein das Ticket und der Diff:\n"
+        f"  hub ticket show {a.id}  (Spec, Abnahmekriterien, Verlauf)\n"
+        f"  git -C {folder} log --oneline {base}..HEAD\n"
+        f"  git -C {folder} diff --stat {base}...HEAD\n"
+        f"  git -C {folder} diff {base}...HEAD\n\n"
+        "Prüfe jedes Abnahmekriterium und jedes berührte Verhalten. Suche echte Fehler (Regression, "
+        "fehlender Fall, falsche Semantik), keine Stilfragen. Jeder Befund ist ein Kommentar im Ticket, "
+        "Schweregrad voran (blocker|major|minor|nit), mit Datei:Zeile und Beleg:\n"
+        f"  hub ticket comment {a.id} --from review \"major: mods/x.js:42 — was falsch ist und warum\"\n"
+        "Am Ende genau ein Urteil:\n"
+        f"  hub review-verdict {a.id} --verdict pass|fail --summary \"1–2 Sätze: Urteil, Zahl der blocker/major/minor/nit\"\n"
+        "pass nur ohne blocker und major. Kein Chat, keine Rückfrage im Terminal; alles ins Ticket."
+    )
+    name = slug(f"review-{a.id}", 32) or "review"
+    labels = ["--label", f"herdr.space=sp{secrets.token_hex(16)}", "--label", f"herdr.tab=tb{secrets.token_hex(16)}",
+              "--label", f"hub.ticket={a.id}", "--label", "hub.role=review"]
+    cmd = ["hc", "run", "--bg", "--json", "--keep", "--outlive-parent", "--name", name, "--cwd", folder, *labels]
+    if on:
+        cmd += ["--on", on]
+    r = subprocess.run(cmd + ["--", *agent, task], capture_output=True, text=True)
+    if r.returncode != 0 and "name" in (r.stderr or "").lower():
+        name = f"{name[:26]}-{secrets.token_hex(2)}"
+        cmd[cmd.index("--name") + 1] = name
+        r = subprocess.run(cmd + ["--", *agent, task], capture_output=True, text=True)
+    if r.returncode != 0:
+        die(f"hc run: {(r.stderr or r.stdout).strip()}")
+    out = json.loads(r.stdout)
+    t.update(reviewer=key, review_terminal=out["address"])
+    write(t)
+    print(json.dumps({"ticket": a.id, "terminal": out["address"], "name": name, "folder": folder,
+                      "branch": branch, "base": base, "agent": key}, ensure_ascii=False))
+
+
+def cmd_review_verdict(a):
+    t = read(a.id)
+    if t["status"] == "done":
+        die(f"{a.id} ist bereits fertig")
+    if not t.get("review_terminal"):
+        die(f"{a.id}: keine Prüfstation: erst hub review-start {a.id}")
+    head, err = head_of(t, t.get("machine") or None)
+    if err:
+        die(f"{a.id}: {err}")
+    summary = " ".join(a.summary.split())
+    if not summary:
+        die("leere Zusammenfassung")
+    n = int(t.get("review_rounds") or 0) + 1
+    at = time.strftime("%Y-%m-%d %H:%M")
+    t.update(review=a.verdict, review_head=head, review_at=at, review_summary=summary, review_rounds=str(n))
+    set_review(t, f"- {at} · {a.verdict} · Runde {n} · HEAD {head[:7]} · {t.get('reviewer') or 'review'}\n\n{summary}")
+    add_comment(t, "review", f"Urteil: {a.verdict} (Runde {n}) · {summary}")
+    if a.verdict == "fail":
+        t["status"] = "doing"
+    write(t)
+    notified = False
+    if a.verdict == "fail" and t.get("terminal") and is_live(t["terminal"]):
+        notified = send_agent(t["terminal"], f"{a.id}: Review rot — {summary}. Befunde im Verlauf; "
+                                            f"beheben, dann hub verify und hub review-start.")
+    if a.verdict == "fail":
+        print(f"{a.id}: Review fail · Runde {n} · Ticket zurück auf doing"
+              + (" · Umsetzer benachrichtigt" if notified else " · Umsetzer nicht erreichbar (kein laufendes Terminal)"))
+    else:
+        print(f"{a.id}: Review pass · Runde {n} · HEAD {head[:7]} (hub review kann jetzt übergeben)")
+
+
 def cmd_verify(a):
     t = read(a.id)
     on = t.get("machine") or None
@@ -687,7 +889,9 @@ def cmd_gate(a):
     if a.json:
         print(json.dumps(g, ensure_ascii=False))
         return
+    r = g["review"]
     print(f"{a.id}: {'frei' if g['ok'] else 'gesperrt'} · {g['reason'] or 'Checks grün auf dem HEAD des Worktrees'}")
+    print(f"{a.id}: Review {'grün' if r['ok'] else 'offen'} · {r['reason'] or 'Urteil pass auf dem HEAD des Worktrees'}")
 
 
 def cmd_gates(_a):
@@ -704,29 +908,36 @@ def cmd_gates(_a):
 
 def cmd_review(a):
     t = read(a.id)
+    g = gate(t)
+    rv = g["review"]
+    missing = [r for r in (g["reason"], rv["reason"]) if r]
     if a.force:
         if not a.reason.strip():
             die("--force verlangt --reason \"…\": der Grund gehört in den Verlauf")
-        g = gate(t)
-        add_comment(t, "hub", f"Gate überfahren ({'frei' if g['ok'] else g['reason']}): {a.reason.strip()}")
-    else:
-        g = gate(t)
-        if not g["ok"]:
-            die(f"{a.id}: {g['reason']}. Übergang nach review verweigert; nur mit --force --reason \"…\".")
+        add_comment(t, "hub", f"Gate überfahren ({' · '.join(missing) or 'frei'}): {a.reason.strip()}")
+    elif missing:
+        die(f"{a.id}: {' · '.join(missing)}. Übergang nach review verweigert; "
+            f"nur mit --force --reason \"…\".")
     body, verlauf = split_verlauf(t["body"])
-    # Only the old summary goes; the check record keeps its place right after it.
+    # Only the old summary goes; the check and review records keep their place right after it.
     m = re.search(r"(?ms)^## Prüfung[ \t]*\n.*?(?=\n## |\Z)", body)
     pru = m.group(0).rstrip("\n") if m else ""
+    if m:
+        body = (body[:m.start()] + body[m.end():]).strip("\n")
+    m = re.search(r"(?ms)^## Review[ \t]*\n.*?(?=\n## |\Z)", body)
+    rev = m.group(0).rstrip("\n") if m else ""
     if m:
         body = (body[:m.start()] + body[m.end():]).strip("\n")
     body = re.sub(r"(?ms)^## Zusammenfassung \(Orchestrator\)\n.*?(?=\n## |\Z)", "", body).strip("\n")
     t["body"] = (f"{body}\n\n" if body else "") + f"## Zusammenfassung (Orchestrator)\n{a.summary.strip()}\n"
     if pru:
         t["body"] += f"\n{pru}\n"
+    if rev:
+        t["body"] += f"\n{rev}\n"
     if verlauf:
         t["body"] += f"\n{verlauf}\n"
     t["status"] = "review"
-    # The gate (above) comes from `hub verify` only; --evidence replaces the list.
+    # The gate (above) comes from `hub verify` and the reviewer's verdict; --evidence replaces the list.
     if a.evidence:
         t["evidence"] = ", ".join(e.strip() for e in a.evidence if e.strip())
     write(t)
@@ -1067,12 +1278,13 @@ def cmd_status(_a):
     per = c.get("tickets", {})
     open = [t for t in all_tickets() if t["status"] != "done"]
     if open:
-        print(f"{'Ticket':<40} {'Status':<7} {'CI':<5} {'Terminal':<16} {'Live':<9} {'Kosten':>7} {'Verlauf':>7}  Titel")
+        print(f"{'Ticket':<40} {'Status':<7} {'Urteil':<7} {'Runden':>6} {'CI':<5} {'Terminal':<16} {'Live':<9} {'Kosten':>7} {'Verlauf':>7}  Titel")
     for t in open:
         term = t.get("terminal", "")
         ci = f"CI {CI_MARK.get(t.get('ci'), '–')}"
         cost = f"${per[t['id']]:.2f}" if t["id"] in per else "-"
-        print(f"{t['id']:<40} {t['status']:<7} {ci:<5} {term:<16} {live.get(term, '-' if not term else 'beendet'):<9} {cost:>7} "
+        print(f"{t['id']:<40} {t['status']:<7} {(t.get('review') or '–'):<7} {(t.get('review_rounds') or '–'):>6} "
+              f"{ci:<5} {term:<16} {live.get(term, '-' if not term else 'beendet'):<9} {cost:>7} "
               f"{len(entries(t)):>7}  {t['title']}")
     if c:
         print(f"\nBudget pro Ticket ${c.get('ticketBudget', 0):.0f}, Team ${c.get('teamBudget', 0):.0f}; offen bisher ${c.get('teamCost', 0):.2f}")
@@ -1167,6 +1379,17 @@ def main():
     lc = ls.add_parser("confirm")
     lc.add_argument("id")
     lc.set_defaults(fn=cmd_lesson_confirm)
+    rs = sub.add_parser("review-start")
+    rs.add_argument("id")
+    rs.add_argument("--agent", default=None,
+                    help="Reviewer; Standard ist ein anderes Programm als der Umsetzer")
+    rs.set_defaults(fn=cmd_review_start)
+    rvd = sub.add_parser("review-verdict")
+    rvd.add_argument("id")
+    rvd.add_argument("--verdict", required=True, choices=["pass", "fail"])
+    rvd.add_argument("--summary", required=True)
+    rvd.set_defaults(fn=cmd_review_verdict)
+
     rv = sub.add_parser("review")
     rv.add_argument("id")
     rv.add_argument("--summary", required=True)
