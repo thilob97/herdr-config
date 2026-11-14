@@ -59,6 +59,31 @@ const STAGES = [
 const stageOf = (tk) => (["todo", "review", "done"].includes(tk.status) ? tk.status : "doing");
 const STATUS_RANK = { blocked: 0, working: 1, idle: 2, done: 3 };
 
+// ---------- Wartet-Regel ----------
+// A completion report is never a question, even when a "?" sits inside it: agents end
+// with "Fertig …", "done", "Commit …, kein Push" or an exit line. These words are the
+// ones such a report starts with; the report's headline is its first or last line, so a
+// question that merely mentions a green check is not swallowed by it.
+const COMPLETION_START = /^(fertig|erledigt|abgeschlossen|gemergt|done|finished|complete[d]?|commit(?:ted)?\b|exit\b)/i;
+const COMPLETION_PHRASE = /\b(?:kein push|nicht gepusht|exit \d+)\b/i;
+// A question opens with one of these words or ends with "?".
+const QUESTION_START = /^(wer|was|wann|wo(?:hin|her|mit|für|rum|bei|ran)?|warum|wieso|weshalb|wie|welche[rsmn]?|kann(?:st)?|können|darf(?:st)?|soll(?:st)?|muss|müssen|ist|sind|hat|hast|haben|gibt|brauchst|brauchen|möchtest|willst|passt|einverstanden|ok(?:ay)?|stimmt)\b/i;
+
+function isCompletionReport(text) {
+  const lines = String(text ?? "").split("\n").map((l) => l.trim()).filter(Boolean);
+  const first = lines[0] ?? "", last = lines.at(-1) ?? "";
+  return COMPLETION_START.test(first) || COMPLETION_START.test(last) || COMPLETION_PHRASE.test(first);
+}
+
+// The last line is what the agent asks; an entry that is a completion report is not a
+// question, however many "?" its prose carries (ticket dashboard-4).
+function isQuestionText(text) {
+  const lines = String(text ?? "").split("\n").map((l) => l.trim()).filter(Boolean);
+  const last = lines.at(-1) ?? "";
+  if (!last || isCompletionReport(text)) return false;
+  return /[?]["'”’)\]]*$/.test(last) || QUESTION_START.test(last);
+}
+
 export default class Dashboard extends View {
   init(_props, cx) {
     this.key = null;            // the chosen row, kept across reorders
@@ -91,16 +116,34 @@ export default class Dashboard extends View {
   teamBudget() { return { team: 20, ...(shared("orchestra.budget") ?? {}) }.team; }
   teams() { return shared("orchestra.groups") ?? []; }
 
-  // The ticket an agent is working on, and the last Verlauf entry when it still asks
-  // the human: written by an agent (not `mensch`, not `hub`), nothing answered after
-  // it, and a real question. A finished turn's report is not a question, even when it
-  // tags @mensch (the Inbox's `question` field is that loose); `?` is the line.
+  // The ticket an agent is working on.
   openTicket(address) { return this.tickets().find((tk) => tk.terminal === address && tk.status !== "done") ?? null; }
+
+  // The agent a Verlauf role names. `hub ticket comment --from` writes the name the
+  // person knows: the identity name (`shared "agents.identity"`), the terminal title or
+  // the address; older comments say only the program ("omp"). The ticket's own agent
+  // wins when several match. No match = the agent is not provably still working, so
+  // its message does not wait (rule 3).
+  agentOfRole(role, tk) {
+    const name = String(role ?? "").trim();
+    if (!name || ["mensch", "hub", "orchestrator", "ci"].includes(name)) return null;
+    const hits = agents().filter((a) => a.address === name || a.title === name
+      || ui.identity(a.address).name === name || a.app === name || a.program?.key === name);
+    return hits.find((a) => a.address === tk?.terminal) ?? (hits.length === 1 ? hits[0] : null);
+  }
+
+  // Rule 3: the ticket is not done, its last Verlauf entry comes from an agent that is
+  // still working or blocked, nothing answered after it, and the entry is a real
+  // question. A finished agent's report never waits, even with a "?" in the text.
   ticketQuestion(tk) {
     if (!tk || tk.status === "done" || tk.status === "review") return null;
     const last = (tk.verlauf ?? []).at(-1);
-    if (!last || last.role === "mensch" || last.role === "hub") return null;
-    return String(last.text ?? "").includes("?") ? last : null;
+    if (!last) return null;
+    const a = this.agentOfRole(last.role, tk);
+    if (!a) return null;
+    const st = this.statusOf(a);
+    if (st !== "working" && st !== "blocked") return null;
+    return isQuestionText(last.text) ? { ...last, address: a.address } : null;
   }
 
   // Space and tab as the Team panel names them; an automatic tab number says nothing.
@@ -149,24 +192,33 @@ export default class Dashboard extends View {
     return groups;
   }
 
-  // What waits for you: tickets ready to check, blocked agents (the orchestrator too)
-  // and questions an agent left in a ticket's Verlauf. One entry per matter; a ticket
-  // already shown as a review row or covered by its blocked agent is not repeated.
-  waiting() {
+  // Wartet auf dich — the one rule (ticket dashboard-4). A row appears only when
+  //  1. an agent is blocked (its question with an answer field), or
+  //  2. a ticket is in review (title, gates, "Prüfen"), or
+  //  3. a ticket is not done and its last Verlauf entry is an unanswered question from
+  //     an agent that is still working or blocked.
+  // Done agents and done tickets never wait; a completion report in the text ("Fertig",
+  // "Commit …, kein Push") is not a question even when a "?" is inside it. Those reports
+  // stay in "Letzte Aktivität" (the ticket's newest Verlauf line is an event there).
+  // A ticket already covered by its review row or its blocked agent is not repeated.
+  waitsOnMe() {
     const out = this.tickets().filter((tk) => tk.status === "review")
       .map((tk) => ({ kind: "ticket", key: `ticket:${tk.id}`, tk }));
+    // 1. Blocked agents; the orchestrator too, as the Inbox counts it.
+    const list = agents();
+    const blocked = list.filter((x) => this.statusOf(x) === "blocked");
     const o = this.orchestrator();
-    const blocked = agents().filter((x) => this.statusOf(x) === "blocked");
-    if (o?.status === "blocked" && !agents().some((a) => a.address === o.address)) blocked.push(o);
+    if (o?.status === "blocked" && !list.some((a) => a.address === o.address)) blocked.push(o);
     for (const a of blocked) {
       if (out.some((e) => e.address === a.address)) continue;
       out.push({ kind: "agent", key: `agent:${a.address}`, address: a.address, a });
     }
+    // 3. An agent's open question in the ticket Verlauf (one row per matter).
     for (const tk of this.tickets()) {
       const v = this.ticketQuestion(tk);
       if (!v) continue;
-      if (out.some((e) => e.tk?.id === tk.id || (tk.terminal && e.address === tk.terminal))) continue;
-      out.push({ kind: "ask", key: `ask:${tk.id}`, tk, v });
+      if (out.some((e) => e.tk?.id === tk.id || e.address === v.address)) continue;
+      out.push({ kind: "ask", key: `ask:${tk.id}`, tk, v, address: v.address });
     }
     return out;
   }
@@ -182,7 +234,7 @@ export default class Dashboard extends View {
   }
 
   rows() {
-    const out = this.waiting();
+    const out = this.waitsOnMe();
     for (const tk of this.doing()) out.push({ kind: "doing", key: `doing:${tk.id}`, tk });
     return out;
   }
@@ -196,9 +248,9 @@ export default class Dashboard extends View {
   // One field per blocked agent, created here (never in render: InputState needs
   // a live host call). The question is the agent's last line with a "?".
   sync(cx) {
-    const blocked = new Set(this.waiting().filter((e) => e.kind === "agent").map((e) => e.address));
+    const blocked = new Set(this.waitsOnMe().filter((e) => e.kind === "agent").map((e) => e.address));
     for (const address of this.answers.keys()) if (!blocked.has(address)) this.answers.delete(address);
-    for (const e of this.waiting()) {
+    for (const e of this.waitsOnMe()) {
       if (e.kind !== "agent" || this.answers.has(e.address)) continue;
       const input = InputState.new({ placeholder: `Antwort an ${ui.identity(e.address).name}…` });
       input.on("submit", (_ev, cx) => this.answer(e.address, cx));
@@ -209,7 +261,7 @@ export default class Dashboard extends View {
   }
 
   loadQuestions(cx) {
-    for (const e of this.waiting()) {
+    for (const e of this.waitsOnMe()) {
       if (e.kind !== "agent") continue;
       const have = this.questions[e.address];
       if (this.reading.has(e.address) || (have && Date.now() - have.at < REFRESH)) continue;
@@ -271,7 +323,8 @@ export default class Dashboard extends View {
     else run("terminal.peek", { terminal: address });
   }
 
-  // The last events: one per ticket (its newest Verlauf line, else its state),
+  // The last events: one per ticket (its newest Verlauf line — a finished agent's
+  // "Fertig …" report lands here instead of in "Wartet auf dich"), else its state,
   // blocked agents and budget stops, newest first.
   activity() {
     const out = [];
@@ -462,28 +515,40 @@ export default class Dashboard extends View {
       .when(Boolean(note), (el) => el.child(div().text_size(T_XS).text_color(note.ok === false ? t.blocked : note.ok ? t.done : t.muted).child(note.text)));
   }
 
-  // An agent's question left in the ticket Verlauf and not answered: a link row to the
-  // ticket (the answer is a comment there), not an answer field here.
+  // An agent's question left in the ticket Verlauf and not answered, compact as the
+  // other rows: identity chip · ticket id · question (two lines) · age. A link row to
+  // the ticket (the answer is a comment there), not an answer field here.
   questionRow(t, e, on) {
     const { tk, v } = e;
+    const age = ago(at(v.ts));
     return h_flex().id(`dash-ticket-question-${rid(tk.id)}`).min_h(ui.H_ROW).flex_none().py(4).px(ui.INSET_CARD).gap(ui.GAP_S).items_center().rounded(6)
       .bg(on ? t.selected : t.surface).border_1().border_color(t.border).cursor_pointer().hover((s) => s.bg(t.hover))
       .tooltip(`${tk.title}\n${v.text}\nKlicken: Ticket öffnen`)
       .on_click((_e, cx) => { cx.stop_propagation(); this.key = `ask:${tk.id}`; this.handle.focus(); this.openReview(tk); })
-      .child(ui.chip(t, v.role, t.muted, { tip: `Frage von ${v.role}` }))
+      .child(ui.identityChip(t, `dash-ticket-q-who-${rid(tk.id)}`, e.address))
+      .child(div().flex_none().text_size(T_XS).text_color(t.muted).child(tk.id))
       .child(div().flex_1().min_w(0).max_h(30).overflow_hidden().text_size(T_S).text_color(t.foreground).child(v.text))
-      .child(div().flex_none().text_size(T_XS).text_color(t.dim).child(`${tk.id} · ${ago(at(v.ts))}`));
+      .when(Boolean(age), (el) => el.child(div().flex_none().text_size(T_XS).text_color(t.muted).child(age)));
   }
 
-  // Count is the number of rows; for review tickets and blocked agents it is the
-  // Inbox count (spec 7.3) and the Team pipeline's "Prüfung n".
+  // The header count is the number of rows. Review tickets and blocked agents are
+  // exactly the Inbox count (Rückfragen + Abnahmen, spec 7.3); a question from the
+  // Verlauf adds a row, and the header names that difference so the two numbers never
+  // disagree silently.
   waitingSection(t, waits) {
     const reviews = waits.filter((e) => e.kind === "ticket");
     const asks = waits.filter((e) => e.kind === "agent");
     const questions = waits.filter((e) => e.kind === "ask");
     const count = waits.length;
+    const inbox = reviews.length + asks.length;
+    const diff = questions.length;
+    const note = diff
+      ? div().id("dash-waits-diff").flex_none().text_size(T_XS).text_color(t.dim)
+        .tooltip(`Inbox ${inbox} (Rückfragen + Abnahmen) + ${diff} Frage${diff === 1 ? "" : "n"} aus dem Ticket-Verlauf = ${count} Zeilen`)
+        .child(`Inbox ${inbox} + ${diff} Verlauf`)
+      : null;
     return v_flex().flex_none().gap(ui.GAP_S)
-      .child(ui.sectionHeader(t, "Wartet auf dich", { count, color: count ? t.blocked : t.muted }))
+      .child(ui.sectionHeader(t, "Wartet auf dich", { count, color: count ? t.blocked : t.muted, right: note }))
       .when(!count, (el) => el.child(ui.empty(t, "Nichts wartet auf dich, keine offenen Fragen.", { row: true })))
       .children(reviews.map((e, i) => this.reviewRow(t, e.tk, i === 0, this.key === e.key)))
       .children(asks.map((e) => this.questionCard(t, e)))
@@ -695,7 +760,7 @@ export default class Dashboard extends View {
     if (this.key && !list.some((e) => e.key === this.key)) this.key = null;
     const counts = { todo: 0, doing: 0, review: 0, done: 0 };
     for (const tk of this.tickets()) counts[stageOf(tk)]++;
-    const waits = this.waiting();
+    const waits = this.waitsOnMe();
     const doing = this.doing();
     return v_flex().id("dashboard").track_focus(this.handle).size_full().min_h(0).text_size(T_M).text_color(t.foreground)
       .on_key_down((ev, cx) => this.onKey(ev, cx))
