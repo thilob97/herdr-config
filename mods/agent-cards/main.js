@@ -19,6 +19,7 @@ const GAP_M = 8;
 const GAP_L = 12;
 const GAP_XL = 16;
 const INSET_CARD = 10;
+const INSET_SIDEBAR = 16;
 const H_SECTION = 28;
 const H_ROW = 28;
 const H_BTN = 26;
@@ -612,6 +613,8 @@ export default class Agents extends View {
   }
 
   // Under the list while cards are selected: what to do with all of them.
+  // One 22-px line of actions with their tooltips, the message in the second
+  // (docs/ui/review.md A3): the list keeps its height.
   selectionBar(t) {
     const n = this.selected.size;
     const ready = Boolean(this.message.value().trim()) && !this.busy;
@@ -619,27 +622,30 @@ export default class Agents extends View {
       .border_color(this.force ? t.solid : t.input).bg(this.force ? t.solid : t.background)
       .when(this.force, (el) => el.child(svg("mods/workspace-chrome/check.svg").size(12).text_color(t.solid_foreground)));
     return v_flex().id("ag-selection").flex_none().px(GAP_XL).py(GAP_M).gap(GAP_S).bg(t.chrome).border_t(1).border_color(t.border)
-      .child(h_flex().h(H_BTN_S).gap(GAP_S).items_center().text_size(T_S)
-        .child(div().font_medium().text_color(t.foreground).child(`${n} ausgewählt`))
-        .child(div().id("ag-sel-clear").text_color(t.dim).cursor_pointer().hover((s) => s.text_color(t.foreground))
-          .on_click((_e, cx) => { this.selected.clear(); this.note = null; cx.notify(); }).child("aufheben")))
+      .child(h_flex().h(H_BTN_S).gap(GAP_XS).items_center().text_size(T_S)
+        .child(div().flex_none().font_medium().text_color(t.foreground).child(`${n} ausgewählt`))
+        .child(div().id("ag-sel-clear").flex_none().text_color(t.dim).cursor_pointer().hover((s) => s.text_color(t.foreground))
+          .on_click((_e, cx) => { this.selected.clear(); this.note = null; cx.notify(); }).child("aufheben"))
+        .when(this.busy, (el) => el.child(h_flex().pl(GAP_S).flex_1().min_w(0).gap(GAP_XS).items_center().text_size(T_XS).text_color(t.dim)
+          .child(svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.dim).spin(900)).child("läuft …")))
+        .when(!this.busy && Boolean(this.note), (el) => el.child(div().pl(GAP_S).flex_1().min_w(0).truncate().text_size(T_XS)
+          .text_color(this.note.ok ? t.muted : t.blocked).child(this.note.text)))
+        .when(!this.busy && !this.note, (el) => el.child(div().flex_1()))
+        .child(div().id("ag-sel-force").size(H_BTN_S).flex_none().flex().items_center().justify_center().rounded(6).cursor_pointer()
+          .hover((s) => s.bg(t.hover))
+          .tooltip("Auch an Agents senden, die auf eine Antwort warten: die Nachricht beantwortet ihre Frage")
+          .on_click((_e, cx) => { this.force = !this.force; cx.notify(); })
+          .child(check))
+        .child(iconBtn(t, "ag-sel-int", "mods/agent-cards/icons/stop.svg", "Unterbrechen", (_e, cx) => this.interrupt(cx)))
+        .child(iconBtn(t, "ag-sel-team", "mods/agent-cards/icons/eye.svg", "Als Team beobachten (erscheint im Team-Panel)",
+          (_e, cx) => { this.watchAsTeam(); cx.notify(); })))
       .child(h_flex().h(H_INPUT).pl(10).pr(GAP_XS).gap(GAP_XS).items_center().rounded(6).bg(t.background).border_1().border_color(t.input)
         .child(Input.new(this.message).flex_1().min_w(0).text_size(T_M).text_color(t.foreground))
         .child(div().id("ag-sel-send").size(H_BTN_S).flex_none().flex().items_center().justify_center().rounded(6)
           .bg(ready ? t.solid : t.raised).text_color(ready ? t.solid_foreground : t.dim)
           .tooltip("Senden (Enter)")
           .when(ready, (el) => el.cursor_pointer().hover((s) => s.opacity(0.85)).on_click((_e, cx) => this.broadcast(cx)))
-          .child(svg("mods/agent-cards/icons/send.svg").size(12))))
-      .child(h_flex().id("ag-sel-force").h(H_BTN_S).gap(GAP_S).items_center().text_size(T_S).text_color(t.muted).cursor_pointer()
-        .tooltip("Auch an Agents senden, die auf eine Antwort warten: die Nachricht beantwortet ihre Frage")
-        .on_click((_e, cx) => { this.force = !this.force; cx.notify(); })
-        .child(check).child("auch wartende"))
-      .child(h_flex().flex_wrap().gap(GAP_S)
-        .child(textBtn(t, "ag-sel-int", "Unterbrechen", { enabled: !this.busy }, (_e, cx) => this.interrupt(cx)))
-        .child(textBtn(t, "ag-sel-team", "Als Team beobachten", {}, (_e, cx) => { this.watchAsTeam(); cx.notify(); })))
-      .when(this.busy, (el) => el.child(h_flex().gap(GAP_XS).items_center().text_size(T_S).text_color(t.dim)
-        .child(svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.dim).spin(900)).child("läuft …")))
-      .when(!this.busy && Boolean(this.note), (el) => el.child(div().text_size(T_S).text_color(this.note.ok ? t.muted : t.blocked).child(this.note.text)));
+          .child(svg("mods/agent-cards/icons/send.svg").size(12))));
   }
 
   // Every listed agent's name and avatar (docs/ui-spec.md 7.1), written only when it changed.
@@ -747,17 +753,22 @@ export default class Agents extends View {
     }
 
     const row = (a, i, subs = [], inner = []) => {
+      const name = this.avatars[a.address]?.name ?? (a.program?.name || label(a));
+      // On the rail an avatar carries the identity, the tooltip the words (docs/ui/review.md A4).
       if (collapsed) {
+        const n = this.avatars[a.address]?.n ?? 0;
         return h_flex()
           .id(`ag-${a.address}`)
           .h(H_ROW)
           .px(GAP_M)
           .flex_none()
           .items_center()
+          .justify_center()
           .gap(GAP_XS)
+          .tooltip(`${name} · ${WORD[a.status] ?? a.status} · ${a.space_name}`)
           .hover((s) => s.bg(t.hover))
           .on_click(() => run("pane.focus", { pane: a.pane }))
-          .child(div().flex_1().min_w(0).whitespace_nowrap().text_right().text_color(t.muted).child(String(i + 1)))
+          .child(image(AVATARS[n]).w(16).h(16).flex_none())
           .child(h_flex().w(14).flex_none().items_center().justify_center().child(a.status === "blocked" ? this.bang(t) : statusMark(t, a.status)));
       }
       const pic = icon(a.program, 16, t.foreground);
@@ -773,7 +784,9 @@ export default class Agents extends View {
       const full = byPriority || isPinned;
       const where = [machine, full ? a.space_name : null].filter(Boolean).join(" \u00b7 ");
       const tab = detail.get(a.address) ?? (/^\d+$/.test(label(a)) ? a.program?.name || label(a) : label(a));
-      const name = this.avatars[a.address]?.name ?? (a.program?.name || label(a));
+      // An idle parent whose sub-agent works says so: the spinner is on the child's row.
+      const kidWorking = a.status === "idle"
+        && (subs.some((s) => kidStatus(s.t, this.listed) === "working") || inner.some((s) => SUB_STATUS[s.status] === "working"));
       // "Wartet" never by color alone: under "Wartet auf dich" the head says it, elsewhere a chip.
       const sayWaiting = a.status === "blocked" && !(byPriority && !isPinned);
       // omp: what its session file said at the last read, on a third line.
@@ -806,7 +819,7 @@ export default class Agents extends View {
         .relative()
         .mb(GAP_S)
         .p(INSET_CARD)
-        .gap(10)
+        .gap(GAP_M)
         .items_start()
         .flex_none()
         .line_height(1.2)
@@ -830,13 +843,14 @@ export default class Agents extends View {
         .child(v_flex().flex_1().min_w(0).gap(3)
           .child(h_flex().h(16).gap(GAP_S).items_center()
             .when(Boolean(pic), (el) => el.child(pic))
-            .child(div().flex_none().max_w(120).truncate().text_size(T_L).font_semibold().text_color(idle ? t.muted : t.foreground).child(name))
+            .child(div().flex_none().max_w(120).truncate().tooltip(name).text_size(T_L).font_semibold().text_color(idle ? t.muted : t.foreground).child(name))
             .child(div().flex_1().min_w(0).truncate().text_size(T_S).text_color(t.dim).child(where))
             // Hovered, the buttons take the place of the status (a spinning mark would paint over them).
             .when(sayWaiting && !hovered, (el) => el.child(statusChip(t, "blocked")))
             .child(hovered ? div().size(12).flex_none() : statusMark(t, a.status)))
           .child(h_flex().h(14).gap(GAP_S).items_center()
-            .child(div().flex_1().min_w(0).truncate().text_size(T_S).text_color(t.muted).child(tab || WORD[a.status] || ""))
+            .when(kidWorking, (el) => el.child(div().flex_1().min_w(0).truncate().tooltip(tab).text_size(T_XS).text_color(t.muted).child("Sub-Agent arbeitet")))
+            .when(!kidWorking, (el) => el.child(div().flex_1().min_w(0).truncate().text_size(T_S).text_color(t.muted).child(tab || WORD[a.status] || "")))
             .when(subs.length + inner.length > 0, (el) => el.child(fold(a, subs, inner)))
             .when(Boolean(when), (el) => el.child(div().flex_none().text_size(T_XS).text_color(t.dim).child(duration(now - when)))))
           .when(facts.length > 0, (el) => el.child(h_flex().id(`omp-${a.address}`).gap(GAP_S).items_center().tooltip(about)
@@ -898,7 +912,7 @@ export default class Agents extends View {
         const h = Math.round(s.height);
         if (h !== shared("agent-cards.height")) setShared("agent-cards.height", h);
       })
-      .when(!collapsed, (el) => el.child(h_flex().h(H_SECTION).pl(16).pr(GAP_M).gap(GAP_S).flex_none().items_center()
+      .when(!collapsed, (el) => el.child(h_flex().h(H_SECTION).pl(INSET_SIDEBAR).pr(GAP_M).gap(GAP_S).flex_none().items_center()
         .text_size(T_S).font_medium().text_color(t.muted)
         .child("Agents")
         .child(div().text_color(t.dim).child(String(this.listed.size)))
