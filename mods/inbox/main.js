@@ -16,6 +16,7 @@ import * as ui from "./ui.js";
 import { T_XS, T_S, T_M, T_L, T_XL } from "./ui.js";
 
 const ORCH = "orchestrator";
+const PENDING = "quests.pending";
 const GROUPS = [
   { key: "ask", label: "Rückfragen", color: (t) => t.blocked },
   { key: "review", label: "Abnahmen", color: (t) => t.blocked },
@@ -24,6 +25,9 @@ const GROUPS = [
 ];
 const PREVIEW_LINES = 22;
 const REFRESH = 2500;
+// As tall as no window is: the popup then takes its mod.json height (0.75 of the window)
+// and the list and detail fill it exactly.
+const FILL = 4000;
 
 const machineOf = (address) => (address.includes("/") ? address.slice(0, address.indexOf("/")) : null);
 const baseName = (p) => p.replace(/\/+$/, "").split("/").pop() || p;
@@ -58,6 +62,9 @@ export default class Inbox extends View {
       orch: InputState.new({ placeholder: "Antwort an den Orchestrator… (↵ senden)" }),
     };
     for (const input of Object.values(this.replies)) input.on("submit", (_e, cx) => this.send(cx));
+    this.focus = ui.focusFields();
+    this.focus.track(this.replies.agent, "ib-reply-agent");
+    this.focus.track(this.replies.orch, "ib-reply-orch");
     cx.timer.after(50, () => this.handle.focus());
     cx.timer.every(REFRESH, (cx) => { const e = this.entry(); if (e?.address) this.load(e.address, cx, true); });
   }
@@ -75,6 +82,11 @@ export default class Inbox extends View {
     }
     for (const tk of (shared("orchestra.tickets") ?? []).filter((x) => x.status === "review")) {
       list.push({ kind: "ticket", key: `ticket:${tk.id}`, group: "review", tk, order: tk.updated ?? "" });
+    }
+    for (const p of (shared(PENDING) ?? [])) {
+      // A handover line lives at most 15 minutes: after that the crew had its chance.
+      if (Date.now() - (p.at ?? 0) > 15 * 60000) continue;
+      list.push({ kind: "pending", key: `pending:${p.key}`, group: "work", p, order: p.at ?? "" });
     }
     const rank = Object.fromEntries(GROUPS.map((g, i) => [g.key, i]));
     return list.sort((x, y) => rank[x.group] - rank[y.group] || (x.order < y.order ? -1 : x.order > y.order ? 1 : 0));
@@ -106,6 +118,7 @@ export default class Inbox extends View {
   activate(e) {
     if (!e) return;
     if (e.kind === "ticket") return this.check(e.tk);
+    if (e.kind === "pending") { this.close(); run("tabs-graph.panel-team"); return; }
     this.close();
     if (e.kind === "orch") run("terminal.peek", { terminal: e.o.address });
     else ui.focusAgent(e.address);
@@ -169,7 +182,7 @@ export default class Inbox extends View {
   // ---------- view ----------
 
   avatar(t, e) {
-    if (e.kind === "orch") return svg("mods/orchestra/icon.svg").size(16).flex_none().text_color(t.muted);
+    if (e.kind === "orch" || e.kind === "pending") return svg("mods/orchestra/icon.svg").size(16).flex_none().text_color(t.muted);
     if (e.kind === "ticket") return svg("mods/review/icon.svg").size(16).flex_none().text_color(t.muted);
     const who = ui.identity(e.address), p = who.program;
     if (who.avatar) return image(who.avatar).w(16).h(16).flex_none();
@@ -190,16 +203,19 @@ export default class Inbox extends View {
     } else if (e.kind === "orch") {
       status = "blocked"; name = "Orchestrator"; title = "fragt dich"; meta = "Rückfrage des Orchestrators";
       right = div().flex_none().text_size(T_S).text_color(t.blocked).child("wartet");
+    } else if (e.kind === "pending") {
+      status = "working"; name = null; title = e.p.title; meta = "beim Orchestrator · unterwegs, bis ein Ticket da ist";
+      right = div().flex_none().text_size(T_S).text_color(t.working).child("unterwegs");
     } else {
       const tk = e.tk;
       status = "blocked"; name = null; title = tk.title;
       meta = [tk.branch || tk.repo?.split("/").pop(), tk.machine].filter(Boolean).join(" · ");
-      right = h_flex().flex_none().gap(ui.GAP_XS).children(ui.gateChips(t, tk).slice(0, 1));
+      right = h_flex().flex_none().gap(ui.GAP_XS).children(ui.gateChips(t, tk));
     }
     return v_flex().id(`ib-${e.key}`).h(ui.H_ROW2).flex_none().px(8).justify_center().gap(2).rounded(6).cursor_pointer()
       .when(on, (el) => el.bg(t.selected))
       .when(!on, (el) => el.hover((s) => s.bg(t.hover)))
-      .when(e.group === "work", (el) => el.opacity(0.6))
+      .when(e.group === "work", (el) => el.opacity(0.75))
       .on_click((ev, cx) => { if (ev.click_count === 2) this.activate(e); else { this.select(list, i, cx); this.handle.focus(); } })
       .child(h_flex().gap(ui.GAP_M).items_center()
         .child(ui.statusIcon(t, status))
@@ -207,7 +223,7 @@ export default class Inbox extends View {
         .when(Boolean(name), (el) => el.child(div().flex_none().max_w(110).truncate().text_size(T_M).text_color(t.foreground).when(on, (d) => d.font_semibold()).child(name)))
         .child(div().flex_1().min_w(0).truncate().text_size(T_M).text_color(name ? t.muted : t.foreground).child(title))
         .child(right))
-      .child(div().pl(40).truncate().text_size(T_S).text_color(t.dim).child(meta));
+      .child(div().pl(40).truncate().text_size(T_S).text_color(t.muted).child(meta));
   }
 
   screen(t, address) {
@@ -223,6 +239,7 @@ export default class Inbox extends View {
     const sent = this.sent?.key === e.key ? this.sent : null;
     return v_flex().flex_none().gap(ui.GAP_S)
       .child(ui.inputBox(t, `ib-reply-${e.kind}`, Input.new(this.replies[e.kind]), {
+        focused: this.focus.has(`ib-reply-${e.kind}`),
         send: ui.sendButton(t, "ib-send", "mods/orchestra/icons/send.svg", "Senden (↵)", (cx) => this.send(cx)),
       }))
       .child(div().h(16).text_size(T_XS).text_color(sent ? (sent.ok === false ? t.blocked : sent.ok ? t.done : t.dim) : t.dim).truncate()
@@ -245,13 +262,22 @@ export default class Inbox extends View {
           .child(div().text_size(T_S).font_medium().text_color(t.muted).child("Zusammenfassung"))
           .child(div().text_size(T_M).text_color(tk.summary ? t.foreground : t.dim).child(tk.summary || "Keine Zusammenfassung des Orchestrators."))
           .child(div().pt(ui.GAP_S).text_size(T_S).font_medium().text_color(t.muted).child("Nachweise"))
-          .when(!evidence.length, (el) => el.child(div().text_size(T_S).text_color(t.dim).child("keine angegeben")))
+          .when(!evidence.length, (el) => el.child(div().text_size(T_S).text_color(t.muted).child("keine angegeben")))
           .children(evidence.map((p, i) => (tk.machine
             ? div().text_size(T_S).text_color(t.dim).child(`${p} (auf ${tk.machine})`)
             : ui.link(t, `ib-ev-${i}`, p, () => exec("open", [p]).catch(() => null), { tip: "Öffnen" })))))
         .child(h_flex().gap(ui.GAP_M).items_center()
           .child(ui.button(t, "ib-check", "Prüfen", () => this.check(tk), { kind: "primary", tip: "Review-Fenster: Zusammenfassung, Nachweise, Diff; dort Mergen, PR oder Abnehmen (↵)" }))
           .child(div().text_size(T_XS).text_color(t.dim).child("↵")));
+    }
+    if (e.kind === "pending") {
+      return v_flex().flex_1().min_w(0).min_h(0).gap(ui.GAP_L)
+        .child(h_flex().gap(ui.GAP_M).items_center()
+          .child(svg("mods/orchestra/icon.svg").size(14).text_color(t.foreground))
+          .child(div().flex_1().min_w(0).truncate().text_size(T_L).font_semibold().text_color(t.foreground).child(e.p.title)))
+        .child(div().text_size(T_S).text_color(t.muted).child("Der Auftrag ist beim Orchestrator. Sobald er ein Ticket anlegt, erscheint es hier unter Abnahmen."))
+        .child(h_flex().gap(ui.GAP_M).items_center()
+          .child(ui.button(t, "ib-team", "Team-Panel öffnen", () => { this.close(); run("tabs-graph.panel-team"); }, { kind: "primary", tip: "Die Pipeline, in der das Ticket erscheint" })));
     }
     if (e.kind === "orch") {
       return v_flex().flex_1().min_w(0).min_h(0).gap(ui.GAP_L)
@@ -285,7 +311,6 @@ export default class Inbox extends View {
     const sel = i >= 0 ? list[i] : null;
     const { blocked, review, done } = inboxCount();
     const waits = blocked + review;
-    const meta = waits ? `${waits} ${waits === 1 ? "wartet" : "warten"} auf dich` : done ? `${done} fertig` : "alles ruhig";
 
     const col = v_flex().id("ib-list").w(320).flex_none().h_full().min_h(0).pr(ui.GAP_M).overflow_y_scrollbar().track_scroll(this.scroll)
       .border_r(1).border_color(t.border);
@@ -305,15 +330,14 @@ export default class Inbox extends View {
 
     // A popup is as tall as its content, at most its mod.json height (0.75 of the window):
     // asking for more than any window has makes the list and the detail fill exactly that.
-    return v_flex().id("inbox").track_focus(this.handle).w_full().h(4000).min_h(0).p(ui.GAP_XL).gap(ui.GAP_L).bg(t.popover).text_size(T_M)
+    return v_flex().id("inbox").track_focus(this.handle).w_full().h(FILL).min_h(0).p(ui.GAP_XL).gap(ui.GAP_L).bg(t.popover).text_size(T_M)
       .on_key_down((ev, cx) => this.onKey(ev, cx, list, sel))
       .child(h_flex().h(28).flex_none().gap(ui.GAP_M).items_center()
         .child(div().flex_none().text_size(T_XL).font_semibold().text_color(t.foreground).child("Inbox"))
         .when(waits > 0, (el) => el.child(ui.counterBadge(t, waits, t.blocked)))
         .when(!waits && done > 0, (el) => el.child(ui.counterBadge(t, done, t.done)))
-        .child(div().flex_none().text_size(T_S).text_color(t.muted).child(meta))
         .child(div().flex_1())
-        .child(div().flex_none().text_size(T_XS).text_color(t.dim).child("↑↓ wählen · ↵ hin/prüfen · r antworten · v Review"))
+        .child(div().flex_none().text_size(T_XS).text_color(t.muted).tooltip("↑↓ wählen · ↵ hingehen bzw. prüfen · r antworten · v Review").child("↑↓ ↵ r v"))
         .child(div().id("ib-esc").flex_none().h(ui.H_CHIP).px(6).flex().items_center().rounded(4).bg(t.raised).text_size(T_XS).text_color(t.dim)
           .cursor_pointer().hover((s) => s.text_color(t.foreground)).tooltip("Schließen (Esc)").on_click(() => this.close()).child("Esc")))
       .child(list.length
