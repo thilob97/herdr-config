@@ -580,6 +580,8 @@ export default class Review extends View {
         .bg(t.background).border_1().border_color(t.border).p(ui.GAP_M).text_size(T_XS)
         .font_family(settings().font_family ?? "JetBrains Mono").text_color(t.muted)
         .child(tail.length ? tail.join("\n") : "Keine Ausgabe aufgezeichnet.")));
+  }
+
   // One lesson: when, what, and where it came from.
   lessonLine(t, l) {
     const source = { review: "Review", human: "Mensch", ci: "CI", vorschlag: "Vorschlag" }[l.source] ?? l.source;
