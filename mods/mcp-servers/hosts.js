@@ -50,7 +50,7 @@ export async function probe(m) {
     for (const h of HOSTS) {
       const found = lines.filter((l) => l.replace(/^.*[\\/]/, "").replace(/\.[^.]*$/, "").toLowerCase() === h.bin);
       const path = found.find((l) => /\.exe$/i.test(l)) ?? found.find((l) => /\.(cmd|bat)$/i.test(l));
-      bins[h.key] = path ? { path } : { missing: `${h.name} is not installed here` };
+      bins[h.key] = path ? { path } : { missing: `${h.name} ist hier nicht installiert` };
     }
     return { home: home(), bins };
   }
@@ -62,7 +62,7 @@ export async function probe(m) {
     const path = vars[h.bin];
     // WSL sees Windows' PATH: a /mnt/c shim is the Windows install, not one of this machine's.
     if (path && !path.startsWith("/mnt/")) bins[h.key] = { path };
-    else bins[h.key] = { missing: path ? `only the Windows ${h.name} is visible (${path})` : `${h.name} is not installed here` };
+    else bins[h.key] = { missing: path ? `nur das Windows-${h.name} ist sichtbar (${path})` : `${h.name} ist hier nicht installiert` };
   }
   return { home: vars.HOME, bins };
 }
@@ -171,7 +171,7 @@ export async function readProject(m, key, bin, root) {
     const off = new Set(p?.disabledMcpjsonServers ?? []);
     return byName([
       ...fromMap(workspace.data?.mcpServers, "project", (name) => ({
-        file: mcpJson, enabled: !off.has(name), note: off.has(name) ? "rejected in Claude Code" : on.has(name) || p?.enableAllProjectMcpServers ? null : "awaits approval in Claude Code",
+        file: mcpJson, enabled: !off.has(name), note: off.has(name) ? "in Claude Code abgelehnt" : on.has(name) || p?.enableAllProjectMcpServers ? null : "wartet auf Freigabe in Claude Code",
       })),
       ...fromMap(p?.mcpServers, "local", { file: path }),
     ]);
@@ -263,10 +263,10 @@ export async function addServer(m, key, bin, scope, name, def, root) {
 
 // Why a server can't be removed here, or null.
 export function removeBlock(key, s) {
-  if (s.scope === "plugin") return "Comes from a plugin: uninstall the plugin instead.";
-  if (s.scope === "builtin") return "Built into Copilot CLI.";
-  if (s.scope === "claude.ai") return "A claude.ai connector: manage it at claude.ai.";
-  if (!s.file && !(key === "claude" && s.scope === "local")) return "Its config file is unknown.";
+  if (s.scope === "plugin") return "Kommt aus einem Plugin: stattdessen das Plugin deinstallieren.";
+  if (s.scope === "builtin") return "In Copilot CLI eingebaut.";
+  if (s.scope === "claude.ai") return "Ein claude.ai-Connector: auf claude.ai verwalten.";
+  if (!s.file && !(key === "claude" && s.scope === "local")) return "Seine Konfigurationsdatei ist unbekannt.";
   return null;
 }
 

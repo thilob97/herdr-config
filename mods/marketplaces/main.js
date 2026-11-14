@@ -26,6 +26,8 @@ const INSET_PANEL = 14;
 const H_HEADER = 42, H_BTN = 26, H_BTN_S = 22, H_INPUT = 30, H_CHIP = 18;
 const T_XS = 10.5, T_S = 11, T_M = 12, T_L = 13, T_XL = 15;
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+// Theme colour + alpha suffix (5.4); a theme colour that is already translucent stays as it is.
+const tint = (c, a) => (/^#[0-9a-f]{6}$/i.test(c ?? "") ? c + a : c);
 
 const machineOf = (address) => (address.includes("/") ? address.slice(0, address.indexOf("/")) : null);
 // Which plugin host an agent is: its own report (`app`), else its program.
@@ -689,7 +691,7 @@ export default class Marketplaces extends View {
           .child(h_flex().children(HOSTS.map((h) => {
             const H = g.M.hosts[h.key];
             return h_flex().id(`mk-col-${g.M.key}-${h.key}`).w(CELL).flex_none().gap(GAP_XS).items_center().justify_center()
-              .text_color(H?.bin ? t.muted : t.dim + "88").tooltip(H?.bin ? `${h.name}: ${H.bin}` : H?.missing ?? h.name)
+              .text_color(H?.bin ? t.muted : tint(t.dim, "88")).tooltip(H?.bin ? `${h.name}: ${H.bin}` : H?.missing ?? h.name)
               .child(svg(h.icon).size(12).flex_none()).child(h.short);
           }))))
         : cols.map((c) => h_flex().id(`mk-col-${c.scope}`).w(CELL).flex_none().gap(GAP_XS).items_center().justify_center().text_color(t.muted)
@@ -715,7 +717,7 @@ export default class Marketplaces extends View {
     const c = p.counts;
     const counts = c ? [c.skills && plural(c.skills, "Skill", "Skills"), c.commands && plural(c.commands, "Befehl", "Befehle"), c.agents && plural(c.agents, "Agent", "Agents")].filter(Boolean) : [];
     const meta = [...counts, p.external ? `Quelle: ${p.external}` : null, ...p.keywords.slice(0, 6).map((k) => `#${k}`)].filter(Boolean).join(" · ");
-    return h_flex().id(`mk-row-${p.name}`).flex_none().h(ROW).px(INSET_PANEL).items_center().border_b(1).border_color(t.border + "88").hover((s) => s.bg(t.hover))
+    return h_flex().id(`mk-row-${p.name}`).flex_none().h(ROW).px(INSET_PANEL).items_center().border_b(1).border_color(tint(t.border, "88")).hover((s) => s.bg(t.hover))
       .child(v_flex().flex_1().min_w(0).gap(2).pr(GAP_M)
         .child(h_flex().gap(GAP_S).items_center().min_w(0)
           .child(div().flex_none().font_semibold().text_color(p.orphan ? t.muted : t.foreground).child(p.name))
@@ -733,7 +735,7 @@ export default class Marketplaces extends View {
     const cid = `${scope}-${M.key}-${h.key}-${p.name}`;
     const box = div().w(CELL).h_full().flex_none().flex().items_center().justify_center();
     const pill = (pid) => this.control(pid).h(H_BTN_S).px(8).flex().items_center().rounded(6).text_size(T_S);
-    if (!H?.bin) return box.child(div().id(`mk-c-${cid}`).text_color(t.dim + "88").tooltip(H?.missing ?? `${h.name} nicht verfügbar`).child("—"));
+    if (!H?.bin) return box.child(div().id(`mk-c-${cid}`).text_color(tint(t.dim, "88")).tooltip(H?.missing ?? `${h.name} nicht verfügbar`).child("—"));
     if (H.error) return box.child(div().id(`mk-c-${cid}`).text_color(t.blocked).tooltip(`${h.name} auf ${M.label}: ${H.error}`).child("!"));
     const P = this.project;
     const busy = this.busy.has(`${M.key}|${h.key}|${id}|${scope}`);
@@ -756,7 +758,7 @@ export default class Marketplaces extends View {
     }
     if (!st) {
       const can = known || Boolean(mk.repo);
-      if (p.orphan) return box.child(div().text_color(t.dim + "88").child("·"));
+      if (p.orphan) return box.child(div().text_color(tint(t.dim, "88")).child("·"));
       return box.child(pill(`mk-c-${cid}`).border_1().border_color(t.border).text_color(t.dim).when(!can, (el) => el.opacity(0.4))
         .tooltip(!can ? `${h.name} auf ${M.label} hat ${mk.name} nicht, und die Quelle ist unbekannt` : `${scope === "project" ? "Einschalten" : "Installieren"} in ${where}${known ? "" : ` (fügt zuerst ${mk.repo} hinzu)`}`)
         .when(can, (el) => el.hover((s) => s.bg(t.hover).text_color(t.foreground))
@@ -791,7 +793,7 @@ export default class Marketplaces extends View {
   confirmLayer(t) {
     const C = this.confirm;
     const done = (cx) => { this.confirm = null; cx.notify(); };
-    return div().id("mk-confirm").absolute().inset_0().bg(t.background + "88").flex().items_center().justify_center()
+    return div().id("mk-confirm").absolute().inset_0().bg(tint(t.background, "88")).flex().items_center().justify_center()
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .child(v_flex().w(420).p(GAP_XL).gap(GAP_L).rounded(10).bg(t.popover).border_1().border_color(t.border).shadow_lg()
         .child(div().text_size(T_XL).font_semibold().child(C.title))
