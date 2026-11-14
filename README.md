@@ -140,6 +140,21 @@ Ein Ticket ist erst fertig, wenn die Checks seines Pull Requests grün sind. Das
 
 **In der Oberfläche** steht im Review-Fenster (Ticket-Modus) unter den Gates die CI-Zeile: Zustand, Zeitpunkt, **PR öffnen** und **Erneut prüfen** (`hub ci`); rote Checks klappen Namen und Log-Auszug auf. `hub status` hat die Spalte `CI` (`✓`, `…`, `✗`, `?`).
 
+## Lehren
+
+Was beim Review und bei der Abnahme gelernt wurde, landet automatisch im nächsten Auftrag — pro Repo, in `<repo>/.herdr/lessons.md` (eine Zeile je Lehre, höchstens 40; die älteste fällt raus):
+
+```
+- 2026-11-14 · lehren-pro-repo · review · Erst den Bestand lesen, dann ändern.
+```
+
+- `hub lesson add <repo|ticket> --from review|human|ci "Text"` schreibt eine Lehre; `<ticket>` nimmt ihr Repo und ihre Maschine. `hub lesson list <repo|ticket> [--last 8] [--json]` zeigt sie, `--pending` die noch unbestätigten Vorschläge.
+- `hub dispatch` hängt die letzten 8 Lehren des Repos als Abschnitt „Was hier schon schiefging“ an die Aufgabe; `--no-lessons` lässt ihn weg (z. B. für eine unbelastete Premiere).
+- `hub land <id> --merge|--pr --lesson "Text"` schreibt eine Lehre aus der Abnahme und nennt sie im Verlauf des Tickets (mehrfach möglich).
+- **Rückläufer:** Gibt der Mensch im Review-Fenster **Änderungen …**, geht das Ticket zurück auf `doing`; der Orchestrator legt mit `hub lesson propose <id> "Text"` eine Lehre als Vorschlag ab. Das Review-Fenster zeigt sie mit **Lehre übernehmen** — erst dieser Knopf schreibt sie in die Datei (`--from review`) und nennt sie im Verlauf.
+- **Sichtbarkeit:** Jede Ticket-Zeile im Team-Panel trägt `Lehren n` (Tooltip mit den letzten drei; pink, solange ein Vorschlag wartet). Das Review-Fenster listet die Lehren des Repos aufklappbar unter der Zusammenfassung, den Vorschlag mit dem Bestätigen-Knopf.
+- Nur lokale Repos haben eine Lehren-Anzeige; auf anderen Maschinen liest `hub dispatch` die Datei dort, das Panel zeigt keine Zahl. `.herdr/lessons.md` ist Arbeitsdatei des Repos, nicht Teil dieses Config-Repos.
+
 ## Rahmen: Seitenleiste, Tab-Leiste, Statusleiste
 
 **Seitenleiste.** Der **Kopf** (42 px, bündig mit der Tab-Leiste) zeigt Logo, „Herdr“, Suche (`cmd-p`) und Ein-/Ausklappen; er kommt aus dem eigenen Mod `sidebar-footer` statt aus dem ausgelieferten `workspace-chrome`. Der **Fuß** ist eine 28-px-Zeile (bündig mit der Statusleiste) mit Icon-Knöpfen für Einstellungen (`cmd-,`, mit Punkt, wenn ein Update bereitliegt), Marketplaces (`ctrl-shift-m`), MCP-Server (`ctrl-shift-y`), Maschine hinzufügen und Tastenkürzel (`cmd-/`); eingeklappt (Rail) bleiben Einstellungen und „…“ mit den übrigen vier. **Spaces** nehmen nur so viel Höhe, wie sie brauchen (Kopf, eine 28-px-Zeile je Space, Ordner oder Maschine), höchstens 40 % der Listenhöhe, darüber scrollen sie; den Rest bekommen die Agents. Kopf „Spaces n“ mit „Neuer Ordner“ und „Neuer Space (⌘N)“; Maschinen-Zeilen sind Sektionsköpfe; Kachelfarben kommen aus dem Theme.
