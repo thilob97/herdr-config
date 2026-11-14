@@ -6,11 +6,18 @@ import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { exec, machines, spaces, run, theme, notify } from "herdr";
 
+// Tokens (docs/ui-spec.md, 5).
+const GAP_XS = 4, GAP_S = 6, GAP_M = 8, GAP_L = 12;
+const INSET_PANEL = 14, INSET_CARD = 10;
+const H_HEADER = 42, H_SECTION = 28, H_ROW = 28, H_BTN = 26, H_BTN_S = 22, H_INPUT = 30, H_CHIP = 18;
+const T_XS = 10.5, T_S = 11, T_M = 12, T_L = 13;
+
 // One JSON object per container; labels by name, since `.Labels` joins values that may hold commas.
 const PS_FORMAT = '{"id":{{json .ID}},"name":{{json .Names}},"image":{{json .Image}},"state":{{json .State}},"status":{{json .Status}},"ports":{{json .Ports}},' +
   '"project":{{json (.Label "com.docker.compose.project")}},"dir":{{json (.Label "com.docker.compose.project.working_dir")}},"files":{{json (.Label "com.docker.compose.project.config_files")}}}';
 const SHELL = "command -v bash >/dev/null 2>&1 && exec bash || exec sh";
-const STANDALONE = "Standalone";
+const STANDALONE = "Einzelne Container";
+const HERE = "Dieser Computer";
 
 const lines = (text) => text.split("\n").flatMap((l) => {
   try { return l.trim() ? [JSON.parse(l)] : []; } catch { return []; }
@@ -45,8 +52,10 @@ export default class Docker extends View {
     this.hovered = null;
     this.menu = null; // card whose actions a right-click pinned open
     this.confirm = null; // card asking whether to remove
-    this.input = InputState.new({ placeholder: "Filter containers…" });
+    this.input = InputState.new({ placeholder: "Container filtern …" });
     this.input.on("change", (_e, cx) => { this.filter = this.input.value().trim().toLowerCase(); cx.notify(); });
+    this.input.on("focus", (_e, cx) => { this.typing = true; cx.notify(); });
+    this.input.on("blur", (_e, cx) => { this.typing = false; cx.notify(); });
     this.poll(cx);
     cx.timer.every(5000, (cx) => this.poll(cx));
     cx.timer.every(10000, (cx) => this.stats(cx));
@@ -106,7 +115,7 @@ export default class Docker extends View {
       this.busy.delete(busyId);
       if (r.code !== 0) {
         const verb = args[0] === "compose" ? `compose ${args.at(-1) === "-d" ? "up" : args.at(-1)}` : args[0];
-        notify({ title: `docker ${verb} failed`, body: ((r.stderr || r.stdout).trim() || `exit ${r.code}`).slice(-600), level: "error" });
+        notify({ title: `docker ${verb} fehlgeschlagen`, body: ((r.stderr || r.stdout).trim() || `Exit-Code ${r.code}`).slice(-600), level: "error" });
       }
       this.ps(cx, on);
       cx.notify();
@@ -130,35 +139,46 @@ export default class Docker extends View {
     this.act(cx, g.id, host.on, args);
   }
 
-  icon(t, id, icon, tip, action) {
-    return div().id(id).flex_none().p(2).rounded(4).text_color(t.dim).cursor_pointer()
+  // Icon button (5.6): 26×26 with icon 14 in the head, 22×22 with icon 12 in rows and cards.
+  icon(t, id, icon, tip, action, size = H_BTN_S) {
+    return div().id(id).size(size).flex_none().flex().items_center().justify_center().rounded(6).text_color(t.dim).cursor_pointer()
       .hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip(tip)
       .on_mouse_down("right", (_e, cx) => cx.stop_propagation())
       .on_click((_e, cx) => { cx.stop_propagation(); action(cx); })
-      .child(svg(icon).size(13));
+      .child(svg(icon).size(size === H_BTN ? 14 : 12));
   }
 
   spinner(t, color) {
-    return svg("mods/workspace-chrome/spinner.svg").size(12).mx(1).flex_none().text_color(color ?? t.working).spin(900);
+    return div().size(H_BTN_S).flex_none().flex().items_center().justify_center()
+      .child(svg("mods/workspace-chrome/spinner.svg").size(12).text_color(color ?? t.working).spin(900));
   }
 
-  // The state dot: a soft halo breathes around it while running, faster when in trouble.
+  // The state dot (box 12): a soft halo breathes around it while running, faster when in trouble.
   dot(l) {
-    const dot = div().size(7).rounded(4).bg(l.color);
-    if (!l.anim) return div().size(13).mx(0).flex_none().flex().items_center().justify_center().child(dot.opacity(0.6));
+    const dot = div().size(7).rounded_full().bg(l.color);
+    if (!l.anim) return div().size(12).flex_none().flex().items_center().justify_center().child(dot.opacity(0.6));
     const period = l.anim === "pulse" ? 800 : 2200;
-    return div().relative().size(13).flex_none().flex().items_center().justify_center()
-      .child(div().absolute().inset_0().rounded(7).bg(l.color + "55").loop("opacity", { from: 0, to: 1, period }))
+    return div().relative().size(12).flex_none().flex().items_center().justify_center()
+      .child(div().absolute().inset_0().rounded_full().bg(l.color + "55").loop("opacity", { from: 0, to: 1, period }))
       .child(dot);
   }
 
   // The tile: a container glyph in the state's color; still while running, pulses while in trouble.
   tile(t, l) {
-    const glyph = svg("mods/docker/icon.svg").size(20).absolute().left(4.5).top(5).text_color(l.color)
+    const glyph = svg("mods/docker/icon.svg").size(16).text_color(l.color)
       .when(l.anim === "pulse", (el) => el.loop("opacity", { from: 0.35, to: 1, period: 900 }))
       .when(!l.anim, (el) => el.opacity(0.6));
-    return div().relative().size(32).flex_none().rounded(8).bg(t.background).border(1.5)
-      .border_color(l.anim ? l.color : t.border).overflow_hidden().child(glyph);
+    return div().size(28).flex_none().flex().items_center().justify_center().rounded(6).bg(t.background).border_1()
+      .border_color(l.anim ? l.color : t.border).child(glyph);
+  }
+
+  // A small text button in a card row (5.6, h 22): tinted for the dangerous answer, secondary otherwise.
+  rowButton(t, id, label, danger, action) {
+    return div().id(id).flex_none().h(H_BTN_S).px(8).flex().items_center().rounded(6).text_size(T_M).font_medium().cursor_pointer()
+      .bg(danger ? t.blocked + "26" : t.raised).text_color(danger ? t.blocked : t.foreground)
+      .hover((s) => s.bg(danger ? t.blocked + "55" : t.hover))
+      .on_click((_e, cx) => { cx.stop_propagation(); action(cx); })
+      .child(label);
   }
 
   card(t, host, c) {
@@ -170,60 +190,53 @@ export default class Docker extends View {
     const open = this.hovered === id || this.menu === id;
     const busy = this.busy.has(id);
     const asking = this.confirm === id;
-    const actions = h_flex().flex_none().gap(1).items_center()
+    const actions = h_flex().flex_none().gap(GAP_XS).items_center()
       .child(running
-        ? this.icon(t, `stop-${id}`, "mods/docker/stop.svg", "Stop", (cx) => this.act(cx, id, host.on, ["stop", c.id]))
-        : this.icon(t, `start-${id}`, "mods/docker/play.svg", "Start", (cx) => this.act(cx, id, host.on, ["start", c.id])))
-      .child(this.icon(t, `restart-${id}`, "mods/docker/restart.svg", "Restart", (cx) => this.act(cx, id, host.on, ["restart", c.id])))
-      .child(this.icon(t, `logs-${id}`, "mods/docker/logs.svg", "Logs", () => this.openTerminal(host.on, `logs ${name}`, ["docker", "logs", "-f", "--tail", "200", c.id])))
-      .when(c.state === "running", (el) => el.child(this.icon(t, `shell-${id}`, "mods/workspace-chrome/terminal.svg", "Shell",
+        ? this.icon(t, `stop-${id}`, "mods/docker/stop.svg", "Stoppen", (cx) => this.act(cx, id, host.on, ["stop", c.id]))
+        : this.icon(t, `start-${id}`, "mods/docker/play.svg", "Starten", (cx) => this.act(cx, id, host.on, ["start", c.id])))
+      .child(this.icon(t, `restart-${id}`, "mods/docker/restart.svg", "Neu starten", (cx) => this.act(cx, id, host.on, ["restart", c.id])))
+      .child(this.icon(t, `logs-${id}`, "mods/docker/logs.svg", "Logs in einem Tab", () => this.openTerminal(host.on, `logs ${name}`, ["docker", "logs", "-f", "--tail", "200", c.id])))
+      .when(c.state === "running", (el) => el.child(this.icon(t, `shell-${id}`, "mods/workspace-chrome/terminal.svg", "Shell in einem Tab",
         () => this.openTerminal(host.on, `sh ${name}`, ["docker", "exec", "-it", c.id, "sh", "-c", SHELL]))))
-      .when(!running, (el) => el.child(this.icon(t, `rm-${id}`, "mods/docker/trash.svg", "Remove…", (cx) => { this.confirm = id; cx.notify(); })));
-    const chip = (p) => div().id(`port-${id}-${p}`).flex_none().px(5).h(16).flex().items_center().rounded(4)
-      .bg(t.raised).border(1).border_color(t.border).text_size(10.5).text_color(t.muted).cursor_pointer()
-      .hover((s) => s.text_color(t.foreground).border_color(t.input)).tooltip(`Open http://localhost:${p.split("-")[0]}`)
+      .when(!running, (el) => el.child(this.icon(t, `rm-${id}`, "mods/docker/trash.svg", "Entfernen …", (cx) => { this.confirm = id; cx.notify(); })));
+    const chip = (p) => div().id(`port-${id}-${p}`).flex_none().px(6).h(H_CHIP).flex().items_center().rounded(4)
+      .bg(t.raised).text_size(T_XS).text_color(t.muted).cursor_pointer()
+      .hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip(`http://localhost:${p.split("-")[0]} öffnen`)
       // shortcut: localhost is right for this computer and WSL, not for a remote ssh machine; use its host then.
       .on_click((_e, cx) => { cx.stop_propagation(); cx.open_url(`http://localhost:${p.split("-")[0]}`); })
       .child(`:${p}`);
-    const bar = (label, pct, text) => h_flex().flex_1().min_w(0).gap(5).items_center()
+    const bar = (label, pct, text) => h_flex().flex_1().min_w(0).gap(GAP_S).items_center()
       .child(div().flex_none().child(label))
-      .child(div().flex_1().min_w(12).h(3).rounded(2).bg(t.border).child(div().h(3).rounded(2).w(`${clamp(pct)}%`).bg(pct >= 85 ? t.blocked : t.accent)))
+      .child(div().flex_1().min_w(12).h(3).rounded(4).bg(t.border).child(div().h(3).rounded(4).w(`${clamp(pct)}%`).bg(pct >= 85 ? t.blocked : t.done)))
       .child(div().flex_none().child(text));
     const ports = portsOf(c.ports);
-    return div().id(`c-${id}`).relative().mb(6).flex_none().rounded(10).overflow_hidden()
-      .bg(this.menu === id ? t.selected : t.surface).border(1).border_color(this.menu === id ? t.accent : t.border)
-      .hover((s) => s.bg(t.hover).border_color(t.input))
+    return div().id(`c-${id}`).mb(GAP_S).flex_none().rounded(8)
+      .bg(this.menu === id ? t.selected : t.surface).border_1().border_color(t.border)
+      .hover((s) => s.bg(t.hover))
       .on_hover((on, cx) => {
         if (on) this.hovered = id;
         else if (this.hovered === id) this.hovered = null;
         cx.notify();
       })
       .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.menu = this.menu === id ? null : id; cx.notify(); })
-      .child(div().absolute().left(0).top(0).bottom(0).w(3).bg(l.color))
-      .child(h_flex().pl(12).pr(10).py(8).gap(10).items_start()
+      .child(h_flex().p(INSET_CARD).gap(GAP_M).items_start()
         .child(this.tile(t, l))
-        .child(v_flex().flex_1().min_w(0).gap(4)
-          .child(h_flex().gap(6).items_center().h(18)
+        .child(v_flex().flex_1().min_w(0).gap(GAP_XS)
+          .child(h_flex().gap(GAP_S).items_center().h(H_BTN_S)
             .child(div().flex_shrink(1).min_w(0).truncate().font_semibold().text_color(running ? t.foreground : t.muted).child(name))
-            .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.dim).child(c.image))
+            .child(div().flex_1().min_w(0).truncate().text_size(T_S).text_color(t.dim).child(c.image))
             .child(busy ? this.spinner(t, l.color) : open && !asking ? actions : this.dot(l)))
           .child(asking
-            ? h_flex().gap(6).items_center().text_size(11)
-              .child(div().flex_1().min_w(0).truncate().text_color(t.blocked).child(`Remove ${name}?`))
-              .child(div().id(`rm-yes-${id}`).flex_none().px(7).h(18).flex().items_center().rounded(5).bg(t.blocked + "26").text_color(t.blocked).cursor_pointer()
-                .hover((s) => s.bg(t.blocked + "40"))
-                .on_click((_e, cx) => { cx.stop_propagation(); this.confirm = null; this.act(cx, id, host.on, ["rm", c.id]); })
-                .child("Remove"))
-              .child(div().id(`rm-no-${id}`).flex_none().px(7).h(18).flex().items_center().rounded(5).text_color(t.dim).cursor_pointer()
-                .hover((s) => s.bg(t.hover).text_color(t.foreground))
-                .on_click((_e, cx) => { cx.stop_propagation(); this.confirm = null; cx.notify(); })
-                .child("Cancel"))
-            : h_flex().gap(6).items_center().text_size(11).text_color(t.dim)
+            ? h_flex().gap(GAP_S).items_center().text_size(T_S)
+              .child(div().flex_1().min_w(0).truncate().text_color(t.blocked).child(`${name} entfernen?`))
+              .child(this.rowButton(t, `rm-yes-${id}`, "Entfernen", true, (cx) => { this.confirm = null; this.act(cx, id, host.on, ["rm", c.id]); }))
+              .child(this.rowButton(t, `rm-no-${id}`, "Abbrechen", false, (cx) => { this.confirm = null; cx.notify(); }))
+            : h_flex().gap(GAP_S).items_center().text_size(T_S).text_color(t.dim)
               .child(div().flex_1().min_w(0).truncate().child(c.status))
               .children(ports.map(chip)))
-          .when(Boolean(u), (el) => el.child(h_flex().gap(10).items_center().text_size(10.5).text_color(t.dim)
+          .when(Boolean(u), (el) => el.child(h_flex().gap(GAP_L).items_center().text_size(T_XS).text_color(t.dim)
             .child(bar("CPU", parseFloat(u.CPUPerc), u.CPUPerc))
-            .child(bar("MEM", parseFloat(u.MemPerc), String(u.MemUsage ?? "").split(" / ")[0]))))));
+            .child(bar("RAM", parseFloat(u.MemPerc), String(u.MemUsage ?? "").split(" / ")[0]))))));
   }
 
   // A compose project (or the standalone containers): folds; compose ones get up / stop / restart.
@@ -231,32 +244,38 @@ export default class Docker extends View {
     const open = !this.folded.has(g.id);
     const up = g.members.filter((c) => c.state === "running").length;
     const compose = g.project !== null;
-    return h_flex().id(g.id).px(6).pt(6).h(28).flex_none().gap(6).items_center().text_size(11).font_medium().text_color(t.dim)
+    return h_flex().id(g.id).px(GAP_S).h(H_SECTION).flex_none().gap(GAP_S).items_center().text_size(T_S).font_medium().text_color(t.muted)
       .cursor_pointer().hover((s) => s.text_color(t.foreground))
       .on_click((_e, cx) => { open ? this.folded.add(g.id) : this.folded.delete(g.id); cx.notify(); })
-      .child(svg(`mods/workspace-chrome/chevron-${open ? "down" : "right"}.svg`).size(11).flex_none())
-      .child(div().flex_shrink(1).min_w(0).truncate().text_color(up ? t.muted : t.dim).child(g.project ?? STANDALONE))
-      .child(div().id(`n-${g.id}`).flex_none().text_color(up ? t.working : t.dim).tooltip(`${up} running of ${g.members.length}`).child(`${up}/${g.members.length}`))
+      .child(svg(`mods/workspace-chrome/chevron-${open ? "down" : "right"}.svg`).size(12).flex_none().text_color(t.dim))
+      .child(div().flex_shrink(1).min_w(0).truncate().child(g.project ?? STANDALONE))
+      .child(div().id(`n-${g.id}`).flex_none().text_color(up ? t.working : t.dim).tooltip(`${up} von ${g.members.length} laufen`).child(`${up}/${g.members.length}`))
       .child(div().flex_1())
       .when(compose && this.busy.has(g.id), (el) => el.child(this.spinner(t)))
-      .when(compose && !this.busy.has(g.id), (el) => el
-        .child(this.icon(t, `up-${g.id}`, "mods/docker/play.svg", g.dir ? "compose up -d" : "compose up -d (no project folder known)", (cx) => this.compose(cx, host, g, "up")))
-        .child(this.icon(t, `stop-${g.id}`, "mods/docker/stop.svg", "compose stop", (cx) => this.compose(cx, host, g, "stop")))
-        .child(this.icon(t, `restart-${g.id}`, "mods/docker/restart.svg", "compose restart", (cx) => this.compose(cx, host, g, "restart"))));
+      .when(compose && !this.busy.has(g.id), (el) => el.child(h_flex().gap(GAP_XS)
+        .child(this.icon(t, `up-${g.id}`, "mods/docker/play.svg", g.dir ? "Starten (compose up -d)" : "Starten (compose up -d, Projektordner unbekannt)", (cx) => this.compose(cx, host, g, "up")))
+        .child(this.icon(t, `stop-${g.id}`, "mods/docker/stop.svg", "Stoppen (compose stop)", (cx) => this.compose(cx, host, g, "stop")))
+        .child(this.icon(t, `restart-${g.id}`, "mods/docker/restart.svg", "Neu starten (compose restart)", (cx) => this.compose(cx, host, g, "restart")))));
+  }
+
+  // An empty section: one quiet row.
+  emptyRow(text, t) {
+    return h_flex().px(GAP_M).h(H_ROW).flex_none().items_center().text_size(T_S).text_color(t.dim).child(text);
   }
 
   rows(t, host) {
-    const label = host.on ?? "This PC";
+    const label = host.on ?? HERE;
     const running = host.list.filter((c) => c.state === "running").length;
-    const head = h_flex().id(`m-${host.key}`).px(6).pt(10).pb(2).flex_none().gap(6).items_center().text_size(11.5).font_semibold().text_color(t.muted)
-      .child(svg("mods/workspace-chrome/server.svg").size(12).flex_none().text_color(t.dim))
+    // The machine as a section head (icon 12, T_S).
+    const head = h_flex().id(`m-${host.key}`).px(GAP_S).h(H_SECTION).flex_none().gap(GAP_S).items_center().text_size(T_S).font_medium().text_color(t.muted)
+      .child(svg(`mods/workspace-chrome/${host.on ? "server" : "monitor"}.svg`).size(12).flex_none().text_color(t.dim))
       .child(div().child(label))
-      .when(!host.error, (el) => el.child(div().text_size(11).font_normal().text_color(t.dim).child(`${running} running · ${host.list.length}`)));
+      .when(!host.error, (el) => el.child(div().font_normal().text_color(t.dim).child(`${running} laufen · ${host.list.length}`)));
     if (host.error) {
-      return [head, h_flex().id(`err-${host.key}`).mx(2).mb(6).px(10).py(8).gap(8).items_center().rounded(10).border(1).border_color(t.border).bg(t.surface)
-        .text_size(11.5).text_color(t.dim).tooltip(host.error)
-        .child(div().size(7).flex_none().rounded(4).border(1.5).border_color(t.dim))
-        .child(div().flex_1().min_w(0).truncate().child(/daemon|connect|pipe|socket/i.test(host.error) ? "Docker not running" : host.error))];
+      return [head, h_flex().id(`err-${host.key}`).mb(GAP_S).p(INSET_CARD).gap(GAP_M).items_center().rounded(8).border_1().border_color(t.border).bg(t.surface)
+        .text_size(T_S).text_color(t.dim).tooltip(host.error)
+        .child(div().size(12).flex_none().flex().items_center().justify_center().child(div().size(7).rounded_full().border(1.5).border_color(t.idle)))
+        .child(div().flex_1().min_w(0).truncate().child(/daemon|connect|pipe|socket/i.test(host.error) ? "Docker läuft nicht." : host.error))];
     }
     const match = (c) => (this.all || c.state === "running" || c.state === "restarting")
       && (!this.filter || [c.name, c.image, c.project].some((s) => (s ?? "").toLowerCase().includes(this.filter)));
@@ -278,7 +297,7 @@ export default class Docker extends View {
       out.push(this.group(t, host, g));
       if (!this.folded.has(g.id)) out.push(...shown.map((c) => this.card(t, host, c)));
     }
-    if (out.length === 1) out.push(div().px(8).py(4).text_size(11.5).text_color(t.dim).child(this.filter ? "Nothing matches." : this.all ? "No containers." : "No running containers."));
+    if (out.length === 1) out.push(this.emptyRow(this.filter ? "Keine Treffer." : this.all ? "Keine Container." : "Keine laufenden Container.", t));
     return out;
   }
 
@@ -287,26 +306,29 @@ export default class Docker extends View {
     const hosts = machines().filter((m) => m.layout !== "unavailable")
       .map((m) => this.hosts.get(m.name ?? "") && { ...this.hosts.get(m.name ?? ""), key: m.name ?? "" }).filter(Boolean);
     const loading = !hosts.length && this.psBusy.size > 0;
-    const seg = (id, label, on, value) => div().id(id).px(8).h(20).flex().items_center().rounded(5).text_size(11)
-      .bg(on ? t.selected : t.background).text_color(on ? t.foreground : t.dim).cursor_pointer()
+    // Segment entry (5.6).
+    const seg = (id, label, on, value) => div().id(id).px(8).h(H_BTN_S).flex().items_center().rounded(6).text_size(T_S)
+      .bg(on ? t.selected : t.background).text_color(on ? t.foreground : t.muted).cursor_pointer()
       .hover((s) => s.text_color(t.foreground))
       .on_click((_e, cx) => { this.all = value; localStorage.setItem("all", value ? "1" : "0"); cx.notify(); })
       .child(label);
     return v_flex().id("docker").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border)
-      .text_color(t.foreground).text_size(13)
+      .text_color(t.foreground).text_size(T_L)
       .on_mouse_down("left", (_e, cx) => { if (this.menu || this.confirm) { this.menu = null; this.confirm = null; cx.notify(); } })
-      .child(h_flex().px(14).h(40).flex_none().gap(8).items_center().border_b(1).border_color(t.border)
-        .child(svg("mods/docker/icon.svg").size(15).flex_none().text_color(t.accent))
-        .child(div().flex_1().text_size(12.5).font_semibold().child("Docker"))
-        .child(h_flex().p(2).gap(2).rounded(7).border(1).border_color(t.border).bg(t.background)
-          .child(seg("show-running", "Running", !this.all, false))
-          .child(seg("show-all", "All", this.all, true)))
-        .child(this.icon(t, "refresh", "mods/docker/restart.svg", "Refresh", (cx) => { this.poll(cx); this.stats(cx); })))
-      .child(h_flex().px(10).pt(8).pb(4).flex_none()
-        .child(Input.new(this.input).w_full().h(28).px(8).rounded(7).border_1().border_color(t.input).bg(t.surface).text_size(12).text_color(t.foreground)))
-      .child(v_flex().id("docker-list").flex_1().min_h(0).px(8).pb(8).overflow_y_scrollbar()
-        .children(hosts.flatMap((h) => this.rows(t, h)))
-        .when(!hosts.length, (el) => el.child(div().px(8).py(10).text_size(12).text_color(t.dim)
-          .child(loading ? "Looking for Docker…" : "No machine with Docker found."))));
+      .child(h_flex().px(INSET_PANEL).h(H_HEADER).flex_none().gap(GAP_M).items_center().border_b(1).border_color(t.border)
+        .child(div().flex_1().font_semibold().child("Docker"))
+        .child(h_flex().h(H_BTN).p(2).gap(2).items_center().rounded(8).border_1().border_color(t.border).bg(t.background)
+          .child(seg("show-running", "Laufend", !this.all, false))
+          .child(seg("show-all", "Alle", this.all, true)))
+        .child(this.icon(t, "refresh", "mods/docker/restart.svg", "Aktualisieren", (cx) => { this.poll(cx); this.stats(cx); }, H_BTN)))
+      .child(h_flex().px(INSET_PANEL).pt(GAP_M).pb(GAP_XS).flex_none()
+        .child(Input.new(this.input).w_full().h(H_INPUT).px(10).rounded(6).border_1().border_color(this.typing ? t.accent : t.input).bg(t.background).text_size(T_M).text_color(t.foreground)))
+      .child(v_flex().id("docker-list").flex_1().min_h(0).px(INSET_PANEL).pb(GAP_M).overflow_y_scrollbar()
+        .when(hosts.length > 0, (el) => el.children(hosts.flatMap((h) => this.rows(t, h))))
+        .when(!hosts.length, (el) => el.child(v_flex().flex_1().min_h(120).gap(GAP_M).items_center().justify_center().text_size(T_S).text_color(t.dim)
+          .child(loading
+            ? svg("mods/workspace-chrome/spinner.svg").size(12).text_color(t.dim).spin(900)
+            : svg("mods/docker/icon.svg").size(16).text_color(t.dim))
+          .child(loading ? "lädt …" : "Keine Maschine mit Docker gefunden."))));
   }
 }
