@@ -6,9 +6,16 @@ from the orchestrator's terminal, so they are its children (hc types their
 reports into it) and show in the Team graph under it.
 
   hub ticket new --title T --repo PATH [--on MACHINE] [--labels a,b] [--source URL] [--body TEXT | --body-file F | -]
-  hub ticket list [--all] [--json]          open tickets (--all: done too)
-  hub ticket show ID
+  hub ticket list [--all] [--json] [--agent NAME]   open tickets (--all: done too)
+  hub ticket show ID                        including the ## Verlauf section
   hub ticket set ID key=value ...           e.g. status=todo, repo=/path
+  hub ticket comment ID --from ROLE "text"  append to ## Verlauf (ROLE: orchestrator, agent name,
+                                            mensch); @name in text becomes a tag
+  hub ticket assign ID AGENT                who is to work on it
+  hub ticket link ID --blocked-by ID ...    dependencies; dispatch refuses while one is not done
+  hub ticket next AGENT                     the next startable ticket (todo, assigned, unblocked)
+  hub ticket inbox AGENT [--json]           tickets naming (@), assigning or waiting on AGENT
+  hub ticket watch ID --on AGENT            "waiting for an answer from @AGENT"
   hub dispatch ID [--agent omp|claude|codex|"cmd args"] [--no-worktree] [--branch B]
   hub review ID --summary TEXT [--checks pass|fail] [--evidence PATH]...
                                             ready for the human: status review + summary; --checks sets the
@@ -24,7 +31,8 @@ import argparse, json, os, pwd, re, secrets, shlex, subprocess, sys, time, unico
 APP = os.environ.get("HERDR_APP_HOME") or os.path.expanduser("~/.config/herdr-app")
 TICKETS = os.path.join(APP, "data", "quests", "tickets")
 FIELDS = ["title", "status", "repo", "labels", "due", "machine", "agent", "branch", "base", "worktree", "terminal",
-          "source", "checks", "evidence", "merged", "pr", "by", "updated"]
+          "source", "checks", "evidence", "merged", "pr", "assignee", "blocked_by", "tags", "waiting", "by",
+          "updated"]
 COSTS = os.path.join(APP, "data", "orchestra", "costs.json")  # written by the Team panel's watcher
 AGENTS = {"omp": ["omp"], "claude": ["claude"], "codex": ["codex", "--no-daemon"], "pi": ["pi"]}
 
@@ -84,6 +92,77 @@ def all_tickets():
     return [read(n[:-3]) for n in names]
 
 
+# ---- verlauf: the ticket's comment history, the only channel between agents
+
+VERLAUF = "## Verlauf"
+ENTRY = re.compile(r"^- (\d{4}-\d{2}-\d{2} \d{2}:\d{2}) · ([^·]+?) · (.*)$")
+
+
+def entries(t):
+    """The ## Verlauf comments, oldest first: (timestamp, role, text)."""
+    body = t.get("body") or ""
+    m = re.search(r"(?m)^## Verlauf[ \t]*$", body)
+    if not m:
+        return []
+    tail = body[m.end():]
+    nxt = re.search(r"(?m)^## ", tail)
+    if nxt:
+        tail = tail[:nxt.start()]
+    return [(e.group(1), e.group(2).strip(), e.group(3).strip())
+            for e in (ENTRY.match(line.strip()) for line in tail.splitlines()) if e]
+
+
+def split_verlauf(body):
+    """(body without the ## Verlauf section, that section text)."""
+    m = re.search(r"(?ms)^## Verlauf[ \t]*\n.*?(?=\n## |\Z)", body or "")
+    if not m:
+        return (body or "").rstrip("\n"), ""
+    return ((body[:m.start()] + body[m.end():]).strip("\n"), m.group(0).rstrip("\n"))
+
+
+def mentions(text):
+    return sorted(set(re.findall(r"@([A-Za-z0-9][A-Za-z0-9_.-]*)", text or "")))
+
+
+def names(v):
+    return [x.strip() for x in (v or "").split(",") if x.strip()]
+
+
+def add_comment(t, who, text):
+    text = " ".join(str(text).split())
+    if not text:
+        die("leerer Kommentar")
+    line = f"- {time.strftime('%Y-%m-%d %H:%M')} · {who} · {text}"
+    rest, section = split_verlauf(t.get("body"))
+    section = f"{section}\n{line}" if section else f"{VERLAUF}\n{line}"
+    t["body"] = (rest + "\n\n" if rest else "") + section + "\n"
+    t["tags"] = ", ".join(sorted(set(names(t.get("tags"))) | set(mentions(text))))
+    return line
+
+
+def open_blockers(t):
+    """(id, status) of predecessors that are not done yet; a missing one counts as open."""
+    out = []
+    for b in names(t.get("blocked_by")):
+        p = path_of(b)
+        out.append((b, read(b)["status"] if os.path.exists(p) else "fehlt"))
+    return [b for b in out if b[1] != "done"]
+
+
+def age(ts):
+    try:
+        d = max(0, int(time.time() - time.mktime(time.strptime(ts, "%Y-%m-%d %H:%M"))))
+    except (TypeError, ValueError):
+        return "?"
+    if d < 60:
+        return "gerade"
+    if d < 3600:
+        return f"{d // 60} min"
+    if d < 86400:
+        return f"{d // 3600} h"
+    return f"{d // 86400} d"
+
+
 # ---- machines: local commands, or through `hc exec --on`
 
 def run(argv, on=None, cwd=None, check=True):
@@ -125,11 +204,18 @@ def cmd_new(a):
 
 def cmd_list(a):
     rows = [t for t in all_tickets() if a.all or t["status"] != "done"]
+    if a.agent:
+        rows = [t for t in rows if a.agent in (t.get("assignee"), *names(t.get("tags")), *names(t.get("waiting")))]
     if a.json:
-        print(json.dumps([{k: v for k, v in t.items() if k != "body"} for t in rows], ensure_ascii=False, indent=1))
+        out = []
+        for t in rows:
+            row = {k: v for k, v in t.items() if k != "body"}
+            row["comments"] = len(entries(t))
+            out.append(row)
+        print(json.dumps(out, ensure_ascii=False, indent=1))
         return
     for t in rows:
-        print(f"{t['id']:<40} {t['status']:<7} {t.get('terminal', ''):<14} {t['title']}")
+        print(f"{t['id']:<40} {t['status']:<7} {t.get('assignee', ''):<10} {t.get('terminal', ''):<14} {t['title']}")
 
 
 def cmd_show(a):
@@ -139,6 +225,106 @@ def cmd_show(a):
             print(f"{k}: {t[k]}")
     print()
     print(t["body"].rstrip())
+
+
+def cmd_comment(a):
+    t = read(a.id)
+    who = re.sub(r"[·\r\n]+", " ", a.role).strip() or "mensch"
+    add_comment(t, who, " ".join(a.text))
+    write(t)
+    print(f"{a.id}: Verlauf, {len(entries(t))} Einträge")
+
+
+def cmd_assign(a):
+    t = read(a.id)
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", a.agent):
+        die(f"bad agent name {a.agent!r}")
+    t["assignee"] = a.agent
+    write(t)
+    print(f"{a.id}: zugewiesen an {a.agent}")
+
+
+def cmd_link(a):
+    t = read(a.id)
+    cur = names(t.get("blocked_by"))
+    for b in a.blocked_by:
+        path_of(b)  # validates the id
+        if b == a.id:
+            die(f"{a.id} kann sich nicht selbst blockieren")
+        if not os.path.exists(path_of(b)):
+            die(f"no ticket {b}")
+        if b in cur:
+            continue
+        seen, todo = set(), [b]  # a cycle would block both forever
+        while todo:
+            x = todo.pop()
+            if x == a.id:
+                die(f"{a.id} -> {b} wäre ein Zyklus")
+            if x in seen:
+                continue
+            seen.add(x)
+            p = path_of(x)
+            if os.path.exists(p):
+                todo += names(read(x).get("blocked_by"))
+        cur.append(b)
+    t["blocked_by"] = ", ".join(cur)
+    write(t)
+    print(f"{a.id}: blocked_by {t['blocked_by'] or '-'}")
+
+
+def cmd_next(a):
+    for t in all_tickets():
+        if t["status"] == "todo" and t.get("assignee") == a.agent and not open_blockers(t):
+            print(f"{t['id']}\t{t['title']}")
+            return
+    die(f"kein startbares Ticket für {a.agent} (todo, ihm zugewiesen, nicht blockiert)")
+
+
+def inbox_rows(agent):
+    rows = []
+    for t in all_tickets():
+        if t["status"] == "done":
+            continue
+        reasons, question, stamp = [], "", t.get("updated") or ""
+        if t.get("assignee") == agent:
+            reasons.append("zugewiesen")
+        if agent in names(t.get("waiting")):
+            reasons.append("wartet")
+        history = entries(t)
+        if history and history[-1][1] != agent and agent in mentions(history[-1][2]):
+            reasons.append("genannt")
+            question, stamp = history[-1][2], history[-1][0]
+        if reasons:
+            row = {k: v for k, v in t.items() if k != "body"}
+            row.update(reasons=reasons, question=question, age=age(stamp), comments=len(history))
+            rows.append(row)
+    return rows
+
+
+def cmd_inbox(a):
+    rows = inbox_rows(a.agent)
+    if a.json:
+        print(json.dumps(rows, ensure_ascii=False, indent=1))
+        return
+    if not rows:
+        print(f"{a.agent}: nichts offen")
+        return
+    for r in rows:
+        print(f"{r['id']:<36} {r['status']:<6} {','.join(r['reasons']):<20} {r['age']:<7} {r['title']}")
+        if r["question"]:
+            print(f"    ? {r['question']}")
+
+
+def cmd_watch(a):
+    t = read(a.id)
+    waiting = names(t.get("waiting"))
+    if a.agent in waiting:
+        print(f"{a.id}: wartet bereits auf {a.agent}")
+        return
+    waiting.append(a.agent)
+    t["waiting"] = ", ".join(waiting)
+    write(t)
+    print(f"{a.id}: wartet auf eine Antwort von {a.agent}")
 
 
 def cmd_set(a):
@@ -163,6 +349,10 @@ def is_live(address):
 
 def cmd_dispatch(a):
     t = read(a.id)
+    blockers = open_blockers(t)
+    if blockers:
+        die(f"{a.id} ist blockiert durch {', '.join(f'{b} ({st})' for b, st in blockers)}; "
+            f"erst abschließen (hub done <id>)")
     if t["status"] in ("doing", "review") and t.get("terminal") and is_live(t["terminal"]):
         die(f"{a.id} already runs in {t['terminal']} (status {t['status']}); talk to it with hc send")
     repo, on = t.get("repo"), t.get("machine") or None
@@ -189,8 +379,12 @@ def cmd_dispatch(a):
         f"Ticket {a.id}: {t['title']}\n\n{t['body'].strip()}\n\n---\n"
         f"Du arbeitest in {folder}" + (f" auf Branch {branch}" if branch else "") + ". "
         "Lies zuerst den relevanten Code, ändere fokussiert, führe die Checks/Tests des Projekts aus, committe in kleinen Schritten, kein Push. "
-        "Starte keine weiteren Agents. Fragen und Entscheidungen klärst du mit dem Orchestrator, nicht mit dem Menschen: "
-        f"{report}. Wenn du fertig oder blockiert bist, melde dich genauso mit: was geändert, Testergebnis, was offen ist."
+        "Starte keine weiteren Agents. Das Ticket ist die einzige Quelle und der einzige Weg: Arbeit bekommst du nur über dieses Ticket, "
+        "erledigt wird nur, was darin steht. Fragen, Blocker und Übergaben an andere Agents und den Menschen sind Kommentare in diesem Ticket: "
+        f"hub ticket comment {a.id} --from <dein-name> \"…\" (andere Agents mit @name taggen; sie antworten im selben Ticket). "
+        "Chat an andere Agents ist verboten. Brauchst du Arbeit von einem anderen, lege ein Ticket an und verlinke dein eigenes mit --blocked-by. "
+        f"hc send nur für \"fertig\" oder \"blockiert, Ticket {a.id}\": {report}. "
+        "Wenn du fertig oder blockiert bist, melde dich genauso mit: was geändert, Testergebnis, was offen ist."
     )
     agent = AGENTS.get(a.agent) or shlex.split(a.agent)
     if on:
@@ -219,8 +413,11 @@ def cmd_dispatch(a):
 
 def cmd_review(a):
     t = read(a.id)
-    body = re.sub(r"\n## Zusammenfassung \(Orchestrator\)\n.*\Z", "\n", t["body"], flags=re.S).rstrip()
-    t["body"] = f"{body}\n\n## Zusammenfassung (Orchestrator)\n{a.summary.strip()}\n"
+    body, verlauf = split_verlauf(t["body"])
+    body = re.sub(r"\n?## Zusammenfassung \(Orchestrator\)\n.*\Z", "", body, flags=re.S).strip("\n")
+    t["body"] = (f"{body}\n\n" if body else "") + f"## Zusammenfassung (Orchestrator)\n{a.summary.strip()}\n"
+    if verlauf:
+        t["body"] += f"\n{verlauf}\n"
     t["status"] = "review"
     # Gates stay as they were unless this round states them: --checks overwrites the check
     # status, --evidence replaces the list.
@@ -270,7 +467,7 @@ def cmd_land(a):
         if run(["git", "remote", "get-url", "origin"], on, wt, check=False).returncode != 0:
             die("no remote 'origin' to push to")
         run(["git", "push", "-u", "origin", branch], on, wt)
-        summary = re.search(r"\n## Zusammenfassung \(Orchestrator\)\n(.*)\Z", t["body"], re.S)
+        summary = re.search(r"\n## Zusammenfassung \(Orchestrator\)\n(.*?)(?=\n## Verlauf|\Z)", t["body"], re.S)
         body = (summary.group(1).strip() if summary else t["body"].strip()) + f"\n\n---\nTicket `{a.id}`, über den Herdr-Orchestrator umgesetzt."
         r = run(["gh", "pr", "create", "--base", base, "--head", branch, "--title", t["title"], "--body", body], on, wt, check=False)
         if r.returncode != 0:
@@ -329,6 +526,7 @@ def main():
     l = tk.add_parser("list")
     l.add_argument("--all", action="store_true")
     l.add_argument("--json", action="store_true")
+    l.add_argument("--agent", metavar="NAME")
     l.set_defaults(fn=cmd_list)
     s = tk.add_parser("show")
     s.add_argument("id")
@@ -337,6 +535,30 @@ def main():
     st.add_argument("id")
     st.add_argument("pairs", nargs="+")
     st.set_defaults(fn=cmd_set)
+    cm = tk.add_parser("comment")
+    cm.add_argument("id")
+    cm.add_argument("--from", dest="role", required=True, metavar="ROLE")
+    cm.add_argument("text", nargs="+", metavar="TEXT")
+    cm.set_defaults(fn=cmd_comment)
+    asg = tk.add_parser("assign")
+    asg.add_argument("id")
+    asg.add_argument("agent")
+    asg.set_defaults(fn=cmd_assign)
+    lk = tk.add_parser("link")
+    lk.add_argument("id")
+    lk.add_argument("--blocked-by", action="extend", nargs="+", required=True, metavar="ID")
+    lk.set_defaults(fn=cmd_link)
+    nx = tk.add_parser("next")
+    nx.add_argument("agent")
+    nx.set_defaults(fn=cmd_next)
+    ib = tk.add_parser("inbox")
+    ib.add_argument("agent")
+    ib.add_argument("--json", action="store_true")
+    ib.set_defaults(fn=cmd_inbox)
+    wt = tk.add_parser("watch")
+    wt.add_argument("id")
+    wt.add_argument("--on", dest="agent", required=True, metavar="AGENT")
+    wt.set_defaults(fn=cmd_watch)
     d = sub.add_parser("dispatch")
     d.add_argument("id")
     d.add_argument("--agent", default="omp")
