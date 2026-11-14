@@ -26,7 +26,7 @@
 //   edit, compose-<node id>, note-<text, _ for spaces>, send, cancel, target-<terminal>,
 //   connect-<terminal>, pin, pane, new, refresh, close-tab
 
-import { View, div, svg, PathBuilder } from "gpui-kit";
+import { View, div, svg, image, PathBuilder } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { theme, settings, agents, panes, spaces, focused, props as given, knownAgents, exec, hc, run, home, notify, readTextFile, watchFolder, nextCommand, shared, setShared, window as host } from "herdr";
 import { parseFlowchart } from "./mermaid.js";
@@ -969,12 +969,25 @@ export default class Blueprint extends View {
   }
 
   targets(all = panes(), tab = this.servedTab(all)) {
+    // Name and avatar come from the sidebar's cards (shared "agents.identity", 7.1), else
+    // the program; the program stays in `program` for the tooltip and the fallback icon.
+    const known = shared("agents.identity") ?? {};
+    const who = (address, program) => {
+      const k = known[address] ?? null;
+      return {
+        name: k?.name ?? program?.name ?? address,
+        avatar: k?.avatar ?? null,
+        icon: program?.icon ?? null,
+        tint: Boolean(program?.tint),
+        program: program?.name ?? null,
+      };
+    };
     const list = agents().filter((a) => !tab || a.tab === tab).sort((a, b) => b.seq - a.seq)
-      .map((a) => ({ address: a.address, name: APPS[a.app] ?? a.program?.name ?? a.app ?? a.address, status: a.status }));
+      .map((a) => ({ address: a.address, ...who(a.address, a.program), programName: APPS[a.app] ?? a.program?.name ?? a.app ?? a.address, status: a.status, pane: a.pane, space: a.space_name }));
     for (const p of all) {
       const agent = p.program && (p.program.agent || this.agentKeys.has(p.program.key));
       if (p.terminal && (!tab || p.tab === tab) && agent && !list.some((x) => x.address === p.terminal)) {
-        list.push({ address: p.terminal, name: p.program.name, status: p.status });
+        list.push({ address: p.terminal, ...who(p.terminal, p.program), programName: p.program.name, status: p.status, pane: p.pane, space: "" });
       }
     }
     return list;
@@ -1267,7 +1280,7 @@ export default class Blueprint extends View {
     const t = theme();
     return v_flex().id("bp-root").size_full().bg(t.background).items_center().justify_center().gap(10).p(16)
       .child(div().text_size(12.5).text_color(t.muted).child(this.T.broken))
-      .child(div().max_w(420).text_size(11).text_color(t.dim).child(String(err?.message ?? err)))
+      .child(div().max_w(420).text_size(11).text_color(t.muted).child(String(err?.message ?? err)))
       .child(this.refreshButton(t));
   }
 
@@ -1356,7 +1369,7 @@ export default class Blueprint extends View {
         cx.stop_propagation();
         this.redraw(cx);
       })
-      .child(this.header(t, pal, G, narrow))
+      .child(this.header(t, pal, G))
       .child(this.tabs(t))
       .child(this.canvas(t, pal, cx))
       .child(this.footer(t, narrow))
@@ -1380,23 +1393,28 @@ export default class Blueprint extends View {
     return this.iconButton(t, "bp-refresh", "refresh.svg", this.T.refreshTip, false, (cx) => this.refresh(cx), size);
   }
 
-  // Panel head (5.6): "Blueprint", the project as meta, the update and agent chips, at most
-  // three icon buttons (pin, open as pane, edit; refresh moves to the diagram row then).
-  header(t, pal, G, narrow) {
+  // Panel head (5.6): "Blueprint", the update and agent chips, at most three icon buttons
+  // (pin, open as pane, edit; refresh moves to the diagram row then). The project keeps its
+  // name in the diagram row, where there is room for it.
+  header(t, pal, G) {
     const T = this.T;
     const icon = (...a) => this.iconButton(t, ...a);
-    // The agent as an identity chip: status mark and name, as in the sidebar.
+    // The agent as an identity chip: avatar, name and status mark, as in the sidebar (7.1).
     const a = this.pickTarget(this.targetList);
+    const pic = a?.avatar ? image(a.avatar).w(16).h(16).flex_none()
+      : a?.icon ? (a.tint ? svg(a.icon).size(16).flex_none().text_color(t.muted) : image(a.icon).w(16).h(16).flex_none())
+        : null;
+    const tip = a ? [a.programName !== a.name ? a.programName : null, a.space, a.address].filter(Boolean).join(" · ") : T.noAgent;
     const pill = h_flex().id("bp-agent").flex_none().gap(GAP_XS).px(6).h(H_BTN_S).rounded(6).items_center().bg(t.raised)
-      .tooltip(a?.status ? T.status[a.status] ?? a.status : a?.name ?? T.noAgent)
-      .when(!!a, (el) => el.child(div().size(12).flex_none().flex().items_center().justify_center().child(statusMark(t, a.status))))
-      .child(div().text_size(T_S).text_color(a ? t.foreground : t.dim).max_w(140).truncate().child(a ? a.name : T.noAgent));
-    const meta = this.project ? this.project.topic ?? this.project.name : "";
+      .tooltip(a?.status ? `${T.status[a.status] ?? a.status} · ${tip}` : tip)
+      .when(!!a?.pane, (el) => el.cursor_pointer().hover((s) => s.bg(t.hover))
+        .on_click(() => run("pane.focus", { pane: a.pane })))
+      .when(!!pic, (el) => el.child(pic))
+      .child(div().text_size(T_S).text_color(a ? t.foreground : t.dim).max_w(140).truncate().child(a ? a.name : T.noAgent))
+      .when(!!a, (el) => el.child(div().size(12).flex_none().flex().items_center().justify_center().child(statusMark(t, a.status))));
     return h_flex().h(HEADER_H).flex_none().px(INSET_PANEL).gap(GAP_M).items_center().border_b(1).border_color(t.border)
       .child(div().flex_none().text_size(T_L).font_semibold().text_color(t.foreground).child("Blueprint"))
-      .child(h_flex().flex_1().min_w(0).gap(GAP_M).items_center()
-        .when(!!meta, (el) => el.child(div().min_w(0).truncate().text_size(T_S).text_color(t.dim).tooltip(meta).child(meta)))
-        .when(!!this.project && !!this.ctxBranch && !narrow, (el) => el.child(div().flex_none().text_size(T_S).font_family(this.mono).text_color(t.dim).child(this.ctxBranch))))
+      .child(div().flex_1().min_w(0))
       // A newer Blueprint as a chip: one click asks the agent to update it; the version is in the tooltip.
       .when(!!this.version && newer(this.latest, this.version), (el) => el.child(div().id("bp-update").flex_none().px(6).h(H_CHIP)
         .rounded(4).flex().items_center().text_size(T_XS).font_medium().bg(t.done + "26").text_color(t.done)
@@ -1413,17 +1431,22 @@ export default class Blueprint extends View {
       .when(!!G, (el) => el.child(icon("bp-edit", "edit.svg", T.editTip, this.editing, () => this.editKey())));
   }
 
-  // The parts of the project: one tab per diagram (always, even one), + to
-  // ask for another right after them, and the shown diagram's age at the far
-  // end. The project itself is the header's title.
+  // The parts of the project: its name and branch, one tab per diagram (always, even one),
+  // + to ask for another right after them, and the shown diagram's age at the far end.
   tabs(t) {
     const p = this.project, G = this.graphs[this.tab];
     this.rowH = TABS_H;
+    // The project leads the row: a 42 px head has no room for it beside the chips.
+    const narrow = this.width > 0 && this.width < 420;
+    const name = p ? p.topic ?? p.name : "";
+    const branch = p && this.ctxBranch && !narrow ? this.ctxBranch : "";
+    const lead = p ? [name, branch].filter(Boolean).join(" · ") : "";
+    const leadW = lead ? Math.min(180, estimate(lead, 11.5) + 4) : 0;
     // A tab is as wide as its title, up to TAB_MAX; a longer title ends in "…"
     // and shows whole in the tooltip. When the tabs don't fit, the longest
     // ones narrow together (short ones keep their size), down to TAB_MIN.
     const age = G ? this.T.ago(minutesSince(G.loaded)) : "";
-    const room = this.width - 20 - (p ? 32 : 0) - (this.asking() ? 96 : 0) - (G ? estimate(age, 11.5) + 16 : 0);
+    const room = this.width - 20 - (p ? 32 : 0) - (this.asking() ? 96 : 0) - (G ? estimate(age, 11.5) + 16 : 0) - (lead ? leadW + 12 : 0);
     const natural = this.graphs.map((d, i) => estimate(d.tab, 12) + 22 + (d.pinned ? 16 : 0) + (p && i === this.tab ? 21 : 0) + 4);
     const tabMax = this.width > 0 ? tabCap(natural, room, TAB_MIN, TAB_MAX) : TAB_MAX;
     // A tab pressed and let go over another moves there (as Herdr's own tabs
@@ -1436,6 +1459,8 @@ export default class Blueprint extends View {
     return h_flex().h(TABS_H).flex_none().px(10).gap(4).items_center().border_b(1).border_color(t.border).overflow_hidden()
       .on_mouse_up("left", () => (this.pressedTab = null))
       .on_mouse_down_out(() => (this.pressedTab = null))
+      .when(Boolean(lead), (el) => el.child(div().id("bp-project").flex_none().max_w(180).pr(GAP_M).truncate()
+        .text_size(T_S).text_color(t.muted).tooltip([name, this.ctxBranch].filter(Boolean).join(" · ")).child(lead)))
       .children(this.graphs.map((d, i) => {
         const on = i === this.tab, target = !!pressed && pressed !== d.key;
         return h_flex().id(`bp-tab-${i}`).flex_none().max_w(tabMax).h(26).gap(5).px(10).items_center().rounded(6).text_size(12)
@@ -1468,7 +1493,7 @@ export default class Blueprint extends View {
             })
             .child(svg("mods/blueprint/close.svg").size(11))));
       }))
-      .when(!!this.asking(), (el) => el.child(div().flex_none().px(10).py(4).rounded(6).text_size(12).text_color(t.dim)
+      .when(!!this.asking(), (el) => el.child(div().flex_none().px(10).py(4).rounded(6).text_size(12).text_color(t.muted)
         .border(1).border_color(t.border).child(this.T.drawingNew)))
       .when(!!p, (el) => el.child(div().id("bp-new").flex_none().size(26).ml(2).flex().items_center().justify_center().rounded(6)
         .cursor_pointer().tooltip(this.T.newTip).text_color(this.compose?.kind === "new" ? t.accent : t.muted)
@@ -1554,7 +1579,7 @@ export default class Blueprint extends View {
       const failed = error || ["LR", "TB"].every((dir) => this.failed.has(this.lkey(this.tab, dir)));
       if (!failed && !this.job?.noted) return el;
       return el.child(div().absolute().inset_0().flex().flex_col().items_center().justify_center().gap(8)
-        .child(div().text_size(12).text_color(t.dim).child(failed ? this.T.drawFailed : this.T.laying))
+        .child(div().text_size(12).text_color(t.muted).child(failed ? this.T.drawFailed : this.T.laying))
         .when(!!failed, (el) => el.child(this.refreshButton(t))));
     }
     return el.children(els)
@@ -1576,7 +1601,7 @@ export default class Blueprint extends View {
         .child(body.child(div().text_size(12.5).text_color(t.muted).child(T.noAgentHere)));
     }
     const where = [p.path, this.ctxBranch].filter(Boolean).join(" · ");
-    let out = body.child(div().text_size(11).font_family(this.mono).text_color(t.dim).truncate().child(where));
+    let out = body.child(div().text_size(11).font_family(this.mono).text_color(t.muted).truncate().child(where));
     const asked = this.pending(list);
     if (asked) {
       out = out.child(div().pt(4).text_size(12.5).text_color(t.accent).child(T.asked(asked.name)))
@@ -1996,7 +2021,7 @@ export default class Blueprint extends View {
       ? h_flex().flex_1().min_w(0).gap(8).items_center().overflow_hidden()
         .child(div().flex_none().text_size(12).font_semibold().text_color(t.foreground).child(n.title))
         .when(!!n.ref, (el) => el.child(div().min_w(0).truncate().text_size(11).font_family(mono).text_color(t.accent).child(n.ref)))
-        .when(!narrow && !this.editing, (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child(this.T.hintEdit)))
+        .when(!narrow && !this.editing, (el) => el.child(div().flex_none().text_size(11).text_color(t.muted).child(this.T.hintEdit)))
       : div().flex_1().min_w(0).truncate().text_size(12).text_color(t.muted)
         .child(this.cut ? this.T.partial : this.editing ? this.T.hintEditing : narrow ? this.T.hintNarrow : this.T.hint);
     return h_flex().h(FOOTER_H).flex_none().px(12).gap(6).items_center().border_t(1).border_color(t.border)

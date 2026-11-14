@@ -270,10 +270,10 @@ export default class Docker extends View {
     const head = h_flex().id(`m-${host.key}`).px(GAP_S).h(H_SECTION).flex_none().gap(GAP_S).items_center().text_size(T_S).font_medium().text_color(t.muted)
       .child(svg(`mods/workspace-chrome/${host.on ? "server" : "monitor"}.svg`).size(12).flex_none().text_color(t.dim))
       .child(div().child(label))
-      .when(!host.error, (el) => el.child(div().font_normal().text_color(t.dim).child(`${running} laufen · ${host.list.length}`)));
+      .when(!host.error, (el) => el.child(div().font_normal().text_color(t.muted).child(`${running} laufen · ${host.list.length}`)));
     if (host.error) {
       return [head, h_flex().id(`err-${host.key}`).mb(GAP_S).p(INSET_CARD).gap(GAP_M).items_center().rounded(8).border_1().border_color(t.border).bg(t.surface)
-        .text_size(T_S).text_color(t.dim).tooltip(host.error)
+        .text_size(T_S).text_color(t.muted).tooltip(host.error)
         .child(div().size(12).flex_none().flex().items_center().justify_center().child(div().size(7).rounded_full().border(1.5).border_color(t.idle)))
         .child(div().flex_1().min_w(0).truncate().child(/daemon|connect|pipe|socket/i.test(host.error) ? "Docker läuft nicht." : host.error))];
     }

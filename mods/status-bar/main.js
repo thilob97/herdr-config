@@ -304,7 +304,7 @@ export default class StatusBar extends View {
     }
     slot.value.disabled.forEach((d, i) => v.child(h_flex().id(`dis-${key}-${i}`).gap(GAP_S).items_center().opacity(0.55).tooltip(d.reason)
       .child(div().flex_none().text_color(t.muted).child(short(d.provider)))
-      .child(div().flex_1().min_w(0).truncate().text_size(T_S).text_color(t.dim).child(`nicht verfügbar · ${d.reason}`))));
+      .child(div().flex_1().min_w(0).truncate().text_size(T_S).text_color(t.muted).child(`nicht verfügbar · ${d.reason}`))));
     if (!slot.value.providers.length && !slot.value.disabled.length) v.child(div().text_size(T_S).text_color(t.dim).child("Keine Konten mit Limits."));
     return v;
   }
@@ -415,7 +415,8 @@ export default class StatusBar extends View {
         .tooltip(team.over ? "Team-Budget überschritten: Team-Panel öffnen (⌘⌥7)" : "Kosten offener Tickets + Orchestrator / Team-Budget: Team-Panel öffnen (⌘⌥7)")
         .on_click(() => run("tabs-graph.panel-team"))
         .child(teamText)))
-      .child(h_flex().id("palette").gap(GAP_XS).items_center().cursor_pointer().text_color(t.dim).hover(s => s.text_color(t.foreground))
+      // The keyboard hint is what the person acts on: muted (dim is below 4.5:1).
+      .child(h_flex().id("palette").gap(GAP_XS).items_center().cursor_pointer().text_color(t.muted).hover(s => s.text_color(t.foreground))
         .tooltip("Befehlspalette")
         .on_click(() => run("app.palette"))
         .when(Boolean(hint.key), e => e.child(div().text_size(T_XS).child(hint.key)))
