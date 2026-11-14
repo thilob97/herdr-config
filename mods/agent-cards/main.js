@@ -109,18 +109,18 @@ function statusChip(t, status, word = WORD[status] ?? status) {
     .text_size(T_XS).font_medium().text_color(color).child(word);
 }
 
-// An icon button: 22 with icon 12 in rows and cards, 26 with icon 14 in heads; always a tooltip.
-function iconBtn(t, id, path, tooltip, action, size = H_BTN_S) {
-  return div().id(id).size(size).flex_none().flex().items_center().justify_center().rounded(6).text_color(t.dim).cursor_pointer()
+// An icon button in rows, cards and section heads: 22 with icon 12; always a tooltip.
+function iconBtn(t, id, path, tooltip, action) {
+  return div().id(id).size(H_BTN_S).flex_none().flex().items_center().justify_center().rounded(6).text_color(t.dim).cursor_pointer()
     .hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip(tooltip)
     .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
     .on_click((e, cx) => { cx.stop_propagation(); action(e, cx); })
-    .child(svg(path).size(size === H_BTN_S ? 12 : 14));
+    .child(svg(path).size(12));
 }
 
-// A text button: primary (solid) or secondary (raised); 26 high, 22 in rows.
-function textBtn(t, id, label, { primary = false, enabled = true, small = false } = {}, action) {
-  return h_flex().id(id).h(small ? H_BTN_S : H_BTN).px(10).flex_none().items_center().rounded(6).text_size(T_M).font_medium()
+// A text button: primary (solid) or secondary (raised), 26 high.
+function textBtn(t, id, label, { primary = false, enabled = true } = {}, action) {
+  return h_flex().id(id).h(H_BTN).px(10).flex_none().items_center().rounded(6).text_size(T_M).font_medium()
     .bg(!enabled ? t.raised : primary ? t.solid : t.raised).text_color(!enabled ? t.dim : primary ? t.solid_foreground : t.foreground)
     .when(enabled, (el) => el.cursor_pointer().hover((s) => (primary ? s.opacity(0.85) : s.bg(t.hover)))
       .on_click((e, cx) => { cx.stop_propagation(); action(e, cx); }))
