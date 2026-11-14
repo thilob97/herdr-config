@@ -88,6 +88,15 @@ export function gateChips(t, tk, gate) {
   return out;
 }
 
+/** CI-Chip (5.6): pass/fail/running/unknown aus `hub ci`; `pr`/`ci_at` erklärt er im Tooltip. */
+export function ciChip(t, tk) {
+  const [text, color] = {
+    pass: ["CI ✓", t.done], fail: ["CI ✗", t.blocked],
+    running: ["CI …", t.working], unknown: ["CI ?", t.muted],
+  }[tk.ci] ?? ["CI –", t.muted];
+  return chip(t, text, color, { tip: tk.ci_at ? `PR-Checks: zuletzt geprüft ${tk.ci_at}` : "PR-Checks: noch nicht geprüft" });
+}
+
 /** Zähler-Badge: h 16, Text background auf Statusfarbe. */
 export function counterBadge(t, n, color) {
   return div().flex_none().h(16).min_w(16).px(5).flex().items_center().justify_center().rounded(8)

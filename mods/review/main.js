@@ -88,6 +88,8 @@ export default class Review extends View {
     this.settled = false;   // the ticket was landed or accepted here: nothing more to do
     this.asking = false;    // the "Änderungen …" field is open
     this.verlauf = null;    // the ticket's Verlauf after a comment written here
+    this.ciOpen = false;    // the CI failures under the ticket head are expanded
+    this.ciPatch = null;    // fresh CI fields from `hub ci`, until shared catches up
     this.commitInput = InputState.new({ placeholder: "Commit-Nachricht" });
     this.commitInput.on("submit", (_e, cx) => this.commit(cx));
     this.commentInput = InputState.new({ placeholder: "Kommentar (an @agent)… (↵ ins Ticket)" });
@@ -125,7 +127,7 @@ export default class Review extends View {
   ticket() {
     if (!this.ticketId) return null;
     const tk = (shared("orchestra.tickets") ?? []).find((x) => x.id === this.ticketId);
-    if (tk) this.snapshot = tk;
+    if (tk) this.snapshot = this.ciPatch ? { ...tk, ...this.ciPatch } : tk;
     return this.snapshot;
   }
 
@@ -308,6 +310,62 @@ export default class Review extends View {
   }
 
   // ---------- ticket mode ----------
+
+  // `hub ci` writes the ticket file; shared("orchestra.tickets") catches up only every 5 s,
+  // so the CI row takes the fresh fields straight from `hub ticket list --json`.
+  async ciSnapshot() {
+    try {
+      const rows = JSON.parse(await hub(["ticket", "list", "--all", "--json"]));
+      const row = rows.find((x) => x.id === this.ticketId);
+      if (row) this.ciPatch = {
+        ci: row.ci, ci_at: row.ci_at, ci_url: row.ci_url, ci_details: row.ci_details,
+        pr: row.pr, status: row.status,
+      };
+    } catch {}
+  }
+
+  checkCi(cx) {
+    const tk = this.ticket();
+    if (!tk) return;
+    this.act(cx, "ci", async () => {
+      const out = await hub(["ci", tk.id], 120000);
+      await this.ciSnapshot();
+      return out.split("\n")[0] || "CI geprüft";
+    });
+  }
+
+  // The CI row: state, PR link, recheck. Red checks open into the checks and the log tail
+  // `hub ci` stored in `ci_details` (and wrote as a Verlauf comment).
+  ciRow(t, tk, cx) {
+    let d = null;
+    try { d = JSON.parse(tk.ci_details || "null"); } catch {}
+    const failed = d?.checks ?? [];
+    const st = tk.ci, url = tk.ci_url || tk.pr;
+    const word = { pass: "grün", fail: "rot", running: "läuft", unknown: "nicht prüfbar" }[st] ?? "noch nicht geprüft";
+    return v_flex().id("rv-ci").flex_none().gap(ui.GAP_XS)
+      .child(h_flex().gap(ui.GAP_S).items_center().h(ui.H_BTN_S)
+        .when(Boolean(st), (el) => el.child(ui.ciChip(t, tk)))
+        .when(!st, (el) => el.child(div().flex_none().text_size(T_S).font_medium().text_color(t.muted).child(`CI ${word}`)))
+        .when(Boolean(tk.ci_at), (el) => el.child(div().text_size(T_XS).text_color(t.dim).child(tk.ci_at)))
+        .when(Boolean(url), (el) => el.child(ui.link(t, "rv-ci-url", "PR öffnen", (c) => c.open_url(url), { tip: url })))
+        .child(div().flex_1())
+        .when(Boolean(tk.pr), (el) => el.child(ui.button(t, "rv-ci-check", this.busy === "ci" ? "Prüft …" : "Erneut prüfen",
+          (c) => this.checkCi(c), { small: true, enabled: !this.busy,
+            tip: "gh pr checks: Ergebnis ins Ticket; Fehlschläge mit Log in den Verlauf" }))))
+      .when(st === "fail", (el) => el.child(v_flex().flex_none().gap(2).min_w(0)
+        .child(ui.sectionHeader(t, failed.length ? `Fehlschläge (${failed.length})` : "Fehlschlag", {
+          id: "rv-ci-toggle", open: this.ciOpen, onClick: (c) => { this.ciOpen = !this.ciOpen; c.notify(); },
+        }))
+        .when(this.ciOpen, (e) => e.child(v_flex().id("rv-ci-detail").flex_none().gap(2).p(6).rounded(6)
+          .bg(t.background).border_1().border_color(t.border)
+          .children(failed.map((c, i) => h_flex().gap(ui.GAP_S).items_center().min_w(0)
+            .child(div().flex_none().text_size(T_XS).font_medium().text_color(t.blocked).child(c.name || "Check"))
+            .when(Boolean(c.state), (x) => x.child(div().text_size(T_XS).text_color(t.muted).child(String(c.state).toLowerCase())))
+            .when(Boolean(c.link), (x) => x.child(ui.link(t, `rv-ci-log-${i}`, "Log", (c2) => c2.open_url(c.link), { tip: c.link })))))
+          .when(Boolean(d.log), (x) => x.child(div().max_h(110).overflow_y_scroll().text_size(T_XS).text_color(t.dim)
+            .children(String(d.log).split("\n").map((line) => div().child(line || " ")))))
+          .when(!failed.length && !d?.log, (x) => x.child(div().text_size(T_XS).text_color(t.muted).child(tk.ci_comment || "Details im Verlauf.")))))));
+  }
 
   // `hub land` merges (or opens a PR), then ends the agent and removes the worktree.
   // A merge conflict goes back to the orchestrator, who has the agent rebase.
@@ -522,6 +580,7 @@ export default class Review extends View {
         .child(div().flex_1().min_w(0).truncate().text_size(T_L).font_semibold().text_color(t.foreground).child(tk.title))
         .when(Boolean(tk.terminal), (el) => el.child(div().flex_none().max_w(180).child(ui.identityChip(t, "rv-who", tk.terminal))))
         .children(ui.gateChips(t, tk, tk.status === "done" ? null : this.gate)))
+      .when(Boolean(tk.pr) || Boolean(tk.ci), (el) => el.child(this.ciRow(t, tk, cx)))
       .child(div().id("rv-summary").max_h(90).overflow_y_scroll().text_size(T_S).text_color(tk.summary ? t.muted : t.dim)
         .child(tk.summary || "Keine Zusammenfassung des Orchestrators."))
       .child(h_flex().flex_wrap().gap(ui.GAP_S).items_start()

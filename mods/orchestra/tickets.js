@@ -6,7 +6,7 @@ import { appHome, shared, setShared } from "herdr";
 export const ticketsDir = () => `${appHome()}/data/quests/tickets`;
 const FIELDS = ["title", "status", "repo", "labels", "due", "machine", "agent", "branch", "base", "worktree", "terminal",
   "source", "checks", "checks_head", "checks_at", "checks_duration", "checks_exit", "checks_cmd", "verify", "evidence",
-  "merged", "pr", "assignee", "blocked_by", "tags", "waiting", "by", "updated"];
+  "merged", "pr", "ci", "ci_at", "ci_url", "ci_details", "assignee", "blocked_by", "tags", "waiting", "by", "updated"];
 
 export function parse(id, text) {
   const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(text);
@@ -102,10 +102,16 @@ export function verifyOf(t) {
   return { meta, tail, fields: metaFields(meta) };
 }
 
+// The last CI comment `hub ci` wrote into ## Verlauf (`--from ci`), for the review window.
+export const ciCommentOf = (t) => {
+  const all = [...String(t.body ?? "").matchAll(/^- \d{4}-\d{2}-\d{2} \d{2}:\d{2} · ci · (.*)$/gm)];
+  return all.length ? all[all.length - 1][1].trim() : "";
+};
+
 // The orchestrator's tickets as shared("orchestra.tickets") carries them: no body, but its
 // summary, its Verlauf, an open question to the human, `checks` (pass|fail|null), the
-// check's run (HEAD, duration, exit, command) with its output tail in `verify`, and
-// `evidence` (paths), newest first.
+// check's run (HEAD, duration, exit, command) with its output tail in `verify`, the CI
+// result (`ci`, `ci_at`, `ci_details`, last CI comment) and `evidence` (paths), newest first.
 export async function published() {
   return (await list()).filter((t) => t.by === "orchestrator")
     .map(({ body, checks, evidence, ...t }) => {
@@ -116,6 +122,7 @@ export async function published() {
         ...t, summary: summaryOf({ body }), verlauf: verlaufOf({ body }), question: questionOf({ body, waiting: t.waiting }),
         checks: checks || v.checks || null, verify,
         evidence: (evidence ?? "").split(",").map((p) => p.trim()).filter(Boolean),
+        ci_comment: ciCommentOf({ body }),
       };
     })
     .sort((a, b) => (b.updated ?? "").localeCompare(a.updated ?? ""));
