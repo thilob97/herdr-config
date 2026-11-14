@@ -32,30 +32,27 @@ export default class Orchestra extends View {
   // ---------- view ----------
 
   // The pipeline as a segment: display and jump only. Counts stay two characters
-  // (`99+`); when the panel is too narrow for all four stages, only the stages that
-  // hold tickets stay and the tooltip carries the whole pipeline.
+  // (`99+`). When the panel is too narrow for the labels, the bar shows counters only
+  // (`12 · 1 · 1 · 1`): no stage ever falls away, each counter names its stage in the
+  // tooltip (B5, dritter Durchgang).
   stages(t, counts) {
     const count = (n) => (n > 99 ? "99+" : String(n));
     const all = STAGES.map((s) => ({ ...s, n: counts[s.key] ?? 0 }));
     const est = (s) => s.label.length * 6.6 + count(s.n).length * 6.6 + 12;
     const room = Math.max(120, (this.width || 368) - 14 * 2 - 32 - 8);
-    const fits = (list) => list.reduce((w, s) => w + est(s), 0) + Math.max(0, list.length - 1) * 10 <= room;
-    let list = all;
-    if (!fits(list)) list = all.filter((s) => s.n > 0);
-    if (!list.length) list = [all[0]];
-    while (list.length > 1 && !fits(list)) list = list.slice(0, -1);
-    const compact = list.length < all.length;
-    const sum = all.map((s) => `${s.label} ${s.n}`).join(" · ");
+    const full = all.reduce((w, s) => w + est(s), 0) + (all.length - 1) * 10 <= room;
+    const sep = (x) => div().flex_none().text_size(T_S).text_color(t.dim).child(x);
     const parts = [];
-    list.forEach((s, i) => {
+    all.forEach((s, i) => {
       const waits = s.key === "review" && s.n > 0;
-      if (i) parts.push(div().flex_none().text_size(T_S).text_color(t.dim).child("›"));
-      parts.push(div().id(`stage-${s.key}`).flex_none().h(22).px(4).gap(ui.GAP_XS).flex().items_center().rounded(6).text_size(T_S)
+      if (i) parts.push(sep(full ? "›" : "·"));
+      parts.push(div().id(`stage-${s.key}`).flex_none().h(22).px(full ? 4 : 6).gap(ui.GAP_XS).flex().items_center().rounded(6).text_size(T_S)
         .text_color(waits ? t.blocked : s.n ? t.muted : t.dim)
-        .tooltip(compact ? sum : waits ? `${s.label}: ${s.n} wartet auf dich` : `${s.label}: ${s.n}`)
+        .tooltip(waits ? `${s.label}: ${s.n} wartet auf dich` : `${s.label}: ${s.n}`)
         .when(s.n > 0, (el) => el.cursor_pointer().hover((x) => x.bg(t.hover).text_color(waits ? t.blocked : t.foreground))
           .on_click((_e, cx) => { this.jump = s.key; if (s.key === "done") this.showDone = true; cx.notify(); }))
-        .child(s.label).child(div().font_medium().child(count(s.n))));
+        .when(full, (el) => el.child(s.label))
+        .child(div().font_medium().child(count(s.n))));
     });
     return h_flex().id("stages").flex_none().min_w(0).h(ui.H_BTN).p(2).gap(0).items_center().overflow_hidden().rounded(8).bg(t.background).border_1().border_color(t.border).children(parts);
   }

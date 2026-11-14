@@ -301,7 +301,7 @@ export default class Launcher extends View {
       : "Kein Orchestrator läuft. Starte ihn im Team-Panel (Orchestrator-Karte) oder starte selbst.";
     return v_flex().flex_1().min_h(0).gap(ui.GAP_M)
       .child(h_flex().gap(ui.GAP_M).items_center()
-        .child(div().flex_1().min_w(0).text_size(T_S).text_color(o ? t.dim : t.blocked).child(hint))
+        .child(div().flex_1().min_w(0).text_size(T_S).text_color(o ? t.muted : t.blocked).child(hint))
         .when(!o, (el) => el.child(ui.link(t, "ln-team-panel", "Team-Panel öffnen", () => { closeOverlay(props().overlay); run("tabs-graph.panel-team"); }))))
       .child(this.area(t, this.ask, this.focus.has("ln-ask")))
       .child(this.footer(t, null,
@@ -336,7 +336,7 @@ export default class Launcher extends View {
           { value: "tab", label: "Neuer Tab im Space" },
           { value: "worktree", label: n > 1 ? "Je ein Worktree" : "Eigener Worktree", tip: r ? "Eigener Git-Worktree unter ~/.herdr/worktrees mit eigenem Space" : "Der Space ist kein Git-Repository" },
         ], this.where, (v, cx) => { if (v === "tab" || r) { this.where = v; cx.notify(); } })))
-      .child(div().truncate().text_size(T_S).text_color(r === null ? t.blocked : t.dim).child(repoLine))
+      .child(div().truncate().text_size(T_S).text_color(r === null ? t.blocked : t.muted).child(repoLine))
       .child(this.where === "worktree"
         ? h_flex().gap(ui.GAP_M).items_center().child(div().flex_1().child(ui.inputBox(t, "ln-branch", Input.new(this.branch), { focused: this.focus.has("ln-branch") })))
           .when(n > 1, (el) => el.child(div().text_size(T_S).text_color(t.dim).child("+ -<agent>")))

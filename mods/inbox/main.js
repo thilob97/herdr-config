@@ -38,6 +38,32 @@ function ago(ms) {
   return s < 60 ? "gerade" : s < 3600 ? `${Math.floor(s / 60)}m` : s < 86400 ? `${Math.floor(s / 3600)}h` : `${Math.floor(s / 86400)}d`;
 }
 
+// The sidebar's state for a card: its own or the most urgent of its sub-agents (terminals
+// it started and omp's task sub-agents), so "Arbeitet" counts one number there and here (N8).
+const RANK = { blocked: 4, done: 3, working: 2, idle: 1 };
+const SUB_STATUS = { running: "working", pending: "idle", completed: "done", failed: "blocked", cancelled: "blocked", aborted: "blocked" };
+const moreUrgent = (x, y) => ((RANK[y] ?? 0) > (RANK[x] ?? 0) ? y : x);
+function effectiveStatus(a, terms, subs) {
+  // As the sidebar ranks children: a finished sub-agent counts as idle, an error as waiting.
+  const kid = (t) => (t.status === "error" ? "blocked" : t.status === "done" ? "idle" : t.status ?? "idle");
+  let st = a.status ?? "idle";
+  const walk = (addr) => {
+    for (const k of terms.filter((x) => x.parent === addr && x.state !== "finished")) { st = moreUrgent(st, kid(k)); walk(k.address); }
+    for (const s of subs[addr] ?? []) st = moreUrgent(st, s.status === "completed" ? "idle" : SUB_STATUS[s.status] ?? "idle");
+  };
+  walk(a.address);
+  return st;
+}
+// A sub-agent with a pane is nested under its parent's card, not a row of its own.
+function nested(all, address) {
+  const seen = new Set();
+  for (let p = all.find((x) => x.address === address)?.parent; p && !seen.has(p); p = all.find((x) => x.address === p)?.parent) {
+    seen.add(p);
+    if (all.some((x) => x.address === p)) return true;
+  }
+  return false;
+}
+
 // Spec 7.3, literally: the same number as the tab bar's Inbox badge.
 export function inboxCount() {
   const all = agents();
@@ -74,8 +100,11 @@ export default class Inbox extends View {
     const since = shared("attention.since") ?? {};
     const at = (a) => (since[a.address]?.status === a.status ? since[a.address].at : null);
     const group = { blocked: "ask", done: "done", working: "work" };
-    const list = agents().filter((a) => a.status in group)
-      .map((a) => ({ kind: "agent", key: a.address, address: a.address, group: group[a.status], a, since: at(a), order: at(a) ?? a.seq }));
+    const all = agents(), terms = terminals(), subs = shared("omp.subagents") ?? {};
+    const list = all.filter((a) => !nested(terms, a.address))
+      .map((a) => ({ a, st: effectiveStatus(a, terms, subs) }))
+      .filter(({ st }) => st in group)
+      .map(({ a, st }) => ({ kind: "agent", key: a.address, address: a.address, group: group[st], a, st, since: at({ ...a, status: st }), order: at(a) ?? a.seq }));
     const o = terminals().find((x) => x.name === ORCH && x.state === "live");
     if (o?.status === "blocked" && !list.some((e) => e.address === o.address)) {
       list.push({ kind: "orch", key: "orch", address: ORCH, group: "ask", o, since: null, order: -1 });
@@ -141,7 +170,7 @@ export default class Inbox extends View {
     const text = input?.value().trim();
     if (!text || !e || e.kind === "ticket") return;
     // A blocked agent shows a question or dialog: typing into it is the answer.
-    const blocked = e.kind === "orch" || e.a?.status === "blocked";
+    const blocked = e.kind === "orch" || e.st === "blocked" || e.a?.status === "blocked";
     const args = ["send", e.address, text, ...(blocked ? ["--force"] : [])];
     this.sent = { key: e.key, ok: null, text: "sende …" };
     cx.notify();
@@ -173,7 +202,7 @@ export default class Inbox extends View {
     else if (k === "up" || k === "k") this.select(list, i - 1, cx);
     else if (k === "enter") this.activate(sel);
     else if (k === "r" || k === "tab") { this.replies[sel?.kind]?.focus(); }
-    else if (k === "v") { if (sel?.kind === "agent" && sel.a.status === "done") this.review(sel); }
+    else if (k === "v") { if (sel?.kind === "agent" && (sel.st ?? sel.a.status) === "done") this.review(sel); }
     else if (k === "escape") this.close();
     else return;
     cx.stop_propagation();
@@ -195,11 +224,11 @@ export default class Inbox extends View {
     let status, name, title, meta, right;
     if (e.kind === "agent") {
       const a = e.a, m = machineOf(a.address);
-      status = a.status;
+      status = e.st ?? a.status;
       name = ui.identity(a.address).name;
       title = ui.plain(a.title) || a.program?.name || "";
       meta = `${m ? `${m} · ` : ""}${a.space_name} · Tab ${a.tab_name}`;
-      right = div().flex_none().text_size(T_S).text_color(ui.statusColor(t, a.status)).child(`${ui.STATUS_WORD[a.status]}${e.since ? ` · ${ago(e.since)}` : ""}`);
+      right = div().flex_none().text_size(T_S).text_color(ui.statusColor(t, status)).child(`${ui.STATUS_WORD[status]}${e.since ? ` · ${ago(e.since)}` : ""}`);
     } else if (e.kind === "orch") {
       status = "blocked"; name = "Orchestrator"; title = "fragt dich"; meta = "Rückfrage des Orchestrators";
       right = div().flex_none().text_size(T_S).text_color(t.blocked).child("wartet");
@@ -210,7 +239,7 @@ export default class Inbox extends View {
       const tk = e.tk;
       status = "blocked"; name = null; title = tk.title;
       meta = [tk.branch || tk.repo?.split("/").pop(), tk.machine].filter(Boolean).join(" · ");
-      right = h_flex().flex_none().gap(ui.GAP_XS).children(ui.gateChips(t, tk));
+      right = null;
     }
     return v_flex().id(`ib-${e.key}`).h(ui.H_ROW2).flex_none().px(8).justify_center().gap(2).rounded(6).cursor_pointer()
       .when(on, (el) => el.bg(t.selected))
@@ -222,8 +251,10 @@ export default class Inbox extends View {
         .child(this.avatar(t, e))
         .when(Boolean(name), (el) => el.child(div().flex_none().max_w(110).truncate().text_size(T_M).text_color(t.foreground).when(on, (d) => d.font_semibold()).child(name)))
         .child(div().flex_1().min_w(0).truncate().text_size(T_M).text_color(name ? t.muted : t.foreground).child(title))
-        .child(right))
-      .child(div().pl(40).truncate().text_size(T_S).text_color(t.muted).child(meta));
+        .when(Boolean(right), (el) => el.child(right)))
+      .child(h_flex().pl(40).min_w(0).gap(ui.GAP_S).items_center()
+        .child(div().flex_1().min_w(0).truncate().text_size(T_S).text_color(on ? t.foreground : t.muted).child(meta))
+        .when(e.kind === "ticket", (el) => el.child(h_flex().flex_none().gap(ui.GAP_XS).children(ui.gateChips(t, e.tk)))));
   }
 
   screen(t, address) {
@@ -243,7 +274,7 @@ export default class Inbox extends View {
         send: ui.sendButton(t, "ib-send", "mods/orchestra/icons/send.svg", "Senden (↵)", (cx) => this.send(cx)),
       }))
       .child(div().h(16).text_size(T_XS).text_color(sent ? (sent.ok === false ? t.blocked : sent.ok ? t.done : t.dim) : t.dim).truncate()
-        .child(sent ? sent.text : e.kind === "orch" || e.a?.status === "blocked" ? "Die Antwort beantwortet die offene Frage." : " "));
+        .child(sent ? sent.text : e.kind === "orch" || e.st === "blocked" || e.a?.status === "blocked" ? "Die Antwort beantwortet die offene Frage." : " "));
   }
 
   detail(t, e) {
@@ -300,7 +331,7 @@ export default class Inbox extends View {
       .child(this.replyField(t, e))
       .child(h_flex().gap(ui.GAP_M).items_center()
         .child(ui.button(t, "ib-go", "Zum Agent", () => this.activate(e), { kind: "primary", tip: "Zum Agent gehen (↵)" }))
-        .when(a.status === "done", (el) => el.child(ui.button(t, "ib-review", "Review", () => this.review(e), { tip: "Änderungen des Agents prüfen (v)" }))));
+        .when((e.st ?? a.status) === "done", (el) => el.child(ui.button(t, "ib-review", "Review", () => this.review(e), { tip: "Änderungen des Agents prüfen (v)" }))));
   }
 
   render(cx) {
@@ -337,7 +368,7 @@ export default class Inbox extends View {
         .when(waits > 0, (el) => el.child(ui.counterBadge(t, waits, t.blocked)))
         .when(!waits && done > 0, (el) => el.child(ui.counterBadge(t, done, t.done)))
         .child(div().flex_1())
-        .child(div().flex_none().text_size(T_XS).text_color(t.muted).tooltip("↑↓ wählen · ↵ hingehen bzw. prüfen · r antworten · v Review").child("↑↓ ↵ r v"))
+        .child(div().flex_none().text_size(T_XS).text_color(t.muted).child("↑↓ wählen · ↵ öffnen · r antworten · v Review"))
         .child(div().id("ib-esc").flex_none().h(ui.H_CHIP).px(6).flex().items_center().rounded(4).bg(t.raised).text_size(T_XS).text_color(t.dim)
           .cursor_pointer().hover((s) => s.text_color(t.foreground)).tooltip("Schließen (Esc)").on_click(() => this.close()).child("Esc")))
       .child(list.length

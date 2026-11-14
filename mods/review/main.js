@@ -27,7 +27,10 @@ const machineOf = (address) => (address?.includes("/") ? address.slice(0, addres
 const countLines = (text) => (text ? text.split("\n").length - Number(text.endsWith("\n")) : 0);
 const untab = (text) => text.replace(/[^\t]*\t/g, (s) => s.slice(0, -1).padEnd((s.length - 1) - (s.length - 1) % 4 + 4));
 const lastLine = (r) => (r.stderr || r.stdout || `exit ${r.code}`).trim().split("\n").pop().slice(0, 240);
-const errorText = (e) => String(e?.message ?? e ?? "fehlgeschlagen").replace(/^Error: /, "").replace(/^hub: /, "");
+// Never the raw exec text (N1): the prefixes and the "folder is gone" case get German words.
+const errorText = (e) => String(e?.message ?? e ?? "fehlgeschlagen")
+  .replace(/^Error: /, "").replace(/^hub: /, "").replace(/^herdr\.exec: /, "")
+  .replace(/cannot run git: No such file or directory \(os error \d+\)/i, "git findet den Ordner nicht mehr (Worktree entfernt?)");
 const baseName = (p) => p.replace(/\/+$/, "").split("/").pop() || p;
 
 function diffRows(lines) {
@@ -131,6 +134,8 @@ export default class Review extends View {
 
   refresh(cx) {
     if (this.loading || this.busy || this.settled) return;
+    // Landed or accepted elsewhere: its worktree is gone, and that is no error (N1).
+    if (this.ticket()?.status === "done") { this.repo = null; this.files = []; this.rows = []; this.error = null; cx.notify(); return; }
     const tg = this.target();
     if (!tg?.cwd) {
       this.repo = null; this.files = []; this.rows = [];
@@ -193,11 +198,11 @@ export default class Review extends View {
         else this.rows = [];
         if (!this.commitInput.value() && dirty) this.commitInput.set_value(this.suggestion());
       } catch (e) {
-        // A landed ticket's worktree is gone: say so instead of git's complaint.
+        // A worktree the merge already removed is a finished state, not an error (N1).
         const tk = this.ticket();
-        this.error = tk?.status === "done" && (tk.merged || tk.pr)
-          ? `Abgenommen und gelandet (${tk.merged ? `gemergt in ${tk.merged}` : `PR ${tk.pr}`}); der Worktree ist entfernt.`
-          : errorText(e);
+        if (tk?.status === "done" || /ENOENT|No such file or directory|cannot run git/i.test(String(e?.message ?? e))) {
+          this.repo = null; this.files = []; this.rows = []; this.error = null;
+        } else this.error = errorText(e);
       }
       finally { this.loading = false; cx.notify(); }
     });
@@ -426,8 +431,8 @@ export default class Review extends View {
         .children(ui.gateChips(t, tk)))
       .child(div().id("rv-summary").max_h(90).overflow_y_scroll().text_size(T_S).text_color(tk.summary ? t.muted : t.dim)
         .child(tk.summary || "Keine Zusammenfassung des Orchestrators."))
-      .child(h_flex().flex_wrap().gap(ui.GAP_S).items_center()
-        .child(div().flex_none().text_size(T_S).font_medium().text_color(t.muted).child("Nachweise"))
+      .child(h_flex().flex_wrap().gap(ui.GAP_S).items_start()
+        .child(div().flex_none().pt(2).text_size(T_S).font_medium().text_color(t.muted).child("Nachweise"))
         .when(!evidence.length, (el) => el.child(div().text_size(T_S).text_color(t.muted).child("keine angegeben")))
         .children(evidence.map((p, i) => {
           const pic = /\.(png|jpe?g|gif|webp|svg)$/i.test(p);
@@ -435,7 +440,9 @@ export default class Review extends View {
           return div().id(`rv-ev-${i}`).flex_none().cursor_pointer().tooltip(`Öffnen: ${p}`)
             .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
             .on_click(() => exec("open", [p]).catch(() => null))
-            .when(pic && Boolean(this.previews[p]), (el) => el.child(image(this.previews[p]).w(48).h(48).flex_none().rounded(4).border_1().border_color(t.border)))
+            .when(pic && Boolean(this.previews[p]), (el) => el.child(v_flex().flex_none().w(64).gap(2)
+              .child(image(this.previews[p]).w(48).h(48).flex_none().rounded(4).border_1().border_color(t.border))
+              .child(div().w(64).truncate().text_size(T_XS).text_color(t.muted).child(baseName(p)))))
             .when(pic && !this.previews[p], (el) => el.child(svg("mods/review/icon.svg").size(16).text_color(t.muted)))
             .when(!pic, (el) => el.child(div().text_size(T_S).text_color(t.muted).hover((x) => x.text_color(t.foreground)).child(baseName(p))));
         }))
@@ -522,6 +529,8 @@ export default class Review extends View {
 
     const body = this.error
       ? ui.empty(t, this.error)
+      : !repo && tk && tk.status === "done"
+        ? ui.empty(t, "Abgenommen: Branch und Worktree sind aufgeräumt.")
       : !repo
         ? v_flex().flex_1().items_center().justify_center().child(ui.loading(t, "lese Änderungen …"))
         : !this.files.length
