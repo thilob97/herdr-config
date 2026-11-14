@@ -10,7 +10,9 @@ reports into it) and show in the Team graph under it.
   hub ticket show ID
   hub ticket set ID key=value ...           e.g. status=todo, repo=/path
   hub dispatch ID [--agent omp|claude|codex|"cmd args"] [--no-worktree] [--branch B]
-  hub review ID --summary TEXT              ready for the human: status review + summary
+  hub review ID --summary TEXT [--checks pass|fail] [--evidence PATH]...
+                                            ready for the human: status review + summary, gate status of
+                                            the checks and evidence files (screenshots, logs; repeatable)
   hub land ID --merge | --pr                after acceptance: merge into its base branch, or push and open a
                                             pull request (gh); then end its agent and remove its worktree
   hub done ID                               accepted without landing
@@ -22,7 +24,7 @@ import argparse, json, os, pwd, re, secrets, shlex, subprocess, sys, time, unico
 APP = os.environ.get("HERDR_APP_HOME") or os.path.expanduser("~/.config/herdr-app")
 TICKETS = os.path.join(APP, "data", "quests", "tickets")
 FIELDS = ["title", "status", "repo", "labels", "due", "machine", "agent", "branch", "base", "worktree", "terminal",
-          "source", "merged", "pr", "by", "updated"]
+          "source", "checks", "evidence", "merged", "pr", "by", "updated"]
 COSTS = os.path.join(APP, "data", "orchestra", "costs.json")  # written by the Team panel's watcher
 AGENTS = {"omp": ["omp"], "claude": ["claude"], "codex": ["codex", "--no-daemon"], "pi": ["pi"]}
 
@@ -220,6 +222,9 @@ def cmd_review(a):
     body = re.sub(r"\n## Zusammenfassung \(Orchestrator\)\n.*\Z", "\n", t["body"], flags=re.S).rstrip()
     t["body"] = f"{body}\n\n## Zusammenfassung (Orchestrator)\n{a.summary.strip()}\n"
     t["status"] = "review"
+    # Each review round states its gates anew: an omitted flag clears the previous round's value.
+    t["checks"] = a.checks or ""
+    t["evidence"] = ", ".join(e.strip() for e in a.evidence if e.strip())
     write(t)
     print(f"{a.id}: review")
 
@@ -338,6 +343,8 @@ def main():
     rv = sub.add_parser("review")
     rv.add_argument("id")
     rv.add_argument("--summary", required=True)
+    rv.add_argument("--checks", choices=["pass", "fail"])
+    rv.add_argument("--evidence", action="append", default=[], metavar="PATH")
     rv.set_defaults(fn=cmd_review)
     dn = sub.add_parser("done")
     dn.add_argument("id")

@@ -33,16 +33,21 @@ Dein Terminal: `$HC_TERMINAL_ID`. Werkzeuge: `hub` (Tickets und Team, siehe
 5. **Prüfen**, bevor etwas zum Menschen geht: `git -C <worktree> log --oneline`,
    `git -C <worktree> diff <basis>...HEAD`, Tests/Checks selbst ausführen,
    Abnahmekriterien abhaken. Fehlt etwas: konkretes Feedback per `hc send`,
-   dann weiter warten. Erst wenn alles erfüllt ist:
-   `hub review <id> --summary "Was geändert, wie geprüft, offene Punkte, Branch"`.
-   Der Mensch bekommt dann eine Meldung und reviewt im Review-Fenster.
+   dann weiter warten. Erst wenn alles erfüllt ist, **immer mit Checks und Nachweisen**:
+   `hub review <id> --summary "Was geändert, wie geprüft, offene Punkte, Branch" --checks pass|fail --evidence <pfad> [--evidence <pfad>]…`
+   `--checks`: ob Tests/Checks grün sind (`fail` nur mit Begründung in der Zusammenfassung).
+   `--evidence`: Dateien, die die Abnahmekriterien belegen (Screenshots, Test-Logs,
+   Berichte) als absolute Pfade auf diesem Rechner; mindestens einer. Fehlt ein Nachweis,
+   lass ihn vom Agent erzeugen. Der Mensch bekommt dann eine Meldung (Inbox) und prüft
+   Zusammenfassung, Nachweise und Diff im Review-Fenster.
 6. **Feedback des Menschen** kommt als Nachricht „Feedback vom Menschen zu
    Ticket …". Leite es präzise an den zuständigen Agent weiter (Ticket-Feld
    `terminal`), Ticket mit `hub ticket set <id> status=doing` zurücksetzen,
    danach wieder Schritt 4–5.
-7. **Abnahme** macht der Mensch im Team-Panel: **Mergen** (`hub land <id> --merge`)
-   oder **PR** (`hub land <id> --pr`) – das beendet den Agent und entfernt den
-   Worktree – oder „nur abnehmen“. Du bekommst danach eine Nachricht und musst
+7. **Abnahme** macht der Mensch im Review-Fenster (Knopf **Prüfen** im Team-Panel oder
+   in der Inbox): **Mergen** (`hub land <id> --merge`) oder **PR** (`hub land <id> --pr`)
+   – das beendet den Agent und entfernt den Worktree –, **Änderungen …** (kommt als
+   Feedback, Schritt 6) oder „Nur abnehmen“. Du bekommst danach eine Nachricht und musst
    nichts aufräumen. Selbst `hub land` nur, wenn der Mensch es ausdrücklich sagt.
    **Merge-Konflikt** („Merge-Konflikt bei Ticket …“): lass den Agent den Branch auf
    die Basis rebasen (Basis steht im Ticket-Feld `base`), prüfe erneut, wieder `hub review`.
