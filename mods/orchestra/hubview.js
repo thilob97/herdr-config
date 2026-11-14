@@ -292,6 +292,15 @@ export class HubSection {
       .child(h_flex().gap(ui.GAP_S).items_center().min_w(0)
         .when(Boolean(tk.terminal), (el) => el.child(div().flex_none().max_w(130).child(ui.identityChip(t, `tk-who-${tk.id}`, tk.terminal))))
         .child(div().flex_1().min_w(0).truncate().text_size(T_S).text_color(t.muted).tooltip(where).child(where))
+        .when(tk.lessons != null, (el) => {
+          const n = tk.lessons.length, tip = [
+            `${n} ${n === 1 ? "Lehre" : "Lehren"} für dieses Repo`,
+            ...tk.lessons.slice(-3).map((l) => `· ${l.text}`),
+            tk.lessonProposal ? "Ein Vorschlag wartet im Review-Fenster." : "",
+          ].filter(Boolean).join("\n");
+          return el.child(div().id(`tk-lessons-${tk.id}`).flex_none().text_size(T_XS)
+            .text_color(tk.lessonProposal ? t.accent : t.muted).tooltip(tip).child(`Lehren ${n}`));
+        })
         .when(Boolean(landed), (el) => el.child(div().flex_none().text_size(T_XS).text_color(t.done).when(Boolean(tk.pr), (x) => x.tooltip(tk.pr)).child(landed)))
         .when(stage !== "todo", (el) => el.children(ui.gateChips(t, tk, gateOf(tk.id)))))
       .when(stage === "review" && Boolean(tk.summary), (el) => el.child(div().max_h(36).overflow_hidden().text_size(T_S).text_color(t.muted).child(clip(tk.summary))))

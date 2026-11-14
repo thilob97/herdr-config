@@ -90,6 +90,8 @@ export default class Review extends View {
     this.verlauf = null;    // the ticket's Verlauf after a comment written here
     this.ciOpen = false;    // the CI failures under the ticket head are expanded
     this.ciPatch = null;    // fresh CI fields from `hub ci`, until shared catches up
+    this.lessonsOpen = false; // the repo's lessons, unfolded
+    this.confirmedLesson = null; // proposal text just confirmed here (hide it until the next publish)
     this.commitInput = InputState.new({ placeholder: "Commit-Nachricht" });
     this.commitInput.on("submit", (_e, cx) => this.commit(cx));
     this.commentInput = InputState.new({ placeholder: "Kommentar (an @agent)… (↵ ins Ticket)" });
@@ -440,6 +442,18 @@ export default class Review extends View {
     });
   }
 
+  // The orchestrator's suggestion after feedback: the human's OK writes it into the repo's
+  // lessons (bin/hub lesson confirm), so the next order carries it.
+  confirmLesson(cx) {
+    const tk = this.ticket(), p = tk?.lessonProposal;
+    if (!tk || !p) return;
+    this.act(cx, "lesson", async () => {
+      await hub(["lesson", "confirm", tk.id]);
+      this.confirmedLesson = p.text;
+      return `Lehre übernommen: ${p.text}`;
+    });
+  }
+
   // ---------- terminal mode ----------
 
   commit(cx) {
@@ -566,6 +580,13 @@ export default class Review extends View {
         .bg(t.background).border_1().border_color(t.border).p(ui.GAP_M).text_size(T_XS)
         .font_family(settings().font_family ?? "JetBrains Mono").text_color(t.muted)
         .child(tail.length ? tail.join("\n") : "Keine Ausgabe aufgezeichnet.")));
+  // One lesson: when, what, and where it came from.
+  lessonLine(t, l) {
+    const source = { review: "Review", human: "Mensch", ci: "CI", vorschlag: "Vorschlag" }[l.source] ?? l.source;
+    return h_flex().min_w(0).gap(ui.GAP_S).items_start().text_size(T_S)
+      .child(div().flex_none().text_size(T_XS).text_color(t.dim).child(l.date))
+      .child(div().flex_1().min_w(0).text_color(t.muted).child(l.text))
+      .child(div().flex_none().text_size(T_XS).text_color(t.dim).tooltip(`Ticket ${l.ticket}`).child(source));
   }
 
   // Ticket mode: what was ordered, the gates and the orchestrator's evidence.
@@ -573,6 +594,8 @@ export default class Review extends View {
     this.previewEvidence(tk, cx);
     const evidence = tk.evidence ?? [];
     const verlauf = this.verlauf ?? tk.verlauf ?? [];
+    const lessons = tk.lessons ?? [];
+    const proposal = tk.lessonProposal && tk.lessonProposal.text !== this.confirmedLesson ? tk.lessonProposal : null;
     const local = !tk.machine;
     return v_flex().flex_none().px(ui.INSET_PANEL).py(ui.GAP_L).gap(ui.GAP_M).border_b(1).border_color(t.border)
       .child(h_flex().gap(ui.GAP_M).items_center()
@@ -605,6 +628,18 @@ export default class Review extends View {
           .child(div().text_size(T_S).font_medium().text_color(t.muted).child("Verlauf"))
           .child(div().text_size(T_XS).text_color(t.dim).child(String(verlauf.length))))
         .child(div().max_h(110).overflow_y_scroll().gap(2).children(verlauf.map((v) => this.verlaufLine(t, v))))))
+      .when(lessons.length > 0 || Boolean(proposal), (el) => el.child(v_flex().id("rv-lessons").gap(2)
+        .child(ui.sectionHeader(t, "Lehren", { count: lessons.length, open: this.lessonsOpen,
+          onClick: (cx) => { this.lessonsOpen = !this.lessonsOpen; cx.notify(); } }))
+        .when(this.lessonsOpen, (x) => x.child(div().max_h(140).overflow_y_scroll().gap(2)
+          .children(lessons.map((l) => this.lessonLine(t, l)))))
+        .when(!this.lessonsOpen && lessons.length > 0, (x) => x.child(div().gap(2)
+          .children(lessons.slice(-2).map((l) => this.lessonLine(t, l)))))
+        .when(!lessons.length, (x) => x.child(div().text_size(T_S).text_color(t.dim).child("Noch keine Lehre für dieses Repo.")))
+        .when(Boolean(proposal), (x) => x.child(h_flex().gap(ui.GAP_S).items_center()
+          .child(div().flex_1().min_w(0).text_size(T_S).text_color(t.foreground).child(`Vorschlag: ${proposal.text}`))
+          .child(ui.button(t, "rv-lesson", "Lehre übernehmen", (cx) => this.confirmLesson(cx),
+            { kind: "primary", small: true, enabled: !this.busy, tip: "Schreibt die Lehre ins Repo; jeder nächste Auftrag enthält sie" }))))))
       .child(h_flex().gap(ui.GAP_M).items_center()
         .child(this.field(t, "rv-comment", this.commentInput, { focused: this.focus.has("rv-comment"),
           send: ui.sendButton(t, "rv-comment-send", "mods/orchestra/icons/send.svg",
