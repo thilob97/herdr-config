@@ -64,12 +64,25 @@ export const statusChip = (t, st, word) => chip(t, word ?? STATUS_WORD[st] ?? st
 
 // ---------- Gate-Chips (5.6, Felder 7.6) ----------
 
-/** Gate-Chips eines Tickets aus orchestra.tickets: Checks ✓/✗/–, dazu Review offen bzw. abgenommen. */
-export function gateChips(t, tk) {
-  const out = [];
-  if (tk.checks === "pass") out.push(chip(t, "Checks ✓", t.done, { tip: "Checks grün (hub review --checks pass)" }));
-  else if (tk.checks === "fail") out.push(chip(t, "Checks ✗", t.blocked, { tip: "Checks rot (hub review --checks fail)" }));
-  else out.push(chip(t, "Checks –", t.muted, { tip: "Keine Angabe zu den Checks" }));
+/** Prüf-Gate eines Tickets: `hub verify` schreibt checks, HEAD, Dauer, Exit und den Auszug.
+ *  `gate` (aus `hub gate --json`) überstimmt die Aufzeichnung, weil es den HEAD von jetzt kennt. */
+export function gateChip(t, tk, gate) {
+  const ok = gate ? gate.ok : tk.checks === "pass";
+  const head = (gate?.checked_head ?? tk.checks_head ?? "").slice(0, 7);
+  const dur = (gate?.duration ?? tk.checks_duration) ? `${gate?.duration ?? tk.checks_duration}s` : null;
+  if (ok) return chip(t, ["Checks ✓", dur, head && `HEAD ${head}`].filter(Boolean).join(" · "), t.done,
+    { tip: `Prüfung bestanden${(gate?.at ?? tk.checks_at) ? ` · ${gate?.at ?? tk.checks_at}` : ""} (hub verify)` });
+  const why = gate?.reason ?? (tk.checks === "fail" ? `Prüfung rot (Exit ${tk.checks_exit ?? "?"})`
+    : "Noch keine Prüfung");
+  const short = !gate ? (tk.checks === "fail" ? `Exit ${tk.checks_exit ?? "?"}` : "nicht geprüft")
+    : gate.checks === "fail" ? `Exit ${gate.exit ?? "?"}`
+      : gate.checks === "pass" ? "neuer Commit" : "nicht geprüft";
+  return chip(t, `Checks ✗ · ${short}`, t.blocked, { tip: why });
+}
+
+/** Gate-Chips eines Tickets aus orchestra.tickets: Checks, dazu Review offen bzw. abgenommen. */
+export function gateChips(t, tk, gate) {
+  const out = [gateChip(t, tk, gate)];
   if (tk.status === "review") out.push(chip(t, "Review offen", t.working, { tip: "Wartet auf deine Abnahme" }));
   else if (tk.status === "done") out.push(chip(t, "abgenommen", t.done));
   return out;

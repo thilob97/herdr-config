@@ -8,7 +8,7 @@
 
 import { div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { run, notify, playSound, openOverlay, shared, setShared, knownAgents, terminals } from "herdr";
+import { run, notify, playSound, openOverlay, shared, setShared, knownAgents, terminals, exec, appHome } from "herdr";
 import * as orch from "./orchestrator.js";
 import * as tickets from "./tickets.js";
 import * as costs from "./costs.js";
@@ -17,6 +17,7 @@ import { T_XS, T_S, T_M, T_L, usd } from "./ui.js";
 
 const errorText = (e) => String(e?.message ?? e ?? "fehlgeschlagen").replace(/^Error: /, "");
 const WC = "mods/workspace-chrome";
+const HUB = () => `${appHome()}/mods/orchestra/bin/hub`;
 // At most two lines of T_S text in the panel's width.
 const clip = (s, n = 140) => (s.length > n ? `${s.slice(0, n - 1).trimEnd()}…` : s);
 
@@ -28,6 +29,33 @@ export const STAGES = [
   { key: "done", label: "Fertig" },
 ];
 export const stageOf = (tk) => (["todo", "review", "done"].includes(tk.status) ? tk.status : "doing");
+
+// The gate of every open ticket, from `hub gates`: only hub can read the worktree's
+// HEAD, so a green chip turns red when a commit lands after the check (every 15 s,
+// and after the panel's own actions republish).
+export class GateWatcher {
+  constructor(cx) {
+    this.busy = false;
+    this.refresh(cx);
+    cx.timer.every(15000, (cx) => this.refresh(cx));
+  }
+
+  refresh(cx) {
+    if (this.busy) return;
+    this.busy = true;
+    cx.spawn(async () => {
+      try {
+        const r = await exec(HUB(), ["gates", "--json"], { timeout: 20000 });
+        if (r.code !== 0) return;
+        const slim = JSON.parse(r.stdout || "[]");
+        if (JSON.stringify(slim) !== JSON.stringify(shared("orchestra.gates") ?? [])) setShared("orchestra.gates", slim);
+      } catch {}
+      finally { this.busy = false; }
+    });
+  }
+}
+
+export const gateOf = (id) => (shared("orchestra.gates") ?? []).find((g) => g.id === id) ?? null;
 
 export class HubDaemon {
   constructor(cx) {
@@ -41,6 +69,7 @@ export class HubDaemon {
     cx.spawn(async () => { await costs.load(); });
     cx.timer.after(10000, (cx) => this.pollCosts(cx));
     cx.timer.every(30000, (cx) => this.pollCosts(cx));
+    this.gates = new GateWatcher(cx);
   }
 
   pollCosts(cx) {
@@ -109,6 +138,7 @@ export class HubSection {
     cx.timer.every(3000, (cx) => this.poll(cx));
     this.publish(cx);
     cx.timer.every(5000, (cx) => this.publish(cx));
+    this.gates = new GateWatcher(cx);
   }
 
   poll(cx) {
@@ -263,7 +293,7 @@ export class HubSection {
         .when(Boolean(tk.terminal), (el) => el.child(div().flex_none().max_w(130).child(ui.identityChip(t, `tk-who-${tk.id}`, tk.terminal))))
         .child(div().flex_1().min_w(0).truncate().text_size(T_S).text_color(t.muted).tooltip(where).child(where))
         .when(Boolean(landed), (el) => el.child(div().flex_none().text_size(T_XS).text_color(t.done).when(Boolean(tk.pr), (x) => x.tooltip(tk.pr)).child(landed)))
-        .when(stage !== "todo", (el) => el.children(ui.gateChips(t, tk))))
+        .when(stage !== "todo", (el) => el.children(ui.gateChips(t, tk, gateOf(tk.id)))))
       .when(stage === "review" && Boolean(tk.summary), (el) => el.child(div().max_h(36).overflow_hidden().text_size(T_S).text_color(t.muted).child(clip(tk.summary))))
       .when((tk.verlauf ?? []).length > 0, (el) => el.child(this.verlaufBlock(t, tk)))
       .when(stage === "review", (el) => el.child(h_flex().gap(ui.GAP_M).items_center()

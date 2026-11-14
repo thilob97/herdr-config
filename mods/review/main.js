@@ -80,6 +80,9 @@ export default class Review extends View {
     this.files = []; this.rows = []; this.open = null; this.diffWidth = 300;
     this.repo = null; this.error = null; this.note = null; this.busy = null; this.loading = false;
     this.snapshot = null;   // the ticket as last seen (it stays readable after landing)
+    this.gate = null;       // hub gate --json: does the recorded check count for the current HEAD?
+    this.gating = false;
+    this.showChecks = false; // the recorded check output, folded under the gate
     this.previews = {};     // evidence path → app-home-relative copy for the 48-px preview
     this.copying = new Set();
     this.settled = false;   // the ticket was landed or accepted here: nothing more to do
@@ -126,6 +129,20 @@ export default class Review extends View {
     return this.snapshot;
   }
 
+  // The gate is computed, not remembered: `hub gate` compares the recorded checks_head
+  // with the worktree's HEAD now, and carries the last check output.
+  loadGate(cx) {
+    if (!this.ticketId || this.gating || this.ticket()?.status === "done") return;
+    this.gating = true;
+    cx.spawn(async (cx) => {
+      try {
+        const r = await exec(hubBin(), ["gate", this.ticketId, "--json"], { timeout: 15000 });
+        this.gate = r.code === 0 ? JSON.parse(r.stdout.trim() || "{}") : null;
+      } catch { this.gate = null; }
+      finally { this.gating = false; cx.notify(); }
+    });
+  }
+
   // Where the work is: the agent's pane's live folder, else what the core reports, else
   // props { folder, on } or the ticket's worktree (its agent may have ended already).
   target() {
@@ -148,6 +165,7 @@ export default class Review extends View {
 
   refresh(cx) {
     if (this.loading || this.busy || this.settled) return;
+    if (this.ticketId) this.loadGate(cx);
     // Landed or accepted elsewhere: its worktree is gone, and that is no error (N1).
     if (this.ticket()?.status === "done") { this.repo = null; this.files = []; this.rows = []; this.error = null; cx.notify(); return; }
     const tg = this.target();
@@ -326,6 +344,17 @@ export default class Review extends View {
     });
   }
 
+  runVerify(cx) {
+    const tk = this.ticket();
+    if (!tk || this.busy) return;
+    this.act(cx, "verify", async () => {
+      const r = await exec(hubBin(), ["verify", tk.id], { timeout: 900000 });
+      if (r.code !== 0) throw new Error(errorText(lastLine(r)));
+      this.showChecks = true;
+      return (r.stdout || "").trim().split("\n").pop() || "Prüfung ausgeführt";
+    });
+  }
+
   requestChanges(cx) {
     const tk = this.ticket(), text = this.changesInput.value().trim();
     if (!tk || !text) return;
@@ -455,6 +484,32 @@ export default class Review extends View {
           div().when(p.startsWith("@"), (e) => e.text_color(t.accent).font_medium()).child(p))));
   }
 
+  // The check's state: what `hub verify` ran on this HEAD, its output folded underneath,
+  // and the button that runs it again (the gate in `hub review` trusts only that run).
+  verifyRow(t, tk, cx) {
+    // A landed ticket has no worktree left: the recorded run is what remains.
+    const g = tk.status === "done" ? null : this.gate, tail = g?.tail ?? tk.verify?.tail ?? [];
+    const color = !g ? t.muted : g.ok ? t.done : t.blocked;
+    const state = g
+      ? (g.ok ? `bestanden · ${g.cmd ?? ".herdr/verify.sh"}${g.at ? ` · ${g.at}` : ""}` : g.reason)
+      : tk.checks === "pass" ? "bestanden (aufgezeichnet)" : tk.checks === "fail" ? "rot (aufgezeichnet)" : "noch nicht ausgeführt";
+    return v_flex().flex_none().gap(ui.GAP_S)
+      .child(h_flex().gap(ui.GAP_S).items_center().min_w(0)
+        .child(div().flex_none().text_size(T_S).font_medium().text_color(t.muted).child("Prüfung"))
+        .child(div().flex_1().min_w(0).truncate().text_size(T_S).text_color(color).tooltip(state).child(state))
+        .child(ui.link(t, "rv-checks", this.showChecks ? "Zeilen ausblenden" : "Letzte Zeilen",
+          (cx) => { this.showChecks = !this.showChecks; cx.notify(); },
+          { tip: `Die letzten Zeilen von ${g?.cmd ?? tk.checks_cmd ?? ".herdr/verify.sh"}` }))
+        .child(ui.button(t, "rv-verify", this.busy === "verify" ? "Prüft …" : "Prüfung erneut ausführen",
+          (cx) => this.runVerify(cx),
+          { small: true, enabled: !this.busy && tk.status !== "done",
+            tip: `hub verify ${tk.id} im Worktree${tk.machine ? ` auf ${tk.machine}` : ""}; das Gate verlangt diesen Lauf` })))
+      .when(this.showChecks, (el) => el.child(div().id("rv-checks-log").max_h(180).overflow_y_scroll().rounded(6)
+        .bg(t.background).border_1().border_color(t.border).p(ui.GAP_M).text_size(T_XS)
+        .font_family(settings().font_family ?? "JetBrains Mono").text_color(t.muted)
+        .child(tail.length ? tail.join("\n") : "Keine Ausgabe aufgezeichnet.")));
+  }
+
   // Ticket mode: what was ordered, the gates and the orchestrator's evidence.
   ticketHead(t, tk, cx) {
     this.previewEvidence(tk, cx);
@@ -466,7 +521,7 @@ export default class Review extends View {
         .child(ui.statusIcon(t, tk.status === "review" ? "blocked" : tk.status === "done" ? "done" : tk.status === "doing" ? "working" : "idle"))
         .child(div().flex_1().min_w(0).truncate().text_size(T_L).font_semibold().text_color(t.foreground).child(tk.title))
         .when(Boolean(tk.terminal), (el) => el.child(div().flex_none().max_w(180).child(ui.identityChip(t, "rv-who", tk.terminal))))
-        .children(ui.gateChips(t, tk)))
+        .children(ui.gateChips(t, tk, tk.status === "done" ? null : this.gate)))
       .child(div().id("rv-summary").max_h(90).overflow_y_scroll().text_size(T_S).text_color(tk.summary ? t.muted : t.dim)
         .child(tk.summary || "Keine Zusammenfassung des Orchestrators."))
       .child(h_flex().flex_wrap().gap(ui.GAP_S).items_start()
@@ -485,6 +540,7 @@ export default class Review extends View {
             .when(!pic, (el) => el.child(div().text_size(T_S).text_color(t.muted).hover((x) => x.text_color(t.foreground)).child(baseName(p))));
         }))
         .when(!local && evidence.length > 0, (el) => el.child(div().text_size(T_XS).text_color(t.muted).child(`auf ${tk.machine}`))))
+      .child(this.verifyRow(t, tk, cx))
       .when(verlauf.length > 0, (el) => el.child(v_flex().id("rv-verlauf").gap(2)
         .child(h_flex().items_center().gap(ui.GAP_S)
           .child(div().text_size(T_S).font_medium().text_color(t.muted).child("Verlauf"))
