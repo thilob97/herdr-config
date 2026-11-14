@@ -74,7 +74,11 @@ const zpaths = (k) => ({
 
 const MOD = "blueprint";
 const LANG_KEY = "blueprint.lang";
-const HEADER_H = 44, TABS_H = 38, FOOTER_H = 40;
+const HEADER_H = 42, TABS_H = 38, FOOTER_H = 40;
+// Herdr UI tokens (docs/ui-spec.md, 5), for the panel head, its chips and buttons.
+const GAP_XS = 4, GAP_M = 8, INSET_PANEL = 14;
+const H_BTN = 26, H_BTN_S = 22, H_CHIP = 18;
+const T_XS = 10.5, T_S = 11, T_L = 13;
 const COMPOSE_H = 136;
 const TAB_MIN = 72, TAB_MAX = 200; // diagram tabs, px // the request box, as drawn 12px above the canvas bottom
 const TITLE = 12.5, SUB = 10.5, LABEL = 11; // text px at 100%
@@ -1359,52 +1363,51 @@ export default class Blueprint extends View {
       .children(this.measuring());
   }
 
-  // A quiet icon button, drawn in the text colour, with a tooltip.
-  iconButton(t, id, file, tip, on, onClick) {
-    return div().id(id).flex_none().size(28).flex().items_center().justify_center()
-      .rounded(6).cursor_pointer().tooltip(tip).text_color(on ? t.accent : t.muted)
-      .when(on, (el) => el.bg(alpha(t.accent, 0.16)))
+  // Icon button (5.6): 26×26 with icon 14 in the head (22×22, icon 12 in rows), dim, tooltip.
+  iconButton(t, id, file, tip, on, onClick, size = H_BTN) {
+    return div().id(id).flex_none().size(size).flex().items_center().justify_center()
+      .rounded(6).cursor_pointer().tooltip(tip).text_color(on ? t.foreground : t.dim)
+      .when(on, (el) => el.bg(t.selected))
       .when(!on, (el) => el.hover((s) => s.bg(t.hover).text_color(t.foreground)))
       .on_click((_e, cx) => {
         onClick(cx);
         this.redraw(cx);
       })
-      .child(svg(`mods/blueprint/${file}`).size(15));
+      .child(svg(`mods/blueprint/${file}`).size(size === H_BTN ? 14 : 12));
   }
 
-  refreshButton(t) {
-    return this.iconButton(t, "bp-refresh", "refresh.svg", this.T.refreshTip, false, (cx) => this.refresh(cx));
+  refreshButton(t, size) {
+    return this.iconButton(t, "bp-refresh", "refresh.svg", this.T.refreshTip, false, (cx) => this.refresh(cx), size);
   }
 
-  // Title, the agent, and four icon buttons (refresh, pin, open as pane, edit).
+  // Panel head (5.6): "Blueprint", the project as meta, the update and agent chips, at most
+  // three icon buttons (pin, open as pane, edit; refresh moves to the diagram row then).
   header(t, pal, G, narrow) {
     const T = this.T;
     const icon = (...a) => this.iconButton(t, ...a);
-    // The agent with the same status marks as the Agents list in the sidebar.
+    // The agent as an identity chip: status mark and name, as in the sidebar.
     const a = this.pickTarget(this.targetList);
-    const pill = h_flex().id("bp-agent").flex_none().gap(6).px(10).h(24).rounded_full().items_center().bg(t.raised)
+    const pill = h_flex().id("bp-agent").flex_none().gap(GAP_XS).px(6).h(H_BTN_S).rounded(6).items_center().bg(t.raised)
       .tooltip(a?.status ? T.status[a.status] ?? a.status : a?.name ?? T.noAgent)
-      .when(!!a, (el) => el.child(statusMark(t, a.status)))
-      .child(div().text_size(12).text_color(a ? t.muted : t.dim).max_w(160).truncate().child(a ? a.name : T.noAgent));
-    return h_flex().h(HEADER_H).flex_none().pl(16).pr(10).gap(8).items_center().border_b(1).border_color(t.border)
-      .child(h_flex().flex_1().min_w(0).gap(8).items_center()
-        // While the tab's project is being looked up there is nothing to name yet.
-        .child(div().min_w(0).truncate().font_semibold().text_color(t.foreground)
-          .child(this.project ? this.project.topic ?? this.project.name : this.loading ? "" : T.noProject))
-        .when(!!this.project && !!this.ctxBranch && !narrow, (el) => el.child(div().flex_none().text_size(11.5).font_family(this.mono).text_color(t.dim).child(this.ctxBranch))))
-      // A newer Blueprint: one click asks the agent to update it.
-      // Just the word, small: the version is in the tooltip, and the header's
-      // other controls keep their room.
-      .when(!!this.version && newer(this.latest, this.version), (el) => el.child(div().id("bp-update").flex_none().mr(2).px(8).h(22)
-        .rounded_full().flex().items_center().text_size(11.5).font_medium().bg(alpha(t.accent, 0.16)).text_color(t.accent)
-        .cursor_pointer().tooltip(T.updateTip(this.latest, this.version)).hover((s) => s.bg(alpha(t.accent, 0.28)))
+      .when(!!a, (el) => el.child(div().size(12).flex_none().flex().items_center().justify_center().child(statusMark(t, a.status))))
+      .child(div().text_size(T_S).text_color(a ? t.foreground : t.dim).max_w(140).truncate().child(a ? a.name : T.noAgent));
+    const meta = this.project ? this.project.topic ?? this.project.name : "";
+    return h_flex().h(HEADER_H).flex_none().px(INSET_PANEL).gap(GAP_M).items_center().border_b(1).border_color(t.border)
+      .child(div().flex_none().text_size(T_L).font_semibold().text_color(t.foreground).child("Blueprint"))
+      .child(h_flex().flex_1().min_w(0).gap(GAP_M).items_center()
+        .when(!!meta, (el) => el.child(div().min_w(0).truncate().text_size(T_S).text_color(t.dim).tooltip(meta).child(meta)))
+        .when(!!this.project && !!this.ctxBranch && !narrow, (el) => el.child(div().flex_none().text_size(T_S).font_family(this.mono).text_color(t.dim).child(this.ctxBranch))))
+      // A newer Blueprint as a chip: one click asks the agent to update it; the version is in the tooltip.
+      .when(!!this.version && newer(this.latest, this.version), (el) => el.child(div().id("bp-update").flex_none().px(6).h(H_CHIP)
+        .rounded(4).flex().items_center().text_size(T_XS).font_medium().bg(t.done + "26").text_color(t.done)
+        .cursor_pointer().tooltip(T.updateTip(this.latest, this.version)).hover((s) => s.bg(t.done + "55"))
         .on_click((_e, cx) => {
           this.askUpdate(cx);
           this.redraw(cx);
         })
         .child(T.update)))
-      .child(div().mr(4).child(pill))
-      .child(this.refreshButton(t))
+      .child(pill)
+      .when(!G, (el) => el.child(this.refreshButton(t)))
       .when(!!G, (el) => el.child(icon("bp-pin", G.pinned ? "pin-on.svg" : "pin.svg", G.pinned ? T.unpinTip : T.pinTip, G.pinned, (cx) => this.togglePin(cx))))
       .when(this.inPanel, (el) => el.child(icon("bp-pane", "pane.svg", T.openPane, false, () => this.openPane())))
       .when(!!G, (el) => el.child(icon("bp-edit", "edit.svg", T.editTip, this.editing, () => this.editKey())));
@@ -1476,7 +1479,7 @@ export default class Blueprint extends View {
         })
         .child(svg("mods/blueprint/plus.svg").size(14))))
       .child(div().flex_1())
-      .when(!!G, (el) => el.child(div().flex_none().pl(8).pr(4).text_size(11.5).text_color(t.dim).child(age)));
+      .when(!!G, (el) => el.child(div().flex_none().pl(8).pr(4).text_size(T_S).text_color(t.dim).child(age)).child(this.refreshButton(t, H_BTN_S)));
   }
 
   canvas(t, pal, cx) {
