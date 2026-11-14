@@ -27,10 +27,15 @@ reports into it) and show in the Team-Panel under it.
                                             ready for the human: status review + summary; refuses unless
                                             `hub verify` passed on the worktree's HEAD; --force needs --reason
                                             and writes it to the Verlauf; --evidence replaces the files
-  hub land ID --merge | --pr                after acceptance: merge into its base branch, or push and open a
-                                            pull request (gh); then end its agent and remove its worktree
+  hub land ID --merge | --pr [--wait-ci]    after acceptance: merge into its base branch, or push and open a
+                                            pull request (gh); then end its agent and remove its worktree.
+                                            --wait-ci polls the PR's checks (30 s, max 20 min) and only
+                                            finishes a green ticket
+  hub ci ID                                 gh pr checks for the ticket's PR: pass|fail|running|unknown in
+                                            the ticket, failures as a Verlauf comment (--from ci) and back
+                                            to the agent
   hub done ID                               accepted without landing
-  hub status                                tickets with their agents' live status and cost so far
+  hub status                                tickets with their agents' live status, CI and cost so far
 Python 3, standard library only.
 """
 import argparse, json, os, pwd, re, secrets, shlex, subprocess, sys, time, unicodedata
@@ -39,10 +44,22 @@ APP = os.environ.get("HERDR_APP_HOME") or os.path.expanduser("~/.config/herdr-ap
 TICKETS = os.path.join(APP, "data", "quests", "tickets")
 FIELDS = ["title", "status", "repo", "labels", "due", "machine", "agent", "branch", "base", "worktree", "terminal",
           "source", "checks", "checks_head", "checks_at", "checks_duration", "checks_exit", "checks_cmd", "verify",
-          "evidence",
-          "merged", "pr", "assignee", "blocked_by", "tags", "waiting", "by", "updated"]
+          "evidence", "merged", "pr", "ci", "ci_at", "ci_url", "ci_details",
+          "assignee", "blocked_by", "tags", "waiting", "by", "updated"]
 COSTS = os.path.join(APP, "data", "orchestra", "costs.json")  # written by the Team panel's watcher
 AGENTS = {"omp": ["omp"], "claude": ["claude"], "codex": ["codex", "--no-daemon"], "pi": ["pi"]}
+
+# CI wait: 30 s poll, 20 min at most. Overridable for the mock-gh test, not for everyday use.
+def env_int(name, default):
+    try:
+        return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+CI_POLL = max(0, env_int("HUB_CI_POLL", 30))
+CI_TIMEOUT = max(0, env_int("HUB_CI_TIMEOUT", 1200))
+CI_MARK = {"pass": "✓", "fail": "✗", "running": "…", "unknown": "?"}
 
 
 def die(msg):
@@ -274,11 +291,14 @@ def age(ts):
 # ---- machines: local commands, or through `hc exec --on`
 
 def run(argv, on=None, cwd=None, check=True):
-    if on:
-        cmd = ["hc", "exec", "--on", on] + (["sh", "-c", f"cd {shlex.quote(cwd)} && exec \"$@\"", "sh"] if cwd else []) + argv
-        r = subprocess.run(cmd, capture_output=True, text=True)
-    else:
-        r = subprocess.run(argv, capture_output=True, text=True, cwd=cwd)
+    try:
+        if on:
+            cmd = ["hc", "exec", "--on", on] + (["sh", "-c", f"cd {shlex.quote(cwd)} && exec \"$@\"", "sh"] if cwd else []) + argv
+            r = subprocess.run(cmd, capture_output=True, text=True)
+        else:
+            r = subprocess.run(argv, capture_output=True, text=True, cwd=cwd)
+    except FileNotFoundError:
+        die(f"{argv[0]} ist nicht installiert")
     if check and r.returncode != 0:
         die(f"{' '.join(argv)}: {(r.stderr or r.stdout).strip()}")
     return r
@@ -448,10 +468,10 @@ def cmd_set(a):
 
 
 def is_live(address):
-    r = subprocess.run(["hc", "get", address, "--json"], capture_output=True, text=True)
     try:
+        r = subprocess.run(["hc", "get", address, "--json"], capture_output=True, text=True)
         return r.returncode == 0 and json.loads(r.stdout).get("state") == "live"
-    except ValueError:
+    except (OSError, ValueError):
         return False
 
 
@@ -614,6 +634,165 @@ def cmd_done(a):
     print(f"{a.id}: done")
 
 
+# ---- CI: the PR's checks decide whether a delivered ticket is done
+
+def ci_bucket(c):
+    """pass | fail | running for one `gh pr checks` row (bucket is newer than state)."""
+    b = (c.get("bucket") or "").lower()
+    if b:
+        return "fail" if b in ("fail", "cancel") else "running" if b == "pending" else "pass"
+    s = (c.get("state") or "").lower()
+    if s in ("failure", "error", "cancelled", "timed_out", "action_required"):
+        return "fail"
+    if s in ("pending", "queued", "in_progress", "requested", "waiting"):
+        return "running"
+    return "pass"
+
+
+def last_line(text, n=300):
+    lines = (text or "").strip().splitlines()
+    return lines[-1][:n] if lines else ""
+
+
+def gh(args, cwd=None):
+    """gh without check=True (pr checks exits 1 on red checks); no gh is data, not a crash."""
+    try:
+        return subprocess.run(["gh", *args], capture_output=True, text=True, cwd=cwd)
+    except FileNotFoundError:
+        return None
+
+
+def ci_log(failed, cwd):
+    """The tail of `gh run view --log-failed` for the first failed check that links a run."""
+    for c in failed:
+        m = re.search(r"https?://[^/]+/([^/]+/[^/]+)/actions/runs/(\d+)", c.get("link") or "")
+        if not m:
+            continue
+        r = gh(["run", "view", m.group(2), "--repo", m.group(1), "--log-failed"], cwd)
+        if r and r.returncode == 0 and r.stdout.strip():
+            return "\n".join(r.stdout.strip().splitlines()[-12:])
+        if r and r.stderr.strip():
+            return f"(Log nicht abrufbar: {last_line(r.stderr)})"
+    return ""
+
+
+def ci_collect(t):
+    """Ask gh for the ticket's PR checks. Never raises; an unreachable CI is `unknown`."""
+    cwd = t.get("worktree") if t.get("worktree") and os.path.isdir(t["worktree"]) else t.get("repo")
+    if cwd and not os.path.isdir(cwd):
+        cwd = None  # a remote machine's checkout: gh works on the PR URL
+    sel = t.get("pr") or t.get("branch")
+    url = t.get("pr") or ""
+    out = {"state": "unknown", "checks": [], "log": "", "url": url, "open": 0, "total": 0}
+    if not sel:
+        return {**out, "error": "kein PR und kein Branch am Ticket"}
+    view = gh(["pr", "view", sel, "--json", "url,state"], cwd)
+    if view and view.returncode == 0:
+        try:
+            url = json.loads(view.stdout).get("url") or url
+        except ValueError:
+            pass
+    r = gh(["pr", "checks", sel, "--json", "name,state,bucket,link"], cwd)
+    if r is None:
+        return {**out, "error": "gh ist nicht installiert"}
+    try:
+        checks = json.loads(r.stdout) if r.stdout.strip() else None
+    except ValueError:
+        checks = None
+    if checks is None:
+        # `gh pr checks` exits 1 without checks; that is a pass, not an outage.
+        if "no checks reported" in (r.stderr or "").lower():
+            checks = []
+        else:
+            return {**out, "url": url, "error": f"gh pr checks: {last_line(r.stderr or r.stdout) or f'exit {r.returncode}'}"}
+    failed = [c for c in checks if ci_bucket(c) == "fail"]
+    running = [c for c in checks if ci_bucket(c) == "running"]
+    state = "fail" if failed else "running" if running else "pass"
+    log = ci_log(failed, cwd) if failed else ""
+    names = ", ".join(c.get("name") or "?" for c in failed)
+    if state == "fail":
+        comment = f"CI rot: {names}"
+        if log:
+            comment += ". Log: " + " | ".join(line.strip() for line in log.splitlines()[-6:] if line.strip())
+    elif state == "running":
+        comment = f"CI läuft: {len(running)} offen"
+    else:
+        comment = "CI grün" + (f" ({len(checks)} Checks)" if checks else " (keine Checks)")
+    return {"state": state, "checks": failed, "log": log, "url": url, "comment": comment[:1500],
+            "open": len(running), "total": len(checks)}
+
+
+def send_agent(address, text):
+    """hc send; a blocked agent waits on a question, so the second try forces it."""
+    try:
+        r = subprocess.run(["hc", "send", address, text], capture_output=True, text=True)
+        if r.returncode != 0:
+            r = subprocess.run(["hc", "send", address, text, "--force"], capture_output=True, text=True)
+        return r.returncode == 0
+    except OSError:
+        return False
+
+
+def apply_ci(t, res, feedback=True):
+    """Write the result into the ticket. Red reopens it and goes back to its live agent."""
+    state = res["state"]
+    t["ci"] = state
+    t["ci_at"] = time.strftime("%Y-%m-%d %H:%M")
+    if res.get("url"):
+        t["ci_url"] = res["url"]
+    if state == "fail":
+        t["ci_details"] = json.dumps({
+            "checks": [{"name": c.get("name") or "?", "state": c.get("state") or "", "link": c.get("link") or ""}
+                       for c in res["checks"]],
+            "log": res.get("log") or "",
+        }, ensure_ascii=False)[:8000]
+        text = " ".join((res.get("comment") or "CI rot").split())
+        history = entries(t)
+        if not (history and history[-1][1] == "ci" and history[-1][2] == text):
+            add_comment(t, "ci", text)
+        if feedback and t.get("terminal") and is_live(t["terminal"]):
+            send_agent(t["terminal"], f"{t['id']}: CI rot, siehe Kommentar")
+        t["status"] = "doing"
+    else:
+        t.pop("ci_details", None)
+    return state
+
+
+def wait_ci(t):
+    """Poll until pass/fail/unknown or CI_TIMEOUT; each poll writes `ci`, `ci_at`."""
+    deadline = time.time() + CI_TIMEOUT
+    while True:
+        res = ci_collect(t)
+        apply_ci(t, res)
+        write(t)
+        if res["state"] in ("pass", "fail", "unknown"):
+            return res
+        sys.stderr.write(f"hub: CI läuft ({res['open']} offen, {res['state']}) …\n")
+        if time.time() >= deadline:
+            res["timeout"] = True
+            return res
+        time.sleep(max(0, min(CI_POLL, deadline - time.time())))
+
+
+def cmd_ci(a):
+    t = read(a.id)
+    res = ci_collect(t)
+    state = apply_ci(t, res)
+    write(t)
+    where = f" · {t['ci_url']}" if t.get("ci_url") else ""
+    if state == "unknown":
+        print(f"{a.id}: CI unbekannt: {res.get('error') or 'keine Antwort'}")
+    elif state == "fail":
+        names = ", ".join(c.get("name") or "?" for c in res["checks"]) or "Check"
+        print(f"{a.id}: CI rot: {names}{where}")
+        print(f"{a.id}: Ticket auf doing, Namen und Log-Auszug im Verlauf"
+              + ("; Agent benachrichtigt" if t.get("terminal") and is_live(t["terminal"]) else ""))
+    elif state == "running":
+        print(f"{a.id}: CI läuft: {res['open']} offen{where}")
+    else:
+        print(f"{a.id}: CI grün ({res['total']} Checks){where}")
+
+
 def main_checkout(t, on):
     common = run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], on, t.get("worktree") or t["repo"]).stdout.strip()
     return common[:-5] if common.endswith("/.git") else common
@@ -621,6 +800,8 @@ def main_checkout(t, on):
 
 def cmd_land(a):
     t = read(a.id)
+    if a.wait_ci and not a.pr:
+        die("--wait-ci gilt nur mit --pr")
     on, wt, branch = t.get("machine") or None, t.get("worktree"), t.get("branch")
     if not (wt and branch):
         die(f"{a.id} has no worktree branch to land")
@@ -630,6 +811,7 @@ def cmd_land(a):
         die(f"{wt} has uncommitted changes; the agent must commit first")
     main = main_checkout(t, on)
     base = t.get("base") or run(["git", "rev-parse", "--abbrev-ref", "HEAD"], on, main).stdout.strip()
+    result = {"ticket": a.id, "merged": None, "pr": None, "ci": None}
     if a.merge:
         here = run(["git", "rev-parse", "--abbrev-ref", "HEAD"], on, main).stdout.strip()
         if here != base:
@@ -641,17 +823,36 @@ def cmd_land(a):
             run(["git", "merge", "--abort"], on, main, check=False)
             die(f"merge conflict between {branch} and {base}; have the agent rebase {branch} onto {base}")
         t["merged"] = f"{base}@{run(['git', 'rev-parse', '--short', 'HEAD'], on, main).stdout.strip()}"
+        result["merged"] = t["merged"]
     else:
         if run(["git", "remote", "get-url", "origin"], on, wt, check=False).returncode != 0:
             die("no remote 'origin' to push to")
         run(["git", "push", "-u", "origin", branch], on, wt)
-        summary = re.search(r"(?ms)^## Zusammenfassung \(Orchestrator\)\n(.*?)(?=\n## |\Z)", t["body"])
-        body = (summary.group(1).strip() if summary else t["body"].strip()) + f"\n\n---\nTicket `{a.id}`, über den Herdr-Orchestrator umgesetzt."
-        r = run(["gh", "pr", "create", "--base", base, "--head", branch, "--title", t["title"], "--body", body], on, wt, check=False)
-        if r.returncode != 0:
-            die(f"gh pr create: {(r.stderr or r.stdout).strip()}")
-        t["pr"] = r.stdout.strip().splitlines()[-1]
-    # The work is landed: its agent and checkout are no longer needed (a PR branch stays on the remote).
+        # A pushed branch starts a new check round: the old red is stale until `hub ci` says otherwise.
+        for k in ("ci", "ci_at", "ci_details", "ci_url"):
+            t.pop(k, None)
+        if not t.get("pr"):
+            summary = re.search(r"(?ms)^## Zusammenfassung \(Orchestrator\)\n(.*?)(?=\n## |\Z)", t["body"])
+            body = (summary.group(1).strip() if summary else t["body"].strip()) + f"\n\n---\nTicket `{a.id}`, über den Herdr-Orchestrator umgesetzt."
+            r = run(["gh", "pr", "create", "--base", base, "--head", branch, "--title", t["title"], "--body", body], on, wt, check=False)
+            if r.returncode != 0:
+                die(f"gh pr create: {(r.stderr or r.stdout).strip()}")
+            t["pr"] = r.stdout.strip().splitlines()[-1]
+        result["pr"] = t["pr"]
+        if a.wait_ci:
+            res = wait_ci(t)
+            result.update(ci=t["ci"], ci_at=t.get("ci_at"))
+            if res["state"] != "pass":
+                # Not green: the agent and its checkout stay, so the failure can be fixed.
+                t.setdefault("status", "review")
+                write(t)
+                why = {"fail": f"CI rot: {', '.join(c.get('name') or '?' for c in res['checks'])}",
+                       "unknown": f"CI nicht prüfbar: {res.get('error') or 'keine Antwort'}",
+                       "running": f"CI nach {CI_TIMEOUT // 60} Minuten noch nicht fertig"}.get(res["state"], res["state"])
+                result["message"] = f"{why}; Ticket bleibt offen, Agent und Worktree bleiben"
+                print(json.dumps(result, ensure_ascii=False))
+                return
+    # The work is landed (and green, when waited for): its agent and checkout are no longer needed.
     if t.get("terminal") and is_live(t["terminal"]):
         subprocess.run(["hc", "kill", t["terminal"]], capture_output=True)
     run(["git", "worktree", "remove", wt], on, main, check=False)
@@ -659,7 +860,8 @@ def cmd_land(a):
         run(["git", "branch", "-d", branch], on, main, check=False)
     t["status"] = "done"
     write(t)
-    print(json.dumps({"ticket": a.id, "merged": t.get("merged"), "pr": t.get("pr")}, ensure_ascii=False))
+    result.update(merged=t.get("merged"), pr=t.get("pr"), ci=t.get("ci"), ci_at=t.get("ci_at"))
+    print(json.dumps(result, ensure_ascii=False))
 
 
 def costs():
@@ -680,11 +882,12 @@ def cmd_status(_a):
     per = c.get("tickets", {})
     open = [t for t in all_tickets() if t["status"] != "done"]
     if open:
-        print(f"{'Ticket':<40} {'Status':<7} {'Terminal':<16} {'Live':<9} {'Kosten':>7} {'Verlauf':>7}  Titel")
+        print(f"{'Ticket':<40} {'Status':<7} {'CI':<5} {'Terminal':<16} {'Live':<9} {'Kosten':>7} {'Verlauf':>7}  Titel")
     for t in open:
         term = t.get("terminal", "")
+        ci = f"CI {CI_MARK.get(t.get('ci'), '–')}"
         cost = f"${per[t['id']]:.2f}" if t["id"] in per else "-"
-        print(f"{t['id']:<40} {t['status']:<7} {term:<16} {live.get(term, '-' if not term else 'beendet'):<9} {cost:>7} "
+        print(f"{t['id']:<40} {t['status']:<7} {ci:<5} {term:<16} {live.get(term, '-' if not term else 'beendet'):<9} {cost:>7} "
               f"{len(entries(t)):>7}  {t['title']}")
     if c:
         print(f"\nBudget pro Ticket ${c.get('ticketBudget', 0):.0f}, Team ${c.get('teamBudget', 0):.0f}; offen bisher ${c.get('teamCost', 0):.2f}")
@@ -771,7 +974,11 @@ def main():
     how = ld.add_mutually_exclusive_group(required=True)
     how.add_argument("--merge", action="store_true")
     how.add_argument("--pr", action="store_true")
+    ld.add_argument("--wait-ci", action="store_true")
     ld.set_defaults(fn=cmd_land)
+    ci = sub.add_parser("ci")
+    ci.add_argument("id")
+    ci.set_defaults(fn=cmd_ci)
     sub.add_parser("status").set_defaults(fn=cmd_status)
     a = p.parse_args()
     a.fn(a)
