@@ -5,7 +5,7 @@ import { appHome, shared, setShared } from "herdr";
 
 export const ticketsDir = () => `${appHome()}/data/quests/tickets`;
 const FIELDS = ["title", "status", "repo", "labels", "due", "machine", "agent", "branch", "base", "worktree", "terminal",
-  "source", "checks", "checks_head", "checks_at", "checks_duration", "checks_exit", "checks_cmd", "verify", "evidence",
+  "space", "tab", "source", "checks", "checks_head", "checks_at", "checks_duration", "checks_exit", "checks_cmd", "verify", "evidence",
   "merged", "pr", "ci", "ci_at", "ci_url", "ci_details",
   "review", "review_head", "review_at", "review_summary", "review_rounds", "reviewer", "review_terminal",
   "assignee", "blocked_by", "tags", "waiting", "by", "updated"];
