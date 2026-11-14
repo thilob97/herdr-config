@@ -361,7 +361,7 @@ export default class Marketplaces extends View {
     const source = this.addInput.value().trim().replace(/^https:\/\/github\.com\/([\w.-]+\/[\w.-]+?)(\.git)?\/?$/, "$1");
     if (!source || /\s/.test(source)) { A.error = "Gib ein GitHub-owner/repo oder eine Git-URL ein."; cx.notify(); return; }
     const targets = this.targets().filter((x) => A.targets.has(x.id));
-    if (!targets.length) { A.error = "Wähle mindestens einen Host."; cx.notify(); return; }
+    if (!targets.length) { A.error = "Wähle mindestens ein Ziel."; cx.notify(); return; }
     A.busy = true;
     A.error = null;
     cx.notify();
@@ -469,7 +469,8 @@ export default class Marketplaces extends View {
       .bg(t.popover)
       .text_color(t.foreground)
       .text_size(T_M)
-      .child(this.titleBar(t, loading))
+      // The empty body waits on its own: one spinner, not two.
+      .child(this.titleBar(t, loading && markets.length > 0))
       .child(this.marketStrip(t, markets))
       .when(Boolean(this.adding), (el) => el.child(this.addPanel(t)))
       .when(Boolean(mk), (el) => el.child(this.marketBar(t, mk)))
@@ -502,7 +503,7 @@ export default class Marketplaces extends View {
   }
 
   // Window title row (5.6): like a panel head, chrome background, Close last.
-  titleBar(t, loading) {
+  titleBar(t, showLoading) {
     const seg = (mode, label) => this.control(`mode-${mode}`).h(H_BTN_S).px(8).flex().items_center().rounded(6).text_size(T_S)
       .bg(this.mode === mode ? t.selected : t.background).text_color(this.mode === mode ? t.foreground : t.muted)
       .hover((s) => s.text_color(t.foreground)).on_click((_e, cx) => this.setMode(cx, mode)).child(label);
@@ -514,10 +515,13 @@ export default class Marketplaces extends View {
         .child(seg("user", "Benutzer"))
         .child(seg("project", "Projekt")))
       .child(div().flex_1())
-      .when(off.length > 0, (el) => el.child(div().id("mk-off").text_size(T_S).text_color(t.dim)
+      .when(off.length > 0, (el) => el.child(div().id("mk-off").text_size(T_S).text_color(t.muted)
         .tooltip(off.map((M) => `${M.label}: ${M.error ?? "nicht erreichbar"}`).join("\n"))
         .child(`${off.map((M) => M.label).join(", ")} nicht erreichbar`)))
-      .when(loading, (el) => el.child(this.spinner(t)))
+      .when(showLoading, (el) => el.child(this.spinner(t)))
+      // Same as the MCP window: adding is an icon button in the title row.
+      .child(this.button(t, "mk-add", null, (_e, cx) => (this.adding ? ((this.adding = null), cx.notify()) : this.openAdd(cx)),
+        { icon: "mods/workspace-chrome/plus.svg", tip: "Marketplace hinzufügen" }))
       .child(this.button(t, "mk-refresh", null, (_e, cx) => this.refresh(cx), { icon: ICON("refresh"), tip: "Alles neu einlesen" }))
       .child(this.button(t, "mk-close", null, () => this.close(), { icon: "mods/pane/close.svg", tip: "Schließen (Esc)" }));
   }
@@ -530,14 +534,12 @@ export default class Marketplaces extends View {
         return this.control(`mk-tab-${x.name}`).flex().flex_none().items_center().gap(GAP_S).h(H_BTN).px(10).rounded(6)
           .bg(on ? t.selected : t.raised).text_color(on ? t.foreground : t.muted)
           .hover((s) => s.bg(on ? t.selected : t.hover).text_color(t.foreground))
-          .tooltip(`${x.repo ?? x.source ?? x.name}\nIn ${plural(x.where.length, "Host", "Hosts")} eingerichtet`)
+          .tooltip(`${x.repo ?? x.source ?? x.name}\nIn ${plural(x.where.length, "Agent-Konfiguration", "Agent-Konfigurationen")} eingerichtet`)
           .on_click((_e, cx) => { this.select(x.name); cx.notify(); })
           .child(div().font_medium().child(x.name))
-          .child(div().text_size(T_XS).text_color(t.dim).child(cat?.plugins?.length ? String(cat.plugins.length) : ""))
+          .child(div().text_size(T_XS).text_color(t.muted).child(cat?.plugins?.length ? String(cat.plugins.length) : ""))
           .child(h_flex().gap(2).children(HOSTS.filter((h) => x.where.some((w) => w.key === h.key)).map((h) => svg(h.icon).size(12).flex_none().text_color(t.muted))));
-      }))
-      .child(this.button(t, "mk-add", "Hinzufügen", (_e, cx) => (this.adding ? ((this.adding = null), cx.notify()) : this.openAdd(cx)),
-        { icon: "mods/workspace-chrome/plus.svg", tip: "Marketplace hinzufügen" }));
+      }));
   }
 
   // A checkbox (radius 4): solid when on.
@@ -558,7 +560,7 @@ export default class Marketplaces extends View {
           : this.button(t, "mk-add-go", "Hinzufügen", (_e, cx) => this.addMarketplace(cx), { primary: true }))
         .child(this.button(t, "mk-add-cancel", "Abbrechen", (_e, cx) => { this.adding = null; cx.notify(); })))
       .child(h_flex().flex_wrap().gap(GAP_S).items_center()
-        .child(div().text_size(T_S).text_color(t.dim).child("in"))
+        .child(div().text_size(T_S).text_color(t.muted).child("in"))
         .children(targets.map((x) => {
           const on = A.targets.has(x.id);
           return this.control(`mk-tg-${x.id}`).flex().items_center().gap(GAP_S).h(H_BTN_S).px(8).rounded(6)
@@ -593,7 +595,7 @@ export default class Marketplaces extends View {
           .child(h_flex().gap(GAP_M).items_center().min_w(0)
             .child(div().text_size(T_L).font_semibold().child(mk.name))
             .child(div().truncate().text_size(T_S).text_color(t.muted).child(mk.repo ?? mk.source ?? "")))
-          .child(div().truncate().text_size(T_S).text_color(t.dim)
+          .child(div().truncate().text_size(T_S).text_color(t.muted)
             .child(cat?.loading ? "Katalog lädt …" : cat?.error ? "Katalog nicht lesbar" : [cat?.description, cat?.from ? `Katalog aus ${cat.from}` : null].filter(Boolean).join(" · "))))
         .child(h_flex().w(180).flex_none().h(H_INPUT).px(10).gap(GAP_S).rounded(6).bg(t.background).border_1().border_color(t.input).items_center()
           .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
@@ -647,7 +649,7 @@ export default class Marketplaces extends View {
       .child(h_flex().gap(GAP_M).items_center().text_size(T_S)
         .when(Boolean(P?.loading), (el) => el.child(this.spinner(t)))
         .child(div().flex_1().min_w(0).truncate().text_color(P?.error ? t.blocked : t.muted).child(info))
-        .when(Boolean(note), (el) => el.child(div().flex_none().text_size(T_XS).text_color(t.dim).child(note))));
+        .when(Boolean(note), (el) => el.child(div().flex_none().text_size(T_XS).text_color(t.muted).child(note))));
   }
 
   columns() {
@@ -683,7 +685,7 @@ export default class Marketplaces extends View {
       if (this.mode === "user" && groups.at(-1)?.M === c.M) groups.at(-1).n++;
       else groups.push({ M: c.M, label, n: 1 });
     }
-    const header = h_flex().flex_none().h(46).px(INSET_PANEL).items_end().pb(GAP_S).gap(0).border_b(1).border_color(t.border).text_size(T_S).text_color(t.dim)
+    const header = h_flex().flex_none().h(46).px(INSET_PANEL).items_end().pb(GAP_S).gap(0).border_b(1).border_color(t.border).text_size(T_S).text_color(t.muted)
       .child(div().flex_1().min_w(0).child(plural(list.length, "Plugin", "Plugins")))
       .children(this.mode === "user"
         ? groups.map((g) => v_flex().w(CELL * g.n).flex_none().gap(GAP_XS)
@@ -759,7 +761,7 @@ export default class Marketplaces extends View {
     if (!st) {
       const can = known || Boolean(mk.repo);
       if (p.orphan) return box.child(div().text_color(tint(t.dim, "88")).child("·"));
-      return box.child(pill(`mk-c-${cid}`).border_1().border_color(t.border).text_color(t.dim).when(!can, (el) => el.opacity(0.4))
+      return box.child(pill(`mk-c-${cid}`).border_1().border_color(t.border).text_color(t.muted).when(!can, (el) => el.opacity(0.4))
         .tooltip(!can ? `${h.name} auf ${M.label} hat ${mk.name} nicht, und die Quelle ist unbekannt` : `${scope === "project" ? "Einschalten" : "Installieren"} in ${where}${known ? "" : ` (fügt zuerst ${mk.repo} hinzu)`}`)
         .when(can, (el) => el.hover((s) => s.bg(t.hover).text_color(t.foreground))
           .on_click((_e, cx) => (scope === "project" ? this.projectCell(cx, M, h.key, id, mk, null) : this.userCell(cx, M, h.key, id, mk, null))))
@@ -780,13 +782,16 @@ export default class Marketplaces extends View {
         .child(div().size(7).rounded_full().border_1().border_color(color).when(on, (el) => el.bg(color)))));
   }
 
-  // Empty state (5.6): icon 16 and one sentence, dim, and the way out; while reading a spinner.
+  // Empty state (5.6): icon 16 and one sentence, then the way out as a link.
+  // While it reads, the title row stays quiet: one waiting sign is enough.
   empty(t, loading) {
     return v_flex().flex_1().items_center().justify_center().gap(GAP_M).text_size(T_S).text_color(t.dim)
       .when(loading, (el) => el.child(this.spinner(t)).child("lädt …"))
       .when(!loading, (el) => el.child(svg("mods/workspace-chrome/layers.svg").size(16).text_color(t.dim))
-        .child("Noch kein Marketplace in einem Host eingerichtet.")
-        .child(this.button(t, "mk-empty-add", "Marketplace hinzufügen", (_e, cx) => this.openAdd(cx), { primary: true })));
+        .child("Noch kein Marketplace eingerichtet.")
+        .child(this.control("mk-empty-add").text_size(T_S).text_color(t.muted).cursor_pointer()
+          .hover((s) => s.text_color(t.foreground)).tooltip("Marketplace hinzufügen")
+          .on_click((_e, cx) => this.openAdd(cx)).child("Marketplace hinzufügen")));
   }
 
   // Confirmation (5.6 dialog): title, detail, Abbrechen and the one primary action.

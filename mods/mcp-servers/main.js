@@ -466,7 +466,8 @@ export default class McpServers extends View {
       .bg(t.popover)
       .text_color(t.foreground)
       .text_size(T_M)
-      .child(this.titleBar(t, loading))
+      // The body waits on its own ("lädt …" in its note): one spinner, not two.
+      .child(this.titleBar(t, loading && !(this.mode === "user" && !cols.length)))
       .children(this.hintRows(t))
       .when(this.mode === "project", (el) => el.child(this.agentBar(t)))
       .when(Boolean(this.adding), (el) => el.child(this.addPanel(t)))
@@ -513,7 +514,7 @@ export default class McpServers extends View {
   }
 
   // Window title row (5.6): like a panel head, chrome background, Close last.
-  titleBar(t, loading) {
+  titleBar(t, showLoading) {
     const off = [...this.machines.values()].filter((M) => M.state === "unreachable" || M.state === "error");
     const healthErr = this.readyMachines().filter((M) => M.hosts.claude?.healthError).map((M) => `${M.label}: ${M.hosts.claude.healthError}`);
     return h_flex().flex_none().h(H_HEADER).px(INSET_PANEL).gap(GAP_M).items_center().bg(t.chrome).border_b(1).border_color(t.border)
@@ -521,12 +522,13 @@ export default class McpServers extends View {
       .child(this.segment(t, "mode", [["user", "Benutzer"], ["project", "Projekt"]], this.mode, (cx, mode) => this.setMode(cx, mode),
         "Scope: für den Benutzer oder für das Projekt eines Agents"))
       .child(div().flex_1())
-      .when(off.length > 0, (el) => el.child(div().id("mc-off").text_size(T_S).text_color(t.dim)
+      .when(off.length > 0, (el) => el.child(div().id("mc-off").text_size(T_S).text_color(t.muted)
         .tooltip(off.map((M) => `${M.label}: ${M.error ?? "nicht erreichbar"}`).join("\n"))
         .child(`${off.map((M) => M.label).join(", ")} nicht erreichbar`)))
       .when(healthErr.length > 0, (el) => el.child(div().id("mc-health-err").text_size(T_S).text_color(t.blocked).tooltip(healthErr.join("\n")).child("Gesundheitscheck fehlgeschlagen")))
-      .when(loading, (el) => el.child(this.spinner(t)))
-      .child(this.button(t, "mc-add", "Hinzufügen", (_e, cx) => (this.adding ? ((this.adding = null), cx.notify()) : this.openAdd(cx)), { icon: "mods/workspace-chrome/plus.svg", tip: "MCP-Server hinzufügen" }))
+      .when(showLoading, (el) => el.child(this.spinner(t)))
+      // Same as the Marketplaces window: adding is an icon button in the title row.
+      .child(this.button(t, "mc-add", null, (_e, cx) => (this.adding ? ((this.adding = null), cx.notify()) : this.openAdd(cx)), { icon: "mods/workspace-chrome/plus.svg", tip: "MCP-Server hinzufügen" }))
       .child(this.button(t, "mc-refresh", null, (_e, cx) => this.refresh(cx, true), { icon: "mods/git-graph/icons/refresh.svg", tip: "Alles neu einlesen und die Server von Claude Code prüfen (dauert ein paar Sekunden)" }))
       .child(this.button(t, "mc-close", null, () => this.close(), { icon: "mods/pane/close.svg", tip: "Schließen (Esc)" }));
   }
@@ -603,7 +605,7 @@ export default class McpServers extends View {
         .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
         .child(Textarea.new(this.addKv).size_full().text_size(T_M).text_color(t.foreground)))
       .child(h_flex().flex_wrap().gap(GAP_S).items_center()
-        .child(div().text_size(T_S).text_color(t.dim).child("in"))
+        .child(div().text_size(T_S).text_color(t.muted).child("in"))
         .children(targets.map((x) => {
           const on = A.targets.has(x.id);
           return this.control(`mc-tg-${x.id}`).flex().items_center().gap(GAP_S).h(H_BTN_S).px(8).rounded(6)
@@ -613,7 +615,7 @@ export default class McpServers extends View {
             .child(svg(hostInfo(x.key).icon).size(12).flex_none())
             .child(`${hostInfo(x.key).short} · ${x.M.label}`);
         }))
-        .when(!targets.length, (el) => el.child(div().text_size(T_S).text_color(t.dim).child(project ? "Wähle zuerst einen laufenden Agent." : "Kein Host gefunden.")))
+        .when(!targets.length, (el) => el.child(div().text_size(T_S).text_color(t.dim).child(project ? "Wähle zuerst einen laufenden Agent." : "Keine Maschine mit einem Agent.")))
         .child(div().flex_1())
         .child(this.segment(t, "mc-scope", [["user", "Benutzer"], ["project", "Projekt", !project]], A.scope, (cx, s) => { A.scope = s; cx.notify(); }, "Scope")))
       .when(Boolean(A.error), (el) => el.child(div().text_size(T_S).text_color(t.blocked).child(A.error)));
@@ -632,7 +634,7 @@ export default class McpServers extends View {
       if (this.mode === "user" && groups.at(-1)?.M === c.M) groups.at(-1).n++;
       else groups.push({ M: c.M, n: 1 });
     }
-    const header = h_flex().flex_none().h(46).px(INSET_PANEL).items_end().pb(GAP_S).border_b(1).border_color(t.border).text_size(T_S).text_color(t.dim)
+    const header = h_flex().flex_none().h(46).px(INSET_PANEL).items_end().pb(GAP_S).border_b(1).border_color(t.border).text_size(T_S).text_color(t.muted)
       .child(div().flex_1().min_w(0).child(plural(rows.length, "Server", "Server")))
       .children(this.mode === "user"
         ? groups.map((g) => v_flex().w(CELL * g.n).flex_none().gap(GAP_XS)
@@ -652,7 +654,9 @@ export default class McpServers extends View {
       .child(header)
       .child(v_flex().id("mc-rows").flex_1().min_h(0).overflow_y_scrollbar()
         .when(Boolean(note), (el) => el.child(h_flex().h(H_ROW).px(INSET_PANEL).mt(GAP_S).gap(GAP_M).items_center().text_size(T_S).text_color(t.dim).child(note)
-          .when(!rows.length && cols.length > 0 && !this.adding, (el) => el.child(this.button(t, "mc-empty-add", "Server hinzufügen", (_e, cx) => this.openAdd(cx), { primary: true })))))
+          .when(!rows.length && cols.length > 0 && !this.adding, (el) => el.child(this.control("mc-empty-add").text_size(T_S).text_color(t.muted)
+            .hover((s) => s.text_color(t.foreground)).tooltip("MCP-Server hinzufügen")
+            .on_click((_e, cx) => this.openAdd(cx)).child("Server hinzufügen")))))
         .children(rows.map((x) => this.row(t, x, cols))));
   }
 
@@ -661,7 +665,7 @@ export default class McpServers extends View {
     return h_flex().id(`mc-row-${x.name}`).flex_none().h(ROW).px(INSET_PANEL).items_center().border_b(1).border_color(tint(t.border, "88")).hover((s) => s.bg(t.hover))
       .child(v_flex().flex_1().min_w(0).gap(2).pr(GAP_M)
         .child(div().truncate().font_semibold().child(x.name))
-        .child(div().truncate().text_size(T_S).text_color(t.dim).child(`${S.transport} · ${target(S)}`)))
+        .child(div().truncate().text_size(T_S).text_color(t.muted).child(`${S.transport} · ${target(S)}`)))
       .children(cols.map((col) => this.cell(t, col, x.name)));
   }
 
