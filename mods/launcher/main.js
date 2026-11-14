@@ -70,6 +70,9 @@ export default class Launcher extends View {
     this.name = InputState.new({ placeholder: "Tab-Name" });
     this.custom = InputState.new({ placeholder: "Kommando, z. B. claude --model opus" });
     this.task = TextareaState.new({ rows: 12, placeholder: "Erste Nachricht an den Agent …" });
+    this.focus = ui.focusFields();
+    for (const [id, state] of [["ln-ask", this.ask], ["ln-task", this.task], ["ln-branch", this.branch], ["ln-folder", this.folder],
+      ["ln-name", this.name], ["ln-custom", this.custom]]) this.focus.track(state, id);
     if (this.ticket) {
       this.ask.set_value(this.ticket.team ?? teamText(this.ticket));
       this.fromTicket();
@@ -186,7 +189,13 @@ export default class Launcher extends View {
       const r = await hc(["send", ORCH, text, ...(o.status === "blocked" ? ["--force"] : [])]);
       if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim().split("\n").pop() || "Senden fehlgeschlagen");
       if (this.ticket?.quest) this.handOver({ mode: "team", terminal: o.address });
-      else notify({ title: "Auftrag an das Team", body: text.split("\n")[0].slice(0, 200), level: "success", timeout: 6000, action: { name: "tabs-graph.panel-team" } });
+      else {
+        // Until a ticket exists, the Inbox says the order is with the orchestrator (B, optional gap).
+        const list = shared("quests.pending") ?? [];
+        setShared("quests.pending", [...list.slice(-4),
+          { key: `auftrag:${Date.now()}`, id: "", url: "", source: "text", title: text.split("\n")[0].slice(0, 80), at: Date.now() }]);
+        notify({ title: "Auftrag an das Team", body: text.split("\n")[0].slice(0, 200), level: "success", timeout: 6000, action: { name: "tabs-graph.panel-team" } });
+      }
     });
   }
 
@@ -274,8 +283,8 @@ export default class Launcher extends View {
       .when(Boolean(sub), (el) => el.child(div().truncate().text_size(T_S).text_color(t.dim).child(sub)));
   }
 
-  area(t, state) {
-    return Textarea.new(state).flex_1().min_h(120).w_full().px(10).py(6).rounded(6).border_1().border_color(t.input).bg(t.background).text_size(T_M).text_color(t.foreground);
+  area(t, state, focused = false) {
+    return Textarea.new(state).flex_1().min_h(120).w_full().px(10).py(6).rounded(6).border_1().border_color(focused ? t.accent : t.input).bg(t.background).text_size(T_M).text_color(t.foreground);
   }
 
   footer(t, left, button) {
@@ -294,7 +303,7 @@ export default class Launcher extends View {
       .child(h_flex().gap(ui.GAP_M).items_center()
         .child(div().flex_1().min_w(0).text_size(T_S).text_color(o ? t.dim : t.blocked).child(hint))
         .when(!o, (el) => el.child(ui.link(t, "ln-team-panel", "Team-Panel öffnen", () => { closeOverlay(props().overlay); run("tabs-graph.panel-team"); }))))
-      .child(this.area(t, this.ask))
+      .child(this.area(t, this.ask, this.focus.has("ln-ask")))
       .child(this.footer(t, null,
         ui.button(t, "ln-send", "An das Team", (cx) => this.sendTeam(cx), { kind: "primary", enabled: Boolean(o) && !this.busy,
           tip: "Per hc send an den Orchestrator" })));
@@ -320,7 +329,7 @@ export default class Launcher extends View {
         .when(this.agents === null && Boolean(s), (el) => el.child(ui.loading(t, "suche installierte Agents …")))
         .children((this.agents ?? []).map((a) => this.chip(t, `ag-${a.key}`, a.name, this.picked.has(a.key), (cx) => this.toggleAgent(a.key, cx))))
         .child(this.chip(t, "ag-custom", "Kommando …", this.picked.has("custom"), (cx) => this.toggleAgent("custom", cx))))
-      .when(this.picked.has("custom"), (el) => el.child(ui.inputBox(t, "ln-custom", Input.new(this.custom))))
+      .when(this.picked.has("custom"), (el) => el.child(ui.inputBox(t, "ln-custom", Input.new(this.custom), { focused: this.focus.has("ln-custom") })))
       .child(h_flex().pt(ui.GAP_XS).gap(ui.GAP_M).items_center()
         .child(this.label(t, "Wo"))
         .child(ui.segment(t, "ln-where", [
@@ -329,13 +338,13 @@ export default class Launcher extends View {
         ], this.where, (v, cx) => { if (v === "tab" || r) { this.where = v; cx.notify(); } })))
       .child(div().truncate().text_size(T_S).text_color(r === null ? t.blocked : t.dim).child(repoLine))
       .child(this.where === "worktree"
-        ? h_flex().gap(ui.GAP_M).items_center().child(div().flex_1().child(ui.inputBox(t, "ln-branch", Input.new(this.branch))))
+        ? h_flex().gap(ui.GAP_M).items_center().child(div().flex_1().child(ui.inputBox(t, "ln-branch", Input.new(this.branch), { focused: this.focus.has("ln-branch") })))
           .when(n > 1, (el) => el.child(div().text_size(T_S).text_color(t.dim).child("+ -<agent>")))
-        : ui.inputBox(t, "ln-folder", Input.new(this.folder)))
+        : ui.inputBox(t, "ln-folder", Input.new(this.folder), { focused: this.focus.has("ln-folder") }))
       .child(this.label(t, "Tab-Name"))
-      .child(ui.inputBox(t, "ln-name", Input.new(this.name)))
+      .child(ui.inputBox(t, "ln-name", Input.new(this.name), { focused: this.focus.has("ln-name") }))
       .child(this.label(t, "Erste Nachricht · {folder} {branch} {branchnote} {space} werden ersetzt"))
-      .child(this.area(t, this.task))
+      .child(this.area(t, this.task, this.focus.has("ln-task")))
       .child(h_flex().gap(ui.GAP_L).items_center().flex_wrap()
         .child(this.check(t, "ln-team", this.team, "Als Team beobachten", (cx) => { this.team = !this.team; cx.notify(); }))
         .when(Boolean(this.ticket?.writeback), (el) => el.child(this.check(t, "ln-wb", this.writeback, this.ticket.writeback, (cx) => { this.writeback = !this.writeback; cx.notify(); }))))
