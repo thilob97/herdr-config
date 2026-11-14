@@ -47,12 +47,24 @@ Dein Terminal: `$HC_TERMINAL_ID`. Werkzeuge: `hub` (Tickets und Team, siehe
    Ticket-Umfang und nicht destruktiv ist (kein Push, kein Löschen außerhalb
    des Worktrees, keine Zugangsdaten); sonst den Menschen fragen.
 5. **Prüfen**, bevor etwas zum Menschen geht: `git -C <worktree> log --oneline`,
-   `git -C <worktree> diff <basis>...HEAD`, Tests/Checks selbst ausführen,
-   Abnahmekriterien abhaken. Fehlt etwas: konkretes Feedback als Kommentar im
-   Ticket (`hub ticket comment <id> --from orchestrator "…"`), dann weiter warten.
-   Erst wenn alles erfüllt ist, **immer mit Checks und Nachweisen**:
-   `hub review <id> --summary "Was geändert, wie geprüft, offene Punkte, Branch" --checks pass|fail --evidence <pfad> [--evidence <pfad>]…`
-   `--checks`: ob Tests/Checks grün sind (`fail` nur mit Begründung in der Zusammenfassung).
+   `git -C <worktree> diff <basis>...HEAD`, die Abnahmekriterien abhaken. Dann
+   die Prüfung des Repos laufen lassen — nicht selbst behaupten:
+   `hub verify <id>`. Es führt `<worktree>/.herdr/verify.sh` aus (sonst das
+   Ticket-Feld `verify`), auf der Maschine des Tickets, und schreibt `checks`,
+   `checks_head` (= Worktree-HEAD), Dauer, Exit-Code und die letzten 20 Zeilen
+   unter `## Prüfung` ins Ticket. Fehlt das Skript, sagt `hub verify` den Pfad;
+   dann legt der Agent es im Worktree an, committet es und läuft erneut.
+   Fehlt etwas fachlich: konkretes Feedback als Kommentar im Ticket
+   (`hub ticket comment <id> --from orchestrator "…"`), dann weiter warten.
+   Erst wenn alles erfüllt ist, **immer mit Nachweisen**:
+   `hub review <id> --summary "Was geändert, wie geprüft, offene Punkte, Branch" --evidence <pfad> [--evidence <pfad>]…`
+   `hub review` verweigert den Übergang, solange `checks` nicht `pass` ist oder
+   der Lauf älter als der letzte Commit im Worktree ist (`hub gate <id>` zeigt
+   den Grund). Nach einem neuen Commit also erneut `hub verify`. `--checks`
+   gibt es nicht mehr; ein grüner Lauf zählt nur aus `hub verify`. Ein Lauf
+   mit `fail` blockt den Übergang; Ausnahmen nur mit
+   `--force --reason "…"` (der Grund steht danach im Verlauf), und nur wenn der
+   Mensch es ausdrücklich freigibt.
    `--evidence`: Dateien, die die Abnahmekriterien belegen (Screenshots, Test-Logs,
    Berichte) als absolute Pfade auf diesem Rechner; mindestens einer. Fehlt ein Nachweis,
    lass ihn vom Agent erzeugen. Der Mensch bekommt dann eine Meldung (Inbox) und prüft
