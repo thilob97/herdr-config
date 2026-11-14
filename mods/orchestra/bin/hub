@@ -17,8 +17,12 @@ reports into it) and show in the Team-Panel under it.
   hub ticket inbox AGENT [--json]           tickets naming (@), assigning or waiting on AGENT
   hub ticket watch ID --on AGENT            "waiting for an answer from @AGENT"
   hub dispatch ID [--agent omp|claude|codex|"cmd args"] [--no-worktree] [--branch B] [--no-lessons]
-                                            start the ticket's agent; appends the repo's last 8 lessons
+                                            start the ticket's agent; writes base and base_head (the base's
+                                            commit at the start); appends the repo's last 8 lessons
                                             (## Was hier schon schiefging) unless --no-lessons
+  hub rebase ID                             rebase the ticket's branch in its worktree onto its base;
+                                            a conflict stops with exit 1, names the files and leaves
+                                            the worktree in the rebase for the agent to resolve
   hub lesson add <repo|ticket> --from review|human|ci "text"
                                             append to <repo>/.herdr/lessons.md (at most 40 lines, oldest drop)
   hub lesson list <repo|ticket> [--json] [--last N]
@@ -74,7 +78,7 @@ import argparse, datetime, json, os, pwd, re, secrets, shlex, subprocess, sys, t
 
 APP = os.environ.get("HERDR_APP_HOME") or os.path.expanduser("~/.config/herdr-app")
 TICKETS = os.path.join(APP, "data", "quests", "tickets")
-FIELDS = ["title", "status", "repo", "labels", "due", "machine", "agent", "branch", "base", "worktree", "terminal",
+FIELDS = ["title", "status", "repo", "labels", "due", "machine", "agent", "branch", "base", "base_head", "worktree", "terminal",
           "space", "tab", "source", "checks", "checks_head", "checks_at", "checks_duration", "checks_exit", "checks_cmd", "verify",
           "evidence", "merged", "pr", "ci", "ci_at", "ci_url", "ci_details",
           "review", "review_head", "review_at", "review_summary", "review_rounds", "reviewer", "review_terminal",
@@ -394,6 +398,7 @@ def gate(t):
     else:
         g.update(ok=True, reason="")
     g["review"] = review_gate(t, head, err)
+    g["base"] = base_gate(t, head, err)
     return g
 
 
@@ -422,6 +427,44 @@ def review_gate(t, head=None, err=None):
                        f"jetzt {(head or '?')[:7]}): hub review-start {t['id']}")
     else:
         g["ok"] = True
+    return g
+
+
+def base_gate(t, head=None, err=None):
+    """Whether the branch sits on its base: the base's current tip must be an ancestor of HEAD.
+    The recorded `base_head` is only the fallback when the base ref is gone (another machine,
+    deleted branch); a base that moved on after dispatch therefore counts as stale."""
+    on = t.get("machine") or None
+    base = t.get("base") or ""
+    g = {"base": base or None, "base_head": t.get("base_head") or None, "ok": None,
+         "reason": "", "tip": None, "behind": None}
+    if not base or not t.get("branch"):
+        g["reason"] = "Keine Basis im Ticket: hub dispatch schreibt base und base_head"
+        return g
+    if head is None and err is None:
+        head, err = head_of(t, on)
+    if err:
+        g.update(ok=False, reason=f"{err}; hub verify {t['id']} prüft im Worktree")
+        return g
+    folder = target_of(t, on)
+    if not folder:
+        g.update(ok=False, reason="Worktree und Repo fehlen")
+        return g
+    r = run(["git", "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}"], on, folder, check=False)
+    g["tip"] = r.stdout.strip() if r.returncode == 0 else g["base_head"]
+    if not g["tip"]:
+        g["reason"] = (f"Basis {base} nicht gefunden: git fetch im Repo oder "
+                       f"hub ticket set {t['id']} base=<branch>")
+        return g
+    if run(["git", "merge-base", "--is-ancestor", g["tip"], "HEAD"], on, folder, check=False).returncode == 0:
+        g["ok"] = True
+        return g
+    behind = run(["git", "rev-list", "--count", f"HEAD..{g['tip']}"], on, folder, check=False)
+    g["ok"] = False
+    g["behind"] = int(behind.stdout.strip() or 0) if behind.returncode == 0 else None
+    n = f" ({g['behind']} Commit{'s' if g['behind'] != 1 else ''} hinter {base})" if g["behind"] else ""
+    g["reason"] = (f"Basis veraltet: der Branch setzt nicht auf {base} auf{n}; im Worktree "
+                   f"`git rebase {base}` (oder hub rebase {t['id']}), dann erneut prüfen")
     return g
 
 
@@ -746,8 +789,19 @@ def cmd_dispatch(a):
         die(f"{a.id} has no repo; hub ticket set {a.id} repo=/path/to/checkout")
     me = os.environ.get("HC_TERMINAL_ID")
     folder, branch = repo, None
+    # The base and its commit at the start: the branch lands here later, and `hub review`
+    # checks that the base has not moved on under the branch (drift).
+    top_r = run(["git", "rev-parse", "--show-toplevel"], on, repo, check=False)
+    top = top_r.stdout.strip() if top_r.returncode == 0 else repo
+    base = t.get("base") or ""
+    if not base and top_r.returncode == 0:
+        base = run(["git", "rev-parse", "--abbrev-ref", "HEAD"], on, top).stdout.strip()
+    base_head = t.get("base_head") or ""
+    if top_r.returncode == 0:
+        r = run(["git", "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}"], on, top, check=False)
+        base_head = r.stdout.strip() if r.returncode == 0 else \
+            run(["git", "rev-parse", "HEAD"], on, top).stdout.strip()
     if not a.no_worktree:
-        top = run(["git", "rev-parse", "--show-toplevel"], on, repo).stdout.strip()
         common = run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], on, repo).stdout.strip()
         main = common[:-5] if common.endswith("/.git") else common
         labels = t.get("labels", "").lower()
@@ -757,9 +811,13 @@ def cmd_dispatch(a):
         folder = f"{home_of(on)}/.herdr/worktrees/{os.path.basename(main)}/{slug(branch.replace('/', '-'), 60)}"
         exists = run(["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"], on, main, check=False).returncode == 0
         if run(["test", "-d", folder], on, check=False).returncode != 0:
-            run(["git", "worktree", "add", folder, branch] if exists else ["git", "worktree", "add", "-b", branch, folder, "HEAD"], on, top)
-        # Where it lands later: the branch the repo was on when the work started.
-        t["base"] = t.get("base") or run(["git", "rev-parse", "--abbrev-ref", "HEAD"], on, top).stdout.strip()
+            # New branches start on the recorded base commit, not on whatever HEAD is now.
+            start = base_head or "HEAD"
+            run(["git", "worktree", "add", folder, branch] if exists else ["git", "worktree", "add", "-b", branch, folder, start], on, top)
+    if base:
+        t["base"] = base
+    if base_head:
+        t["base_head"] = base_head
     report = f"hc send {me} \"…\"" if me else "deine Abschlussnachricht"
     order = t["body"].strip()
     lessons = "" if a.no_lessons else lesson_section(repo, on)
@@ -922,6 +980,41 @@ def cmd_review_verdict(a):
         print(f"{a.id}: Review pass · Runde {n} · HEAD {head[:7]} (hub review kann jetzt übergeben)")
 
 
+def cmd_rebase(a):
+    """Rebase the ticket's branch in its worktree onto its base. A conflict leaves the
+    worktree mid-rebase (never aborted): the agent resolves it and continues."""
+    t = read(a.id)
+    on = t.get("machine") or None
+    folder, branch = t.get("worktree"), t.get("branch")
+    if not (folder and branch):
+        die(f"{a.id} hat keinen Worktree (kein hub dispatch); hub rebase braucht den Branch des Umsetzers")
+    if run(["test", "-d", folder], on, check=False).returncode != 0:
+        die(f"{a.id}: Worktree {folder} fehlt")
+    base = t.get("base") or ""
+    if not base:
+        die(f"{a.id}: Basis unbekannt (Feld base): hub ticket set {a.id} base=main")
+    if run(["git", "status", "--porcelain"], on, folder).stdout.strip():
+        die(f"{a.id}: {folder} hat uncommittete Änderungen; der Agent muss sie erst committen, "
+            f"dann hub rebase {a.id}")
+    r = run(["git", "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}"], on, folder, check=False)
+    if r.returncode != 0:
+        die(f"{a.id}: Basis {base} nicht gefunden in {folder}: git fetch, dann hub rebase {a.id}")
+    tip = r.stdout.strip()
+    if run(["git", "merge-base", "--is-ancestor", tip, "HEAD"], on, folder, check=False).returncode == 0:
+        print(f"{a.id}: Basis aktuell ({base} {tip[:7]})")
+        return
+    r = run(["git", "rebase", base], on, folder, check=False)
+    if r.returncode != 0:
+        files = run(["git", "diff", "--name-only", "--diff-filter=U"], on, folder, check=False).stdout.split()
+        where = ", ".join(files) if files else "(git status im Worktree)"
+        die(f"{a.id}: Rebase auf {base} gestoppt — Konflikt in {where}. "
+            f"Der Worktree {folder} bleibt im Rebase: Konflikte auflösen, git add, git rebase --continue "
+            f"(oder --abort); danach hub verify {a.id} und hub review {a.id}.")
+    t["base_head"] = tip
+    write(t)
+    print(f"{a.id}: rebased auf {base} ({tip[:7]})")
+
+
 def cmd_verify(a):
     t = read(a.id)
     on = t.get("machine") or None
@@ -965,8 +1058,12 @@ def cmd_gate(a):
         print(json.dumps(g, ensure_ascii=False))
         return
     r = g["review"]
+    b = g["base"]
     print(f"{a.id}: {'frei' if g['ok'] else 'gesperrt'} · {g['reason'] or 'Checks grün auf dem HEAD des Worktrees'}")
     print(f"{a.id}: Review {'grün' if r['ok'] else 'offen'} · {r['reason'] or 'Urteil pass auf dem HEAD des Worktrees'}")
+    if b.get("ok") is not None:
+        what = b["reason"] or f"setzt auf {b['base']} auf"
+        print(f"{a.id}: Basis {'aktuell' if b['ok'] else 'veraltet'} · {what}")
 
 
 def cmd_gates(_a):
@@ -985,7 +1082,8 @@ def cmd_review(a):
     t = read(a.id)
     g = gate(t)
     rv = g["review"]
-    missing = [r for r in (g["reason"], rv["reason"]) if r]
+    b = g["base"]
+    missing = ([b["reason"]] if b.get("ok") is False else []) + [r for r in (g["reason"], rv["reason"]) if r]
     if a.force:
         if not a.reason.strip():
             die("--force verlangt --reason \"…\": der Grund gehört in den Verlauf")
@@ -1752,14 +1850,16 @@ def cmd_status(_a):
     tickets = all_tickets()
     open = [t for t in tickets if t["status"] != "done"]
     if open:
-        print(f"{'Ticket':<40} {'Status':<7} {'Urteil':<7} {'Runden':>6} {'CI':<5} {'Terminal':<16} {'Live':<9} {'Alter':>6} {'Kosten':>7} {'Verlauf':>7}  Titel")
+        print(f"{'Ticket':<40} {'Status':<7} {'Basis':<17} {'Urteil':<7} {'Runden':>6} {'CI':<5} {'Terminal':<16} {'Live':<9} {'Alter':>6} {'Kosten':>7} {'Verlauf':>7}  Titel")
     for t in open:
         term = t.get("terminal", "")
         ci = f"CI {CI_MARK.get(t.get('ci'), '–')}"
         cost = f"${per[t['id']]:.2f}" if t["id"] in per else "-"
         # Age since the last status change (tickets from before the log fall back to `updated`).
         age_t = age(t.get("status_at") or t.get("updated") or "")
-        print(f"{t['id']:<40} {t['status']:<7} {(t.get('review') or '–'):<7} {(t.get('review_rounds') or '–'):>6} "
+        bg = base_gate(t)
+        basis = "⚠ Basis veraltet" if bg["ok"] is False else "ok" if bg["ok"] else "–"
+        print(f"{t['id']:<40} {t['status']:<7} {basis:<17} {(t.get('review') or '–'):<7} {(t.get('review_rounds') or '–'):>6} "
               f"{ci:<5} {term:<16} {live.get(term, '-' if not term else 'beendet'):<9} {age_t:>6} {cost:>7} "
               f"{len(entries(t)):>7}  {t['title']}")
     rests, spaces = [], None
@@ -1972,6 +2072,9 @@ def main():
     d.add_argument("--branch")
     d.add_argument("--no-lessons", action="store_true")
     d.set_defaults(fn=cmd_dispatch)
+    rb = sub.add_parser("rebase")
+    rb.add_argument("id")
+    rb.set_defaults(fn=cmd_rebase)
     vf = sub.add_parser("verify")
     vf.add_argument("id")
     vf.add_argument("--or-command", metavar="CMD", help="falls .herdr/verify.sh fehlt (vor dem Ticket-Feld verify)")
