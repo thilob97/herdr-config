@@ -25,8 +25,13 @@ const bump = (scope) => setShared(REV, { at: Date.now(), scope });
 const SEL = "quests.selected";
 // What the Auftrag dialog started for a ticket (see the header).
 const HANDOVER = "quests.handover";
+// Handovers to the orchestrator without a ticket yet (read by the Inbox, pruned here).
+const PENDING = "quests.pending";
 const keyOf = (t) => `${t.source}:${t.id}`;
-const STAGE_WORD = { todo: "offen", doing: "in Arbeit", done: "fertig" };
+// One language with the Team panel and the Inbox (B1): Geplant / In Arbeit / Prüfung / Fertig.
+const STAGE_WORD = { todo: "Geplant", doing: "In Arbeit", review: "Prüfung", done: "Fertig" };
+// A team ticket's status as a pipeline stage (unknown values run).
+const pipeline = (s2) => (["todo", "review", "done"].includes(s2) ? s2 : "doing");
 
 // ---- small pieces
 
@@ -50,11 +55,11 @@ const chip = (t, id, text, color) => div().id(id).flex_none().max_w(120).truncat
 
 const field = (t, text, el) => v_flex().gap(ui.GAP_XS).child(div().text_size(T_S).font_medium().text_color(t.muted).child(text)).child(el);
 
-const styled = (t, el) => el.h(ui.H_INPUT).px(10).rounded(6).border_1().border_color(t.input).bg(t.background).text_size(T_M).text_color(t.foreground);
+const styled = (t, el, focused = false) => el.h(ui.H_INPUT).px(10).rounded(6).border_1().border_color(focused ? t.accent : t.input).bg(t.background).text_size(T_M).text_color(t.foreground);
 
 const spinner = (t, color) => svg(SPINNER).size(12).flex_none().text_color(color ?? t.working).spin(900);
 
-const area = (t, state, h) => Textarea.new(state).h(h).px(10).py(6).rounded(6).border_1().border_color(t.input).bg(t.background).text_size(T_M).text_color(t.foreground);
+const area = (t, state, h, focused = false) => Textarea.new(state).h(h).px(10).py(6).rounded(6).border_1().border_color(focused ? t.accent : t.input).bg(t.background).text_size(T_M).text_color(t.foreground);
 
 // A started quest now: its agent's status, or just whether its tab is still there.
 function liveState(rec) {
@@ -109,6 +114,8 @@ class Board {
     this.gen = 0;
     this.input = InputState.new({ placeholder: "Quests filtern …" });
     this.input.on("change", (_e, cx) => { this.filter = this.input.value().trim().toLowerCase(); cx.notify(); });
+    this.focus = ui.focusFields();
+    this.focus.track(this.input, "q-filter");
     this.rev = shared(REV)?.at ?? 0;
     this.reload(cx, true);
   }
@@ -144,10 +151,19 @@ class Board {
 
   record(tk) { return lastRecord(this.started, keyOf(tk)); }
 
+  // The team's ticket for this quest, when the orchestrator took it: by source URL, for a
+  // local ticket by the same id. Its status is what Quests shows (B1, one language).
+  team(tk) {
+    return (shared("orchestra.tickets") ?? []).find((x) => (tk.source === "plain" ? x.id === tk.id : Boolean(tk.url) && x.source === tk.url)) ?? null;
+  }
+
+  // The stage a quest is in: the team's, when it has one, else its source's.
+  stageOf(tk) { const team = this.team(tk); return team ? pipeline(team.status) : stage(tk); }
+
   matches(tk) {
-    const st = stage(tk);
+    const st = this.stageOf(tk);
     if (this.stage === "open" && st === "done") return false;
-    if (this.stage === "doing" && st !== "doing" && !liveState(this.record(tk))?.alive) return false;
+    if (this.stage === "doing" && st !== "doing" && st !== "review" && !liveState(this.record(tk))?.alive) return false;
     if (!this.filter) return true;
     return [tk.title, tk.id, tk.project, tk.assignee, ...tk.labels].some((s) => String(s ?? "").toLowerCase().includes(this.filter));
   }
@@ -213,6 +229,8 @@ class Board {
             }
             await store.addStarted({ key: keyOf(tk), source: tk.source, id: tk.id, title: tk.title, url: tk.url, branch: "beim Orchestrator", worktree: false,
               folder: repo ?? "", machine: sp?.machine ?? null, space: null, tab: null, terminal: h.terminal, agent: "Orchestrator", at: h.at });
+            setShared(PENDING, [...(shared(PENDING) ?? []).filter((p) => p.key !== keyOf(tk)),
+              { key: keyOf(tk), id: tk.id, url: tk.url ?? "", source: tk.source, title: tk.title, at: h.at ?? Date.now() }]);
             notify({ title: "An den Orchestrator übergeben", body: tk.title, level: "success", timeout: 6000, action: { name: "tabs-graph.panel-team" } });
           } else {
             let lines = [], wrote = false;
@@ -246,7 +264,18 @@ class Board {
     cx.notify();
   }
 
+  // Drops pending handovers once the team has a ticket for them (or after 15 minutes).
+  prunePending() {
+    const list = shared(PENDING) ?? [];
+    if (!list.length) return;
+    const team = shared("orchestra.tickets") ?? [];
+    const keep = list.filter((p) => Date.now() - (p.at ?? 0) < 15 * 60000
+      && !team.some((x) => (p.source === "plain" ? x.id === p.id : Boolean(p.url) && x.source === p.url)));
+    if (keep.length !== list.length) setShared(PENDING, keep);
+  }
+
   sync(cx) {
+    this.prunePending();
     const rev = shared(REV);
     if (rev && rev.at !== this.rev) { this.rev = rev.at; this.reload(cx, rev.scope === "all"); }
     if (this.view === "page") this.selected = shared(SEL) ?? null;
@@ -254,12 +283,15 @@ class Board {
   }
 
   // Status, its word and whether something runs for this ticket.
+  // The word is the pipeline stage (one language with Team and Inbox); the icon shows
+  // the agent's live status while one runs. Only a start without a team ticket says
+  // "beendet", because the stage would claim work that is no longer there.
   look(t, tk, rec) {
     const live = liveState(rec);
-    if (live?.status) return { status: live.status, live, text: ui.STATUS_WORD[live.status] ?? live.status, color: ui.statusColor(t, live.status) };
-    if (live?.alive) return { status: "idle", live, text: "läuft", color: t.muted };
-    const st = stage(tk);
-    return { status: st === "done" ? "done" : null, live, text: rec ? "beendet" : STAGE_WORD[st], color: t.dim };
+    const st = this.stageOf(tk);
+    const status = live?.alive ? live.status ?? "idle" : st === "review" ? "blocked" : st === "done" ? "done" : null;
+    const ended = Boolean(rec) && !live?.alive && !this.team(tk) && st !== "done";
+    return { status, live, text: ended ? "beendet" : STAGE_WORD[st], color: st === "review" ? t.blocked : st === "done" ? t.done : t.muted };
   }
 
   // One ticket: a two-line row; on hover the ways on (Orchestrator, Start, or its open tab).
@@ -272,11 +304,16 @@ class Board {
     // A local ticket's project is its repo path: its last folder says enough here.
     const meta = [tk.source === "github" ? `#${tk.number}` : null, String(tk.project ?? "").replace(/\/+$/, "").split("/").pop(), tk.due && `bis ${tk.due}`, tk.assignee,
       rec && `${rec.branch} · ${rec.agent}`].filter(Boolean).join(" · ") || label(tk.source);
+    const alive = Boolean(l.live?.alive);
     const right = hov
-      ? h_flex().flex_none().gap(2)
-        .when(Boolean(l.live?.alive), (el) => el.child(iconBtn(t, `open-${k}`, "mods/orchestra/icons/open.svg", "Öffnen: zum laufenden Agent", () => openRecord(rec, this.view === "page"), true)))
-        .child(iconBtn(t, `orch-${k}`, "mods/orchestra/icon.svg", "Orchestrator: Auftrag ans Team (er plant, verteilt und bringt es geprüft zur Abnahme)", () => this.auftrag(tk, "team"), true))
-        .child(iconBtn(t, `start-${k}`, "mods/orchestra/icons/play.svg", "Start: selbst Agents starten (Branch, Worktree, Agent)", () => this.auftrag(tk, "self"), true))
+      ? h_flex().flex_none().gap(ui.GAP_XS).items_center()
+        // Running work: go to it, do not start it again (B2). Only then is there a primary button.
+        .when(alive, (el) => el
+          .child(btn(t, `open-${k}`, "Zum Agent", () => openRecord(rec, this.view === "page"), { primary: true, tip: "Zum laufenden Agent dieses Tickets" }))
+          .child(iconBtn(t, `orch-${k}`, "mods/orchestra/icon.svg", "An Orchestrator: was noch fehlt (er plant, verteilt und bringt es geprüft zur Abnahme)", () => this.auftrag(tk, "team"), true)))
+        .when(!alive, (el) => el
+          .child(iconBtn(t, `orch-${k}`, "mods/orchestra/icon.svg", "Orchestrator: Auftrag ans Team (er plant, verteilt und bringt es geprüft zur Abnahme)", () => this.auftrag(tk, "team"), true))
+          .child(iconBtn(t, `start-${k}`, "mods/orchestra/icons/play.svg", "Start: selbst Agents starten (Branch, Worktree, Agent)", () => this.auftrag(tk, "self"), true)))
       : div().flex_none().text_size(T_S).text_color(l.color).child(l.text);
     return v_flex().id(`q-${k}`).h(ui.H_ROW2).flex_none().px(8).gap(2).justify_center().rounded(6).cursor_pointer()
       .when(sel, (el) => el.bg(t.selected)).when(!sel, (el) => el.hover((s) => s.bg(t.hover)))
@@ -284,10 +321,10 @@ class Board {
       .on_click((_e, cx) => (this.view === "page" ? this.select(tk, cx) : this.auftrag(tk)))
       .child(h_flex().h(ui.H_BTN_S).gap(ui.GAP_M).items_center()
         .child(l.status ? ui.statusIcon(t, l.status) : div().size(12).flex_none())
-        .child(div().flex_1().min_w(0).truncate().text_size(T_M).text_color(stage(tk) === "done" ? t.muted : t.foreground).child(tk.title))
+        .child(div().flex_1().min_w(0).truncate().text_size(T_M).text_color(this.stageOf(tk) === "done" ? t.muted : t.foreground).child(tk.title))
         .child(right))
       .child(h_flex().pl(20).gap(ui.GAP_XS).items_center().min_w(0)
-        .child(div().flex_shrink(1).min_w(0).truncate().text_size(T_S).text_color(t.dim).child(meta))
+        .child(div().flex_shrink(1).min_w(0).truncate().text_size(T_S).text_color(t.muted).child(meta))
         .children(tk.labels.slice(0, 3).map((x, i) => chip(t, `${k}-l${i}`, x))));
   }
 
@@ -320,7 +357,7 @@ class Board {
   stageSeg(t) {
     return ui.segment(t, "q-stage", [
       { value: "open", label: "Offen", tip: "Alles außer Erledigtem" },
-      { value: "doing", label: "In Arbeit", tip: "Begonnen oder mit laufendem Agent" },
+      { value: "doing", label: "Begonnen", tip: "In Arbeit oder Prüfung, oder mit laufendem Agent" },
       { value: "all", label: "Alle" },
     ], this.stage, (value, cx) => { this.stage = value; localStorage.setItem("stage", value); cx.notify(); });
   }
@@ -336,7 +373,7 @@ class Board {
 
   filterRow(t) {
     return h_flex().px(ui.INSET_PANEL).pt(ui.GAP_L).pb(ui.GAP_S).gap(ui.GAP_M).flex_none().items_center()
-      .child(div().flex_1().min_w(0).child(ui.inputBox(t, "q-filter", Input.new(this.input))))
+      .child(div().flex_1().min_w(0).child(ui.inputBox(t, "q-filter", Input.new(this.input), { focused: this.focus.has("q-filter") })))
       .child(this.stageSeg(t));
   }
 
@@ -390,7 +427,7 @@ class Board {
             .child(h_flex().gap(ui.GAP_M).items_center()
               .child(live?.alive ? ui.statusIcon(t, live.status ?? "idle") : div().size(12).flex_none())
               .child(div().flex_1().min_w(0).truncate().text_size(T_M).text_color(live?.alive ? t.foreground : t.dim).child(rec.title)))
-            .child(div().pl(20).truncate().text_size(T_S).text_color(t.dim)
+            .child(div().pl(20).truncate().text_size(T_S).text_color(t.muted)
               .child(`${rec.branch} · ${live?.status ? ui.STATUS_WORD[live.status] : live?.alive ? "läuft" : "beendet"}`));
         })));
   }
@@ -401,7 +438,7 @@ class Board {
     const k = keyOf(tk);
     const recs = this.started.filter((r) => r.key === k).reverse();
     const meta = [label(tk.source), tk.source === "github" ? `#${tk.number} · ${tk.repo}` : tk.source === "plain" ? `${tk.id}.md` : tk.id,
-      STAGE_WORD[stage(tk)], tk.assignee, tk.due && `bis ${tk.due}`, tk.source !== "github" && String(tk.project ?? "").replace(/\/+$/, "").split("/").pop()].filter(Boolean);
+      STAGE_WORD[this.stageOf(tk)], tk.assignee, tk.due && `bis ${tk.due}`, tk.source !== "github" && String(tk.project ?? "").replace(/\/+$/, "").split("/").pop()].filter(Boolean);
     return v_flex().size_full().min_h(0)
       .child(ui.panelHeader(t, "Ticket", [
         ...(tk.source === "plain" ? [iconBtn(t, "d-edit", `${WC}/square-pen.svg`, "Lokales Ticket bearbeiten", () => openEdit(tk.id))] : []),
@@ -410,11 +447,15 @@ class Board {
       .child(v_flex().id("q-detail").flex_1().min_h(0).overflow_y_scrollbar().px(ui.INSET_PANEL).py(ui.GAP_L).gap(ui.GAP_L)
         .child(div().text_size(T_L).font_semibold().child(tk.title))
         .child(h_flex().flex_wrap().gap(ui.GAP_XS).items_center()
-          .child(div().text_size(T_S).text_color(t.dim).child(meta.join(" · ")))
+          .child(div().text_size(T_S).text_color(t.muted).child(meta.join(" · ")))
           .children(tk.labels.map((x, i) => chip(t, `d-l${i}`, x))))
         .child(h_flex().gap(ui.GAP_M).items_center()
-          .child(btn(t, "d-orch", "An Orchestrator", () => this.auftrag(tk, "team"), { primary: true, tip: "Auftrag ans Team: er plant, verteilt und bringt es geprüft zur Abnahme" }))
-          .child(btn(t, "d-start", "Start", () => this.auftrag(tk, "self"), { tip: "Selbst Agents starten: Branch, Worktree, Agent" })))
+          .when(Boolean(liveState(this.record(tk))?.alive), (el) => el
+            .child(btn(t, "d-open", "Zum Agent", () => openRecord(this.record(tk), true), { primary: true, tip: "Zum laufenden Agent dieses Tickets" }))
+            .child(btn(t, "d-orch", "An Orchestrator", () => this.auftrag(tk, "team"), { tip: "Was noch fehlt, an das Team geben" })))
+          .when(!liveState(this.record(tk))?.alive, (el) => el
+            .child(btn(t, "d-orch", "An Orchestrator", () => this.auftrag(tk, "team"), { primary: true, tip: "Auftrag ans Team: er plant, verteilt und bringt es geprüft zur Abnahme" }))
+            .child(btn(t, "d-start", "Start", () => this.auftrag(tk, "self"), { tip: "Selbst Agents starten: Branch, Worktree, Agent" }))))
         .children(recs.map((rec) => {
           const l = this.look(t, tk, rec);
           return h_flex().id(`dr-${rec.at}`).h(ui.H_ROW).flex_none().px(8).gap(ui.GAP_M).items_center().rounded(6).bg(t.surface)
@@ -456,6 +497,9 @@ class Settings {
     this.in.asanaToken.set_masked(true);
     this.in.triliumToken.set_masked(true);
     this.template = TextareaState.new({ rows: 8 });
+    this.focus = ui.focusFields();
+    for (const [k, state] of Object.entries(this.in)) this.focus.track(state, `s-${k}`);
+    this.focus.track(this.template, "s-template");
     cx.spawn(async (cx) => {
       const s = (this.s = await store.loadSettings());
       this.in.ghRepos.set_value(s.github.repos);
@@ -494,7 +538,7 @@ class Settings {
     const s = this.s;
     if (!s) return dialog(t, "q-settings", "Quellen", ui.loading(t));
     const flip = (obj, k) => (cx) => { obj[k] = !obj[k]; cx.notify(); };
-    const input = (k) => styled(t, Input.new(this.in[k]));
+    const input = (k) => styled(t, Input.new(this.in[k]), this.focus.has(`s-${k}`));
     const tokenField = (k, src, text) => {
       const saved = Boolean(s[src].token) && !this.clear.has(src);
       return field(t, `${text}${saved ? " · gespeichert, tippen ersetzt" : ""}`, h_flex().gap(ui.GAP_S).items_center()
@@ -505,7 +549,7 @@ class Settings {
       .child(h_flex().items_center().child(div().flex_1().text_size(T_L).font_semibold().child(text)).child(toggle(t, `${id}-on`, enabled, enabled ? "an" : "aus", flipIt)))
       .when(enabled, (el) => el.child(body));
     const body = v_flex().gap(ui.GAP_L)
-      .child(div().text_size(T_S).text_color(t.dim).child(`Nur auf diesem Rechner gespeichert, in ${store.dir()}/settings.json (git-ignoriert). Tokens werden nie wieder angezeigt.`))
+      .child(div().text_size(T_S).text_color(t.muted).child(`Nur auf diesem Rechner gespeichert, in ${store.dir()}/settings.json (git-ignoriert). Tokens werden nie wieder angezeigt.`))
       .child(section("s-gh", "GitHub-Issues (gh CLI)", s.github.enabled, flip(s.github, "enabled"), v_flex().gap(ui.GAP_M)
         .child(field(t, "Weitere Repositories (die GitHub-Checkouts deiner Spaces sind immer dabei)", input("ghRepos")))
         .child(toggle(t, "s-gh-mine", s.github.mine, "Nur mir zugewiesene Issues", flip(s.github, "mine")))))
@@ -519,11 +563,11 @@ class Settings {
         .child(tokenField("triliumToken", "trilium", "ETAPI-Token"))
         .child(field(t, "Suche (Notizen, die Quests sind)", input("triliumQuery")))))
       .child(section("s-plain", "Lokale Tickets (Markdown-Dateien)", s.plain.enabled, flip(s.plain, "enabled"),
-        div().text_size(T_S).text_color(t.dim).child(`${store.dir()}/tickets/*.md`)))
+        div().text_size(T_S).text_color(t.muted).child(`${store.dir()}/tickets/*.md`)))
       .child(v_flex().gap(ui.GAP_M).p(ui.INSET_CARD).rounded(8).bg(t.surface).border_1().border_color(t.border)
         .child(div().text_size(T_L).font_semibold().child("Starten"))
         .child(toggle(t, "s-dry", s.dryRun, "Writeback als Probelauf: zeigen, was geschrieben würde, nichts ändern", flip(s, "dryRun")))
-        .child(field(t, "Vorlage der ersten Nachricht: {title} {body} {url} {source} {id} {labels}, beim Start {branch} {folder}", area(t, this.template, 170))))
+        .child(field(t, "Vorlage der ersten Nachricht: {title} {body} {url} {source} {id} {labels}, beim Start {branch} {folder}", area(t, this.template, 170, this.focus.has("s-template")))))
       .when(Boolean(this.error), (el) => el.child(div().text_color(t.blocked).text_size(T_M).child(this.error)));
     return dialog(t, "q-settings", "Quellen", body, h_flex().gap(ui.GAP_M)
       .child(btn(t, "s-cancel", "Abbrechen", closeSelf))
@@ -543,6 +587,8 @@ class Edit {
     this.labels = InputState.new({ placeholder: "bug, ui (optional)" });
     this.due = InputState.new({ placeholder: "JJJJ-MM-TT (optional)" });
     this.body = TextareaState.new({ rows: 12, placeholder: "Markdown: was, warum, Abnahmekriterien …" });
+    this.focus = ui.focusFields();
+    for (const [id, state] of [["e-title", this.title], ["e-repo", this.repo], ["e-labels", this.labels], ["e-due", this.due], ["e-body", this.body]]) this.focus.track(state, id);
     if (this.id) {
       cx.spawn(async (cx) => {
         try {
@@ -584,14 +630,14 @@ class Edit {
   render() {
     const t = theme();
     const body = v_flex().gap(ui.GAP_L)
-      .child(field(t, "Titel", styled(t, Input.new(this.title))))
+      .child(field(t, "Titel", styled(t, Input.new(this.title), this.focus.has("e-title"))))
       .child(field(t, "Status", h_flex().child(ui.segment(t, "e-status", ["todo", "doing", "done"].map((v) => ({ value: v, label: STAGE_WORD[v] })),
         this.status, (v, cx) => { this.status = v; cx.notify(); }))))
-      .child(field(t, "Repository-Hinweis", styled(t, Input.new(this.repo))))
+      .child(field(t, "Repository-Hinweis", styled(t, Input.new(this.repo), this.focus.has("e-repo"))))
       .child(h_flex().gap(ui.GAP_M)
-        .child(div().flex_1().child(field(t, "Labels", styled(t, Input.new(this.labels)))))
-        .child(div().w(170).child(field(t, "Fällig", styled(t, Input.new(this.due))))))
-      .child(field(t, "Beschreibung", area(t, this.body, 220)))
+        .child(div().flex_1().child(field(t, "Labels", styled(t, Input.new(this.labels), this.focus.has("e-labels")))))
+        .child(div().w(170).child(field(t, "Fällig", styled(t, Input.new(this.due), this.focus.has("e-due"))))))
+      .child(field(t, "Beschreibung", area(t, this.body, 220, this.focus.has("e-body"))))
       .when(Boolean(this.error), (el) => el.child(div().text_color(t.blocked).text_size(T_M).child(this.error)));
     const footer = h_flex().gap(ui.GAP_M).flex_1().items_center()
       .when(Boolean(this.id) && !this.asking, (el) => el.child(btn(t, "e-del", "Löschen", (cx) => { this.asking = true; cx.notify(); }, { danger: true })))
@@ -613,7 +659,7 @@ class Bar {
     const win = (id, icon, tip, cmd) => iconBtn(t, id, icon, tip, () => run(cmd));
     return h_flex().size_full().px(ui.INSET_PANEL).gap(ui.GAP_M).items_center().bg(t.chrome).border_b(1).border_color(t.border)
       .child(div().text_size(T_L).font_semibold().text_color(t.foreground).child("Quests"))
-      .child(div().text_size(T_S).text_color(t.dim).child("Ticket wählen · ans Team geben oder selbst starten"))
+      .child(div().text_size(T_S).text_color(t.muted).child("Ticket wählen · ans Team geben oder selbst starten"))
       .child(div().flex_1())
       .child(btn(t, "bar-back", "Zurück zu Elric", () => run("layout.switch", { name: "elric" }), { icon: `${WC}/chevron-left.svg`, tip: "Zurück zum Layout elric (⌃⇧Q)" }))
       .when(Boolean(w?.buttons), (el) => el

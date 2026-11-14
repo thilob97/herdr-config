@@ -13,11 +13,12 @@ export const SOURCES = [
 ];
 export const label = (key) => SOURCES.find((s) => s.key === key)?.label ?? key;
 
-// todo / doing / done, whatever the source calls it.
+// The pipeline stage, whatever the source calls it: todo / doing / review / done (as the Team panel).
 export function stage(t) {
   const s = String(t.status ?? "").toLowerCase();
   if (/done|closed|complete|erledigt/.test(s)) return "done";
-  if (/doing|progress|started|review|arbeit/.test(s)) return "doing";
+  if (/review|prüf|pruef|abnahme/.test(s)) return "review";
+  if (/doing|progress|started|arbeit/.test(s)) return "doing";
   return "todo";
 }
 
