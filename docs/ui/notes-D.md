@@ -48,7 +48,9 @@ damit startet Herdr nach dem Wechsel im Dashboard.
 - Antwort aus dem Feld kommt im Fake-Agent an (`docs/ui-preview.sh hc read t2` zeigt den Text);
   Auftrag aus dem Feld kommt im Fake-Orchestrator an (`hc read orchestrator`).
 - `⌘⇧0` in beide Richtungen geprüft; danach war `shared("layout")` jeweils das gezeigte Layout.
-- Prüfbefehle aus `docs/ui-spec.md` §10 ohne Treffer in den eigenen Dateien.
+- Prüfbefehle aus `docs/ui-spec.md` §10: keine Hex-Farben, kein `toUpperCase()`, keine englischen
+  Reste, keine Radien außerhalb 4/6/8/10. Die Größenprüfung trifft nur die Token-Namen (`T_XS` …,
+  Werte 10,5/11/12/13/15 aus §5.2); Zahlenliterale gibt es in den Dateien nicht.
 
 ## Offen
 
