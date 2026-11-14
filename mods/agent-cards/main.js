@@ -452,7 +452,7 @@ export default class Agents extends View {
       .child(this.menuRow(t, "more-pin", `mods/workspace-chrome/${pinned ? "pin-off" : "pin"}.svg`, pinned ? "Lösen" : "Anheften", then(() =>
         run("terminal.pin", { terminal: address, pinned: !pinned }))))
       .child(this.menuRow(t, "more-rename", "mods/agent-cards/icons/pencil.svg", "Umbenennen …", then(() =>
-        openOverlay({ mod: "agent-cards", kind: "dialog", width: 380, height: 210, props: { rename: address, value: name ?? "" } }))));
+        openOverlay({ mod: "agent-cards", kind: "dialog", width: 380, height: 190, props: { rename: address, value: name ?? "" } }))));
   }
 
   openMore(a) {
@@ -637,7 +637,9 @@ export default class Agents extends View {
       .child(h_flex().flex_wrap().gap(GAP_S)
         .child(textBtn(t, "ag-sel-int", "Unterbrechen", { enabled: !this.busy }, (_e, cx) => this.interrupt(cx)))
         .child(textBtn(t, "ag-sel-team", "Als Team beobachten", {}, (_e, cx) => { this.watchAsTeam(); cx.notify(); })))
-      .when(Boolean(this.note), (el) => el.child(div().text_size(T_S).text_color(this.note.ok ? t.muted : t.blocked).child(this.note.text)));
+      .when(this.busy, (el) => el.child(h_flex().gap(GAP_XS).items_center().text_size(T_S).text_color(t.dim)
+        .child(svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.dim).spin(900)).child("läuft …")))
+      .when(!this.busy && Boolean(this.note), (el) => el.child(div().text_size(T_S).text_color(this.note.ok ? t.muted : t.blocked).child(this.note.text)));
   }
 
   // Every listed agent's name and avatar (docs/ui-spec.md 7.1), written only when it changed.
@@ -792,12 +794,13 @@ export default class Agents extends View {
         o.cost != null ? `Kosten $${o.cost.toFixed(2)} in dieser Sitzung` : null,
       ].filter(Boolean).join("\n") : "";
       const fill = pct == null ? null : pct >= 85 ? t.blocked : pct >= 60 ? t.working : t.done;
-      // While hovered: Review, Unterbrechen and "…" over the card's top right.
-      const actions = h_flex().absolute().top(7).right(7).gap(2).rounded(6).bg(chosen ? t.selected : t.hover)
+      // While hovered: Review, Unterbrechen and "…" over the card's top right, on the
+      // card's own color (theme hover/selected may be translucent: chrome under it).
+      const actions = div().absolute().top(7).right(7).rounded(6).bg(t.chrome).child(h_flex().gap(2).rounded(6).bg(chosen ? t.selected : t.hover)
         .child(iconBtn(t, `rv-${a.address}`, "mods/agent-cards/icons/review.svg", "Review: Änderungen dieses Agents",
           () => openOverlay({ mod: "review", kind: "window", key: "review", width: 960, height: 680, props: { terminal: a.address } })))
         .child(iconBtn(t, `int-${a.address}`, "mods/agent-cards/icons/stop.svg", "Unterbrechen", () => hc(["interrupt", a.address]).catch(() => null)))
-        .child(iconBtn(t, `more-${a.address}`, "mods/agent-cards/icons/more.svg", "Mehr: Plugins, MCP-Server, Anheften, Umbenennen", () => this.openMore(a)));
+        .child(iconBtn(t, `more-${a.address}`, "mods/agent-cards/icons/more.svg", "Mehr: Plugins, MCP-Server, Anheften, Umbenennen", () => this.openMore(a))));
       return h_flex()
         .id(`ag-${a.address}`)
         .relative()
@@ -829,8 +832,9 @@ export default class Agents extends View {
             .when(Boolean(pic), (el) => el.child(pic))
             .child(div().flex_none().max_w(120).truncate().text_size(T_L).font_semibold().text_color(idle ? t.muted : t.foreground).child(name))
             .child(div().flex_1().min_w(0).truncate().text_size(T_S).text_color(t.dim).child(where))
-            .when(sayWaiting, (el) => el.child(statusChip(t, "blocked")))
-            .child(statusMark(t, a.status)))
+            // Hovered, the buttons take the place of the status (a spinning mark would paint over them).
+            .when(sayWaiting && !hovered, (el) => el.child(statusChip(t, "blocked")))
+            .child(hovered ? div().size(12).flex_none() : statusMark(t, a.status)))
           .child(h_flex().h(14).gap(GAP_S).items_center()
             .child(div().flex_1().min_w(0).truncate().text_size(T_S).text_color(t.muted).child(tab || WORD[a.status] || ""))
             .when(subs.length + inner.length > 0, (el) => el.child(fold(a, subs, inner)))
