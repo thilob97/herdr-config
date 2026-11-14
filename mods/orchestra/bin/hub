@@ -55,8 +55,15 @@ reports into it) and show in the Team-Panel under it.
   hub ci ID                                 gh pr checks for the ticket's PR: pass|fail|running|unknown in
                                             the ticket, failures as a Verlauf comment (--from ci) and back
                                             to the agent
-  hub done ID                               accepted without landing
-  hub status                                tickets with their agents' live status, CI and cost so far
+  hub done ID [--keep-worktree] [--keep-space]
+                                            accepted without landing; ends the agent, removes the
+                                            clean worktree and closes the ticket's space/tab (branch
+                                            stays); the flags keep one of them
+  hub cleanup [--dry-run]                   remove leftovers: worktrees without a ticket, spaces
+                                            without live terminals that belong to a ticket, finished
+                                            agents older than an hour
+  hub status                                tickets with their agents' live status, CI and cost so far;
+                                            done tickets are listed only while something is left
 Python 3, standard library only.
 """
 import argparse, json, os, pwd, re, secrets, shlex, subprocess, sys, time, unicodedata
@@ -64,7 +71,7 @@ import argparse, json, os, pwd, re, secrets, shlex, subprocess, sys, time, unico
 APP = os.environ.get("HERDR_APP_HOME") or os.path.expanduser("~/.config/herdr-app")
 TICKETS = os.path.join(APP, "data", "quests", "tickets")
 FIELDS = ["title", "status", "repo", "labels", "due", "machine", "agent", "branch", "base", "worktree", "terminal",
-          "source", "checks", "checks_head", "checks_at", "checks_duration", "checks_exit", "checks_cmd", "verify",
+          "space", "tab", "source", "checks", "checks_head", "checks_at", "checks_duration", "checks_exit", "checks_cmd", "verify",
           "evidence", "merged", "pr", "ci", "ci_at", "ci_url", "ci_details",
           "review", "review_head", "review_at", "review_summary", "review_rounds", "reviewer", "review_terminal",
           "assignee", "blocked_by", "tags", "waiting", "by", "updated"]
@@ -711,7 +718,8 @@ def cmd_dispatch(a):
         sh = shell()
         argv = [sh, "-lic", '"$@"; exec "$0" -li', sh, *agent, task]
     name = slug(a.id, 32) or "agent"
-    labels = ["--label", f"herdr.space=sp{secrets.token_hex(16)}", "--label", f"herdr.tab=tb{secrets.token_hex(16)}",
+    space, tab = f"sp{secrets.token_hex(16)}", f"tb{secrets.token_hex(16)}"
+    labels = ["--label", f"herdr.space={space}", "--label", f"herdr.tab={tab}",
               "--label", f"hub.ticket={a.id}"]
     cmd = ["hc", "run", "--bg", "--json", "--keep", "--outlive-parent", "--name", name, "--cwd", folder, *labels]
     if on:
@@ -724,7 +732,8 @@ def cmd_dispatch(a):
     if r.returncode != 0:
         die(f"hc run: {(r.stderr or r.stdout).strip()}")
     out = json.loads(r.stdout)
-    t.update(status="doing", agent=a.agent, branch=branch or "", worktree=folder if branch else "", terminal=out["address"])
+    t.update(status="doing", agent=a.agent, branch=branch or "", worktree=folder if branch else "",
+             terminal=out["address"], space=space, tab=tab)
     write(t)
     print(json.dumps({"ticket": a.id, "terminal": out["address"], "name": name, "folder": folder, "branch": branch}, ensure_ascii=False))
 
@@ -946,9 +955,407 @@ def cmd_review(a):
 
 def cmd_done(a):
     t = read(a.id)
+    res = cleanup_ticket(t, keep_worktree=a.keep_worktree, keep_space=a.keep_space)
     t["status"] = "done"
     write(t)
     print(f"{a.id}: done")
+    for n in res["notes"]:
+        print(f"  {n}")
+    for n in res["skipped"]:
+        sys.stderr.write(f"hub: {n}\n")
+
+
+# ---- Aufräumen: the agent, a clean own worktree and the ticket's own space/tab go; the branch stays
+
+HOUR_MS = 60 * 60 * 1000
+
+
+def hc_term(addr):
+    """One terminal as `hc get` sees it; {} when it is unknown."""
+    if not addr:
+        return {}
+    try:
+        r = subprocess.run(["hc", "get", str(addr), "--json"], capture_output=True, text=True)
+        return json.loads(r.stdout) if r.returncode == 0 else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def app_spaces():
+    """The window's spaces, or None when herdr-app cannot answer."""
+    try:
+        r = subprocess.run(["herdr-app", "ls"], capture_output=True, text=True)
+        return json.loads(r.stdout).get("spaces", []) if r.returncode == 0 else None
+    except (OSError, ValueError):
+        return None
+
+
+def app_do(command, **args):
+    """Run one window command; an error text, or None on success."""
+    try:
+        r = subprocess.run(["herdr-app", "do", command, json.dumps(args)], capture_output=True, text=True)
+        return None if r.returncode == 0 else ((r.stderr or r.stdout).strip() or f"{command} fehlgeschlagen")
+    except OSError as e:
+        return str(e)
+
+
+def space_terminals(space):
+    return [t.get("terminal") for tab in space.get("tabs") or [] for t in tab.get("terminals") or [] if t.get("terminal")]
+
+
+def terminal_labels(info):
+    return (info.get("labels") or {}) if info else {}
+
+
+def same_path(a, b, on=None):
+    if not a or not b:
+        return False
+    return a == b if on else os.path.realpath(a) == os.path.realpath(b)
+
+
+def ui_ids(t):
+    """The space/tab the ticket was dispatched into (its fields, else the terminal's labels)."""
+    space, tab = t.get("space") or "", t.get("tab") or ""
+    if space and tab:
+        return space, tab
+    labels = terminal_labels(hc_term(t.get("terminal")))
+    return space or labels.get("herdr.space", ""), tab or labels.get("herdr.tab", "")
+
+
+def space_of_ticket(t, spaces):
+    """The ticket's space: its id, or the one holding one of its `hub.ticket` labels."""
+    sid, _tab = ui_ids(t)
+    found = next((s for s in spaces if s.get("id") == sid), None) if sid else None
+    if found:
+        return found
+    for s in spaces:
+        for addr in space_terminals(s):
+            if terminal_labels(hc_term(addr)).get("hub.ticket") == t["id"]:
+                return s
+    return None
+
+
+def worktree_state(t, tickets, on=None):
+    """(main checkout, None) when the ticket's own worktree may go; else (None, reason)."""
+    wt = t.get("worktree")
+    if not wt:
+        return None, "kein Worktree"
+    if run(["test", "-d", wt], on, check=False).returncode != 0:
+        return None, f"{wt} ist schon weg"
+    for other in tickets:
+        if other["id"] != t["id"] and other.get("worktree") and same_path(other["worktree"], wt, on):
+            return None, f"{wt} gehört Ticket {other['id']}"
+    common = run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], on, wt, check=False)
+    if common.returncode != 0:
+        return None, f"{wt} ist kein Git-Worktree"
+    main = common.stdout.strip()
+    if main.endswith("/.git"):
+        main = main[:-5]
+    listed = run(["git", "worktree", "list", "--porcelain"], on, main, check=False).stdout
+    paths = [line[len("worktree "):].strip() for line in listed.splitlines() if line.startswith("worktree ")]
+    if not any(same_path(p, wt, on) for p in paths):
+        return None, f"{wt} ist kein eingetragener Worktree"
+    if run(["git", "status", "--porcelain"], on, wt, check=False).stdout.strip():
+        return None, f"{wt} hat uncommittete Änderungen"
+    return main, None
+
+
+def review_worktree_path(t, on=None):
+    """The ticket's Prüfstation checkout, named exactly like `hub review-start` does."""
+    repo = t.get("repo")
+    if not repo:
+        return None
+    top = run(["git", "rev-parse", "--show-toplevel"], on, repo, check=False)
+    if top.returncode != 0 or not top.stdout.strip():
+        return None
+    common = run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], on, top.stdout.strip(), check=False)
+    if common.returncode != 0 or not common.stdout.strip():
+        return None
+    main = common.stdout.strip()
+    if main.endswith("/.git"):
+        main = main[:-5]
+    return f"{home_of(on)}/.herdr/worktrees/{os.path.basename(main)}/review-{slug(t['id'], 48)}"
+
+
+def remove_review_checkout(t, on=None, keep=False):
+    """Remove the ticket's review checkout when its reviewer is not running. (ok, message) or None."""
+    if keep:
+        return None
+    path = review_worktree_path(t, on)
+    if not path or run(["test", "-d", path], on, check=False).returncode != 0:
+        return None
+    rv = t.get("review_terminal") or ""
+    if rv and is_live(rv):
+        return False, f"Prüf-Worktree {path} bleibt: Reviewer {rv} läuft"
+    main, why = worktree_state({"id": t["id"], "worktree": path}, [], on)
+    if why:
+        return False, f"Prüf-Worktree {path} bleibt: {why}"
+    r = run(["git", "worktree", "remove", path], on, main, check=False)
+    if r.returncode != 0:
+        return False, f"Prüf-Worktree {path} bleibt: {(r.stderr or r.stdout).strip()}"
+    return True, f"Prüf-Worktree {path} entfernt"
+
+
+def close_space(t, space):
+    """Close the ticket's own space (or just its tab) if no foreign live terminal is in it."""
+    sid = space.get("id")
+    name = space.get("name") or sid
+    terms = {addr: hc_term(addr) for addr in space_terminals(space)}
+
+    def ours(addr):
+        return addr == (t.get("terminal") or "") or terminal_labels(terms.get(addr)).get("hub.ticket") == t["id"]
+
+    def live(addr):
+        info = terms.get(addr) or {}
+        return info.get("state") == "live" or not info
+
+    def clean(tab):
+        return all(ours(x.get("terminal")) or not live(x.get("terminal")) for x in tab.get("terminals") or [])
+
+    tabs = space.get("tabs") or []
+    our_tabs = [tab for tab in tabs if tab.get("id") == t.get("tab")
+                or any(ours(x.get("terminal")) for x in tab.get("terminals") or [])]
+    other_live = [a for a in terms if not ours(a) and live(a)]
+    if not other_live and all(ours(a) for a in terms):
+        err = app_do("space.close", id=sid, confirmed=True)
+        if err:
+            return False, f"Space {name} bleibt: {err}"
+        t["space"] = t["tab"] = ""
+        return True, f"Space {name} geschlossen"
+    closable = [tab for tab in our_tabs if clean(tab)]
+    if not closable:
+        why = f"fremdes lebendes Terminal {other_live[0]}" if other_live else "kein eigenes Tab gefunden"
+        return False, f"Space {name} bleibt: {why}"
+    for tab in closable:
+        err = app_do("tab.close", id=tab.get("id"), confirmed=True)
+        if err:
+            return False, f"Tab {tab.get('id')} bleibt: {err}"
+    t["tab"] = ""
+    if len(closable) == len(tabs):
+        t["space"] = ""
+    return True, f"Tab {', '.join(tab.get('id') for tab in closable)} geschlossen; Space {name} bleibt"
+
+
+def cleanup_ticket(t, tickets=None, keep_worktree=False, keep_space=False):
+    """End the agent, remove the ticket's clean worktree and close its own space/tab.
+
+    Uncommitted changes abort everything: nothing is ended or removed, and the caller says why.
+    A worktree another ticket claims is never touched. The branch always stays.
+    """
+    on = t.get("machine") or None
+    tickets = all_tickets() if tickets is None else tickets
+    notes, skipped = [], []
+    wt = t.get("worktree") or ""
+    ended = False
+    foreign = None
+    if wt and not keep_worktree and run(["test", "-d", wt], on, check=False).returncode == 0:
+        foreign = next((o["id"] for o in tickets if o["id"] != t["id"] and o.get("worktree")
+                        and same_path(o["worktree"], wt, on)), None)
+        if foreign:
+            skipped.append(f"Worktree {wt} gehört Ticket {foreign}; nicht angefasst")
+        else:
+            dirty = run(["git", "status", "--porcelain"], on, wt, check=False)
+            if dirty.returncode == 0 and dirty.stdout.strip():
+                return {"notes": [], "skipped": [f"nichts aufgeräumt: {wt} hat uncommittete Änderungen"],
+                        "aborted": True, "worktree_removed": False}
+    term = t.get("terminal") or ""
+    if term and keep_space:
+        notes.append(f"Agent {term} bleibt (--keep-space)")
+    elif term:
+        if hc_term(term).get("state") == "live":
+            r = subprocess.run(["hc", "kill", term], capture_output=True, text=True)
+            if r.returncode == 0:
+                notes.append(f"Agent {term} beendet")
+                ended = True
+            else:
+                skipped.append(f"Agent {term} läuft weiter: {(r.stderr or r.stdout).strip()}")
+        else:
+            ended = True
+    removed = False
+    if wt and not keep_worktree and not foreign:
+        main, why = worktree_state(t, tickets, on)
+        if why:
+            skipped.append(f"Worktree bleibt: {why}")
+        else:
+            r = run(["git", "worktree", "remove", wt], on, main, check=False)
+            if r.returncode == 0:
+                notes.append(f"Worktree {wt} entfernt")
+                removed = True
+            else:
+                skipped.append(f"Worktree {wt} bleibt: {(r.stderr or r.stdout).strip()}")
+    review = remove_review_checkout(t, on, keep=keep_worktree)
+    if review:
+        (notes if review[0] else skipped).append(review[1])
+    if not keep_space:
+        spaces = app_spaces()
+        if spaces is None:
+            skipped.append("Space bleibt: herdr-app antwortet nicht")
+        else:
+            space = space_of_ticket(t, spaces)
+            if not space:
+                if t.get("space"):
+                    notes.append(f"Space {t['space']} ist schon weg")
+                t["space"] = t["tab"] = ""
+            else:
+                ok, message = close_space(t, space)
+                (notes if ok else skipped).append(message)
+    if ended and term:
+        t["terminal"] = ""
+    return {"notes": notes, "skipped": skipped, "aborted": False, "worktree_removed": removed}
+
+
+def expired_at(info, now_ms):
+    """A finished agent older than an hour: exited, or reporting done/idle/error for that long."""
+    if info.get("state") == "finished":
+        ts = info.get("finished_ms")
+    else:
+        st = (info.get("status") or {}).get("state")
+        ts = info.get("status_ms") if st in ("done", "idle", "error") else None
+    try:
+        return ts is not None and now_ms - int(ts) >= HOUR_MS
+    except (TypeError, ValueError):
+        return False
+
+
+def local_worktrees():
+    """The worktrees hub made: ~/.herdr/worktrees/<repo>/<branch>."""
+    root = os.path.join(os.path.expanduser("~"), ".herdr", "worktrees")
+    out = []
+    try:
+        repos = list(os.scandir(root))
+    except OSError:
+        return out
+    for repo in repos:
+        if not repo.is_dir(follow_symlinks=False):
+            continue
+        try:
+            children = list(os.scandir(repo.path))
+        except OSError:
+            continue
+        for child in children:
+            if child.is_dir(follow_symlinks=False) and os.path.exists(os.path.join(child.path, ".git")):
+                out.append(child.path)
+    return out
+
+
+def cmd_cleanup(a):
+    tickets = all_tickets()
+    now = int(time.time() * 1000)
+    dry = a.dry_run
+    done_actions, skipped, changed = [], [], {}
+
+    infos = {}
+    try:
+        listed = json.loads(subprocess.run(["hc", "ls", "--all", "--json"], capture_output=True, text=True).stdout)
+        for x in listed.get("terminals", []):
+            addr = x.get("address")
+            if addr:
+                info = dict(hc_term(addr) or {})
+                info.setdefault("address", addr)
+                infos[addr] = info
+    except (OSError, ValueError):
+        skipped.append("Agents: hc ls nicht lesbar")
+
+    expired = [info for info in infos.values()
+               if terminal_labels(info).get("hub.ticket") and expired_at(info, now)]
+    expired_addrs = {info["address"] for info in expired}
+
+    def info_of(addr):
+        if addr not in infos:
+            infos[addr] = dict(hc_term(addr) or {})
+            infos[addr].setdefault("address", addr)
+        return infos[addr]
+
+    spaces = app_spaces()
+    closeable = []
+    if spaces is None:
+        skipped.append("Spaces: herdr-app antwortet nicht")
+    else:
+        ticket_spaces = {t.get("space") for t in tickets if t.get("space")}
+        for sp in spaces:
+            addrs = space_terminals(sp)
+            terms = [info_of(addr) for addr in addrs]
+            owns = any(terminal_labels(x).get("hub.ticket") for x in terms) or sp.get("id") in ticket_spaces
+            if not owns:
+                continue
+            blocking = [x["address"] for x in terms
+                        if x["address"] not in expired_addrs and x.get("state") in (None, "live")]
+            if blocking:
+                skipped.append(f"Space {sp.get('name') or sp.get('id')}: {blocking[0]} lebt noch")
+                continue
+            closeable.append(sp)
+
+    for info in expired:
+        addr, tid = info["address"], terminal_labels(info).get("hub.ticket", "")
+        kill = info.get("state") == "live"
+        action = f"Agent {addr} beenden (Ticket {tid})" if kill else f"Terminal {addr} entfernen (Ticket {tid})"
+        if dry:
+            done_actions.append(action)
+            continue
+        r = subprocess.run(["hc", "kill" if kill else "rm", addr], capture_output=True, text=True)
+        if r.returncode != 0:
+            skipped.append(f"{action}: {(r.stderr or r.stdout).strip()}")
+            continue
+        done_actions.append(action)
+        for t in tickets:
+            if t.get("terminal") == addr:
+                t["terminal"] = ""
+                changed[t["id"]] = t
+
+    for sp in closeable:
+        action = f"Space {sp.get('name') or sp.get('id')} schließen"
+        if dry:
+            done_actions.append(action)
+            continue
+        err = app_do("space.close", id=sp.get("id"), confirmed=True)
+        if err:
+            skipped.append(f"{action}: {err}")
+            continue
+        done_actions.append(action)
+        for t in tickets:
+            if t.get("space") == sp.get("id"):
+                t["space"] = t["tab"] = ""
+                changed[t["id"]] = t
+
+    claimed = [t.get("worktree") for t in tickets if t.get("worktree")]
+    for wt in local_worktrees():
+        if any(same_path(wt, c) for c in claimed):
+            continue
+        base = os.path.basename(wt)
+        owner = next((t for t in tickets if base == f"review-{slug(t['id'], 48)}"), None) if base.startswith("review-") else None
+        if owner and owner.get("status") != "done":
+            skipped.append(f"Worktree {wt} gehört zur Prüfstation von {owner['id']} ({owner.get('status', '?')}); bleibt")
+            continue
+        if owner:
+            rv = owner.get("review_terminal") or ""
+            if rv and is_live(rv):
+                skipped.append(f"Worktree {wt}: Reviewer {rv} läuft; bleibt")
+                continue
+        where = f"Prüfstation von {owner['id']}" if owner else "ohne Ticket"
+        action = f"Worktree {wt} entfernen ({where})"
+        main, why = worktree_state({"id": "", "worktree": wt}, [], None)
+        if why:
+            skipped.append(f"{action}: {why}")
+            continue
+        if dry:
+            done_actions.append(action)
+            continue
+        r = run(["git", "worktree", "remove", wt], None, main, check=False)
+        if r.returncode != 0:
+            skipped.append(f"{action}: {(r.stderr or r.stdout).strip()}")
+            continue
+        done_actions.append(action)
+
+    if not dry:
+        for t in changed.values():
+            write(t)
+    print(f"Aufräumen{' (dry run)' if dry else ''}:")
+    if not done_actions and not skipped:
+        print("  Nichts zu tun.")
+    for line in done_actions:
+        print(f"  {line}")
+    for line in skipped:
+        print(f"  bleibt: {line}")
 
 
 # ---- CI: the PR's checks decide whether a delivered ticket is done
@@ -1240,11 +1647,10 @@ def cmd_land(a):
                 result["message"] = f"{why}; Ticket bleibt offen, Agent und Worktree bleiben"
                 print(json.dumps(result, ensure_ascii=False))
                 return
-    # The work is landed (and green, when waited for): its agent and checkout are no longer needed.
-    if t.get("terminal") and is_live(t["terminal"]):
-        subprocess.run(["hc", "kill", t["terminal"]], capture_output=True)
-    run(["git", "worktree", "remove", wt], on, main, check=False)
-    if a.merge:
+    # The work is landed (and green, when waited for): its agent, checkout and space are no longer needed.
+    res = cleanup_ticket(t, keep_worktree=a.keep_worktree, keep_space=a.keep_space)
+    result["cleanup"] = res["notes"] + res["skipped"]
+    if a.merge and not a.keep_worktree and not res.get("aborted"):
         run(["git", "branch", "-d", branch], on, main, check=False)
     t["status"] = "done"
     write(t)
@@ -1276,7 +1682,8 @@ def cmd_status(_a):
         pass
     c = costs()
     per = c.get("tickets", {})
-    open = [t for t in all_tickets() if t["status"] != "done"]
+    tickets = all_tickets()
+    open = [t for t in tickets if t["status"] != "done"]
     if open:
         print(f"{'Ticket':<40} {'Status':<7} {'Urteil':<7} {'Runden':>6} {'CI':<5} {'Terminal':<16} {'Live':<9} {'Kosten':>7} {'Verlauf':>7}  Titel")
     for t in open:
@@ -1286,6 +1693,26 @@ def cmd_status(_a):
         print(f"{t['id']:<40} {t['status']:<7} {(t.get('review') or '–'):<7} {(t.get('review_rounds') or '–'):>6} "
               f"{ci:<5} {term:<16} {live.get(term, '-' if not term else 'beendet'):<9} {cost:>7} "
               f"{len(entries(t)):>7}  {t['title']}")
+    rests, spaces = [], None
+    for t in (x for x in tickets if x["status"] == "done"):
+        left = []
+        term = t.get("terminal", "")
+        if term and term in live:
+            left.append(f"Terminal {term}")
+        wt = t.get("worktree", "")
+        if wt and not t.get("machine") and os.path.isdir(wt):
+            left.append(f"Worktree {wt}")
+        if t.get("space"):
+            if spaces is None:
+                spaces = app_spaces() or []
+            if any(s.get("id") == t["space"] for s in spaces):
+                left.append("Space")
+        if left:
+            rests.append((t, left))
+    if rests:
+        print("\nReste (hub cleanup):")
+        for t, left in rests:
+            print(f"  {t['id']}: {', '.join(left)}")
     if c:
         print(f"\nBudget pro Ticket ${c.get('ticketBudget', 0):.0f}, Team ${c.get('teamBudget', 0):.0f}; offen bisher ${c.get('teamCost', 0):.2f}")
 
@@ -1399,6 +1826,8 @@ def main():
     rv.set_defaults(fn=cmd_review)
     dn = sub.add_parser("done")
     dn.add_argument("id")
+    dn.add_argument("--keep-worktree", action="store_true", help="den sauberen Worktree stehen lassen")
+    dn.add_argument("--keep-space", action="store_true", help="Space und Tab des Tickets offen lassen")
     dn.set_defaults(fn=cmd_done)
     ld = sub.add_parser("land")
     ld.add_argument("id")
@@ -1406,12 +1835,17 @@ def main():
     how.add_argument("--merge", action="store_true")
     how.add_argument("--pr", action="store_true")
     ld.add_argument("--wait-ci", action="store_true")
+    ld.add_argument("--keep-worktree", action="store_true", help="den sauberen Worktree stehen lassen")
+    ld.add_argument("--keep-space", action="store_true", help="Space und Tab des Tickets offen lassen")
     ld.add_argument("--lesson", action="append", metavar="TEXT",
                     help="Lehre für dieses Repo schreiben und im Verlauf nennen (mehrfach möglich)")
     ld.set_defaults(fn=cmd_land)
     ci = sub.add_parser("ci")
     ci.add_argument("id")
     ci.set_defaults(fn=cmd_ci)
+    cl = sub.add_parser("cleanup")
+    cl.add_argument("--dry-run", action="store_true", help="nur zeigen, was aufgeräumt würde")
+    cl.set_defaults(fn=cmd_cleanup)
     sub.add_parser("status").set_defaults(fn=cmd_status)
     a = p.parse_args()
     a.fn(a)
