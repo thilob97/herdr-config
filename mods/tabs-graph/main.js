@@ -13,13 +13,15 @@ const RESERVED = 26 + 40 + 2 * 4;
 // Keys stay ⌘⌥1 … ⌘⌥9. Board and Team-Hub ship with their packages; until then a local
 // placeholder icon draws their spot (fallback) and their own command opens the panel.
 const FABRIK = [
-  { id: "quests", label: "Quests", icon: "mods/quests/icon.svg", key: 6, tip: "Quests: alle Signale und Tickets" },
   { id: "team", label: "Team", icon: "mods/orchestra/icon.svg", key: null, chord: "⌘⌥⇧7", tip: "Team: Pipeline der Tickets" },
-  { id: "factory", label: "Fabrik", icon: "mods/graph/icon.svg", panel: true, cmd: "factory.panel", key: 7, tip: "Fabrik: Agents und Tickets von oben nach unten" },
   { id: "board", label: "Board", icon: "mods/board/icon.svg", fallback: "mods/tabs-graph/board.svg", cmd: "board.panel", panel: true, key: 8, tip: "Board: Tickets auf dem Brett" },
   { id: "timeline", label: "Timeline", icon: "mods/timeline/icon.svg", panel: true, cmd: "timeline.panel", key: 0, tip: "Timeline: wer wann woran gearbeitet hat" },
+  { id: "factory", label: "Fabrik", icon: "mods/graph/icon.svg", panel: true, cmd: "factory.panel", key: 7, tip: "Fabrik: Agents und Tickets von oben nach unten" },
+  { id: "quests", label: "Quests", icon: "mods/quests/icon.svg", key: 6, tip: "Quests: alle Signale und Tickets" },
   { id: "teams", label: "Team-Hub", icon: "mods/teams/icon.svg", fallback: "mods/tabs-graph/teams.svg", cmd: "mod.open", key: 9, tip: "Team-Hub: Teams, Rollen und Arbeit" },
 ];
+// Die vier Fabrik-Ansichten teilen sich eine Kapsel (Team, Board, Timeline, Graph).
+const VIEWS = new Set(["team", "board", "timeline", "factory"]);
 const WERKZEUGE = [
   { id: "changes", label: "Changes", icon: "mods/changes/changes.svg", key: 1, tip: "Changes: Arbeitskopie" },
   { id: "graph", label: "Git", icon: "mods/git-graph/icons/graph.svg", key: 2, tip: "Git: Historie und Zweige" },
@@ -50,32 +52,58 @@ function statusMark(t, status) {
 // Der aktive Workspace und seine Tickets: dieselbe Regel wie `ui.inScope` in den Panels.
 // Dieses Modul hält seine Tokens selbst, deshalb steht der kleine Helfer hier.
 const activeSpace = () => spaces().find((s) => s.active) ?? null;
-function inScope(tk, sp) {
+
+// Agent-Space → Workspace, wie `ui.workspaceId`: der Wegwerf-Space eines Tickets zählt
+// als der Workspace seines Tickets (`agent_space`; ältere Auslieferungen nennen ihn
+// über ein Terminal mit `hub.ticket`). Ein Space, den ein Ticket als Workspace nennt,
+// bleibt Workspace; jeder andere bleibt sein eigener.
+function workspaceId(sid, tks, terms) {
+  const id = String(sid ?? "").trim();
+  if (!id || tks.some((t) => String(t?.space ?? "").trim() === id && String(t?.space_name ?? "").trim())) return id;
+  const home = (t) => String(t?.space ?? "").trim();
+  const mine = tks.find((t) => String(t?.agent_space ?? "").trim() === id);
+  if (mine) return home(mine) && home(mine) !== id ? home(mine) : id;
+  for (const x of terms) {
+    if ((x.space ?? x.labels?.["herdr.space"]) !== id) continue;
+    const tk = tks.find((t) => t?.id === x.labels?.["hub.ticket"]);
+    if (tk && home(tk) && home(tk) !== id) return home(tk);
+  }
+  return id;
+}
+
+function inScope(tk, sp, tks, terms) {
   if (!sp) return true;
   const at = (p) => String(p ?? "").replace(/\\/g, "/").replace(/\/+$/, "");
   const sid = String(tk?.space ?? "").trim();
   if (!sid || sid === sp.id) return true;
+  if (workspaceId(sid, tks, terms) === workspaceId(sp.id, tks, terms)) return true;
   if (String(tk?.space_name ?? "").trim()) return false;
   const repo = at(tk?.repo), folder = at(sp.folder);
   return !repo || !folder ? true : repo === folder || repo.startsWith(`${folder}/`);
 }
 
 // Inbox count (contract 7.3): what waits for the person in this workspace's factory,
-// else what finished. `total` is the whole home, for the tooltip.
+// else what finished. `total` is the whole home, for the tooltip. The ticket list and
+// the terminals are read once: every `shared()`/`terminals()` call copies the whole
+// list, and the scope check runs per waiting ticket and per agent.
 function inboxCount() {
-  const count = (sp) => {
+  const tks = shared("orchestra.tickets") ?? [];
+  const terms = terminals();
+  const sp = activeSpace();
+  const mineWs = sp ? workspaceId(sp.id, tks, terms) : "";
+  const count = (sp, ws) => {
     const list = agents();
-    const scoped = (a) => !sp || !a.space || a.space === sp.id;
-    const o = terminals().find((x) => x.state === "live" && x.status === "blocked"
+    const scoped = (a) => !sp || !a.space || workspaceId(a.space, tks, terms) === ws;
+    const o = terms.find((x) => x.state === "live" && x.status === "blocked"
       && isOrchestrator(x)
       && (!sp || x.labels?.["hub.space"] === sp.id || x.labels?.["herdr.space"] === sp.id));
     const blocked = list.filter((a) => a.status === "blocked" && scoped(a)).length + (o && !list.some((a) => a.address === o.address) ? 1 : 0);
-    const review = (shared("orchestra.tickets") ?? []).filter((x) => x.status === "review" && (!sp || inScope(x, sp))).length;
+    const review = tks.filter((x) => x.status === "review" && inScope(x, sp, tks, terms)).length;
     const done = list.filter((a) => a.status === "done" && scoped(a)).length;
     return blocked + review > 0 ? { n: blocked + review, color: "blocked" } : done > 0 ? { n: done, color: "done" } : null;
   };
-  const mine = count(activeSpace());
-  return mine ? { ...mine, total: count(null) } : null;
+  const mine = count(sp, mineWs);
+  return mine ? { ...mine, total: count(null, "") } : null;
 }
 
 function find(node, id) {
@@ -291,6 +319,14 @@ export default class Tabs extends View {
     };
     const segment = (id, list) => h_flex().id(id).h(H_BTN).p(2).gap(2).flex_none().items_center().rounded(8)
       .bg(t.background).border_1().border_color(t.border).children(list.map(segEntry));
+    // The four factory views share one capsule: only the open one says its name, the
+    // other three stay icons with their chord in the tooltip; the word left of them
+    // says what the group is. Quests and the Team-Hub keep their own segment.
+    const capsule = h_flex().id("panels-fabrik-views").h(H_BTN).p(2).pl(8).gap(2).flex_none().items_center().rounded(8)
+      .bg(t.background).border_1().border_color(t.border).text_size(T_XS).font_medium().text_color(t.dim)
+      .tooltip("Fabrik: Team, Board, Timeline und Graph — die offene Ansicht steht im Panel")
+      .child(div().flex_none().pr(2).child("Fabrik"))
+      .children(FABRIK.filter(p => VIEWS.has(p.id)).map(segEntry));
     // The dashboard is reachable without knowing the chord: same segment shape as the
     // panel groups, never primary. The dashboard carries the reverse ("Workspace").
     const dashboard = h_flex().id("hub-dashboard").h(H_BTN).px(8).gap(GAP_S).flex_none().items_center().rounded(8)
@@ -330,7 +366,8 @@ export default class Tabs extends View {
       })
       .children([dashboard, auftrag, inbox,
         iconButton("hub-review", svg("mods/review/icon.svg").size(14), "Review des fokussierten Terminals (⌘⇧R)", () => run("mod.open", { name: "review" })),
-        segment("panels-fabrik", FABRIK), segment("panels-werkzeuge", WERKZEUGE)])
+        segment("panels-fabrik", FABRIK.filter(p => !VIEWS.has(p.id))), capsule,
+        segment("panels-werkzeuge", WERKZEUGE)])
       .when(winButtons.length > 0, el => el.child(h_flex().flex_none().gap(GAP_XS).children(winButtons)));
     const zoom = settings().zoom || 1;
     // Room for the strip: the bar minus everything right of it (measured, real px ÷ zoom).
