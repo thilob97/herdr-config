@@ -17,17 +17,24 @@ reports into it) and show in the Team-Panel under it.
   hub ticket inbox AGENT [--json]           tickets naming (@), assigning or waiting on AGENT
   hub ticket watch ID --on AGENT            "waiting for an answer from @AGENT"
   hub agent list [--json]                   the roster: named agents with role, program, model, repo
-  hub agent show NAME [--json]
-  hub agent add --name N [--role R] [--program omp|claude|codex|pi] [--model M] [--repo PATH]
+  hub agent show NAME [--json]              every field: harness, prompt, skills, MCP, sandbox, WIP, permissions
+  hub agent add NAME [--name N] [--role R] [--program omp|claude|codex|pi] [--model M] [--repo PATH]
                 [--branch-prefix P] [--labels a,b] [--notes T] [--color c1..c6]
+                [--prompt-file PATH | --prompt TEXT] [--smol M] [--slow M] [--models a,b]
+                [--approval-mode always-ask|always-ask-cached|write|yolo] [--max-cost USD]
+                [--no-lsp|--lsp] [--skills a,b] [--mcp a,b] [--sandbox worktree|repo]
+                [--wip N] [--push|--no-push] [--delete-branches|--no-delete-branches]
   hub agent edit NAME [--name NEW] [same options]     unset fields stay as they are
   hub agent rm NAME
+  hub agent command NAME                    the exact start command: program + harness flags
+  hub agent prompt NAME                     the agent's prompt text (agents/prompts/<slug>.md)
   hub dispatch ID [--agent omp|claude|codex|<roster name>|"cmd args"] [--no-worktree] [--branch B] [--no-lessons]
-                                            with a roster name: program + model, its repo and branch
-                                            prefix as defaults, role and notes in the order
-                                            start the ticket's agent; writes base and base_head (the base's
-                                            commit at the start); appends the repo's last 8 lessons
-                                            (## Was hier schon schiefging) unless --no-lessons
+                                            with a roster name: its programmed command (harness flags
+                                            the program knows), its repo and branch prefix, the prompt
+                                            as "## Deine Rolle", skills/MCP/permissions as "## Umgebung",
+                                            and the agent's WIP gate (tickets in doing). Writes base and
+                                            base_head (the base's commit at the start); appends the repo's
+                                            last 8 lessons (## Was hier schon schiefging) unless --no-lessons
   hub rebase ID                             rebase the ticket's branch in its worktree onto its base;
                                             a conflict stops with exit 1, names the files and leaves
                                             the worktree in the rebase for the agent to resolve
@@ -91,7 +98,7 @@ import argparse, datetime, json, os, pwd, re, secrets, shlex, subprocess, sys, t
 
 APP = os.environ.get("HERDR_APP_HOME") or os.path.expanduser("~/.config/herdr-app")
 TICKETS = os.path.join(APP, "data", "quests", "tickets")
-FIELDS = ["title", "status", "repo", "labels", "due", "machine", "agent", "branch", "base", "base_head", "worktree", "terminal",
+FIELDS = ["title", "status", "repo", "labels", "due", "machine", "agent", "harness", "branch", "base", "base_head", "worktree", "terminal",
           "space", "tab", "source", "checks", "checks_head", "checks_at", "checks_duration", "checks_exit", "checks_cmd", "verify",
           "evidence", "merged", "pr", "ci", "ci_head", "ci_at", "ci_url", "ci_details",
           "review", "review_head", "review_at", "review_summary", "review_rounds", "reviewer", "reviewer_name", "review_terminal",
@@ -103,28 +110,90 @@ AGENT_NAMES = {"omp": "Oh My Pi", "claude": "Claude", "codex": "Codex", "pi": "P
 # labels, notes, colour) and dispatches again and again by name. Versioned with the
 # config, so it lives in agents/roster.json under APP, not in data/.
 ROSTER = os.path.join(APP, "agents", "roster.json")
-ROSTER_FIELDS = ["name", "role", "program", "model", "repo", "branch_prefix", "labels", "notes", "color"]
+ROSTER_FIELDS = ["name", "role", "program", "model", "repo", "branch_prefix", "labels", "notes", "color",
+                 "prompt", "harness", "skills", "mcp", "sandbox", "wip", "permissions"]
 ROSTER_DEFAULTS = {"name": "", "role": "", "program": "omp", "model": "", "repo": "",
-                   "branch_prefix": "feat/", "labels": [], "notes": "", "color": "c1"}
+                   "branch_prefix": "feat/", "labels": [], "notes": "", "color": "c1",
+                   "prompt": "", "sandbox": "worktree", "wip": 1}
 ROSTER_COLORS = ["c1", "c2", "c3", "c4", "c5", "c6"]
+# Harness: what the program starts with. Every field is optional; empty means the
+# program's own default, so an entry only carries the flags the person set.
+HARNESS_FIELDS = ["smol", "slow", "approval_mode", "max_cost", "models", "no_lsp"]
+HARNESS_DEFAULTS = {"smol": "", "slow": "", "approval_mode": "", "max_cost": 0, "models": [], "no_lsp": False}
+APPROVAL_MODES = ["always-ask", "always-ask-cached", "write", "yolo"]
+SANDBOXES = ["worktree", "repo"]
+PERMISSION_FIELDS = ["push", "delete_branches"]
+PERMISSION_DEFAULTS = {"push": False, "delete_branches": False}
+# Claude Code's permission modes, for the approval mode's equivalent. Every other
+# program takes the model only, so a flag it does not know is never passed on.
+CLAUDE_PERMISSION = {"always-ask": "default", "always-ask-cached": "default",
+                     "write": "acceptEdits", "yolo": "bypassPermissions"}
+HARNESS_KEYS = {
+    "omp": ["model", "smol", "slow", "models", "approval_mode", "max_cost", "no_lsp"],
+    "claude": ["model", "approval_mode"],
+    "codex": ["model"],
+    "pi": ["model"],
+}
+
+
+def as_list(value):
+    if isinstance(value, str):
+        return [x.strip() for x in value.split(",") if x.strip()]
+    return [str(x).strip() for x in (value or []) if str(x).strip()]
+
+
+def norm_harness(value):
+    h = dict(HARNESS_DEFAULTS)
+    if isinstance(value, dict):
+        for k in HARNESS_FIELDS:
+            if value.get(k) is not None:
+                h[k] = value[k]
+    for k in ("smol", "slow", "approval_mode"):
+        h[k] = str(h.get(k) or "").strip()
+    h["models"] = as_list(h.get("models"))
+    try:
+        h["max_cost"] = float(h.get("max_cost") or 0)
+    except (TypeError, ValueError):
+        h["max_cost"] = 0
+    h["no_lsp"] = bool(h.get("no_lsp"))
+    return h
+
+
+def norm_permissions(value):
+    p = dict(PERMISSION_DEFAULTS)
+    if isinstance(value, dict):
+        for k in PERMISSION_FIELDS:
+            if value.get(k) is not None:
+                p[k] = bool(value[k])
+    return p
+
+
+def default_prompt(name):
+    return f"agents/prompts/{slug(name, 40) or 'agent'}.md"
 
 
 def norm_agent(entry):
-    """One roster entry with every field present; labels are always a list."""
+    """One roster entry with every field present. Lists are always lists; old files
+    without the v2 fields read as their defaults."""
     a = dict(ROSTER_DEFAULTS)
     for k in ROSTER_FIELDS:
         if entry.get(k) is not None:
             a[k] = entry[k]
-    labels = a.get("labels")
-    if isinstance(labels, str):
-        a["labels"] = [x.strip() for x in labels.split(",") if x.strip()]
-    else:
-        a["labels"] = [str(x).strip() for x in (labels or []) if str(x).strip()]
-    for k in ("name", "role", "program", "model", "repo", "branch_prefix", "notes", "color"):
+    a["harness"] = norm_harness(entry.get("harness"))
+    a["permissions"] = norm_permissions(entry.get("permissions"))
+    for k in ("labels", "skills", "mcp"):
+        a[k] = as_list(a.get(k))
+    for k in ("name", "role", "program", "model", "repo", "branch_prefix", "notes", "color", "prompt", "sandbox"):
         a[k] = str(a.get(k) or "").strip()
     a["program"] = a["program"] or "omp"
     a["branch_prefix"] = a["branch_prefix"] or ""
     a["color"] = a["color"] or "c1"
+    a["sandbox"] = a["sandbox"] or "worktree"
+    try:
+        a["wip"] = int(a["wip"])
+    except (TypeError, ValueError):
+        a["wip"] = 1
+    a["prompt"] = a["prompt"] or default_prompt(a["name"])
     return a
 
 
@@ -184,6 +253,111 @@ def roster_color(value):
     if c not in ROSTER_COLORS:
         die(f"unbekannte Farbe {c!r} (bekannt: {', '.join(ROSTER_COLORS)})")
     return c
+
+
+def prompt_path(entry, repo=""):
+    """The agent's prompt file: absolute, or relative to its repo (the config home when
+    the agent has none yet, so `hub agent add` works before the repo is set)."""
+    p = (entry.get("prompt") or "").strip() or default_prompt(entry.get("name") or "")
+    if os.path.isabs(p):
+        return p
+    base = os.path.expanduser((repo or entry.get("repo") or "").strip()) or APP
+    return os.path.join(base, p)
+
+
+def read_prompt(entry, repo=""):
+    """(text, path) of the agent's prompt; a missing file is a plain error naming both.
+    When the agent's repo has no such file, the config home's copy counts: a preview
+    home or a fresh checkout carries agents/prompts/ before the repo is deployed."""
+    path = prompt_path(entry, repo)
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read().strip(), path
+    except OSError:
+        pass
+    rel = (entry.get("prompt") or "").strip() or default_prompt(entry.get("name") or "")
+    fallback = None if os.path.isabs(rel) else os.path.join(APP, rel)
+    if fallback and fallback != path:
+        try:
+            with open(fallback, encoding="utf-8") as f:
+                return f.read().strip(), fallback
+        except OSError:
+            pass
+    die(f"Prompt-Datei fehlt: {path} (Agent {entry.get('name')}); "
+        f"hub agent edit {entry.get('name')} --prompt \"…\" legt sie an")
+
+
+def write_prompt(entry, text, repo=""):
+    path = prompt_path(entry, repo)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text.strip() + "\n")
+    return path
+
+
+def harness_flags(entry):
+    """The harness flags this program knows, in the order the command shows them.
+    The CLI only accepts the four known programs; a hand-edited entry (a no-op command
+    in a throwaway home, say) gets the omp vocabulary."""
+    prog = (entry.get("program") or "omp").strip()
+    keys = HARNESS_KEYS.get(prog, HARNESS_KEYS["omp"])
+    h = norm_harness(entry.get("harness"))
+    out = []
+    if entry.get("model") and "model" in keys:
+        out.append(f"--model={entry['model']}")
+    if h["smol"] and "smol" in keys:
+        out.append(f"--smol={h['smol']}")
+    if h["slow"] and "slow" in keys:
+        out.append(f"--slow={h['slow']}")
+    if h["models"] and "models" in keys:
+        out.append("--models=" + ",".join(h["models"]))
+    if h["approval_mode"] and "approval_mode" in keys:
+        mode = h["approval_mode"]
+        if mode not in APPROVAL_MODES:
+            die(f"unbekannter Approval-Modus {mode!r} (erlaubt: {', '.join(APPROVAL_MODES)})")
+        out.append(f"--permission-mode={CLAUDE_PERMISSION[mode]}" if prog == "claude"
+                   else f"--approval-mode={mode}")
+    if h["max_cost"] and "max_cost" in keys:
+        out.append(f"--max-cost={h['max_cost']:g}")
+    if h["no_lsp"] and "no_lsp" in keys:
+        out.append("--no-lsp")
+    return out
+
+
+def command_argv(entry):
+    """The exact start command: the program's argv plus the harness flags it knows."""
+    prog = (entry.get("program") or "omp").strip()
+    return [*(AGENTS.get(prog) or shlex.split(prog)), *harness_flags(entry)]
+
+
+def short_harness(entry):
+    return " ".join([(entry.get("program") or "omp"), *harness_flags(entry)])
+
+
+def merge_agent(cur, changes):
+    entry = norm_agent(cur)
+    for k, v in changes.items():
+        if k in ("harness", "permissions"):
+            entry[k] = {**entry[k], **v}
+        else:
+            entry[k] = v
+    return norm_agent(entry)
+
+
+def validate_agent(entry):
+    """add/edit only: a hand-edited file stays readable, a bad command line does not."""
+    entry["program"] = roster_program(entry["program"])
+    entry["color"] = roster_color(entry["color"])
+    if entry["sandbox"] not in SANDBOXES:
+        die(f"unbekannte Sandbox {entry['sandbox']!r} (erlaubt: {', '.join(SANDBOXES)})")
+    h = entry["harness"]
+    if h["approval_mode"] and h["approval_mode"] not in APPROVAL_MODES:
+        die(f"unbekannter Approval-Modus {h['approval_mode']!r} (erlaubt: {', '.join(APPROVAL_MODES)})")
+    if h["max_cost"] < 0:
+        die("Kostenlimit darf nicht negativ sein")
+    if int(entry["wip"]) < 0:
+        die("WIP-Limit darf nicht negativ sein")
+    return entry
 
 
 def agent_name(key):
@@ -893,9 +1067,78 @@ def agent_changes(a):
         value = getattr(a, field, None)
         if value is not None:
             out[field] = str(value).strip()
-    if a.labels is not None:
-        out["labels"] = [x.strip() for x in a.labels.split(",") if x.strip()]
+    for key in ("labels", "skills", "mcp"):
+        value = getattr(a, key, None)
+        if value is not None:
+            out[key] = as_list(value)
+    if getattr(a, "prompt_file", None) is not None and getattr(a, "prompt_text", None) is not None:
+        die("--prompt und --prompt-file schließen sich aus (Text schreibt die Datei)")
+    if getattr(a, "prompt_file", None) is not None:
+        out["prompt"] = str(a.prompt_file).strip()
+    harness = {}
+    for key in ("smol", "slow"):
+        value = getattr(a, key, None)
+        if value is not None:
+            harness[key] = str(value).strip()
+    if getattr(a, "approval_mode", None) is not None:
+        mode = str(a.approval_mode or "").strip()
+        if mode and mode not in APPROVAL_MODES:
+            die(f"unbekannter Approval-Modus {mode!r} (erlaubt: {', '.join(APPROVAL_MODES)})")
+        harness["approval_mode"] = mode
+    if getattr(a, "max_cost", None) is not None:
+        try:
+            cost = float(a.max_cost)
+        except (TypeError, ValueError):
+            die(f"Kostenlimit muss eine Zahl sein: {a.max_cost!r}")
+        if cost <= 0:
+            die("Kostenlimit muss größer als 0 sein (nicht setzen = unbegrenzt)")
+        harness["max_cost"] = cost
+    if getattr(a, "models", None) is not None:
+        harness["models"] = as_list(a.models)
+    if getattr(a, "no_lsp", None) is not None:
+        harness["no_lsp"] = bool(a.no_lsp)
+    if harness:
+        out["harness"] = harness
+    if getattr(a, "sandbox", None) is not None:
+        sandbox = str(a.sandbox or "").strip() or "worktree"
+        if sandbox not in SANDBOXES:
+            die(f"unbekannte Sandbox {sandbox!r} (erlaubt: {', '.join(SANDBOXES)})")
+        out["sandbox"] = sandbox
+    if getattr(a, "wip", None) is not None:
+        try:
+            wip = int(a.wip)
+        except (TypeError, ValueError):
+            die(f"WIP-Limit muss eine ganze Zahl sein: {a.wip!r}")
+        if wip < 0:
+            die("WIP-Limit darf nicht negativ sein (0 = unbegrenzt)")
+        out["wip"] = wip
+    perms = {}
+    for key in PERMISSION_FIELDS:
+        value = getattr(a, key, None)
+        if value is not None:
+            perms[key] = bool(value)
+    if perms:
+        out["permissions"] = perms
     return out
+
+
+def agent_view(entry):
+    """(key, value) rows for `hub agent show`: every field, the nested ones flattened."""
+    h, p = entry["harness"], entry["permissions"]
+    yes = lambda v: "ja" if v else "nein"
+    return [
+        ("name", entry["name"]), ("role", entry["role"]), ("color", entry["color"]),
+        ("program", entry["program"]), ("model", entry["model"]),
+        ("smol", h["smol"]), ("slow", h["slow"]), ("approval_mode", h["approval_mode"]),
+        ("max_cost", f"{h['max_cost']:g}" if h["max_cost"] else ""),
+        ("models", ", ".join(h["models"])), ("no_lsp", yes(h["no_lsp"])),
+        ("prompt", entry["prompt"]), ("repo", entry["repo"]),
+        ("branch_prefix", entry["branch_prefix"]), ("labels", ", ".join(entry["labels"])),
+        ("skills", ", ".join(entry["skills"])), ("mcp", ", ".join(entry["mcp"])),
+        ("sandbox", entry["sandbox"]), ("wip", str(entry["wip"])),
+        ("push", yes(p["push"])), ("delete_branches", yes(p["delete_branches"])),
+        ("notes", entry["notes"]),
+    ]
 
 
 def cmd_agent_list(a):
@@ -919,25 +1162,21 @@ def cmd_agent_show(a):
     if a.json:
         print(json.dumps(found, ensure_ascii=False, indent=1))
         return
-    for k in ROSTER_FIELDS:
-        v = found[k]
-        if k == "labels":
-            v = ", ".join(v)
+    for k, v in agent_view(found):
         print(f"{k}: {v or '-'}")
 
 
 def cmd_agent_add(a):
-    name = (a.name or "").strip()
+    name = (getattr(a, "name", None) or getattr(a, "new_name", None) or "").strip()
     if not name:
-        die("--name fehlt")
+        die("Name fehlt (hub agent add NAME oder --name NAME)")
     rows = read_roster()
     if find_agent(rows, name)[1]:
         die(f"Agent {name!r} gibt es schon")
-    entry = dict(ROSTER_DEFAULTS, name=name)
-    entry.update(agent_changes(a))
-    entry["program"] = roster_program(entry["program"])
-    entry["color"] = roster_color(entry["color"])
-    rows.append(norm_agent(entry))
+    entry = validate_agent(merge_agent(dict(ROSTER_DEFAULTS, name=name), agent_changes(a)))
+    if a.prompt_text is not None:
+        write_prompt(entry, a.prompt_text)
+    rows.append(entry)
     write_roster(rows)
     print(f"Agent {name} angelegt")
 
@@ -947,18 +1186,34 @@ def cmd_agent_edit(a):
     idx, cur = find_agent(rows, a.current)
     if not cur:
         die(f"kein Agent {a.current!r} im Roster")
-    entry = norm_agent({**cur, **agent_changes(a)})
+    entry = merge_agent(cur, agent_changes(a))
     if not entry["name"]:
         die("Name darf nicht leer sein")
     other, _ = find_agent(rows, entry["name"])
     if other is not None and other != idx:
         die(f"Agent {entry['name']!r} gibt es schon")
-    entry["program"] = roster_program(entry["program"])
-    entry["color"] = roster_color(entry["color"])
+    validate_agent(entry)
+    if a.prompt_text is not None:
+        write_prompt(entry, a.prompt_text)
     rows[idx] = entry
     write_roster(rows)
     name = entry["name"]
     print(f"Agent {name} geändert" if name == a.current else f"Agent {a.current} in {name} umbenannt")
+
+
+def cmd_agent_command(a):
+    _, found = find_agent(read_roster(required=True), a.name)
+    if not found:
+        die(f"kein Agent {a.name!r} im Roster")
+    print(shlex.join(command_argv(found)))
+
+
+def cmd_agent_prompt(a):
+    _, found = find_agent(read_roster(required=True), a.name)
+    if not found:
+        die(f"kein Agent {a.name!r} im Roster")
+    text, _ = read_prompt(found)
+    print(text)
 
 
 def cmd_agent_rm(a):
@@ -997,6 +1252,18 @@ def is_live(address):
         return False
 
 
+def doing_of(agent_key, skip=""):
+    """The agent's tickets in `doing`, except the one being dispatched again."""
+    key = (agent_key or "").strip().casefold()
+    out = []
+    for t in all_tickets():
+        if t.get("status") != "doing" or t.get("id") == skip:
+            continue
+        if (t.get("agent") or t.get("assignee") or "").strip().casefold() == key:
+            out.append(t)
+    return out
+
+
 def cmd_dispatch(a):
     t = read(a.id)
     blockers = open_blockers(t)
@@ -1016,6 +1283,16 @@ def cmd_dispatch(a):
             t["repo"] = repo
     if not repo:
         die(f"{a.id} has no repo; hub ticket set {a.id} repo=/path/to/checkout")
+    # WIP gate: the agent's own limit, counted in tickets it is already working on.
+    if who:
+        wip = int(who.get("wip") or 0)
+        if wip > 0:
+            running = doing_of(who["name"], skip=a.id)
+            if len(running) >= wip:
+                names_ = ", ".join(f"{x['id']} ({x.get('title') or 'ohne Titel'})" for x in running)
+                die(f"{who['name']} hat {len(running)}/{wip} Tickets in Arbeit: {names_}; "
+                    f"erst abschließen (hub done ID) oder das Limit erhöhen "
+                    f"(hub agent edit {who['name']} --wip N)")
     me = os.environ.get("HC_TERMINAL_ID")
     folder, branch = repo, None
     # The base and its commit at the start: the branch lands here later, and `hub review`
@@ -1057,14 +1334,27 @@ def cmd_dispatch(a):
     if lessons:
         order += f"\n\n{lessons}"
     intro = []
+    parts = []
     if who:
         intro.append(f"Du bist {who['name']}" + (f" ({who['role']})" if who.get("role") else "") + ".")
         if who.get("notes"):
             intro.append(f"Notizen: {who['notes']}")
         if who.get("model"):
             intro.append(f"Modell: {who['model']}")
+        prompt, _ = read_prompt(who, os.path.expanduser(who.get("repo") or "") or repo)
+        parts.append("## Deine Rolle\n\n" + prompt)
+        perms = who["permissions"]
+        env = [
+            "Skills: " + (", ".join(who["skills"]) or "—"),
+            "MCP: " + (", ".join(who["mcp"]) or "—"),
+            "Grenzen: " + ", ".join(
+                ["Push erlaubt" if perms["push"] else "kein Push",
+                 "Branches löschen erlaubt" if perms["delete_branches"] else "keine Branches löschen"]),
+        ]
+        parts.append("## Umgebung\n\n" + "\n".join(env))
     task = (
         ("\n".join(intro) + "\n\n" if intro else "") +
+        ("\n\n".join(parts) + "\n\n" if parts else "") +
         f"Ticket {a.id}: {t['title']}\n\n{order}\n\n---\n"
         f"Du arbeitest in {folder}" + (f" auf Branch {branch}" if branch else "") + ". "
         "Lies zuerst den relevanten Code, ändere fokussiert, führe die Checks/Tests des Projekts aus, committe in kleinen Schritten, kein Push. "
@@ -1075,9 +1365,7 @@ def cmd_dispatch(a):
         f"hc send nur für \"fertig\" oder \"blockiert, Ticket {a.id}\": {report}. "
         "Wenn du fertig oder blockiert bist, melde dich genauso mit: was geändert, Testergebnis, was offen ist."
     )
-    agent = list(AGENTS.get(program) or shlex.split(program))
-    if who and who.get("model"):
-        agent += ["--model", who["model"]]
+    agent = command_argv(who) if who else list(AGENTS.get(program) or shlex.split(program))
     if on:
         argv = ["sh", "-lc", '"$@"; exec "${SHELL:-sh}" -l', "sh", *agent, task]
     else:
@@ -1098,7 +1386,8 @@ def cmd_dispatch(a):
     if r.returncode != 0:
         die(f"hc run: {(r.stderr or r.stdout).strip()}")
     out = json.loads(r.stdout)
-    t.update(agent=agent_key, branch=branch or "", worktree=folder if branch else "",
+    t.update(agent=agent_key, harness=short_harness(who) if who else program,
+             branch=branch or "", worktree=folder if branch else "",
              terminal=out["address"], space=space, tab=tab)
     set_status(t, "doing")
     write(t)
@@ -2407,7 +2696,8 @@ def main():
     ag = sub.add_parser("agent").add_subparsers(dest="acmd", required=True)
     def agent_opts(p, name):
         if name == "add":
-            p.add_argument("--name", required=True)
+            p.add_argument("new_name", nargs="?", metavar="NAME")
+            p.add_argument("--name")
         elif name == "edit":
             p.add_argument("--name", metavar="NEW", help="neuer Name (Umbenennen)")
         p.add_argument("--role")
@@ -2418,6 +2708,24 @@ def main():
         p.add_argument("--labels", help="kommagetrennt")
         p.add_argument("--notes")
         p.add_argument("--color", help="c1..c6")
+        p.add_argument("--prompt-file", metavar="PATH", help="Pfad relativ zum Repo (Standard agents/prompts/<slug>.md)")
+        p.add_argument("--prompt", dest="prompt_text", metavar="TEXT", help="Prompt-Text; schreibt die Datei")
+        p.add_argument("--smol", help="kleines/schnelles Modell")
+        p.add_argument("--slow", help="großes/gründliches Modell")
+        p.add_argument("--models", help="Models-Liste für Ctrl+P, kommagetrennt")
+        p.add_argument("--approval-mode", metavar="MODE",
+                       help="always-ask|always-ask-cached|write|yolo")
+        p.add_argument("--max-cost", dest="max_cost", metavar="USD", help="Kostenlimit in USD (> 0)")
+        p.add_argument("--no-lsp", dest="no_lsp", action="store_true", default=None)
+        p.add_argument("--lsp", dest="no_lsp", action="store_false", default=None)
+        p.add_argument("--skills", help="kommagetrennt")
+        p.add_argument("--mcp", help="kommagetrennt")
+        p.add_argument("--sandbox", help="worktree (Standard) | repo")
+        p.add_argument("--wip", metavar="N", help="WIP-Limit (0 = unbegrenzt, Standard 1)")
+        p.add_argument("--push", dest="push", action="store_true", default=None)
+        p.add_argument("--no-push", dest="push", action="store_false", default=None)
+        p.add_argument("--delete-branches", dest="delete_branches", action="store_true", default=None)
+        p.add_argument("--no-delete-branches", dest="delete_branches", action="store_false", default=None)
     al = ag.add_parser("list")
     al.add_argument("--json", action="store_true")
     al.set_defaults(fn=cmd_agent_list)
@@ -2435,6 +2743,12 @@ def main():
     ar = ag.add_parser("rm")
     ar.add_argument("name")
     ar.set_defaults(fn=cmd_agent_rm)
+    ac = ag.add_parser("command")
+    ac.add_argument("name")
+    ac.set_defaults(fn=cmd_agent_command)
+    ap = ag.add_parser("prompt")
+    ap.add_argument("name")
+    ap.set_defaults(fn=cmd_agent_prompt)
     d = sub.add_parser("dispatch")
     d.add_argument("id")
     d.add_argument("--agent", default="omp")
