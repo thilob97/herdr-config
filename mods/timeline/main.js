@@ -14,7 +14,7 @@
 // sekündlich aus `now` + lokaler Zeit weiter, ohne neu zu lesen.
 // Das Panel trägt `timeline.panel` (idempotent, Kaltstart-fest wie das Board); als
 // Fenster öffnet `mod.open:timeline` (mod.json overlay).
-import { View, div } from "gpui-kit";
+import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
 import { exec, appHome, shared, setShared, theme, layout, run, nextCommand, openOverlay, closeOverlay, props, settings } from "herdr";
 import * as ui from "./ui.js";
@@ -574,6 +574,8 @@ export default class Timeline extends View {
       // Zwei Zeilen: Name fett, darunter das Ticket-Kürzel in dim statt einer langen Zeile.
       : v_flex().w(LABEL_W).flex_none().min_w(0).h_full().justify_center().gap(0).pl(8 + depth * 10).pr(4)
         .child(h_flex().gap(GAP_XS).items_center().min_w(0)
+          .when(lane.kind === "orchestrator", (el) => el.child(div().flex_none().tooltip("Orchestrator dieses Workspace")
+            .child(svg("mods/orchestra/orchestrator.svg").size(12).flex_none().text_color(t.accent))))
           .child(ui.statusIcon(t, status)).child(nameText))
         .when(Boolean(lane.ticket), (el) => el.child(div().pl(16).min_w(0).truncate().text_size(T_XS)
           .text_color(t.dim).child(shortId(lane.ticket))));
