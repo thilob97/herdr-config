@@ -74,19 +74,24 @@ const clampTitle = (s, per = 24) => {
 };
 
 const PRIO = /^(p[0-3]|prio[-:]?[0-3]|kritisch|hoch|urgent)$/i;
-const prioColor = (t, l) => (/^(p0|prio[-:]?0|kritisch|urgent)$/i.test(l) ? t.blocked : t.working);
-// Höchstens zwei Chips in einer Zeile: Priorität zuerst, der Rest als „+n mehr".
-// Lange Labels werden gekürzt, damit die Zeile neben ID und Alter passt.
+// The triage writes priority p1..p3 as its own field (and a label); the card shows one
+// chip, never the same priority twice. p1 red, p2 yellow, p3 muted.
+function priorityOf(tk) {
+  const field = String(tk.priority ?? "").trim().toLowerCase();
+  const fromField = /^p?([123])$/.exec(field)?.[1];
+  if (fromField) return `p${fromField}`;
+  const label = [...splitList(tk.labels), ...splitList(tk.tags)].find((l) => PRIO.test(l));
+  if (!label) return null;
+  const n = /([123])$/.exec(label)?.[1];
+  return n ? `p${n}` : "p1"; // kritisch, hoch, urgent
+}
+const priorityColor = (t, p) => (p === "p1" ? t.blocked : p === "p2" ? t.working : t.muted);
+const sizeOf = (tk) => (/^[SML]$/i.test(String(tk.size ?? "").trim()) ? String(tk.size).trim().toUpperCase() : null);
+// Höchstens zwei Labels in einer Zeile; Priorität steht als eigener Chip davor.
 function labelChips(t, tk) {
-  const labels = [...new Set([...splitList(tk.labels), ...splitList(tk.tags)])];
-  const prio = labels.filter((l) => PRIO.test(l));
-  const rest = labels.filter((l) => !PRIO.test(l));
-  const ordered = [...prio, ...rest];
+  const ordered = [...new Set([...splitList(tk.labels), ...splitList(tk.tags)])].filter((l) => !PRIO.test(l));
   const shown = ordered.slice(0, ordered.length > 2 ? 1 : 2);
-  const out = shown.map((l) => {
-    const text = l.length > 8 ? `${l.slice(0, 7)}…` : l;
-    return { text: PRIO.test(l) ? text.toUpperCase() : text, color: PRIO.test(l) ? prioColor(t, l) : t.muted };
-  });
+  const out = shown.map((l) => ({ text: l.length > 8 ? `${l.slice(0, 7)}…` : l, color: t.muted }));
   if (ordered.length > shown.length) out.push({ text: `+${ordered.length - shown.length} mehr`, color: t.dim });
   return out;
 }
@@ -155,6 +160,9 @@ const countIcon = (t, icon, n, tip) => h_flex().flex_none().gap(1).items_center(
 
 const labelPill = (t, text, color) => h_flex().flex_none().h(16).px(2).items_center().rounded(4)
   .bg(color + "26").text_size(T_XS).font_medium().text_color(color).child(text);
+const priorityPill = (t, p) => labelPill(t, p.toUpperCase(), priorityColor(t, p));
+const sizeText = (t, size) => div().flex_none().text_size(T_XS).font_medium().text_color(t.muted)
+  .tooltip(`Größe ${size} (hub triage)`).child(size);
 
 const miniAction = (t, id, label, action, { enabled = true, primary = false, tip } = {}) =>
   ui.button(t, id, label, (cx) => action(cx), { kind: primary ? "primary" : "secondary", small: true, enabled, tip });
@@ -171,6 +179,13 @@ export function ticketCard(t, tk, o = {}) {
   const over = spent > limit || Boolean(o.stopped);
   const blocked = blockersOf(tk, o.all ?? []);
   const labels = labelChips(t, tk);
+  const prio = priorityOf(tk), size = sizeOf(tk);
+  const triageOpen = !String(tk.triaged ?? "").trim() && Boolean(String(tk.source ?? "").trim());
+  const flags = [];
+  if (String(tk.preflight ?? "").toLowerCase() === "fail") flags.push(ui.chip(t, "Preflight ✗", t.blocked,
+    { tip: `Preflight rot${tk.preflight_at ? ` · ${tk.preflight_at}` : ""}: die Basis prüft nicht (hub preflight ${tk.id})` }));
+  if (triageOpen) flags.push(ui.chip(t, "Triage offen", t.working,
+    { tip: `Noch nicht triagiert: hub triage ${tk.id} --apply` }));
   const comments = commentCount(tk), evidence = evidenceCount(tk);
   const hovered = Boolean(o.hovered), selected = Boolean(o.selected);
   const box = selected ? t.selected : undefined;
@@ -183,6 +198,8 @@ export function ticketCard(t, tk, o = {}) {
     .child(h_flex().flex_none().h(18).px(3).items_center().rounded(4).bg(t.raised)
       .text_size(T_XS).font_medium().font_family(settings().font_family).text_color(t.muted)
       .tooltip(`Ticket ${tk.id}`).child(shortId(tk.id)))
+    .when(Boolean(prio), (el) => el.child(priorityPill(t, prio)))
+    .when(Boolean(size), (el) => el.child(sizeText(t, size)))
     .children(shownLabels.map((l) => labelPill(t, l.text, l.color)))
     .when(blocked.length > 0, (el) => el.child(ui.chip(t, `gesperrt: ${blocked.map((b) => shortId(b.id)).join(", ")}`, t.blocked,
       { tip: `Sperre: ${blocked.map((b) => `${b.id} (${b.status ?? "unbekannt"})`).join(", ")}` })))
@@ -233,6 +250,8 @@ export function ticketCard(t, tk, o = {}) {
     .tooltip(`${stageLabel(stage)} · ${stageAge(tk)} · zuletzt bearbeitet ${updatedStamp(tk)}`)
     .on_hover((on, cx) => o.onHover?.(on, cx))
     .on_click((_e, cx) => o.onOpen?.(cx))
-    .child(row1).child(title).child(row3)
+    .child(row1).child(title)
+    .when(flags.length > 0, (el) => el.child(h_flex().gap(2).items_center().children(flags)))
+    .child(row3)
     .when(hovered, (el) => el.child(hover));
 }
