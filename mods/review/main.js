@@ -3,7 +3,8 @@
 // - ticket mode (props.ticket, an id from shared "orchestra.tickets"; the Team
 //   panel's and the inbox's "Prüfen", or props.terminal of an agent whose ticket
 //   waits for review, e.g. the sidebar card's Review): the ticket's title, gate chips, the
-//   orchestrator's summary and the evidence files above the diff of its branch,
+//   orchestrator's summary, the Definition of Done from `hub gate` (six points with ✓/–)
+//   and the evidence files above the diff of its branch,
 //   and the acceptance below: Mergen, PR, Änderungen … (to the orchestrator) or
 //   Nur abnehmen, all through mods/orchestra/bin/hub.
 // - terminal mode (props.terminal from the inbox or a toast, or no props for the
@@ -139,7 +140,7 @@ export default class Review extends View {
   // The gate is computed, not remembered: `hub gate` compares the recorded checks_head
   // with the worktree's HEAD now, and carries the last check output.
   loadGate(cx) {
-    if (!this.ticketId || this.gating || this.ticket()?.status === "done") return;
+    if (!this.ticketId || this.gating) return;
     this.gating = true;
     cx.spawn(async (cx) => {
       try {
@@ -693,6 +694,26 @@ export default class Review extends View {
         .child(tk.summary || "Keine Zusammenfassung des Orchestrators."));
   }
 
+  // Definition of Done: the fixed six points from `hub gate` (the same list `hub review`
+  // enforces), each ✓ or – with the reason in the tooltip. Missing ones are named in one
+  // sentence below, so the window says what to do instead of only refusing.
+  dodRow(t, tk) {
+    const dod = this.gate?.dod ?? [];
+    if (!dod.length) return null;
+    const missing = dod.filter((d) => !d.ok);
+    return v_flex().id("rv-dod").flex_none().gap(2)
+      .child(h_flex().gap(ui.GAP_S).items_center().min_w(0)
+        .child(div().flex_none().text_size(T_S).font_medium().text_color(t.muted).child("Definition of Done"))
+        .child(div().id("rv-dod-count").flex_none().text_size(T_XS).text_color(missing.length ? t.blocked : t.done)
+          .child(missing.length ? `${dod.length - missing.length}/${dod.length} erfüllt` : "erfüllt")))
+      .children(dod.map((d) => h_flex().id(`rv-dod-${d.key}`).gap(ui.GAP_S).items_center().min_w(0).text_size(T_S)
+        .child(div().flex_none().text_color(d.ok ? t.done : t.blocked).child(d.ok ? "✓" : "–"))
+        .child(div().min_w(0).truncate().text_color(d.ok ? t.muted : t.foreground)
+          .tooltip(d.ok ? `${d.label}: erfüllt` : `${d.label}: ${d.why}`).child(d.label))))
+      .when(missing.length > 0, (el) => el.child(div().id("rv-dod-missing").text_size(T_XS).text_color(t.blocked)
+        .child(`Fehlt: ${missing.map((d) => d.label).join(" · ")} — hub review ${tk.id} verweigert bis dahin.`)));
+  }
+
   // The scrollable middle above the diff: gates and actions, then the folded detail
   // sections (Nachweise, Verlauf, Lehren) and the comment field. Its cap keeps at least
   // 60 % of the middle for the diff; expanded sections scroll here instead of pushing the
@@ -706,9 +727,11 @@ export default class Review extends View {
     const local = !tk.machine;
     const toggle = (id, label, open, onClick) => ui.link(t, id, `${open ? "▾" : "▸"} ${label}`, onClick,
       { tip: open ? `${label.replace(/ \d+$/, "")} ausblenden` : `${label.replace(/ \d+$/, "")} einblenden` });
+    const dod = this.dodRow(t, tk);
     return v_flex().id("rv-meta").flex_none().min_h(0).max_h("40%").overflow_y_scroll()
       .px(ui.INSET_PANEL).py(ui.GAP_M).gap(ui.GAP_M).border_b(1).border_color(t.border)
       .when(Boolean(tk.pr) || Boolean(tk.ci), (el) => el.child(this.ciRow(t, tk, cx)))
+      .when(Boolean(dod), (el) => el.child(dod))
       .child(this.reviewRow(t, tk, cx))
       .child(this.verifyRow(t, tk, cx))
       .child(h_flex().gap(ui.GAP_L).items_center()

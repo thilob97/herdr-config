@@ -1,11 +1,15 @@
 // Board: die Pipeline als Kanban (Geplant · In Arbeit · Prüfung · Fertig). Vier
-// Spalten mit Kopf (Name, Zahl, Kostensumme) und eigenem Scroll; bei schmalem Panel
-// 2×2, darunter untereinander. Die Karten sind die Ticket-Karte aus card.js (dieselbe
-// wie im Team-Panel): ID, Labels, Status, Titel, Agent, Branch, Alter in der Stufe,
-// Gates, Kosten, Kommentare, Nachweise, Sperre; Hover mit Öffnen / Agent / Prüfen.
+// Spalten mit Kopf (Name, Zahl n/limit, Kostensumme) und eigenem Scroll; bei schmalem
+// Panel 2×2, darunter untereinander. Die WIP-Limits kommen aus `hub wip --json`
+// (data/orchestra/wip.json): „In Arbeit" und „Prüfung" tragen `n/limit`, sind voll
+// gedimmt und färben den Zähler in der Wartet-Farbe. Die Karten sind die Ticket-Karte
+// aus card.js (dieselbe wie im Team-Panel): ID, Labels, Status, Titel, Agent, Branch,
+// Alter in der Stufe, Gates, Kosten, Kommentare, Nachweise, Sperre; Hover mit Öffnen /
+// Agent / Prüfen.
 //
 // Daten: `hub ticket list --all --json` (Ticket-Dateien, alle fünf Sekunden) für die
-// Karten, shared "orchestra.gates" bzw. `hub gates --json` für die Gates, shared
+// Karten, `hub wip --json` (data/orchestra/wip.json, alle 30 s) für die Limits,
+// shared "orchestra.gates" bzw. `hub gates --json` für die Gates, shared
 // "orchestra.costs" (Datei data/orchestra/costs.json als Rückfall) für die Kosten,
 // shared "agents.identity" für Avatare (über ui.identityChip). "board.panel" schaltet
 // das Panel um; die Tab-Leiste trägt der Orchestrator ein (nicht dieser Mod).
@@ -17,7 +21,9 @@ import { T_XS, T_S, GAP_S, GAP_M, INSET_PANEL, H_SECTION, usd, at } from "./ui.j
 import { STAGES, stageOf, stageColor, ticketCard, blockersOf } from "./card.js";
 
 const HUB = () => `${appHome()}/mods/orchestra/bin/hub`;
-const REFRESH = 5000, GATE_REFRESH = 15000, COST_REFRESH = 30000;
+const REFRESH = 5000, GATE_REFRESH = 15000, COST_REFRESH = 30000, WIP_REFRESH = 30000;
+// `hub wip --json` owns the limits (data/orchestra/wip.json); these are its defaults.
+const WIP_DEFAULT = { arbeit: 3, pruefung: 2 };
 const errorText = (e) => String(e?.message ?? e ?? "fehlgeschlagen").replace(/^Error: /, "");
 
 function find(node, id) {
@@ -39,6 +45,7 @@ export default class Board extends View {
     this.tickets = (shared("orchestra.tickets") ?? []).map(normalize);
     this.gates = shared("orchestra.gates") ?? [];
     this.costFile = null;
+    this.wip = { ...WIP_DEFAULT };
     this.selected = null;
     this.hovered = null;
     this.reveal = null;
@@ -48,14 +55,17 @@ export default class Board extends View {
     this.readingT = false;
     this.readingG = false;
     this.readingC = false;
+    this.readingW = false;
     this.scrolls = Object.fromEntries(STAGES.map((s) => [s.key, ScrollHandle.new()]));
     this.outer = ScrollHandle.new();
     this.readCosts(cx);
+    this.readWip(cx);
     this.readTickets(cx);
     this.readGates(cx);
     cx.timer.every(REFRESH, (cx) => this.readTickets(cx));
     cx.timer.every(GATE_REFRESH, (cx) => this.readGates(cx));
     cx.timer.every(COST_REFRESH, (cx) => this.readCosts(cx));
+    cx.timer.every(WIP_REFRESH, (cx) => this.readWip(cx));
     cx.timer.every(20000, (cx) => cx.notify()); // die Alter in der Stufe
     cx.timer.after(50, () => this.handle.focus());
     // Kommando der Tab-Leiste: board.panel zeigt das Panel (idempotent, Kaltstart-fest).
@@ -100,6 +110,21 @@ export default class Board extends View {
       finally { this.readingC = false; cx.notify(); }
     });
   }
+
+  // The WIP limits from `hub wip`; the Board counts its own columns against them.
+  readWip(cx) {
+    if (this.readingW) return;
+    this.readingW = true;
+    cx.spawn(async (cx) => {
+      try {
+        const r = await exec(HUB(), ["wip", "--json"], { timeout: 20000 });
+        if (r.code === 0) this.wip = { ...WIP_DEFAULT, ...JSON.parse(r.stdout || "{}") };
+      } catch {} finally { this.readingW = false; cx.notify(); }
+    });
+  }
+
+  /** Limit of a stage, or null where WIP does not apply (Geplant, Fertig). */
+  limitOfStage(key) { return key === "doing" ? this.wip.arbeit : key === "review" ? this.wip.pruefung : null; }
 
   costs() {
     const s = shared("orchestra.costs"), f = this.costFile;
@@ -253,6 +278,14 @@ export default class Board extends View {
   column(t, key, list, { grow }) {
     const s = STAGES.find((x) => x.key === key);
     const sum = list.reduce((n, tk) => n + this.spentOf(tk), 0);
+    // WIP: the head carries `n/limit`; a full stage dims its name and turns the count
+    // into the waiting colour, so the reason `hub dispatch` refuses is visible here.
+    const limit = this.limitOfStage(key);
+    const full = limit != null && list.length >= limit;
+    const count = limit != null ? `${list.length}/${limit}` : String(list.length);
+    const countTip = limit == null ? `${list.length} Tickets`
+      : full ? `WIP-Limit ${limit}: voll — hub dispatch startet nichts Neues (hub wip ${key === "doing" ? "arbeit" : "pruefung"}=${limit + 1})`
+        : `${list.length} von ${limit} (WIP-Limit)`;
     const body = v_flex().id(`col-${key}-body`).gap(GAP_S).px(GAP_S).pb(GAP_S);
     if (grow) body.flex_1().min_h(0).overflow_y_scrollbar().track_scroll(this.scrolls[key]);
     if (!list.length) body.child(ui.empty(t, s.empty, { row: true }));
@@ -267,8 +300,10 @@ export default class Board extends View {
     return v_flex().id(`col-${key}`).min_w(0).rounded(8).bg(t.background).border_1().border_color(t.border)
       .when(grow, (el) => el.flex_1().min_h(0))
       .child(h_flex().h(H_SECTION).flex_none().px(ui.GAP_M).gap(GAP_S).items_center().border_b(1).border_color(t.border)
-        .child(div().flex_none().text_size(T_S).font_medium().text_color(stageColor(t, key)).child(s.label))
-        .child(div().flex_none().text_size(T_XS).text_color(t.dim).child(String(list.length)))
+        .child(div().id(`col-${key}-name`).flex_none().text_size(T_S).font_medium()
+          .text_color(full ? t.dim : stageColor(t, key)).when(full, (el) => el.tooltip("Stufe voll (WIP-Limit)")).child(s.label))
+        .child(div().id(`col-${key}-count`).flex_none().text_size(T_XS).tooltip(countTip)
+          .text_color(full ? t.blocked : t.dim).child(count))
         .child(div().flex_1())
         .child(div().flex_none().text_size(T_XS).text_color(sum > 0 ? t.muted : t.dim)
           .tooltip("Kosten der Tickets in dieser Spalte").child(`Σ ${usd(sum)}`)))
