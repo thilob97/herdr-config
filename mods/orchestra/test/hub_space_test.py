@@ -563,6 +563,55 @@ class HubSpaceTest(unittest.TestCase):
         self.assertEqual(rows[SP_B]["terminal"], ORCH_B)
 
 
+    def test_timeline_gives_each_orchestrator_its_own_cost_and_start(self):
+        now = int(time.time() * 1000)
+        hour = 3_600_000
+        # `hc ls` carries no created_ms (the real bug); only `hc get` dates the lanes.
+        self.write_json(self.ls_file, {"terminals": [
+            {"address": ORCH_A, "name": "orchestrator", "state": "live",
+             "labels": {"hub.role": "orchestrator", "hub.space": SP_A, "herdr.space": SP_A}},
+            {"address": ORCH_B, "name": "orchestrator", "state": "live",
+             "labels": {"hub.role": "orchestrator", "hub.space": SP_B, "herdr.space": SP_B}}]})
+        self.terminals({
+            ORCH_A: {"address": ORCH_A, "name": "orchestrator", "state": "live",
+                     "created_ms": now - 6 * hour,
+                     "labels": {"hub.role": "orchestrator", "hub.space": SP_A, "herdr.space": SP_A}},
+            ORCH_B: {"address": ORCH_B, "name": "orchestrator", "state": "live",
+                     "created_ms": now - 15 * hour,
+                     "labels": {"hub.role": "orchestrator", "hub.space": SP_B, "herdr.space": SP_B}}})
+        costs = os.path.join(self.app, "data", "orchestra", "costs.json")
+        os.makedirs(os.path.dirname(costs), exist_ok=True)
+        self.write_json(costs, {"orchestrator": 10.97,
+                                "orchestrators": {SP_A: 10.91, SP_B: 0.05}})
+
+        report = self.json_cmd("timeline", "--all")
+        lanes = {l["space"]: l for l in report["lanes"] if l["kind"] == "orchestrator"}
+        self.assertEqual(lanes[SP_A]["cost"], 10.91, "Lane trägt nicht die Heimgesamtkosten")
+        self.assertEqual(lanes[SP_B]["cost"], 0.05)
+        self.assertEqual(lanes[SP_A]["start"], now - 6 * hour, "Start aus hc get, nicht erstes Event")
+        self.assertEqual(lanes[SP_B]["start"], now - 15 * hour)
+
+    def test_two_parallel_orchestrator_starts_launch_exactly_one(self):
+        fresh = "sp" + "c" * 32
+        gamma = os.path.join(self.repos, "gamma")
+        os.makedirs(gamma)
+        self.spaces([{"id": fresh, "name": "Gamma", "folder": gamma, "machine": None, "tabs": []}])
+        env = {**self.env_for(ORCH_A), "HC_RUN_ADDS_LS": "1", "HC_RUN_SLEEP": "0.4"}
+        procs = [subprocess.Popen([sys.executable, HUB, "orchestrator", "start", "--space", fresh],
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+                 for _ in range(2)]
+        results = [p.communicate(timeout=120) for p in procs]
+        codes = [p.returncode for p in procs]
+        self.assertEqual(codes.count(0), 1, results)
+        self.assertIn("Orchestrator", results[codes.index(1)][1],
+                      "der zweite Start nennt den laufenden Orchestrator")
+        try:
+            with open(self.run_log, encoding="utf-8") as f:
+                launches = [line for line in f if line.strip()]
+        except OSError:
+            launches = []
+        self.assertEqual(len(launches), 1, f"genau ein hc run, gesehen: {launches}")
+
     def test_timeline_reads_the_terminal_snapshot_once_for_fifty_tickets(self):
         now = int(time.time() * 1000)
         tdir = os.path.join(self.app, "data", "quests", "tickets")
