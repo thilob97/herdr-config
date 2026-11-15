@@ -20,7 +20,7 @@ import unittest
 HUB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bin", "hub")
 
 HC = """#!/usr/bin/env python3
-import json, os, sys
+import json, os, sys, time
 cmd = sys.argv[1] if len(sys.argv) > 1 else ""
 calls = os.environ.get("HC_CALL_LOG")
 if calls:
@@ -45,6 +45,20 @@ elif cmd == "run":
     if log:
         with open(log, "a", encoding="utf-8") as f:
             f.write(" ".join(sys.argv[1:]) + "\\n")
+    time.sleep(float(os.environ.get("HC_RUN_SLEEP") or 0))
+    if os.environ.get("HC_RUN_ADDS_LS"):
+        argv = sys.argv[2:]
+        labels = {}
+        for i, v in enumerate(argv[:-1]):
+            if v == "--label" and "=" in argv[i + 1]:
+                key, val = argv[i + 1].split("=", 1)
+                labels[key] = val
+        path = os.environ.get("HC_LS_FILE", "")
+        rows = read(path, {"terminals": []})
+        rows.setdefault("terminals", []).append(
+            {"address": os.environ.get("HC_RUN_ADDRESS", "t-new"), "name": "orchestrator",
+             "state": "live", "labels": labels})
+        json.dump(rows, open(path, "w"))
     print(json.dumps({"address": os.environ.get("HC_RUN_ADDRESS", "t-new")}))
 elif cmd in ("send", "kill", "wait", "label"):
     log = os.environ.get("HC_SEND_LOG")
