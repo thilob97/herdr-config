@@ -638,7 +638,15 @@ def my_space():
     # its own Herdr space is the throwaway one dispatch made for the worktree, and even
     # an inherited HERDR_SPACE must not turn a ticket it creates into an agent space.
     labels = hc_term(os.environ.get("HC_TERMINAL_ID") or "").get("labels") or {}
-    sid, sname = stored_space(labels.get("hub.ticket") or "")
+    parent = labels.get("hub.ticket") or ""
+    sid, sname = stored_space(parent)
+    if not sid and parent:
+        # A ticket from before the space model stores only the agent's throwaway space
+        # (no `space_name`). Its factory is the one whose folder holds its repo — the
+        # same rule adoption applies — so the agent's HERDR_SPACE does not win.
+        pt = peek(parent)
+        sid = ticket_space(pt, spaces) if pt is not None else ""
+        sname = space_name_of(sid, spaces) if sid else ""
     ref = next((norm_space(s) for s in spaces if s.get("id") == sid), None)
     if ref is None and sid:
         ref = {"id": sid, "name": sname or sid.rsplit("/", 1)[-1], "folder": "", "machine": ""}
@@ -872,17 +880,8 @@ def path_of(tid):
     return os.path.join(TICKETS, tid + ".md")
 
 
-def read(tid):
-    """One ticket, or None when the file carries no `---` frontmatter.
-
-    A broken file must not take a whole command down: `all_tickets` skips it and
-    `hub status` counts it, while single-ticket commands use `load`, which dies with
-    a readable message instead of a traceback."""
-    p = path_of(tid)
-    try:
-        text = open(p, encoding="utf-8").read()
-    except OSError:
-        die(f"no ticket {tid} ({p})")
+def parse_ticket(tid, text):
+    """One ticket's frontmatter, or None when the `---` block is missing."""
     m = re.match(r"^---\r?\n(.*?)\r?\n---\r?\n?", text, re.S)
     if not m:
         return None
@@ -896,6 +895,35 @@ def read(tid):
     meta.setdefault("status", "todo")
     meta.setdefault("title", tid)
     return meta
+
+
+def read(tid):
+    """One ticket, or None when the file carries no `---` frontmatter.
+
+    A broken file must not take a whole command down: `all_tickets` skips it and
+    `hub status` counts it, while single-ticket commands use `load`, which dies with
+    a readable message instead of a traceback."""
+    p = path_of(tid)
+    try:
+        text = open(p, encoding="utf-8").read()
+    except OSError:
+        die(f"no ticket {tid} ({p})")
+    return parse_ticket(tid, text)
+
+
+def peek(tid):
+    """One ticket like `read`, but a missing or broken file is None, never a die.
+
+    Used where the ticket is only a hint (`my_space` follows a terminal's
+    `hub.ticket` label), so a stale label cannot take the command down."""
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", tid or ""):
+        return None
+    try:
+        with open(path_of(tid), encoding="utf-8") as f:
+            text = f.read()
+    except OSError:
+        return None
+    return parse_ticket(tid, text)
 
 
 def load(tid):
@@ -1795,9 +1823,9 @@ def write_wip(w):
 def wip_usage(me=None, everyone=False, space=None):
     """{arbeit: {'stage','ids','count'}, pruefung: ...} over this factory's tickets.
 
-    Tickets without a space (old ones without a folder match) count everywhere, like
-    ownerless ones did, so old work does not silently drop out of the limits.
-    `everyone=True` is the global sum (`hub wip --all`)."""
+    Only this factory's tickets count, like every other view: a ticket without a
+    workspace belongs to no factory and is counted only in the "ohne Workspace" group
+    (`--space ""`). `everyone=True` is the global sum (`hub wip --all`)."""
     rows = my_tickets(everyone=everyone, me=me, space=space)
     out = {}
     for key, stage in WIP_STAGES.items():
@@ -1810,7 +1838,7 @@ def cmd_wip(a):
     me = orchestrator_id()
     mine = my_space()
     selected = space_arg(a)
-    key = selected or mine["id"] or me
+    key = (mine["id"] or me) if selected is None else selected
     if a.pairs:
         pairs = []
         for kv in a.pairs:
@@ -1837,16 +1865,27 @@ def cmd_wip(a):
                 for k, v in pairs:
                     w[k] = v
             write_wip(w)
-    sid = selected or mine["id"]
+    # `--space ""` is the "ohne Workspace" group: its limits are the file's defaults,
+    # and its label is the group's, not this factory's.
+    sid = mine["id"] if selected is None else selected
     w = read_wip(None if a.all else me, None if a.all else sid)
     use = wip_usage(me, everyone=a.all, space=selected)
     if a.json:
         out = {k: w[k] for k in WIP_STAGES}
-        if sid:
+        if a.all:
+            out["all"] = True  # global numbers: no space fields to misread
+        elif selected is not None or sid:
             out.update(space=sid, space_name=space_name_of(sid))
         print(json.dumps(out, ensure_ascii=False))
         return
-    scope = " (alle Spaces)" if a.all else (f" ({space_name_of(sid) or me})" if (sid or me) else "")
+    if a.all:
+        scope = " (alle Spaces)"
+    elif selected == "":
+        scope = " (ohne Workspace)"
+    elif sid or me:
+        scope = f" ({space_name_of(sid) or me})"
+    else:
+        scope = ""
     for key_, stage in WIP_STAGES.items():
         print(f"{key_} {use[key_]['count']}/{w[key_]} ({len(use[key_]['ids'])} in {stage}){scope}")
 
@@ -4434,7 +4473,8 @@ def cmd_status(a):
                          "age": age(t.get("status_at") or t.get("updated") or ""),
                          "comments": len(entries(t))})
         rows.extend({"id": tid, "invalid": True} for tid in bad)
-        print(json.dumps({"space": selected or mine["id"], "space_name": space_name_of(selected or mine["id"]),
+        sid = mine["id"] if selected is None else selected
+        print(json.dumps({"space": sid, "space_name": space_name_of(sid),
                           "tickets": rows, "invalid": bad,
                           "unassigned": len(unassigned),
                           "unassigned_hint": f"hub spaces --adopt --to <space> ({len(unassigned)} Tickets)" if unassigned else ""},
@@ -4502,7 +4542,12 @@ def dur(minutes):
     if minutes is None:
         return "—"
     m = int(round(minutes))
-    return f"{m} min" if m < 60 else f"{m // 60} h {m % 60:02d}"
+    if m < 60:
+        return f"{m} min"
+    if m < 1440:
+        return f"{m // 60} h {m % 60:02d}"
+    d, h = divmod(m, 1440)
+    return f"{d} d" + (f" {h // 60:02d} h" if h >= 60 else "")
 
 
 def measure(t, now, spent):
@@ -4618,8 +4663,9 @@ def cmd_stats(a):
     repos = []
     for repo in sorted({r["repo"] or "ohne Repo" for r in active}):
         repos.append({"repo": repo, **aggregate([r for r in active if (r["repo"] or "ohne Repo") == repo])})
-    out = {"days": days, "at": int(now * 1000), "space": selected or mine["id"],
-           "space_name": space_name_of(selected or mine["id"]),
+    sid = mine["id"] if selected is None else selected
+    out = {"days": days, "at": int(now * 1000), "space": sid,
+           "space_name": space_name_of(sid),
            "today": today_row, "history": history,
            "summary": {k: agg[k] for k in ("tickets", "done", "median_min", "rounds", "rework", "cost")},
            "stations": agg["stations"], "repos": repos, "agents": agent_rows(tickets, per_ticket),
@@ -4769,12 +4815,17 @@ def build_timeline(ticket="", since="all", space=None, everyone=False):
     derived = [m for t in tickets for m in ticket_marks(t)]
 
     def esp(e):
-        """The factory of an event: its own field, else the space its ticket belongs to."""
-        sid = e.get("space") or ""
+        """The factory of an event: its own field, else the space its ticket belongs to.
+
+        A dispatch from before the space model logged the ticket's throwaway
+        `agent_space`; that entry belongs to the ticket's workspace, exactly as
+        `hub spaces --adopt` assigns the ticket itself."""
+        sid = (e.get("space") or "").strip()
         t = by_id.get(e.get("ticket") or "")
-        if not sid and t is not None:
-            sid = ticket_space(t)
-        sname = e.get("space_name") or (ticket_space_name(t) if t is not None else "") or ""
+        tsid = ticket_space(t) if t is not None else ""
+        if tsid and (not sid or sid == (t.get("agent_space") or "").strip()):
+            sid = tsid
+        sname = (ticket_space_name(t) if t is not None and sid == tsid else "") or (e.get("space_name") or "")
         if sid and not sname:
             sname = space_name_of(sid)
         return sid, sname
@@ -4854,8 +4905,14 @@ def build_timeline(ticket="", since="all", space=None, everyone=False):
         if not addr or addr in by_terminal or (ticket and e["ticket"] != ticket):
             continue
         sid, sname = esp(e)
-        if not everyone and not ticket and mine_id and sid and sid != mine_id:
-            continue
+        if not everyone and not ticket:
+            # `--space ""` is a scope like any other: only events of the tickets
+            # without a workspace. Without `--space` an event without a space stays
+            # visible (legacy log lines), a foreign one never does.
+            if space is not None and sid != mine_id:
+                continue
+            if space is None and mine_id and sid and sid != mine_id:
+                continue
         by_terminal[addr] = lane("", e["ticket"], addr, "reviewer" if e["kind"] == "verdict" else "agent",
                                  (ident.get(addr) or {}).get("name") or agent_name(e["agent"]) or addr,
                                  e["at"], e["at"], "", per_ticket.get(e["ticket"]) if e["ticket"] else 0,
@@ -4877,6 +4934,8 @@ def build_timeline(ticket="", since="all", space=None, everyone=False):
         everything = [e for e in everything if e["at"] >= floor]
     if ticket:
         everything = [e for e in everything if e["ticket"] == ticket]
+    elif space is not None and not everyone:
+        everything = [e for e in everything if e["space"] == mine_id]
     elif not everyone and mine_id:
         everything = [e for e in everything if not e["space"] or e["space"] == mine_id]
     kept = []
