@@ -15,8 +15,24 @@ const dataUrl = (body) => "data:text/javascript," + encodeURIComponent(body);
 
 const APP = dataUrl(`
 export class View {}
-const none = () => null;
-export const div = none, svg = none, image = none, v_flex = none, h_flex = none;
+// A chainable element stub: records id, children and on_click so a test can walk a
+// rendered head and press its buttons. Every other builder method returns itself.
+export const el = () => {
+  const node = { id: null, onClick: [], children: [] };
+  const p = new Proxy(node, {
+    get(target, key) {
+      if (key === "__node") return target;
+      if (key === "id") return (v) => { target.id = v; return p; };
+      if (key === "on_click") return (fn) => { target.onClick.push(fn); return p; };
+      if (key === "child") return (c) => { target.children.push(c); return p; };
+      if (key === "children") return (cs) => { target.children.push(...cs.filter(Boolean)); return p; };
+      if (key === "when") return (cond, fn) => { if (cond) fn(p); return p; };
+      return () => p;
+    },
+  });
+  return p;
+};
+export const div = el, svg = el, image = el, v_flex = el, h_flex = el;
 export class InputState { static new() { return { on() {}, value() { return ""; }, set_value() {} }; } }
 export class TextareaState { static new() { return { on() {} }; } }
 export const Input = {}, Textarea = {};
@@ -28,7 +44,7 @@ export const hc = async () => ({ code: 1, stdout: "", stderr: "" });
 export const exec = async () => ({ code: 1, stdout: "", stderr: "" });
 export const theme = () => ({});
 export const shared = (k) => (globalThis.__dashShared ?? {})[k] ?? null;
-export const setShared = none;
+export const setShared = () => {};
 export const openOverlay = (o) => { globalThis.__overlay = o; };
 export const knownAgents = async () => [];
 export const appHome = () => "/tmp";
@@ -96,6 +112,30 @@ test("'Zum Space' is the deliberate switch to layout elric", () => {
     { name: "layout.switch", args: { name: "elric" } },
     { name: "tab.select", args: { id: "tab-1" } },
     { name: "pane.focus", args: { pane: "pane-1" } },
+  ]);
+});
+
+test("the head opens Board and Timeline as popups and stays on the dashboard", () => {
+  world();
+  const head = view().header({});
+  const nodes = [];
+  const walk = (n) => {
+    if (!n || typeof n !== "object") return;
+    const raw = n.__node ?? n;
+    nodes.push(raw);
+    for (const c of raw.children ?? []) walk(c);
+  };
+  walk(head);
+  const press = (id) => {
+    const node = nodes.find((n) => n.id === id);
+    assert.ok(node, `button ${id} fehlt im Kopf`);
+    for (const fn of node.onClick) fn({}, { stop_propagation() {} });
+  };
+  press("dash-board");
+  press("dash-timeline");
+  assert.deepEqual(runs(), [
+    { name: "mod.open", args: { name: "board" } },
+    { name: "mod.open", args: { name: "timeline" } },
   ]);
 });
 

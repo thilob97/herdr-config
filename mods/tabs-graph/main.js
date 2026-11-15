@@ -9,19 +9,21 @@ const T_XS = 10.5, T_S = 11, T_M = 12;
 // Room the strip leaves for "+" (26), the overflow chip (40) and their gaps.
 const RESERVED = 26 + 40 + 2 * 4;
 
-// Panel group by factory role: Fabrik (Quests, Team, Board, Team-Hub) ‖ Werkzeuge.
-// Keys stay ⌘⌥1 … ⌘⌥9. Board and Team-Hub ship with their packages; until then a local
-// placeholder icon draws their spot (fallback) and their own command opens the panel.
-const FABRIK = [
-  { id: "team", label: "Team", icon: "mods/orchestra/icon.svg", key: null, chord: "⌘⌥⇧7", tip: "Team: Pipeline der Tickets" },
-  { id: "board", label: "Board", icon: "mods/board/icon.svg", fallback: "mods/tabs-graph/board.svg", cmd: "board.panel", panel: true, key: 8, tip: "Board: Tickets auf dem Brett" },
-  { id: "timeline", label: "Timeline", icon: "mods/timeline/icon.svg", panel: true, cmd: "timeline.panel", key: 0, tip: "Timeline: wer wann woran gearbeitet hat" },
-  { id: "factory", label: "Fabrik", icon: "mods/graph/icon.svg", panel: true, cmd: "factory.panel", key: 7, tip: "Fabrik: Agents und Tickets von oben nach unten" },
-  { id: "quests", label: "Quests", icon: "mods/quests/icon.svg", key: 6, tip: "Quests: alle Signale und Tickets" },
-  { id: "teams", label: "Team-Hub", icon: "mods/teams/icon.svg", fallback: "mods/tabs-graph/teams.svg", cmd: "mod.open", key: 9, tip: "Team-Hub: Teams, Rollen und Arbeit" },
+// Two kinds of factory view (UX 12): the wide overviews open as popup windows over the
+// work, the vertical companions dock into the right side panel beside the terminal.
+const POPUPS = [
+  { id: "board", label: "Board", icon: "mods/board/icon.svg", fallback: "mods/tabs-graph/board.svg", chord: "⌘⌥8", popup: true, tip: "Board als Popup-Fenster öffnen" },
+  { id: "timeline", label: "Timeline", icon: "mods/timeline/icon.svg", chord: "⌘⌥0", popup: true, tip: "Timeline als Popup-Fenster öffnen" },
+  { id: "quests", label: "Quests", icon: "mods/quests/icon.svg", chord: "⌘⌥6", popup: true, tip: "Quests als Popup-Fenster öffnen" },
+  { id: "teams", label: "Team-Hub", icon: "mods/teams/icon.svg", fallback: "mods/tabs-graph/teams.svg", chord: "⌘⌥9", popup: true, tip: "Team-Hub als Popup-Fenster öffnen" },
 ];
-// Die vier Fabrik-Ansichten teilen sich eine Kapsel (Team, Board, Timeline, Graph).
-const VIEWS = new Set(["team", "board", "timeline", "factory"]);
+// Side panel companions: the factory's vertical views, then the tools. Exactly one is
+// open at a time; only that one also shows its name.
+const SIDEPANELS = [
+  { id: "team", label: "Team", icon: "mods/orchestra/icon.svg", chord: "⌘⌥⇧7", tip: "Team-Pipeline im Sidepanel" },
+  { id: "factory", label: "Graph", icon: "mods/graph/icon.svg", chord: "⌘⌥7", tip: "Fabrik-Graph im Sidepanel" },
+  { id: "inbox", label: "Inbox", icon: "mods/inbox/icon.svg", tip: "Inbox im Sidepanel" },
+];
 const WERKZEUGE = [
   { id: "changes", label: "Changes", icon: "mods/changes/changes.svg", key: 1, tip: "Changes: Arbeitskopie" },
   { id: "graph", label: "Git", icon: "mods/git-graph/icons/graph.svg", key: 2, tip: "Git: Historie und Zweige" },
@@ -29,7 +31,8 @@ const WERKZEUGE = [
   { id: "blueprint", label: "Blueprint", icon: "mods/blueprint/icon.svg", key: 4, tip: "Blueprint: Diagramme" },
   { id: "docker", label: "Docker", icon: "mods/docker/icon.svg", key: 5, tip: "Docker: Container" },
 ];
-const PANELS = [...WERKZEUGE, ...FABRIK].map(p => p.id);
+const PANELS = [...SIDEPANELS, ...WERKZEUGE].map(p => p.id);
+const ICONS = [...POPUPS, ...SIDEPANELS, ...WERKZEUGE];
 
 // Status indicator (5.6): one look everywhere, box 12×12. Calm (shared "ui.calm",
 // default on) shows the same mark without spinner or pulse; ⌘⇧A toggles (calm).
@@ -146,7 +149,7 @@ export default class Tabs extends View {
     this.icons = {};
     cx.spawn(async () => {
       const found = {};
-      for (const p of FABRIK) {
+      for (const p of ICONS) {
         if (!p.fallback) continue;
         let text = null;
         try { text = await readTextFile(`${appHome()}/${p.icon}`); } catch { text = null; }
@@ -184,25 +187,6 @@ export default class Tabs extends View {
     if (id === null) run(open ? "layout.hide" : "layout.show", { id: "panel" });
     else if (open && body?.active === id) run("layout.hide", { id: "panel" });
     else { run("layout.select", { stack: "panel-body", child: id }); run("layout.show", { id: "panel" }); }
-  }
-
-  // Board cold-start: a `place: none` mod is not loaded until its block is shown, so its
-  // command (`board.panel`) is unknown before that. Select the stack child first (this
-  // loads the block), then show it; the mod command follows only when it is loaded (its
-  // panel command is idempotent). Open/close stays in the bar, so the button never toggles
-  // a panel it just opened.
-  openPanel(id) {
-    const root = layout(), panel = find(root, "panel"), body = find(root, "panel-body");
-    if (!panel || !body) return;
-    const active = body.active === id;
-    if (active && !panel.hidden) { run("layout.hide", { id: "panel" }); return; }
-    if (!active) {
-      run("layout.select", { stack: "panel-body", child: id });
-      run("layout.show", { id: "panel" });
-      return;                       // the block loads with the select; no command yet
-    }
-    run("layout.show", { id: "panel" });
-    run(`${id}.panel`);            // loaded and idempotent: ensure it stays shown
   }
 
   // The side panel is remembered per space: switching shows that space's choice
@@ -305,28 +289,33 @@ export default class Tabs extends View {
       : 10;
     const panel = find(root, "panel"), body = find(root, "panel-body");
     this.syncPanel(space, panel, body, PANELS);
-    // Segments (5.6, icon variant for both groups alike): entries 22×22, only the open panel
-    // also says its name — names would cost the tab strip ~470 px.
+    // Two capsules (5.6, icon entries): the wide factory overviews as popups, the side
+    // panel companions as one rail. Entries are 22×22; only the open side panel also
+    // says its name — names would cost the tab strip ~470 px.
     const segEntry = p => {
-      const on = panel && !panel.hidden && body?.active === p.id;
+      const on = !p.popup && panel && !panel.hidden && body?.active === p.id;
+      const tip = p.chord ? `${p.tip} (${p.chord})` : p.key ? `${p.tip} (⌘⌥${p.key})` : p.tip;
       return h_flex().id(`panel-${p.id}`).h(H_SEG_ITEM).when(on, el => el.px(8)).when(!on, el => el.w(H_SEG_ITEM))
         .justify_center().gap(GAP_XS).flex_none().items_center().rounded(6).text_size(T_S)
         .bg(on ? t.selected : t.background).text_color(on ? t.foreground : t.muted)
         .hover(s => s.bg(on ? t.selected : t.hover).text_color(t.foreground)).on_mouse_down("left", stop)
-        .tooltip(p.chord ? `${p.tip} (${p.chord})` : `${p.tip} (⌘⌥${p.key})`)
-        .on_click(() => (p.panel ? this.openPanel(p.id) : p.cmd ? run(p.cmd, p.cmd === "mod.open" ? { name: p.id } : undefined) : this.togglePanel(p.id)))
+        .tooltip(tip)
+        .on_click(() => (p.popup ? run("mod.open", { name: p.id }) : this.togglePanel(p.id)))
         .child(svg(this.icons[p.id] ?? p.icon).size(14).flex_none()).when(on, el => el.child(p.label));
     };
     const segment = (id, list) => h_flex().id(id).h(H_BTN).p(2).gap(2).flex_none().items_center().rounded(8)
       .bg(t.background).border_1().border_color(t.border).children(list.map(segEntry));
-    // The four factory views share one capsule: only the open one says its name, the
-    // other three stay icons with their chord in the tooltip; the word left of them
-    // says what the group is. Quests and the Team-Hub keep their own segment.
-    const capsule = h_flex().id("panels-fabrik-views").h(H_BTN).p(2).pl(8).gap(2).flex_none().items_center().rounded(8)
-      .bg(t.background).border_1().border_color(t.border).text_size(T_XS).font_medium().text_color(t.dim)
-      .tooltip("Fabrik: Team, Board, Timeline und Graph — die offene Ansicht steht im Panel")
-      .child(div().flex_none().pr(2).child("Fabrik"))
-      .children(FABRIK.filter(p => VIEWS.has(p.id)).map(segEntry));
+    // Group 1: Board, Timeline, Quests and Team-Hub hover as popup windows over the work.
+    const popupsFabrik = segment("popups-fabrik", POPUPS)
+      .tooltip("Breite Übersichten als Popup-Fenster: Board, Timeline, Quests, Team-Hub");
+    // Group 2: one side panel rail — factory companions (Team, Graph, Inbox), a 1px
+    // divider, then the tools (Changes, Git, Tree, Blueprint, Docker).
+    const panelsSidepanel = h_flex().id("panels-sidepanel").h(H_BTN).p(2).gap(2).flex_none().items_center().rounded(8)
+      .bg(t.background).border_1().border_color(t.border)
+      .tooltip("Sidepanel: Team, Graph und Inbox neben dem Terminal, danach die Werkzeuge")
+      .children(SIDEPANELS.map(segEntry))
+      .child(div().w(1).h(16).flex_none().bg(t.border))
+      .children(WERKZEUGE.map(segEntry));
     // The dashboard is reachable without knowing the chord: same segment shape as the
     // panel groups, never primary. The dashboard carries the reverse ("Workspace").
     const dashboard = h_flex().id("hub-dashboard").h(H_BTN).px(8).gap(GAP_S).flex_none().items_center().rounded(8)
@@ -366,8 +355,7 @@ export default class Tabs extends View {
       })
       .children([dashboard, auftrag, inbox,
         iconButton("hub-review", svg("mods/review/icon.svg").size(14), "Review des fokussierten Terminals (⌘⇧R)", () => run("mod.open", { name: "review" })),
-        segment("panels-fabrik", FABRIK.filter(p => !VIEWS.has(p.id))), capsule,
-        segment("panels-werkzeuge", WERKZEUGE)])
+        popupsFabrik, panelsSidepanel])
       .when(winButtons.length > 0, el => el.child(h_flex().flex_none().gap(GAP_XS).children(winButtons)));
     const zoom = settings().zoom || 1;
     // Room for the strip: the bar minus everything right of it (measured, real px ÷ zoom).

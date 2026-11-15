@@ -734,6 +734,12 @@ export default class Dashboard extends View {
     else open();
   }
 
+  /** A wide factory overview as a popup over the dashboard: no layout switch, the
+   *  dashboard stays behind the Board/Timeline window. */
+  popup(name) {
+    run("mod.open", { name });
+  }
+
   /** An agent without leaving the dashboard: a peek at its terminal. A gone agent has
    *  nothing to peek at (its ticket row still opens the review window). */
   peekAgent(address) {
@@ -1020,6 +1026,10 @@ export default class Dashboard extends View {
       .child(image("frame/welcome/herdr.png").size(20).rounded(4).flex_none())
       .child(div().flex_none().text_size(T_XL).font_semibold().text_color(t.foreground).child("Herdr"))
       .child(div().flex_1())
+      .child(ui.button(t, "dash-board", "Board", () => this.popup("board"),
+        { small: true, tip: "Board als Popup-Fenster öffnen (⌘⌥8, das Dashboard bleibt)" }))
+      .child(ui.button(t, "dash-timeline", "Timeline", () => this.popup("timeline"),
+        { small: true, tip: "Timeline als Popup-Fenster öffnen (⌘⌥0, das Dashboard bleibt)" }))
       .child(this.freshDot(t))
       .child(div().flex_none().text_size(T_XS).text_color(t.dim).child("⌘⇧0 Workspace"))
       .child(div().flex_none().text_size(T_S).text_color(t.muted).child(this.clockText()))

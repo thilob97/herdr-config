@@ -174,12 +174,12 @@
                               }
                             },
                             {
-                              "id": "quests",
+                              "id": "inbox",
                               "type": "block",
                               "content": {
-                                "mod": "quests",
+                                "mod": "inbox",
                                 "props": {
-                                  "view": "panel"
+                                  "panel": true
                                 }
                               }
                             },
@@ -188,20 +188,6 @@
                               "type": "block",
                               "content": {
                                 "mod": "orchestra"
-                              }
-                            },
-                            {
-                              "id": "board",
-                              "type": "block",
-                              "content": {
-                                "mod": "board"
-                              }
-                            },
-                            {
-                              "id": "timeline",
-                              "type": "block",
-                              "content": {
-                                "mod": "timeline"
                               }
                             },
                             {
@@ -216,7 +202,7 @@
                         }
                       ],
                       "size": {
-                        "px": 368
+                        "px": 400
                       },
                       "min": 280,
                       "max": 900,
