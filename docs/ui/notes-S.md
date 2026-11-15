@@ -47,6 +47,13 @@ Checkout und Branch-Präfix im Text.
 **Farben.** `c1`→`accent`, `c2`→`working`, `c3`→`done`, `c4`→`blocked`, `c5`→`solid`,
 `c6`→`muted`; neue Agents bekommen der Reihe nach `c1..c6`.
 
+**Leiste.** `mods/teams/icon.svg` ersetzt den Platzhalter im Knopf „Team-Hub“ (tabs-graph prüft das
+Icon beim Start). `teams.panel` schließt das geladene Fenster über `nextCommand`. Solange das
+Fenster zu ist, lädt Herdr ein `place: none`-Mod nicht: `teams.panel`/⌘⌥9 melden dann „need the
+mod loaded“. Ein Host-Block in `layouts/elric.json` oder ein `mod.open`-Rückfall in
+`mods/tabs-graph` liegen außerhalb der Grenzen dieses Tickets; `mod.open --name teams` öffnet
+das Fenster in jedem Fall.
+
 **Messwerte.** `hub stats` gruppiert alle Tickets nach `agent`: Roster-Einträge zuerst (auch mit
 0 Einsätzen), danach weitere Agenten-Schlüssel, mit `tickets`, `open` und der Kostensumme aus
 `data/orchestra/costs.json`. Die Textausgabe hat dafür den Abschnitt „Agents“. Das Team-Panel
