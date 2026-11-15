@@ -11,7 +11,7 @@
 // das Panel um; die Tab-Leiste trägt der Orchestrator ein (nicht dieser Mod).
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
-import { exec, appHome, readTextFile, shared, theme, layout, run, notify, nextCommand, openOverlay } from "herdr";
+import { exec, appHome, readTextFile, shared, theme, layout, run, notify, nextCommand, openOverlay, settings } from "herdr";
 import * as ui from "./ui.js";
 import { T_XS, T_S, GAP_S, GAP_M, INSET_PANEL, H_SECTION, usd } from "./ui.js";
 import { STAGES, stageOf, stageColor, ticketCard, blockersOf, at } from "./card.js";
@@ -58,11 +58,11 @@ export default class Board extends View {
     cx.timer.every(COST_REFRESH, (cx) => this.readCosts(cx));
     cx.timer.every(20000, (cx) => cx.notify()); // die Alter in der Stufe
     cx.timer.after(50, () => this.handle.focus());
-    // Kommando der Tab-Leiste: board.panel schaltet das Panel um.
+    // Kommando der Tab-Leiste: board.panel zeigt das Panel (idempotent, Kaltstart-fest).
     cx.spawn(async (cx) => {
       for (;;) {
         const c = await nextCommand();
-        if (c === "panel") this.togglePanel(cx);
+        if (c === "panel") this.showPanel(cx);
       }
     });
   }
@@ -179,9 +179,11 @@ export default class Board extends View {
     });
   }
 
-  // board.panel: dasselbe wie tabs-graph.togglePanel, aber ohne den fremden Mod zu ändern.
-  // Fehlt der Block noch im Layout, sagt das Board es (der Orchestrator trägt ihn ein).
-  togglePanel(cx) {
+  // board.panel: dasselbe wie tabs-graph.togglePanel, aber ohne den fremden Mod zu ändern,
+  // und idempotent: das Board wird gezeigt, nicht umgeschaltet. So kann die Tab-Leiste
+  // zuerst das Panel zeigen und danach dieses Kommando schicken (Kaltstart, solange der
+  // Block noch nie gerendert wurde, ist das Kommando unbekannt; select+show genügt dann).
+  showPanel(cx) {
     const root = layout(), panel = find(root, "panel"), body = find(root, "panel-body"), me = find(root, "board");
     if (!panel || !body || !me) {
       this.note = { ok: false, text: "Board steht noch nicht im Layout; der Orchestrator trägt es ein." };
@@ -189,8 +191,8 @@ export default class Board extends View {
       cx.notify();
       return;
     }
-    if (!panel.hidden && body.active === "board") run("layout.hide", { id: "panel" });
-    else { run("layout.select", { stack: "panel-body", child: "board" }); run("layout.show", { id: "panel" }); }
+    if (body.active !== "board") run("layout.select", { stack: "panel-body", child: "board" });
+    if (panel.hidden) run("layout.show", { id: "panel" });
   }
 
   // ---------- Auswahl ----------
@@ -233,6 +235,7 @@ export default class Board extends View {
       gate: this.gateOf(tk.id),
       spent: this.spentOf(tk), limit: this.limitOf(tk),
       all: this.tickets,
+      titleChars: this.titleChars(),
       hovered: this.hovered === tk.id,
       selected: this.selected === tk.id,
       next: this.nextOf(tk),
@@ -273,7 +276,16 @@ export default class Board extends View {
   }
 
   // 4 Spalten nebeneinander, 2×2 im schmalen Panel, darunter untereinander.
-  mode(w) { return w >= 860 ? "4" : w >= 330 ? "2" : "1"; }
+  // 772 px ist die kleinste Breite, in der vier Karten noch 180 px breit sind.
+  mode(w) { return w >= 772 ? "4" : w >= 330 ? "2" : "1"; }
+
+  // Zeichen je Titelzeile: Innenbreite der Karte ÷ mittlere Zeichenbreite (12 px
+  // semibold ≈ 7,3 px). Zusammen mit clampTitle ergibt das zwei Zeilen mit „…".
+  titleChars() {
+    const w = this.width || 368, cols = { 4: 4, 2: 2, 1: 1 }[this.mode(w)] ?? 2;
+    const inner = Math.max(110, (w - 2 * INSET_PANEL - (cols - 1) * GAP_M) / cols - 16);
+    return Math.max(10, Math.floor(inner / 7.3));
+  }
 
   render(cx) {
     const t = theme();
@@ -313,7 +325,8 @@ export default class Board extends View {
       .bg(t.background).border_1().border_color(t.border).text_color(t.foreground)
       .on_key_down((ev, cx) => this.onKey(ev, cx))
       .on_size_change((size, cx) => {
-        const w = Math.round(size.width);
+        // on_size_change meldet echte Pixel; Layout und Karten rechnen in Layout-Pixeln.
+        const w = Math.round(size.width / (settings().zoom || 1));
         if (w !== this.width) { this.width = w; cx.notify(); }
       })
       .child(ui.panelHeader(t, "Board", right, { count: flat.length }))

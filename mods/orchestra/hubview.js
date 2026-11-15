@@ -63,23 +63,45 @@ const ageText = (tk) => {
 };
 const updatedStamp = (tk) => String(tk.updated || "nie bearbeitet");
 const PRIO = /^(p[0-3]|prio[-:]?[0-3]|kritisch|hoch|urgent)$/i;
+const prioColor = (t, l) => (/^(p0|prio[-:]?0|kritisch|urgent)$/i.test(l) ? t.blocked : t.working);
+// Höchstens zwei Chips in einer Zeile: Priorität zuerst, der Rest als „+n mehr".
 const labelChips = (t, tk) => {
   const labels = [...new Set([...splitList(tk.labels), ...splitList(tk.tags)])];
   const prio = labels.filter((l) => PRIO.test(l));
   const rest = labels.filter((l) => !PRIO.test(l));
-  const out = prio.map((l) => ({ text: l.toUpperCase(), color: /^(p0|prio[-:]?0|kritisch|urgent)$/i.test(l) ? t.blocked : t.working }));
-  for (const l of rest.slice(0, Math.max(0, 2 - out.length))) out.push({ text: l, color: t.muted });
-  const more = labels.length - out.length;
-  if (more > 0) out.push({ text: `+${more}`, color: t.dim });
+  const ordered = [...prio, ...rest];
+  const shown = ordered.slice(0, ordered.length > 2 ? 1 : 2);
+  const out = shown.map((l) => {
+    const text = l.length > 8 ? `${l.slice(0, 7)}…` : l;
+    return { text: PRIO.test(l) ? text.toUpperCase() : text, color: PRIO.test(l) ? prioColor(t, l) : t.muted };
+  });
+  if (ordered.length > shown.length) out.push({ text: `+${ordered.length - shown.length} mehr`, color: t.dim });
   return out;
 };
 const blockersOf = (tk, all = []) => splitList(tk.blocked_by).map((id) => ({ id, status: all.find((x) => x.id === id)?.status ?? null }))
   .filter((b) => b.status !== "done");
-const clampTitle = (s, n = 34) => {
-  const text = String(s ?? "");
-  if (text.length <= n) return text;
-  const cut = text.slice(0, n - 1), space = cut.lastIndexOf(" ");
-  return `${(space > n * 0.55 ? cut.slice(0, space) : cut).trimEnd()}…`;
+// Titel auf zwei Zeilen mit „…" an einer Wortgrenze. `per` ist die Zeichenzahl je
+// Zeile; passt der Text in zwei Zeilen, bleibt er unverändert.
+const clampTitle = (s, per = 24) => {
+  const text = String(s ?? "").replace(/\s+/g, " ").trim();
+  const width = Math.max(8, Math.floor(per));
+  if (text.length <= width * 2) return text;
+  const words = text.split(" ");
+  const lines = [];
+  let i = 0;
+  for (let li = 0; li < 2 && i < words.length; li++) {
+    if (words[i].length > width) {
+      lines.push(words[i].slice(0, width));
+      words[i] = words[i].slice(width);
+      continue;
+    }
+    let line = words[i++];
+    while (i < words.length && `${line} ${words[i]}`.length <= width) line += ` ${words[i++]}`;
+    lines.push(line);
+  }
+  if (i >= words.length) return lines.join(" ");
+  while (lines[1].length + 1 > width && lines[1].includes(" ")) lines[1] = lines[1].slice(0, lines[1].lastIndexOf(" "));
+  return `${lines[0]} ${lines[1]}…`;
 };
 const evidenceCount = (tk) => (Array.isArray(tk.evidence) ? tk.evidence.length : splitList(tk.evidence).length);
 const commentCount = (tk) => Number(tk.comments ?? tk.verlauf?.length ?? 0);
@@ -122,21 +144,19 @@ const gateIcons = (t, tk, gate) =>
       .tooltip(g.tip).child(svg(icon).size(11).text_color(color).when(g.state === "run", (el) => el.spin(900)));
   }));
 
-// Avatar 16 + Vorname; der volle Name steht im Tooltip.
+// Vorname; der volle Name steht im Tooltip. Ohne Zuweisung kein Chip. Kein Avatar:
+// die Zeile muss neben Gates und Kosten in eine schmale Karte passen.
 const whoChip = (t, tk) => {
   const live = tk.terminal ? ui.identity(tk.terminal) : null;
   const name = live?.name || String(tk.assignee || tk.agent || "").trim();
-  if (!name) return h_flex().flex_none().h(22).px(4).items_center().gap(3).rounded(4).bg(t.raised)
-    .tooltip("Kein Agent zugewiesen").child(div().text_size(T_XS).text_color(t.dim).child("niemand"));
-  const known = live?.avatar ? live : Object.values(shared("agents.identity") ?? {}).find((x) => x && x.name === name);
-  return h_flex().flex_none().max_w(70).h(22).px(4).gap(3).items_center().rounded(4).bg(t.raised).tooltip(name)
-    .when(Boolean(known?.avatar), (el) => el.child(image(known.avatar).w(16).h(16).flex_none()))
+  if (!name) return null;
+  return h_flex().flex_none().max_w(52).h(22).px(4).items_center().rounded(4).bg(t.raised).tooltip(name)
     .child(div().min_w(0).truncate().text_size(T_XS).text_color(t.muted).child(name.split(" ")[0]));
 };
 const countIcon = (t, icon, n, tip) => h_flex().flex_none().gap(1).items_center().tooltip(tip)
   .child(svg(icon).size(9).text_color(t.dim))
   .child(div().text_size(T_XS).text_color(t.muted).child(String(n)));
-const labelPill = (t, text, color) => h_flex().flex_none().h(16).px(3).items_center().rounded(4)
+const labelPill = (t, text, color) => h_flex().flex_none().h(16).px(2).items_center().rounded(4)
   .bg(color + "26").text_size(T_XS).font_medium().text_color(color).child(text);
 const miniAction = (t, id, label, action, { enabled = true, primary = false, tip } = {}) =>
   ui.button(t, id, label, (cx) => action(cx), { kind: primary ? "primary" : "secondary", small: true, enabled, tip });
@@ -156,10 +176,10 @@ function ticketCard(t, tk, o = {}) {
   const shownLabels = blocked.length ? labels.slice(0, 1) : labels;
 
   const ageLine = div().flex_none().text_size(T_XS).text_color(t.dim)
-    .tooltip(`${stageAge(tk, stage)} · zuletzt bearbeitet ${updatedStamp(tk)}`).child(ageText(tk));
+    .tooltip(`${stageAge(tk, stage)} · zuletzt bearbeitet ${updatedStamp(tk)}`).child(ageText(tk).replace(" ", ""));
 
-  const row1 = h_flex().flex_wrap().gap(3).items_center().min_w(0)
-    .child(h_flex().flex_none().h(18).px(4).items_center().rounded(4).bg(t.raised)
+  const row1 = h_flex().gap(2).items_center().min_w(0)
+    .child(h_flex().flex_none().h(18).px(3).items_center().rounded(4).bg(t.raised)
       .text_size(T_XS).font_medium().font_family(settings().font_family).text_color(t.muted)
       .tooltip(`Ticket ${tk.id}`).child(shortId(tk.id)))
     .children(shownLabels.map((l) => labelPill(t, l.text, l.color)))
@@ -171,10 +191,11 @@ function ticketCard(t, tk, o = {}) {
     .child(ageLine);
 
   const title = div().id(`tk-title-${tk.id}`).w_full().max_h(30).overflow_hidden().text_size(T_M).font_semibold()
-    .line_height(1.2).text_color(stage === "done" ? t.muted : t.foreground).child(clampTitle(tk.title || tk.id));
+    .line_height(1.2).text_color(stage === "done" ? t.muted : t.foreground).child(clampTitle(tk.title || tk.id, o.titleChars));
 
-  const row3 = h_flex().flex_wrap().gap(ui.GAP_XS).items_center().min_w(0)
-    .child(whoChip(t, tk))
+  const who = whoChip(t, tk);
+  const row3 = h_flex().gap(ui.GAP_XS).items_center().min_w(0).flex_none()
+    .when(Boolean(who), (el) => el.child(who))
     .child(gateIcons(t, tk, o.gate))
     .child(div().flex_1())
     .child(div().flex_none().text_size(T_XS).text_color(over ? t.blocked : t.muted)
