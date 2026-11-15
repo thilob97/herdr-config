@@ -297,6 +297,32 @@ Feste Agents liegen versioniert in `agents/roster.json`: Name, Rolle, Programm, 
 
 Das Fenster **Team-Hub** (Knopf „Team-Hub“ in der Tab-Leiste, `⌘⌥9`, sonst `mod.open:teams`) zeigt die Agents als Karten mit Avatar in Agent-Farbe, Rolle, Programm/Modell, Repo sowie Einsätzen und Kosten; ein Klick zeigt die laufenden Tickets und startet auf Wunsch einen vorbelegten Auftrag. Anlegen, Bearbeiten und Löschen passieren im selben Fenster. `hub stats agents` zeigt Einsätze und Kosten je Roster-Agent.
 
+## Harness je Agent (Roster v2)
+
+Jeder Agent im Team-Hub ist ein vollständiges Profil in `agents/roster.json`:
+
+| Teil | Felder |
+|---|---|
+| Rolle | `name`, `role`, `color`, `labels` |
+| Harness | `program`, `model`, `smol`, `slow`, `models`, `approval_mode` (`always-ask`/`always-ask-cached`/`write`/`yolo`), `max_cost`, `no_lsp` |
+| Prompt | `prompt` (Pfad, Standard `agents/prompts/<slug>.md`) |
+| Umgebung | `repo`, `branch_prefix`, `skills`, `mcp`, `sandbox` (`worktree`/`repo`) |
+| Grenzen | `wip`, `push`, `delete_branches` |
+
+`hub agent command <name>` zeigt das Startkommando, das `hub dispatch` bauen würde; `hub agent prompt <name>` den Prompt. Der Dispatch hängt den Prompt als Abschnitt „Deine Rolle" vor die Aufgabe, schreibt Skills/MCP/Grenzen hinein und setzt `agent` und `harness` ins Ticket. Zwei Gates greifen vor dem Start: das Agent-WIP (hart, ohne `--force`) und das Stufen-WIP mit `--force --reason`.
+
+## Fluss: WIP, Spec, Definition of Done
+
+- **WIP-Limits** (`hub wip`, Standard `arbeit 3`, `pruefung 2`): `hub dispatch` verweigert über dem Limit und nennt die laufenden Tickets; `--force --reason` schreibt den Grund in den Verlauf. Das Board zeigt `n/limit` im Spaltenkopf, warnt bei Erreichen und dimmt die volle Stufe.
+- **Spec-Gate**: `hub spec <id>` legt fehlende Abschnitte `Ziel`, `Abnahmekriterien`, `Grenzen` an. Ein Ticket ohne mindestens ein Abnahmekriterium kommt nicht in den Dispatch.
+- **Definition of Done** (sechs Punkte, `hub gate`): Abnahmekriterien · `hub verify` grün am HEAD · Prüfstation `pass` · CI grün oder nicht nötig · Nachweise · Abschluss im Verlauf. `hub review` verweigert fehlende Punkte; das Review-Fenster zeigt die Liste mit ✓/–.
+
+Hintergrund und Quellen: `docs/factory-research.md`.
+
+## Freigaben des Menschen
+
+Drei Stellen, alles andere belegt die Maschine: **Abnahme** (Ticket in `review`), **Rückfrage** eines blockierten Agents, **Landen** (Merge/PR). Das Dashboard führt genau diese unter „Wartet auf dich".
+
 ## Farben und Ebenen
 
 Theme `themes/elric.json`: neutrale Dunkelpalette (Fenster `canvas #0b0c0e`, Arbeitsfläche `background #0e0f11`, Leisten `chrome #121418`, Karten `surface #16181b`, Hover `raised #22262b`, Popover `#1d2126`, Auswahl `#263149`), Text `foreground #e7e9ec` / `muted #aeb4bc` / `dim #949ba5`, ein Akzent `#4c8dff`, Status getrennt (`blocked #ef6d6d`, `success #5cb87a`, `warning #d9a441`). Jede Fläche liest nur Theme-Namen, keine Hex-Werte in Mods. Kontraste aller Textfarben ≥ 4,5:1 (dim auf Auswahl 4,6); Tabelle und Vorher/Nachher-Screenshots in `docs/ui/notes-Q.md`.
