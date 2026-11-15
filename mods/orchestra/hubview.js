@@ -16,6 +16,15 @@ import * as ui from "./ui.js";
 import { T_XS, T_S, T_M, T_L, usd } from "./ui.js";
 
 const errorText = (e) => String(e?.message ?? e ?? "fehlgeschlagen").replace(/^Error: /, "");
+// Datenfrische: je Quelle letzter Erfolg und erster Fehler seitdem. Kein eigener Timer:
+// Panels publish (5 s) und GateWatcher (15 s) schreiben hier hinein; über 30 s ohne
+// Erfolg oder nach einem Fehler trägt der Panel-Kopf „Daten alt“.
+const STALE_MS = 30000;
+const shortAge = (ms) => {
+  const s = Math.max(0, Math.round(ms / 1000));
+  return s < 60 ? `${s} s` : s < 3600 ? `${Math.round(s / 60)} min` : `${Math.floor(s / 3600)} h`;
+};
+const freshBad = (f) => Boolean(f.err) || (f.at > 0 && Date.now() - f.at > STALE_MS);
 const WC = "mods/workspace-chrome";
 const HUB = () => `${appHome()}/mods/orchestra/bin/hub`;
 // At most two lines of T_S text in the panel's width.
@@ -288,6 +297,7 @@ function ticketCard(t, tk, o = {}) {
 export class GateWatcher {
   constructor(cx) {
     this.busy = false;
+    this.fresh = { at: 0, err: null };
     this.refresh(cx);
     cx.timer.every(15000, (cx) => this.refresh(cx));
   }
@@ -295,14 +305,22 @@ export class GateWatcher {
   refresh(cx) {
     if (this.busy) return;
     this.busy = true;
-    cx.spawn(async () => {
+    cx.spawn(async (cx) => {
+      const before = freshBad(this.fresh);
       try {
         const r = await exec(HUB(), ["gates", "--json"], { timeout: 20000 });
-        if (r.code !== 0) return;
+        if (r.code !== 0) throw new Error((r.stderr || r.stdout || `Exit ${r.code}`).trim().split("\n").pop());
         const slim = JSON.parse(r.stdout || "[]");
+        this.fresh.at = Date.now();
+        this.fresh.err = null;
         if (JSON.stringify(slim) !== JSON.stringify(shared("orchestra.gates") ?? [])) setShared("orchestra.gates", slim);
-      } catch {}
-      finally { this.busy = false; }
+      } catch (e) {
+        if (!this.fresh.err) this.fresh.err = errorText(e).slice(0, 160);
+      } finally {
+        this.busy = false;
+        // Der Chip im Panel-Kopf hängt an diesem Zustand; nur bei Wechsel neu zeichnen.
+        if (freshBad(this.fresh) !== before) cx.notify();
+      }
     });
   }
 }
@@ -430,6 +448,7 @@ export class HubSection {
     cx.timer.every(5000, (cx) => this.publish(cx));
     this.gates = new GateWatcher(cx);
     this.stats = new StatsWatcher(cx);
+    this.subFresh = { at: 0, err: null };   // tickets.publish(), für den „Daten alt“-Chip
     this.showStats = false;         // the head line's breakdown is folded
   }
 
@@ -446,7 +465,42 @@ export class HubSection {
   publish(cx) {
     if (this.publishing) return;
     this.publishing = true;
-    cx.spawn(async () => { try { await tickets.publish(); } catch {} finally { this.publishing = false; } });
+    cx.spawn(async (cx) => {
+      const before = freshBad(this.subFresh);
+      try {
+        await tickets.publish();
+        this.subFresh.at = Date.now();
+        this.subFresh.err = null;
+      } catch (e) {
+        if (!this.subFresh.err) this.subFresh.err = errorText(e).slice(0, 160);
+      } finally {
+        this.publishing = false;
+        if (freshBad(this.subFresh) !== before) cx.notify();
+      }
+    });
+  }
+
+  /** „Daten alt“ im Panel-Kopf: Tickets oder Gates ohne Erfolg seit 30 s (oder mit Fehler).
+   *  Der Tooltip nennt je Quelle den Befehl, den letzten Erfolg und den ersten Fehler;
+   *  ein Klick liest beide sofort neu. */
+  freshChip(t) {
+    const now = Date.now();
+    const rows = [];
+    const add = (label, cmd, f) => {
+      if (!freshBad(f)) return;
+      const last = f.at ? `zuletzt vor ${shortAge(now - f.at)}` : "noch kein Erfolg";
+      rows.push(`${label} · ${cmd}: ${last}${f.err ? ` · ${f.err}` : ""}`);
+    };
+    add("Tickets", "hub ticket list --all --json", this.subFresh);
+    add("Gates", "hub gates --json", this.gates.fresh);
+    if (!rows.length) return null;
+    // Themes without a warning role (the app's default) fall back instead of failing the render.
+    const warn = t.warning ?? t.unknown ?? t.muted;
+    return div().id("hub-fresh").flex_none().h(18).px(6).flex().items_center().rounded(4)
+      .bg(warn + "26").text_size(T_XS).font_medium().text_color(warn)
+      .cursor_pointer().tooltip(`${rows.join("\n")}\n\nKlicken: sofort neu lesen`)
+      .on_click((_e, cx) => { this.publish(cx); this.gates.refresh(cx); cx.notify(); })
+      .child("Daten alt");
   }
 
   act(cx, label, fn) {

@@ -18,6 +18,11 @@
 // "orchestra.costs" (Datei data/orchestra/costs.json als Rückfall) für die Kosten,
 // shared "agents.identity" für Avatare (über ui.identityChip). "board.panel" schaltet
 // das Panel um; die Tab-Leiste trägt der Orchestrator ein (nicht dieser Mod).
+//
+// Datenfrische: jeder Leseversuch stempelt Erfolg oder den ersten Fehler seit dem letzten
+// Erfolg. Ist eine Quelle älter als 30 s (oder hat sie einen Fehler), steht „Daten alt" in
+// `warning` im Kopf, mit Quelle, letztem Erfolg und Fehlertext im Tooltip; ein Klick liest
+// alle vier sofort neu. Kein eigener Timer: die Refreshes oben tragen den Zustand.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, ScrollHandle } from "gpui-base";
 import { exec, appHome, readTextFile, shared, theme, layout, run, notify, nextCommand, openOverlay, settings } from "herdr";
@@ -32,6 +37,15 @@ const WIP_DEFAULT = { arbeit: 3, pruefung: 2 };
 // Fertig bleibt eine Spalte, keine Liste: die letzten Abnahmen stehen, der Rest klappt zu.
 const DONE_SHOW = 5;
 const errorText = (e) => String(e?.message ?? e ?? "fehlgeschlagen").replace(/^Error: /, "");
+// Datenfrische: je Quelle der letzte Erfolg und der erste Fehler seitdem. Kein eigener
+// Timer: die bestehenden Leser (5/15/30 s) schreiben hier hinein. Über 30 s ohne Erfolg
+// oder nach einem Fehler trägt der Kopf „Daten alt“; der Tooltip nennt die Quelle.
+const STALE_MS = 30000;
+const SOURCES = { tickets: "Tickets", gates: "Gates", costs: "Kosten", wip: "WIP" };
+const shortAge = (ms) => {
+  const s = Math.max(0, Math.round(ms / 1000));
+  return s < 60 ? `${s} s` : s < 3600 ? `${Math.round(s / 60)} min` : `${Math.floor(s / 3600)} h`;
+};
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -76,6 +90,8 @@ export default class Board extends View {
     this.focus.track(this.search, "board-filter");
     this.loaded = false;
     this.note = null;
+    // at: letzter Erfolg (ms), err: erster Fehlertext seit diesem Erfolg.
+    this.fresh = Object.fromEntries(Object.keys(SOURCES).map((k) => [k, { at: 0, err: null }]));
     this.readingT = false;
     this.readingG = false;
     this.readingC = false;
@@ -103,14 +119,33 @@ export default class Board extends View {
 
   // ---------- Daten ----------
 
+  /** Ein Leseversuch ist durch: Erfolg stempelt den Zeitpunkt und löscht den Fehler;
+   *  ein Fehlschlag merkt den ersten Fehlertext seit dem letzten Erfolg. */
+  seen(key, err = null) {
+    const f = this.fresh[key];
+    if (err == null) { f.at = Date.now(); f.err = null; }
+    else if (!f.err) f.err = errorText(err).slice(0, 160);
+  }
+
+  staleSources() {
+    const now = Date.now();
+    // Vor dem ersten Versuch (at 0, kein Fehler) ist nichts „alt“: der Chip soll nicht
+    // beim ersten Bild aufblitzen, sondern erst nach einem Fehlschlag oder 30 s Stille.
+    return Object.keys(SOURCES).filter((k) => this.fresh[k].err
+      || (this.fresh[k].at && now - this.fresh[k].at > STALE_MS));
+  }
+
   readTickets(cx) {
     if (this.readingT) return;
     this.readingT = true;
     cx.spawn(async (cx) => {
       try {
         const r = await exec(HUB(), ["ticket", "list", "--all", "--json"], { timeout: 20000 });
-        if (r.code === 0) { this.tickets = JSON.parse(r.stdout || "[]").map(normalize); this.loaded = true; }
-      } catch {} finally { this.readingT = false; cx.notify(); }
+        if (r.code !== 0) throw new Error((r.stderr || r.stdout || `Exit ${r.code}`).trim().split("\n").pop());
+        this.tickets = JSON.parse(r.stdout || "[]").map(normalize);
+        this.loaded = true;
+        this.seen("tickets");
+      } catch (e) { this.seen("tickets", e); } finally { this.readingT = false; cx.notify(); }
     });
   }
 
@@ -120,8 +155,10 @@ export default class Board extends View {
     cx.spawn(async (cx) => {
       try {
         const r = await exec(HUB(), ["gates", "--json"], { timeout: 20000 });
-        if (r.code === 0) this.gates = JSON.parse(r.stdout || "[]");
-      } catch {} finally { this.readingG = false; cx.notify(); }
+        if (r.code !== 0) throw new Error((r.stderr || r.stdout || `Exit ${r.code}`).trim().split("\n").pop());
+        this.gates = JSON.parse(r.stdout || "[]");
+        this.seen("gates");
+      } catch (e) { this.seen("gates", e); } finally { this.readingG = false; cx.notify(); }
     });
   }
 
@@ -130,8 +167,14 @@ export default class Board extends View {
     this.readingC = true;
     const path = `${appHome()}/data/orchestra/costs.json`;
     cx.spawn(async (cx) => {
-      try { this.costFile = JSON.parse(await readTextFile(path) ?? "{}"); } catch {}
-      finally { this.readingC = false; cx.notify(); }
+      try {
+        this.costFile = JSON.parse(await readTextFile(path) ?? "{}");
+        this.seen("costs");
+      } catch (e) {
+        // Keine Kostendatei ist kein Fehler: shared("orchestra.costs") trägt die Zahlen.
+        if (/ENOENT|no such file/i.test(String(e?.message ?? e))) { this.costFile = {}; this.seen("costs"); }
+        else this.seen("costs", e);
+      } finally { this.readingC = false; cx.notify(); }
     });
   }
 
@@ -142,8 +185,10 @@ export default class Board extends View {
     cx.spawn(async (cx) => {
       try {
         const r = await exec(HUB(), ["wip", "--json"], { timeout: 20000 });
-        if (r.code === 0) this.wip = { ...WIP_DEFAULT, ...JSON.parse(r.stdout || "{}") };
-      } catch {} finally { this.readingW = false; cx.notify(); }
+        if (r.code !== 0) throw new Error((r.stderr || r.stdout || `Exit ${r.code}`).trim().split("\n").pop());
+        this.wip = { ...WIP_DEFAULT, ...JSON.parse(r.stdout || "{}") };
+        this.seen("wip");
+      } catch (e) { this.seen("wip", e); } finally { this.readingW = false; cx.notify(); }
     });
   }
 
@@ -399,6 +444,31 @@ export default class Board extends View {
     return Math.max(10, Math.floor(Math.max(60, colW - 30) / 7.3));
   }
 
+  /** „Daten alt“ im Kopf: sobald eine Quelle einen Fehler hat oder ihr letzter Erfolg
+   *  über 30 s zurückliegt. Der Tooltip nennt je Quelle letzten Erfolg und den ersten
+   *  Fehlertext; ein Klick stößt alle vier Leser sofort neu an. */
+  freshChip(t) {
+    const bad = this.staleSources();
+    if (!bad.length) return null;
+    const now = Date.now();
+    const tip = bad.map((k) => {
+      const f = this.fresh[k];
+      const last = f.at ? `zuletzt vor ${shortAge(now - f.at)}` : "noch kein Erfolg";
+      return `${SOURCES[k]}: ${last}${f.err ? ` · ${f.err}` : ""}`;
+    }).join("\n");
+    // Themes without a warning role (the app's default) fall back instead of failing the
+    // whole render: a colour that does not exist must never blank the board.
+    const warn = t.warning ?? t.unknown ?? t.muted;
+    return div().id("board-fresh").flex_none().h(18).px(6).flex().items_center().rounded(4)
+      .bg(warn + "26").text_size(T_XS).font_medium().text_color(warn)
+      .cursor_pointer().tooltip(`${tip}\n\nKlicken: sofort neu lesen`)
+      .on_click((_e, cx) => {
+        this.readTickets(cx); this.readGates(cx); this.readCosts(cx); this.readWip(cx);
+        cx.notify();
+      })
+      .child("Daten alt");
+  }
+
   render(cx) {
     const t = theme();
     const by = this.columns();
@@ -409,6 +479,8 @@ export default class Board extends View {
     const total = flat.reduce((n, tk) => n + this.spentOf(tk), 0);
 
     const right = [];
+    const fresh = this.freshChip(t);
+    if (fresh) right.push(fresh);
     if (this.note) right.push(div().id("board-note").max_w(230).min_w(0).flex_shrink_1().truncate().text_size(T_XS)
       .text_color(this.note.ok === false ? t.blocked : this.note.ok ? t.muted : t.dim)
       .tooltip(this.note.text).child(this.note.text));
