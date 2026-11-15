@@ -223,6 +223,15 @@ class HubCleanupTest(unittest.TestCase):
         self.assertIn("CI rot", r.stderr)
         self.assertEqual(start, self.git("rev-parse", "HEAD", cwd=repo).stdout.strip())
 
+        self.hub("ticket", "set", tid, "ci=unknown", "ci_head=")
+        r = self.hub("land", tid, "--merge")
+        self.assertNotEqual(r.returncode, 0, "CI ohne HEAD darf nicht landen")
+        self.assertIn("noch keine CI gelaufen", r.stderr)
+        self.assertIn(f"hub ci {tid}", r.stderr)
+        self.assertNotIn("keinen ,", r.stderr)
+        self.assertNotIn("keinen Commit", r.stderr)
+        self.assertEqual(start, self.git("rev-parse", "HEAD", cwd=repo).stdout.strip())
+
         self.hub("ticket", "set", tid, "ci=pass", f"ci_head={start}")
         r = self.hub("land", tid, "--merge")
         self.assertNotEqual(r.returncode, 0, "CI eines anderen Commits darf nicht landen")

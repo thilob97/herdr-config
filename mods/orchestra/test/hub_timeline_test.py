@@ -320,6 +320,13 @@ class HubTimelineTest(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("--since", r.stderr)
 
+    def test_since_rejects_a_zero_window(self):
+        for value in ("0h", "0m", "0d"):
+            r = self.hub("timeline", "--since", value)
+            self.assertEqual(r.returncode, 1, value)
+            self.assertIn("--since erwartet 1h, 30m, 7d oder all", r.stderr)
+            self.assertEqual(r.stdout, "", "kein Fenster von 0 Minuten ausgeben")
+
     def test_ticket_filter_reduces_lanes_and_events(self):
         repo = self.repo()
         now = int(time.time() * 1000)

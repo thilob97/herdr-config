@@ -90,11 +90,15 @@ reports into it) and show in the Team-Panel under it.
   hub gate ID [--json]                 do the recorded check and the reviewer's verdict still count?
                                             checks pass on checks_head = HEAD, verdict pass on review_head = HEAD
   hub gates [--json]                   the same for every open ticket (Team panel)
-  hub review-start ID [--agent ...]    Prüfstation: startet einen zweiten Agent (Standard: anderes Modell
+  hub review-start ID [--agent ...] [--restart]
+                                            Prüfstation: startet einen zweiten Agent (Standard: anderes Modell
                                             als der Umsetzer) im Worktree review-<id> auf dessen Branch;
                                             er liest <base>...HEAD, prüft die Abnahmekriterien des Tickets
                                             und schreibt Befunde als Kommentar (--from review) sowie sein
-                                            Urteil (`hub review-verdict`)
+                                            Urteil (`hub review-verdict`). Eine offene Runde (gestartet,
+                                            kein Urteil) verweigert einen zweiten Start; --restart beendet
+                                            den laufenden Reviewer und startet einen neuen. Nach einem
+                                            Urteil beginnt ein neuer Lauf eine neue Runde
   hub review-verdict ID --verdict pass|fail --summary TEXT
                                             das Urteil des Reviewers, gültig für den HEAD des Worktrees;
                                             ein neuer Commit macht es ungültig; fail setzt das Ticket auf
@@ -138,12 +142,13 @@ reports into it) and show in the Team-Panel under it.
   hub stats [--json] [--days 14] [--all]  throughput per ticket, station and repo: lead time (todo→done),
                                             review rounds, rework (back to doing after review) and cost,
                                             with today's numbers and the last 7 days for the UI
-  hub timeline [--json] [--since 24h|7d|all] [--ticket ID] [--write]
+  hub timeline [--json] [--since 1h|30m|7d|all] [--ticket ID] [--write]
                                             the workflow as lanes: one per terminal (agent, reviewer)
                                             plus the orchestrator, with start/end (live = now), parent,
                                             ticket, status, cost, its events and subagents, built from
                                             data/orchestra/events.jsonl, the tickets' status_log and
-                                            `hc get` (max. 100 lookups). --since also takes 1h or 30m;
+                                            `hc get` (max. 100 lookups). --since takes a positive window
+                                            (1h, 30m, 7d) or all; 0h/0m is rejected;
                                             --write also writes the self-contained data/orchestra/
                                             timeline.html and prints its path
 Python 3, standard library only.
@@ -2595,9 +2600,16 @@ def cmd_review_start(a):
     g = gate(t)
     if not g["ok"]:
         die(f"{a.id}: {g['reason']}. Prüfstation erst nach grünem hub verify.")
-    if t.get("review_terminal") and is_live(t["review_terminal"]):
-        die(f"{a.id}: Review läuft schon in {t['review_terminal']}; "
-            f"hc send {t['review_terminal']} \"…\"")
+    station = t.get("review_terminal") or ""
+    open_round = bool(station) and not (t.get("review") or "").strip()
+    if open_round and not a.restart:
+        n = int(t.get("review_rounds") or 0) + 1
+        die(f"{a.id}: Prüfstation Runde {n} läuft noch in {station}; "
+            f"hc send {station} \"…\" oder hub review-start {a.id} --restart "
+            f"(beendet den laufenden Reviewer und startet einen neuen)")
+    # A closed round's station may still be up: end it before the next one shares its worktree.
+    if station and is_live(station):
+        subprocess.run(["hc", "kill", station], capture_output=True, text=True)
     repo, on = t.get("repo"), t.get("machine") or None
     if not repo:
         die(f"{a.id} has no repo; hub ticket set {a.id} repo=/path/to/checkout")
@@ -3646,10 +3658,15 @@ def cmd_land(a):
     if a.merge:
         head = run(["git", "rev-parse", "HEAD"], on, wt).stdout.strip()
         ci = t.get("ci") or ""
-        stale = bool(ci) and (t.get("ci_head") or "") != head
+        ci_head = t.get("ci_head") or ""
+        stale = bool(ci) and ci_head != head
         if ci == "fail" or stale:
-            why = (f"CI rot ({t.get('ci_at') or 'Zeit unbekannt'})" if ci == "fail"
-                   else f"CI {ci} gilt für {(t.get('ci_head') or 'keinen Commit')[:7]}, HEAD ist {head[:7]}")
+            if not ci_head:
+                why = f"noch keine CI gelaufen (hub ci {a.id})"
+            elif ci == "fail":
+                why = f"CI rot ({t.get('ci_at') or 'Zeit unbekannt'})"
+            else:
+                why = f"CI {ci} gilt für {ci_head[:7]}, HEAD ist {head[:7]}"
             if a.force:
                 if not a.reason.strip():
                     die("--force verlangt --reason \"…\": der Grund gehört in den Verlauf")
@@ -4008,11 +4025,11 @@ def num_ms(value):
 def since_ms(value):
     """Epoch milliseconds a window starts at (`24h`, `7d`, `1h`, `30m`), None for all."""
     v = (value or "all").strip().lower()
-    if v in ("", "all", "0"):
+    if v in ("", "all"):
         return None
     m = re.fullmatch(r"(\d+)([mhd])", v)
-    if not m:
-        die("--since erwartet 24h, 7d, 1h, 30m oder all")
+    if not m or int(m.group(1)) <= 0:
+        die("--since erwartet 1h, 30m, 7d oder all")
     return now_ms() - int(m.group(1)) * SINCE_UNITS[m.group(2)]
 
 
@@ -4479,6 +4496,8 @@ def main():
     rs.add_argument("id")
     rs.add_argument("--agent", default=None,
                     help="Reviewer; Standard ist ein anderes Programm als der Umsetzer")
+    rs.add_argument("--restart", action="store_true",
+                    help="eine offene Prüfstation beenden und einen neuen Reviewer starten")
     rs.set_defaults(fn=cmd_review_start)
     rvd = sub.add_parser("review-verdict")
     rvd.add_argument("id")

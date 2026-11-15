@@ -26,8 +26,12 @@ HUB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bin", "hub
 HC = """#!/bin/sh
 case "$1" in
   ls) echo '{"terminals":[]}' ;;
-  get) echo '{}'; exit 1 ;;
-  run) echo '{"address":"t-agent-1"}' ;;
+  get) if [ -n "$HC_GET_FILE" ] && [ -f "$HC_GET_FILE" ]; then cat "$HC_GET_FILE"; else echo '{}'; exit 1; fi ;;
+  run) if [ -n "$HC_RUN_LOG" ]; then echo run >> "$HC_RUN_LOG"; fi
+       count="${HC_RUN_COUNT:-$HOME/hc-run-count}"
+       n=$(cat "$count" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "$count"
+       echo "{\\"address\\":\\"t-review-$n\\"}" ;;
+  kill) if [ -n "$HC_KILL_LOG" ]; then echo "$2" >> "$HC_KILL_LOG"; fi ;;
   send) ;;
   *) exit 0 ;;
 esac
@@ -50,6 +54,9 @@ class HubRaceTest(unittest.TestCase):
         self.bin = os.path.join(self.base, "bin")
         self.repo = os.path.join(self.base, "repo")
         self.tickets = os.path.join(self.app, "data", "quests", "tickets")
+        self.get_file = os.path.join(self.base, "hc-get.json")
+        self.run_log = os.path.join(self.base, "hc-run.log")
+        self.kill_log = os.path.join(self.base, "hc-kill.log")
         for d in (self.home, self.app, self.bin, self.repo):
             os.makedirs(d)
         for name, body in (("hc", HC), ("herdr-app", APP_STUB)):
@@ -62,7 +69,9 @@ class HubRaceTest(unittest.TestCase):
 
     def env(self):
         env = {**os.environ, "HOME": self.home, "HERDR_APP_HOME": self.app,
-               "PATH": self.bin + os.pathsep + os.environ.get("PATH", "")}
+               "PATH": self.bin + os.pathsep + os.environ.get("PATH", ""),
+               "HC_GET_FILE": self.get_file, "HC_RUN_LOG": self.run_log,
+               "HC_KILL_LOG": self.kill_log}
         env.pop("HC_TERMINAL_ID", None)
         return env
 
@@ -179,6 +188,91 @@ class HubRaceTest(unittest.TestCase):
         self.assertEqual(meta.get("assignee"), "bob")
         self.assertIn("## Ziel", text)
         self.assertIn("## Abnahmekriterien", text)
+
+    # ---- Prüfstation: no second reviewer in the same worktree
+
+    def write_json(self, path, data):
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+
+    def git(self, *args, cwd=None):
+        env = {**os.environ, "GIT_AUTHOR_NAME": "Test", "GIT_AUTHOR_EMAIL": "test@example.test",
+               "GIT_COMMITTER_NAME": "Test", "GIT_COMMITTER_EMAIL": "test@example.test"}
+        r = subprocess.run(["git", *args], cwd=cwd, env=env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r
+
+    def run_lines(self):
+        try:
+            with open(self.run_log, encoding="utf-8") as f:
+                return [line for line in f.read().splitlines() if line.strip()]
+        except OSError:
+            return []
+
+    def review_ticket(self):
+        """A doing ticket with a worktree and a green `hub verify`, ready for the station."""
+        self.git("init", "-q", "-b", "main", cwd=self.repo)
+        with open(os.path.join(self.repo, "f.txt"), "w", encoding="utf-8") as f:
+            f.write("repo\n")
+        os.makedirs(os.path.join(self.repo, ".herdr"))
+        with open(os.path.join(self.repo, ".herdr", "verify.sh"), "w", encoding="utf-8") as f:
+            f.write("#!/bin/sh\necho verify-ok\n")
+        self.git("add", "-A", cwd=self.repo)
+        self.git("commit", "-q", "-m", "start", cwd=self.repo)
+        self.git("branch", "feat/review", cwd=self.repo)
+        wt = os.path.join(self.base, "wt")
+        self.git("worktree", "add", "-q", "--detach", wt, "feat/review", cwd=self.repo)
+
+        r = self.hub("ticket", "new", "--title", "Doppel", "--repo", self.repo,
+                     "--body", "## Abnahmekriterien\n\n- [ ] Die Tür schließt.\n")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        tid = r.stdout.strip()
+        r = self.hub("ticket", "set", tid, "status=doing", "branch=feat/review",
+                     f"worktree={wt}", "base=main")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r = self.hub("verify", tid)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return tid
+
+    def test_review_start_refuses_open_round_even_when_terminal_exited(self):
+        tid = self.review_ticket()
+        r = self.hub("review-start", tid, "--agent", "true")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        # `--agent true` ends at once; the round is still open (no verdict).
+        self.write_json(self.get_file, {"state": "finished"})
+
+        r = self.hub("review-start", tid, "--agent", "true")
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("Prüfstation Runde 1", r.stderr)
+        self.assertIn("--restart", r.stderr)
+        self.assertEqual(len(self.run_lines()), 1, "kein zweiter Reviewer in derselben Runde")
+        meta, _text = self.fields(tid)
+        self.assertEqual(meta.get("review_terminal"), "t-review-1")
+
+        r = self.hub("review-start", tid, "--agent", "true", "--restart")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(len(self.run_lines()), 2)
+        meta, _text = self.fields(tid)
+        self.assertEqual(meta.get("review_terminal"), "t-review-2")
+
+        # A verdict closes the round: the next start is a new round, not a double.
+        self.write_json(self.get_file, {"state": "finished"})
+        r = self.hub("review-verdict", tid, "--verdict", "pass", "--summary", "gut")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r = self.hub("review-start", tid, "--agent", "true")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(len(self.run_lines()), 3)
+
+    def test_review_restart_ends_the_live_reviewer(self):
+        tid = self.review_ticket()
+        r = self.hub("review-start", tid, "--agent", "true")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.write_json(self.get_file, {"state": "live"})
+
+        r = self.hub("review-start", tid, "--agent", "true", "--restart")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(self.kill_log, encoding="utf-8") as f:
+            self.assertEqual(f.read().split(), ["t-review-1"])
 
 
 if __name__ == "__main__":
