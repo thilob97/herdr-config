@@ -297,6 +297,12 @@ Feste Agents liegen versioniert in `agents/roster.json`: Name, Rolle, Programm, 
 
 Das Fenster **Team-Hub** (Knopf „Team-Hub“ in der Tab-Leiste, `⌘⌥9`, sonst `mod.open:teams`) zeigt die Agents als Karten mit Avatar in Agent-Farbe, Rolle, Programm/Modell, Repo sowie Einsätzen und Kosten; ein Klick zeigt die laufenden Tickets und startet auf Wunsch einen vorbelegten Auftrag. Anlegen, Bearbeiten und Löschen passieren im selben Fenster. `hub stats agents` zeigt Einsätze und Kosten je Roster-Agent.
 
+## Timeline: wer wann woran gearbeitet hat
+
+Panel **Timeline** (`⌘⌥0`, Gruppe *Fabrik*, Block `timeline` in `elric`): eine Gantt-Achse über die Arbeit der Fabrik. Zeilen sind Lanes — oben der Orchestrator, darunter je Agent ein Balken von Start bis Ende (live: bis jetzt, mit pulsierendem Rand), Sub-Agents eingerückt unter ihrem Eltern-Agenten. Rechts an jedem Balken die Dauer, links Identität, Ticket-Kürzel und Status; Farben: arbeitet / wartet / fertig. Der Kopf schaltet **1 h · 24 h · 7 Tage · Alles** und filtert auf **Alle · Ticket**; Ereignisse (Dispatch, Prüfung, Urteil, CI, Landen) sitzen als Marker auf der Zeile und nennen im Tooltip Zeit und Text. Klick auf einen Agentenbalken öffnet dessen Terminal.
+
+Datenquelle ist `hub timeline --json`: Lanes und Events kommen aus den Ticket-Zeiten (`created`, `status_log`), den Terminal-Metadaten von `hc` (`created_ms`, `finished_ms`, `parent`, `hub.ticket`) und dem Ereignisprotokoll `data/orchestra/events.jsonl`, das `hub` ab jetzt bei dispatch/nudge/review/verdict/land/done/verify/ci/night schreibt (Rotation auf die letzten 2000 Zeilen). `hub timeline --write` erzeugt zusätzlich eine selbsttragende HTML-Datei für den Blick ohne App. Sub-Agent-Geburten und -Enden schreibt `agent-cards` nach `data/agent-cards/subagents.jsonl`; sie erscheinen als SUB-Lane bzw. Marker.
+
 ## Triage, Preflight, Stockt, Nachtschicht, Gedächtnis
 
 Fünf Kommandos, die den Fluss tragen (Ideen und Bewertung: `docs/features-20.md`):
