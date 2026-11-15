@@ -1,0 +1,35 @@
+[
+  {
+    "name": "Zap",
+    "role": "Umsetzer",
+    "program": "omp",
+    "model": "opencode-go/deepseek-v4.1-flash",
+    "repo": "~/.config/herdr-app",
+    "branch_prefix": "feat/",
+    "labels": ["ui"],
+    "notes": "Setzt fokussiert um, committet in kleinen Schritten und führt vor dem Bericht die Checks aus.",
+    "color": "c1"
+  },
+  {
+    "name": "Ada",
+    "role": "Prüfer",
+    "program": "claude",
+    "model": "opus",
+    "repo": "~/.config/herdr-app",
+    "branch_prefix": "review/",
+    "labels": ["review"],
+    "notes": "Prüft Abnahmekriterien und Diff, ändert keinen Code und schreibt Befunde und Urteil ins Ticket.",
+    "color": "c2"
+  },
+  {
+    "name": "Mira",
+    "role": "Recherche",
+    "program": "pi",
+    "model": "google/gemini-3-pro",
+    "repo": "~/.config/herdr-app",
+    "branch_prefix": "spike/",
+    "labels": ["recherche"],
+    "notes": "Sucht Belege und schreibt das Ergebnis als Kommentar ins Ticket; kein Code, kein Branch.",
+    "color": "c3"
+  }
+]
