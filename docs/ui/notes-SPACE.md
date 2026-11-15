@@ -17,9 +17,11 @@ Ein Ticket trägt im Frontmatter:
 
 **Altbestand:** Ein Ticket ohne `space_name` gilt als alt: sein `space` ist der damalige
 Agent-Space und zählt nicht als Workspace. Es wird über `repo` dem Space zugeordnet, dessen
-Ordner den Pfad enthält; ohne solchen Ordner bleibt es `space: ""` und ist in jedem Space
-sichtbar, wie bisher besitzerlose Tickets. `hub spaces --adopt --yes` schreibt `space`/
-`space_name` und rettet den alten Wert nach `agent_space`.
+Ordner den Pfad enthält; ohne solchen Ordner bleibt es `space: ""` („ohne Workspace") und
+ist **nicht** in einer Projekt-Fabrik sichtbar — nur mit `--all`, `--space ""` oder
+`--space none`. `hub spaces --adopt --yes` schreibt `space`/`space_name` und rettet den
+alten Wert nach `agent_space`; `hub spaces --adopt --to <id|name> --yes` ordnet auch die
+per Repo nicht zuordenbaren Tickets einem Space zu.
 
 ## Wer bin ich, welcher Space ist meiner
 
@@ -41,7 +43,15 @@ still genommen; ohne eigene Fabrik ist die ID leer.
 Betroffen: `ticket list`, `status`, `stats`, `stalls`, `wip`, `timeline`, `gates`,
 `night`, `cleanup`, `ticket next|inbox`. Der Name wird case-insensitiv verglichen; ein
 unbekannter Name bricht mit Liste ab, eine `sp…`-ID wird auch ohne laufendes Fenster
-akzeptiert.
+akzeptiert. `--space ""` und `--space none` wählen die Gruppe „ohne Workspace" (Alt-Tickets,
+deren `repo` in keinen Space-Ordner fällt). Diese Gruppe erscheint in keiner Projekt-Fabrik;
+`hub status` nennt sie in einer Fußzeile:
+
+```text
+60 Tickets ohne Workspace (hub spaces --adopt --to <space>)
+```
+
+`hub status --json` trägt dafür `"unassigned": 60` und `"unassigned_hint"`.
 
 ## JSON mit `space`/`space_name` je Eintrag
 
@@ -237,12 +247,35 @@ Ticket.
 ```text
 $ hub spaces --adopt
 altes-ticket                             → Beta (spbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)
+
+$ hub spaces --adopt --to Beta
+altes-ticket-ohne-ordner                 → Beta (spbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)
 ```
 
 Ohne `--yes` wird nichts geschrieben; die JSON-Form nennt `dry_run: true` und je Ticket
-`space`, `space_name`, `old_agent_space`. Nicht zuordenbare Tickets bleiben unangetastet
-und werden als „ohne Workspace" geführt. Es wird nie etwas gelöscht, und nur
-`$HERDR_APP_HOME/data/quests/tickets` angefasst.
+`space`, `space_name`, `old_agent_space`. `--to <id|name>` fängt zusätzlich alle Tickets,
+deren `repo` in keinen Space-Ordner fällt (sie bleiben sonst „ohne Workspace"). Es wird nie
+etwas gelöscht, und nur `$HERDR_APP_HOME/data/quests/tickets` angefasst.
+
+## Leistung
+
+Ein hub-Aufruf holt die Space-Liste (`herdr-app ls`) und die Terminal-Metadaten
+(`hc ls --all`) **je einmal** je Prozess, `hc get` höchstens für das eigene Terminal;
+`repo → space` ist je Pfad gecacht. Timeline, Status und Sichten spawnen keinen
+Subprozess pro Ticket, Lane oder Event.
+
+Gemessen am echten Home (2026-11-15, ~75 Tickets, 4 Spaces, `/usr/bin/time -p`):
+
+| Kommando | vor dem Space-Modell | nach dem Space-Modell (vor Cache) | jetzt |
+|---|---:|---:|---:|
+| `hub status` | 0.14 s | 2.04 s | 0.21 s |
+| `hub timeline --json` | 0.26 s | 23.73 s | 0.20 s |
+| `hub whoami` | — | 3.87 s | 0.23 s |
+| `hub spaces` | — | 2.01 s | 0.18 s |
+
+Der Test `test_timeline_reads_the_terminal_snapshot_once_for_fifty_tickets` schreibt 50
+Tickets mit je einem Terminal und zählt die Stub-Aufrufe: `hub timeline --json` bleibt bei
+höchstens 5 (`herdr-app ls`, `hc ls --all`, `hc get` für das eigene Terminal).
 
 ## Tests
 
@@ -252,10 +285,13 @@ und werden als „ohne Workspace" geführt. Es wird nie etwas gelöscht, und nur
 - `status`, `timeline` (Lanes und Events), `wip`, `stalls` trennen die Spaces; `--all`
   zeigt beide; `--space <Name>` wählt einen.
 - Neustart: neuer Orchestrator-Terminal im selben Space sieht die Tickets weiter.
-- Alt-Ticket ohne `space_name` zählt per `repo` zum Space; `--adopt` schreibt im Dry-Run
-  nichts, mit `--yes` `space`/`space_name` und rettet den alten Agent-Space.
+- Alt-Ticket ohne `space_name` zählt per `repo` zum Space; „ohne Workspace" ist nur mit
+  `--all`/`--space ""`/`none` sichtbar und steht als Fußzeile in `hub status`.
+- `--adopt` schreibt im Dry-Run nichts, mit `--yes` `space`/`space_name` und rettet den
+  alten Agent-Space; `--adopt --to Beta --yes` nimmt die Unzuordenbaren mit.
 - Zweiter `orchestrator start` im selben Space verweigert mit Terminal und `--restart`;
   `--restart` startet mit allen Labels und dem Prompt.
+- 50 Tickets mit 50 Terminals: `timeline --json` bleibt bei ≤ 5 Subprozessen.
 
 Alle acht Suiten (`hub_bugs`, `hub_cleanup`, `hub_features`, `hub_multi`, `hub_race`,
 `hub_space`, `hub_timeline`, `hub_wip`) sind grün; `herdr-app check mods/orchestra` läuft

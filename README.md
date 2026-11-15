@@ -326,10 +326,15 @@ Orchestrators — ein Neustart mit neuer Terminal-ID verliert die Tickets nicht.
   über denselben Weg (`mods/orchestra/orchestrator.js` ruft `hub orchestrator start`).
 - **`hub spaces [--json]`**: je Space ID, Name, Ordner, Maschine, Orchestrator, `live`,
   offene Tickets je Stufe und Kosten. `hub spaces --adopt` ordnet Alt-Tickets ohne
-  Workspace per Repo-Ordner zu (Dry-Run ohne `--yes`, nichts wird gelöscht).
+  Workspace per Repo-Ordner zu; `--to <id|name>` fängt auch die per Repo nicht
+  zuordenbaren (Dry-Run ohne `--yes`, nichts wird gelöscht).
 - **Altbestand**: Ein Ticket ohne `space_name` gilt als alt; sein `space` ist der damalige
-  Agent-Space. Es zählt zu dem Space, dessen Ordner sein `repo` enthält, sonst zu „ohne
-  Workspace" und ist wie bisher besitzerlose Arbeit überall sichtbar.
+  Agent-Space. Es zählt zu dem Space, dessen Ordner sein `repo` enthält; ohne solchen
+  Ordner ist es „ohne Workspace" und nur mit `--all` oder `--space ""`/`none` sichtbar —
+  nie in einer Projekt-Fabrik. `hub status` nennt die Gruppe in einer Fußzeile.
+- **Leistung**: Space-Liste und Terminal-Metadaten werden je hub-Aufruf einmal geholt
+  (`herdr-app ls`, `hc ls --all`), `repo → space` ist gecacht; auch `timeline --json` mit
+  50 Tickets bleibt unter fünf Subprozessen.
 - **Schreibsperre**: Ticket- und Ereignis-Schreibvorgänge laufen unter
   `data/orchestra/.hub.lock` (`flock`, 10 s Timeout) — parallele Kommentare gehen nicht
   verloren (Test: 20 gleichzeitige Kommentare, 20 im Verlauf).

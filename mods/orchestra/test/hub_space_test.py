@@ -22,6 +22,10 @@ HUB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bin", "hub
 HC = """#!/usr/bin/env python3
 import json, os, sys
 cmd = sys.argv[1] if len(sys.argv) > 1 else ""
+calls = os.environ.get("HC_CALL_LOG")
+if calls:
+    with open(calls, "a", encoding="utf-8") as f:
+        f.write("hc " + cmd + "\\n")
 def read(path, default):
     try:
         return json.load(open(path, encoding="utf-8"))
@@ -51,6 +55,7 @@ sys.exit(0)
 """
 
 APP = """#!/bin/sh
+if [ -n "$APP_CALL_LOG" ]; then echo "app $1" >> "$APP_CALL_LOG"; fi
 case "$1" in
   ls) cat "$SPACES_FILE" ;;
   *) exit 0 ;;
@@ -83,6 +88,7 @@ class HubSpaceTest(unittest.TestCase):
         self.spaces_file = os.path.join(self.base, "spaces.json")
         self.run_log = os.path.join(self.base, "hc-run.log")
         self.send_log = os.path.join(self.base, "hc-send.log")
+        self.call_log = os.path.join(self.base, "calls.log")
         self.terminals({
             ORCH_A: {"address": ORCH_A, "name": "orchestrator", "state": "live",
                      "labels": {"hub.role": "orchestrator", "hub.space": SP_A, "herdr.space": SP_A}},
@@ -126,7 +132,8 @@ class HubSpaceTest(unittest.TestCase):
                "PATH": self.bin + os.pathsep + os.environ.get("PATH", ""),
                "HC_GET_FILE": self.get_file, "HC_LS_FILE": self.ls_file,
                "SPACES_FILE": self.spaces_file, "HC_RUN_LOG": self.run_log,
-               "HC_SEND_LOG": self.send_log}
+               "HC_SEND_LOG": self.send_log, "HC_CALL_LOG": self.call_log,
+               "APP_CALL_LOG": self.call_log}
         env.pop("HC_TERMINAL_ID", None)
         env.pop("HERDR_SPACE", None)
         if who:
@@ -363,14 +370,28 @@ class HubSpaceTest(unittest.TestCase):
         self.assertNotIn(a, visible(ORCH_B), "nicht im fremden Space")
         self.assertIn(a, {e["ticket"] for e in self.json_cmd("timeline")["events"]},
                       "die Timeline ordnet es genauso zu")
-        self.assertIn(loose, visible(ORCH_A), "ohne Zuordnung überall sichtbar")
-        self.assertIn(loose, visible(ORCH_B))
+        self.assertNotIn(loose, visible(ORCH_A), "ohne Workspace ist keine Projekt-Fabrik")
+        self.assertNotIn(loose, visible(ORCH_B))
+        self.assertIn(loose, {r["id"] for r in self.json_cmd("status", "--all")["tickets"]},
+                      "nur mit --all sichtbar")
+        self.assertEqual({r["id"] for r in self.json_cmd("status", "--space", "")["tickets"]}, {loose})
+        self.assertEqual({r["id"] for r in self.json_cmd("status", "--space", "none")["tickets"]}, {loose})
+        status = self.hub("status", who=ORCH_A)
+        self.assertIn("Tickets ohne Workspace", status.stdout, "Fußzeile nennt die Gruppe")
+        self.assertIn("--adopt --to", status.stdout)
 
         dry = self.hub("spaces", "--adopt", who=ORCH_A)
         self.assertEqual(dry.returncode, 0, dry.stderr)
         self.assertIn("Alpha", dry.stdout)
         self.assertIn("ohne Workspace", dry.stdout)
         self.assertNotIn("space:", self.fields(a)[1].split("---")[1], "Dry-Run schreibt nichts")
+
+        target = self.hub("spaces", "--adopt", "--to", "Beta", who=ORCH_A)
+        self.assertEqual(target.returncode, 0, target.stderr)
+        self.assertRegex(target.stdout, rf"{loose}\s+→ Beta", "--to nimmt die Unzuordenbaren")
+        self.assertNotIn("space", self.fields(loose)[0], "--to zeigt nur, schreibt ohne --yes nicht")
+        self.assertNotEqual(self.hub("spaces", "--to", "Beta", who=ORCH_A).returncode, 0,
+                            "--to ohne --adopt ist ein Fehler")
 
         r = self.hub("spaces", "--adopt", "--yes", who=ORCH_A)
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -380,7 +401,14 @@ class HubSpaceTest(unittest.TestCase):
         old = self.fields(b)[0]
         self.assertEqual((old["space"], old["space_name"]), (SP_B, "Beta"))
         self.assertEqual(old["agent_space"], old_agent_space, "der alte Agent-Space bleibt erhalten")
-        self.assertNotIn("space", self.fields(loose)[0], "ohne Zuordnung bleibt es unangetastet")
+        self.assertNotIn("space", self.fields(loose)[0], "ohne --to bleibt Unzuordenbares liegen")
+
+        r = self.hub("spaces", "--adopt", "--to", "Beta", "--yes", who=ORCH_A)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        loose_meta = self.fields(loose)[0]
+        self.assertEqual((loose_meta["space"], loose_meta["space_name"]), (SP_B, "Beta"))
+        self.assertIn(loose, {r["id"] for r in self.json_cmd("status", who=ORCH_B)["tickets"]})
+        self.assertNotIn("Tickets ohne Workspace", self.hub("status", who=ORCH_A).stdout)
 
     def test_spaces_lists_identity_counts_and_cost(self):
         a = self.ticket("A offen", self.alpha)
@@ -440,6 +468,38 @@ class HubSpaceTest(unittest.TestCase):
         self.assertEqual(rows[SP_A]["terminal"], "t-new")
         self.assertTrue(rows[SP_A]["live"])
         self.assertEqual(rows[SP_B]["terminal"], ORCH_B)
+
+
+    def test_timeline_reads_the_terminal_snapshot_once_for_fifty_tickets(self):
+        now = int(time.time() * 1000)
+        tdir = os.path.join(self.app, "data", "quests", "tickets")
+        os.makedirs(tdir, exist_ok=True)
+        rows = {ORCH_A: {"address": ORCH_A, "name": "orchestrator", "state": "live",
+                         "created_ms": now - 3_600_000, "foreground": {"name": "omp"},
+                         "labels": {"hub.role": "orchestrator", "hub.space": SP_A, "herdr.space": SP_A}}}
+        for i in range(50):
+            tid = f"perf-{i}"
+            with open(os.path.join(tdir, tid + ".md"), "w", encoding="utf-8") as f:
+                f.write("---\n"
+                        f"title: Perf {i}\nstatus: doing\nrepo: {self.alpha}\n"
+                        f"space: {SP_A}\nspace_name: Alpha\nmachine: \nterminal: t-{i}\n"
+                        "created: 2026-11-15 10:00\n"
+                        "status_log: todo@2026-11-15 10:00|doing@2026-11-15 10:05\n"
+                        "---\n")
+            rows[f"t-{i}"] = {"address": f"t-{i}", "name": f"Agent {i}", "state": "live",
+                              "created_ms": now - 900_000, "parent": ORCH_A}
+        self.write_json(self.ls_file, {"terminals": list(rows.values())})
+
+        with open(self.call_log, "w", encoding="utf-8"):
+            pass
+        report = self.json_cmd("timeline", who=ORCH_A)
+        with open(self.call_log, encoding="utf-8") as f:
+            calls = [line.strip() for line in f if line.strip()]
+        self.assertLessEqual(len(calls), 5, f"zu viele Subprozesse für 50 Tickets: {calls}")
+        self.assertEqual(len([l for l in report["lanes"] if l["kind"] == "agent"]), 50)
+        self.assertEqual({l["space"] for l in report["lanes"]}, {SP_A})
+        self.assertTrue(all(l["label"] == f"Agent {int(l['terminal'][2:])}" for l in report["lanes"]
+                            if l["kind"] == "agent"))
 
 
 if __name__ == "__main__":
