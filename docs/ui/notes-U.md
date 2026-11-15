@@ -41,9 +41,13 @@ Testfenster `~/.herdr/ui-preview/feat-ticket-meta` (eigener Core, Demo-Welt), Fe
 | `demo-2` (doing) | `2026-11-13 08:56` | `2026-11-15 08:14` | `2026-11-15 08:53` | — |
 
 - `herdr-app check mods/review`, `mods/board`, `mods/orchestra`: `check passed`.
-- Belege `/tmp/ui-meta/`: `review-meta.png` (vier Chips unter dem Titel),
-  `board-hover.png` (Alter 45 min in Zeile 1, Hover „erstellt vor 2 d · zuletzt vor 6 min"),
-  `team-row.png` („in Arbeit seit 46 min", „in Prüfung seit 1 h").
+- Belege `/tmp/ui-meta/`: `review-meta.png` (vier Chips unter dem Titel: „erstellt vor 3 h ·
+  in Prüfung seit 1 h · zuletzt bearbeitet vor 19 min · Prüfung seit 12 min"),
+  `board-hover.png` (Alter `50min` in Zeile 1, Hover „erstellt vor 2 d · zuletzt vor 11 min"),
+  `team-row.png` („in Arbeit seit 49 min", „in Prüfung seit 1 h", „geplant seit 317 d").
+- Der Branch wurde vor den Belegen auf `main` (`070b2fa`) rebased; Konflikte nur in den
+  beiden Kartenkopien (dort hatte `main` inzwischen die Dauer ohne Leerzeichen gesetzt,
+  z. B. `50min` — die Zeile 1 des Boards behält das, das Team-Panel schreibt „seit …").
 - Ohne `orchestra-daemon` veröffentlicht niemand `orchestra.tickets`: für die Belege wurde
   die Liste nach dem Bearbeiten der Tickets einmal aus `hub ticket list --all --json` nach
   `shared.json` geschrieben und das Fenster neu gestartet. Der Hover auf der Board-Karte und
