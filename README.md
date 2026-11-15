@@ -354,6 +354,12 @@ Hintergrund und Quellen: `docs/factory-research.md`.
 
 Drei Stellen, alles andere belegt die Maschine: **Abnahme** (Ticket in `review`), **Rückfrage** eines blockierten Agents, **Landen** (Merge/PR). Das Dashboard führt genau diese unter „Wartet auf dich".
 
+## Ruhige Anzeige (Animationen)
+
+Statusanzeigen sind standardmäßig **statisch**: arbeitet = gefüllter Punkt, wartet = Ausrufezeichen-Punkt, fertig = kleiner Punkt, ruhig = Ring — kein Spinner, kein Pulsen. Das spart messbar CPU: im Layout `elric` mit laufendem Agenten ~21 % statt ~31–33 %, im Dashboard unter 1 %. `⌘⇧A` (oder der Punkt „Ruhige Anzeige“ im Sidebar-Menü) schaltet Animationen ein; die Einstellung liegt in `shared("ui.calm")` und alle Mods lesen sie über ihre `ui.js`-Kopie.
+
+Hintergrund: eine einzige laufende Endlosanimation zwingt das Fenster, dauerhaft neu zu zeichnen — auf dem Laptop spürbar. `docs/ui/notes-CALM.md` enthält die Messreihe.
+
 ## Farben und Ebenen
 
 Theme `themes/elric.json`: neutrale Dunkelpalette (Fenster `canvas #0b0c0e`, Arbeitsfläche `background #0e0f11`, Leisten `chrome #121418`, Karten `surface #16181b`, Hover `raised #22262b`, Popover `#1d2126`, Auswahl `#263149`), Text `foreground #e7e9ec` / `muted #aeb4bc` / `dim #949ba5`, ein Akzent `#4c8dff`, Status getrennt (`blocked #ef6d6d`, `success #5cb87a`, `warning #d9a441`). Jede Fläche liest nur Theme-Namen, keine Hex-Werte in Mods. Kontraste aller Textfarben ≥ 4,5:1 (dim auf Auswahl 4,6); Tabelle und Vorher/Nachher-Screenshots in `docs/ui/notes-Q.md`.
