@@ -27,7 +27,7 @@
 // alle vier sofort neu. Kein eigener Timer: die Refreshes oben tragen den Zustand.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, ScrollHandle } from "gpui-base";
-import { exec, appHome, readTextFile, shared, theme, layout, run, notify, nextCommand, openOverlay, settings } from "herdr";
+import { exec, appHome, readTextFile, shared, theme, layout, run, notify, nextCommand, openOverlay, settings, props, closeOverlay } from "herdr";
 import * as ui from "./ui.js";
 import { T_XS, T_S, T_L, GAP_S, GAP_M, INSET_PANEL, H_HEADER, H_SECTION, H_ROW, usd, at } from "./ui.js";
 import { STAGES, stageOf, stageColor, ticketCard, blockersOf } from "./card.js";
@@ -539,15 +539,21 @@ export default class Board extends View {
       .on_key_down((ev, cx) => { if (ev.key === "escape" && this.filter) { this.clearFilter(cx); cx.stop_propagation(); } })
       .child(ui.inputBox(t, "board-filter", Input.new(this.search), { focused: this.focus.has("board-filter") }));
     const count = this.filter ? `${flat.length} von ${this.tickets.length}` : String(flat.length);
-    const header = h_flex().id("board-header").h(H_HEADER).flex_none().px(INSET_PANEL).gap(GAP_M).items_center()
-      .border_b(1).border_color(t.border)
-      .child(div().flex_none().text_size(T_L).font_semibold().text_color(t.foreground).child("Board"))
-      .when(Boolean(scope), (el) => el.child(scope))
-      .child(div().id("board-count").flex_none().text_size(T_XS).text_color(t.dim)
+    const chips = [
+      scope,
+      div().id("board-count").flex_none().text_size(T_XS).text_color(t.dim)
         .when(Boolean(this.filter), (el) => el.tooltip(`${flat.length} von ${this.tickets.length} Tickets passen zum Filter`))
-        .child(count))
-      .child(search)
-      .children(right);
+        .child(count),
+      search,
+      ...right,
+    ].filter(Boolean);
+    // Breite: vier Spalten leben vom Fenster (1120), im 368er Panel stehen sie gestapelt.
+    const overlay = props()?.overlay;
+    const header = overlay
+      ? ui.windowHeader(t, "Board", chips, () => closeOverlay(overlay),
+        { actions: [ui.surfaceToggle(t, "board-to-panel", "to-panel", () => ui.switchToPanel("board", overlay))] })
+      : ui.panelHeader(t, "Board", chips,
+        { actions: [ui.surfaceToggle(t, "board-to-window", "to-window", () => ui.switchToWindow("board"))] });
 
     let body;
     if (mode === "4") {

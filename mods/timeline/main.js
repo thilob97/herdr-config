@@ -675,10 +675,13 @@ export default class Timeline extends View {
       .when(Boolean(note), (el) => el.child(note));
 
     const scope = ui.spaceChip(t);
-    const header = props()?.overlay
-      ? ui.windowHeader(t, "Timeline", [scope, this.ticketChip(t)].filter(Boolean), () => closeOverlay(props().overlay), { meta, metaTip: "Lanes im gewählten Zeitraum" })
-      : ui.panelHeader(t, "Timeline", [scope, this.ticketChip(t), div().flex_none().text_size(T_XS).text_color(t.dim).child(`seit ${since}`)].filter(Boolean),
-        { count: `${count} Lanes` });
+    const overlay = props()?.overlay;
+    const chips = [scope, this.ticketChip(t)].filter(Boolean);
+    const header = overlay
+      ? ui.windowHeader(t, "Timeline", chips, () => closeOverlay(overlay), { meta, metaTip: "Lanes im gewählten Zeitraum",
+        actions: [ui.surfaceToggle(t, "tl-to-panel", "to-panel", () => ui.switchToPanel("timeline", overlay))] })
+      : ui.panelHeader(t, "Timeline", [...chips, div().flex_none().text_size(T_XS).text_color(t.dim).child(`seit ${since}`)],
+        { count: `${count} Lanes`, actions: [ui.surfaceToggle(t, "tl-to-window", "to-window", () => ui.switchToWindow("timeline"))] });
 
     const rows = all.map((x, i) => this.row(t, x.lane, x.depth, marks, now, i));
     // Das Raster liegt hinter den Zeilen: senkrechte Linien über die ganze Höhe.
