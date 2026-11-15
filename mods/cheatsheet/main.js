@@ -13,7 +13,7 @@ const INSET_CARD = 10, H_SECTION = 28, H_ROW = 28, H_INPUT = 30, H_CHIP = 18;
 const T_XS = 10.5, T_S = 11, T_M = 12, T_XL = 15;
 
 const SEND = { "\u001bb": "Wort zurück", "\u001bf": "Wort vor", "\u0017": "Wort löschen", "\u0001": "Zeilenanfang", "\u0005": "Zeilenende", "\u0015": "Zeile löschen" };
-const PANEL = { changes: "Changes", graph: "Git", filetree: "Tree", blueprint: "Blueprint", docker: "Docker", quests: "Quests", team: "Team", board: "Board", timeline: "Timeline" };
+const PANEL = { changes: "Changes", graph: "Git", filetree: "Tree", blueprint: "Blueprint", docker: "Docker", quests: "Quests", team: "Team", board: "Board", timeline: "Timeline", factory: "Fabrik" };
 const DIR = { left: "links", right: "rechts", up: "oben", down: "unten" };
 const DESC = {
   "layout.switch:dashboard": "Dashboard zeigen",
@@ -23,6 +23,7 @@ const DESC = {
   "mod.open:teams": "Team-Hub öffnen",
   "mod.open:launcher": "Auftrag: neue Arbeit ans Team oder selbst starten",
   "mod.open:inbox": "Inbox: was auf dich wartet",
+  "mod.open:graph": "Fabrik-Graph: Agents und Tickets von oben nach unten",
   "status-bar.attention-next": "Zum nächsten wartenden Agent (wartet, dann fertig)",
   "mod.open:review": "Review des fokussierten Terminals",
   "mod.open:cheatsheet": "Diese Übersicht",
@@ -44,9 +45,9 @@ const DESC = {
 };
 const GROUPS = [
   ["Auftrag und Agents", (a) => /^agent\.|^status-bar\.|^hermes\.|^mod\.open:(inbox|review|launcher)$/.test(a)],
-  // Die Fabrik-Flächen der Tab-Leiste: Dashboard, Team-Hub, Board, Timeline, Quests.
+  // Die Fabrik-Flächen der Tab-Leiste: Dashboard, Team-Hub, Board, Timeline, Fabrik-Graph, Quests.
   // Sie stehen nicht bei den Werkzeugen (Changes, Git, Tree, Blueprint, Docker) im Dialog.
-  ["Fabrik", (a) => /^layout\.switch:dashboard$|^board\.panel$|^mod\.open:teams$|^tabs-graph\.panel-(quests|team|timeline)$/.test(a)],
+  ["Fabrik", (a) => /^layout\.switch:dashboard$|^board\.panel$|^mod\.open:(teams|graph)$|^tabs-graph\.panel-(quests|team|timeline|factory)$/.test(a)],
   ["Panels und Seitenleiste", (a) => /^tabs-graph\.|^layout\.toggle:sidebar$/.test(a)],
   ["Tabs", (a) => /^tab\./.test(a)],
   ["Spaces", (a) => /^space\.|^space-folders\./.test(a)],
