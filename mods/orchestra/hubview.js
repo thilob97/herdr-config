@@ -1,10 +1,11 @@
 // The orchestrator in the Team panel (HubSection: its compact card and the ticket
 // pipeline) and its watcher (HubDaemon). HubDaemon runs in a 0px block of the elric
-// layout, so it works while the panel is closed: it starts the orchestrator when none
-// runs (unless stopped by hand), publishes the orchestrator's tickets as shared
-// "orchestra.tickets", and says when a ticket is ready for review or the orchestrator
-// ends a turn. The panel republishes the tickets too (without notifications), so it is
-// current even where no daemon runs.
+// and dashboard layouts, so it works while the panel is closed: it starts the
+// orchestrator when none runs (unless stopped by hand), publishes the orchestrator's
+// tickets as shared "orchestra.tickets", the gates, stats and the window's spaces
+// (shared "orchestra.spaces"), and says when a ticket is ready for review or the
+// orchestrator ends a turn. The panel republishes the tickets too (without
+// notifications), so it is current even where no daemon runs.
 
 import { div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
@@ -355,6 +356,33 @@ export class StatsWatcher {
 
 export const statsOf = () => shared("orchestra.stats") ?? null;
 
+// The window's spaces with their orchestrators, open tickets and costs (`hub spaces
+// --json --agents`) for the other mods: the dashboard reads this instead of running
+// its own `hub spaces`. `at` is the heartbeat: fresh means the daemon is alive.
+export class SpacesWatcher {
+  constructor(cx) {
+    this.busy = false;
+    this.refresh(cx);
+    cx.timer.every(15000, (cx) => this.refresh(cx));
+  }
+
+  refresh(cx) {
+    if (this.busy) return;
+    this.busy = true;
+    cx.spawn(async () => {
+      try {
+        const r = await exec(HUB(), ["spaces", "--json", "--agents"], { timeout: 20000 });
+        if (r.code !== 0) return;
+        const next = { ...JSON.parse(r.stdout || "{}"), at: Date.now() };
+        if (JSON.stringify({ ...next, at: 0 }) !== JSON.stringify({ ...(shared("orchestra.spaces") ?? {}), at: 0 })) {
+          setShared("orchestra.spaces", next);
+        }
+      } catch {}
+      finally { this.busy = false; }
+    });
+  }
+}
+
 /** Dauer wie `hub stats` ("42 min", "1 h 05", "—"). */
 export const span = (min) => {
   if (min == null) return "—";
@@ -383,6 +411,7 @@ export class HubDaemon {
     cx.timer.every(30000, (cx) => this.pollCosts(cx));
     this.gates = new GateWatcher(cx);
     this.stats = new StatsWatcher(cx);
+    this.spaces = new SpacesWatcher(cx);
     this.space = ui.activeSpace()?.id ?? "";
   }
 

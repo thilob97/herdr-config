@@ -2,7 +2,7 @@
 // `hub orchestrator start` starts it (cwd ~/.herdr/orchestrator, whose AGENTS.md is
 // copied from mods/orchestra/orchestrator.md, labels hub.role=orchestrator and
 // hub.space=<space id>), so the app and the command line take the same path.
-import { terminals, exec, hc, appHome, spaces, focused, shared, setShared } from "herdr";
+import { terminals, panes, exec, hc, appHome, spaces, focused, shared, setShared } from "herdr";
 import * as ui from "./ui.js";
 
 export const NAME = "orchestrator";
@@ -15,21 +15,39 @@ export function spaceId() {
   return ui.workspaceId(sid);
 }
 
-/** The orchestrator of the current space — never another factory's. */
-export const find = () => {
-  const sid = spaceId();
-  const live = terminals().filter((x) => x.state === "live" && ui.isOrchestrator(x));
-  if (sid) return live.find((x) => x.labels?.["hub.space"] === sid || x.labels?.["herdr.space"] === sid) ?? null;
-  // A home without space labels keeps the one orchestrator it has.
-  return live.find((x) => !x.labels?.["hub.space"]) ?? null;
-};
+/** The space of a terminal that carries no space label: its pane → tab → the tab's
+ *  space in `spaces()` (`hc ls` rows of older clients have no labels). "" when
+ *  neither the label nor the pane knows. */
+function paneSpaceOf(address) {
+  const tab = panes().find((p) => p.terminal === address)?.tab;
+  if (!tab) return "";
+  return spaces().find((s) => (s.tabs ?? []).some((t) => t.id === tab))?.id ?? "";
+}
 
-/** Every live orchestrator, at most one per space. A home without space labels keeps
- *  its one orchestrator under `spaceId` "". */
+/** The workspace of a terminal: `hub.space` (set by `hub orchestrator start`), else
+ *  `herdr.space`, else the space of its pane — normalized, so an agent space counts
+ *  as the workspace of its ticket. Never another factory's space. `tks` saves the
+ *  caller a shared() read per terminal (see ui.workspaceId). */
+export function terminalSpace(x, tks) {
+  const sid = x?.labels?.["hub.space"] || x?.labels?.["herdr.space"] || paneSpaceOf(x?.address) || "";
+  return ui.workspaceId(sid, tks);
+}
+
+/** The orchestrator of one workspace (default: the current space) — never another
+ *  factory's. A home without space labels keeps the one orchestrator it has. */
+export function find(sid = spaceId()) {
+  const live = terminals().filter((x) => x.state === "live" && ui.isOrchestrator(x));
+  if (sid) { const tks = ui.teamTickets(); return live.find((x) => terminalSpace(x, tks) === sid) ?? null; }
+  return live.find((x) => !x.labels?.["hub.space"]) ?? null;
+}
+
+/** Every live orchestrator, at most one per workspace. An orchestrator without any
+ *  space label lands in the workspace its pane names; a home without spaces keeps it
+ *  under `spaceId` "". */
 export function all() {
-  const seen = new Set(), out = [];
+  const seen = new Set(), out = [], tks = ui.teamTickets();
   for (const x of terminals().filter((t) => t.state === "live" && ui.isOrchestrator(t))) {
-    const sid = x.labels?.["hub.space"] || x.labels?.["herdr.space"] || "";
+    const sid = terminalSpace(x, tks);
     if (seen.has(sid)) continue;
     seen.add(sid);
     out.push({ ...x, spaceId: sid });
@@ -59,9 +77,9 @@ export async function stop() {
   await hc(["wait", o.address, "--timeout", "5"]).catch(() => null);
 }
 
-export async function send(text) {
-  const o = find();
-  if (!o) throw new Error("Orchestrator läuft nicht");
+export async function send(text, sid = spaceId()) {
+  const o = find(sid);
+  if (!o) throw new Error(sid ? `Orchestrator läuft nicht im Space ${sid}` : "Orchestrator läuft nicht");
   const r = await hc(["send", o.address, text, ...(o.status === "blocked" ? ["--force"] : [])]);
   if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim().split("\n").pop());
 }

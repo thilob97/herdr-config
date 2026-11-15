@@ -24,6 +24,7 @@ export const appHome = () => "/tmp", home = () => "/tmp", knownAgents = async ()
 export const machines = () => [], readTextFile = async () => null, notify = none;
 export const agents = () => globalThis.__agents ?? [];
 export const terminals = () => globalThis.__terminals ?? [];
+export const panes = () => globalThis.__panes ?? [];
 export const spaces = () => globalThis.__spaces ?? [];
 export const focused = () => globalThis.__focused ?? null;
 // Wie der Host: jeder Aufruf gibt eine frische Kopie (bei 70 Tickets ~1 ms). Wer eine
