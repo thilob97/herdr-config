@@ -34,6 +34,18 @@ export function verlaufOf(body) {
     .map((x) => ({ ts: x[1], role: x[2].trim(), text: x[3].trim() }));
 }
 
+// The latest recorded run under ## Nachtschicht (`hub night` appends one block after a
+// run): "- begin → end · n gestartet, m übersprungen". No status file exists, so this
+// record is the only place the dashboard can learn about the night shift.
+const NIGHT_RUN = /^- (\d{4}-\d{2}-\d{2} \d{2}:\d{2}) → (\d{4}-\d{2}-\d{2} \d{2}:\d{2}) · (\d+) gestartet, (\d+) übersprungen/mg;
+export function nightOf(body) {
+  let last = null;
+  for (const m of String(body ?? "").matchAll(NIGHT_RUN)) {
+    last = { begin: m[1], end: m[2], started: Number(m[3]), skipped: Number(m[4]) };
+  }
+  return last;
+}
+
 /** The factory's tickets, newest first. Null when the folder cannot be read. */
 export async function read() {
   let names;
@@ -44,6 +56,7 @@ export async function read() {
       const t = parse(n.slice(0, -3), await fs.readFile(`${ticketsDir()}/${n}`, "utf8"));
       if (t.by !== "orchestrator") continue; // the same filter as tickets.publish()
       t.verlauf = verlaufOf(t.body);
+      t.night = nightOf(t.body);
       delete t.body;
       out.push(t);
     } catch {}
