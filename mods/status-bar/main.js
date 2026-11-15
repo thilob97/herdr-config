@@ -392,7 +392,7 @@ export default class StatusBar extends View {
     const team = teamBudget();
     const teamText = team ? `Team ${dollars(team.cost)} / ${dollars(team.budget)}` : "";
     // Left side + team chip + cost + hint + paddings and gaps, estimated as in fit() (11px mono ≈ 6.6px).
-    const used = 6.6 * (where.length + (space?.branch?.length ?? 0) + costText.length + `${hint.key ?? ""} ${hint.text}`.length) + 6.3 * teamText.length
+    const used = 6.6 * (where.length + (space?.branch?.length ?? 0) + costText.length + `${hint.key ?? ""} ${hint.text}`.length + "Dashboard".length) + 6.3 * teamText.length
       + 2 * 14 + 2 * 20 + 6 * GAP_L + 28 + 60;
     const n = this.fit(chips, used);
     const anyLimits = Object.values(this.data.limits).some((s) => s.value);
@@ -404,6 +404,10 @@ export default class StatusBar extends View {
       .child(div().ml(GAP_S).text_color(cost == null ? t.dim : t.foreground).child(costText));
     return h_flex().id("root").size_full().px(14).gap(GAP_L).items_center().bg(t.chrome).border_t(1).border_color(t.border).text_size(T_S).text_color(t.muted)
       .on_size_change((size, cx) => { this.width = size.width; cx.notify(); })
+      // The dashboard is a place, so its way in sits with the place: left, before the location.
+      .child(div().id("dash-link").flex_none().cursor_pointer().text_color(t.muted).text_size(T_S)
+        .hover(s => s.text_color(t.foreground)).tooltip("Zum Dashboard (⌘⇧0)")
+        .on_click(() => run("layout.switch", { name: "dashboard" })).child("Dashboard"))
       .child(label(space?.machine ? "server" : "monitor", where))
       .when(Boolean(space?.branch), el => el.child(label("branch", space.branch)))
       .child(div().flex_1())
