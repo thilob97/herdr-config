@@ -128,9 +128,17 @@ reports into it) and show in the Team-Panel under it.
   hub stats [--json] [--days 14]      throughput per ticket, station and repo: lead time (todo→done),
                                             review rounds, rework (back to doing after review) and cost,
                                             with today's numbers and the last 7 days for the UI
+  hub timeline [--json] [--since 24h|7d|all] [--ticket ID] [--write]
+                                            the workflow as lanes: one per terminal (agent, reviewer)
+                                            plus the orchestrator, with start/end (live = now), parent,
+                                            ticket, status, cost, its events and subagents, built from
+                                            data/orchestra/events.jsonl, the tickets' status_log and
+                                            `hc get` (max. 100 lookups). --since also takes 1h or 30m;
+                                            --write also writes the self-contained data/orchestra/
+                                            timeline.html and prints its path
 Python 3, standard library only.
 """
-import argparse, datetime, json, os, pwd, re, secrets, shlex, subprocess, sys, time, unicodedata
+import argparse, datetime, html, json, os, pwd, re, secrets, shlex, subprocess, sys, time, unicodedata
 
 APP = os.environ.get("HERDR_APP_HOME") or os.path.expanduser("~/.config/herdr-app")
 TICKETS = os.path.join(APP, "data", "quests", "tickets")
@@ -483,6 +491,70 @@ def all_tickets():
     except OSError:
         return []
     return [read(n[:-3]) for n in names]
+
+
+# ---- Chronik: one JSON line per action, so `hub timeline` knows what happened when
+EVENTS = os.path.join(APP, "data", "orchestra", "events.jsonl")
+EVENT_MAX, EVENT_KEEP = 5000, 2000
+EVENT_KINDS = ["dispatch", "nudge", "review", "verdict", "land", "done", "verify", "ci", "night", "comment"]
+
+
+def now_ms():
+    return int(time.time() * 1000)
+
+
+def event(kind, ticket="", agent="", terminal="", text=""):
+    """Append one log line; past EVENT_MAX lines the log keeps the last EVENT_KEEP.
+
+    `at` is epoch milliseconds, so the timeline can sort and window entries without
+    re-reading the tickets. Only EVENT_KINDS are written here; the timeline derives
+    `status` entries from a ticket's status_log on its own."""
+    if kind not in EVENT_KINDS:
+        raise ValueError(f"unknown event kind {kind!r}")
+    row = {"at": now_ms(), "kind": kind, "ticket": ticket or "", "agent": agent or "",
+           "terminal": terminal or "", "text": one_line(text)[:500]}
+    os.makedirs(os.path.dirname(EVENTS), exist_ok=True)
+    with open(EVENTS, "a", encoding="utf-8") as f:
+        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    # Rotation is the only rewrite: the normal path is one append, so parallel hub
+    # commands do not lose each other's lines.
+    try:
+        with open(EVENTS, encoding="utf-8") as f:
+            lines = [line for line in f.read().splitlines() if line.strip()]
+    except OSError:
+        return row
+    if len(lines) > EVENT_MAX:
+        tmp = EVENTS + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines[-EVENT_KEEP:]) + "\n")
+        os.replace(tmp, EVENTS)
+    return row
+
+
+def read_events():
+    """The log, oldest first; an unreadable line is skipped, never fatal."""
+    rows = []
+    try:
+        with open(EVENTS, encoding="utf-8") as f:
+            text = f.read()
+    except OSError:
+        return rows
+    for line in text.splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        try:
+            at = int(row["at"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        rows.append({"at": at, "kind": str(row.get("kind") or ""), "ticket": str(row.get("ticket") or ""),
+                     "agent": str(row.get("agent") or ""), "terminal": str(row.get("terminal") or ""),
+                     "text": str(row.get("text") or "")})
+    rows.sort(key=lambda r: r["at"])
+    return rows
 
 
 # ---- Messwerte: every move is recorded, so throughput and rework can be counted
@@ -1458,6 +1530,7 @@ def cmd_nudge(a):
     sent = bool(addr and is_live(addr) and send_agent(addr, f"Stand zu {a.id}: {text}"))
     add_comment(t, "orchestrator", f"Stand abgefragt: {text}")
     write(t)
+    event("nudge", a.id, t.get("agent") or t.get("assignee") or "", addr, text)
     print(f"{a.id}: " + (f"Nachricht an {addr} gesendet; Kommentar geschrieben"
                          if sent else "Agent nicht lebend; nur Kommentar geschrieben"))
 
@@ -1584,6 +1657,7 @@ def cmd_night(a):
         r = night_dispatch(candidate["id"], candidate.get("assignee") or "omp")
         if r.returncode == 0:
             started.append(candidate["id"])
+            event("night", candidate["id"], candidate.get("assignee") or "omp", "", "Start")
             print(f"gestartet: {candidate['id']}")
         else:
             attempted.add(candidate["id"])
@@ -1605,6 +1679,7 @@ def cmd_night(a):
         t = read(tid)
         add_night_section(t, record)
         write(t)
+        event("night", tid, t.get("agent") or "", t.get("terminal") or "", "Stopp")
     print(f"Nachtschicht: {len(started)} gestartet, {len(skipped)} übersprungen ({begin} → {end})")
 
 
@@ -1658,6 +1733,7 @@ def cmd_comment(a):
     who = re.sub(r"[·\r\n]+", " ", a.role).strip() or "mensch"
     add_comment(t, who, " ".join(a.text))
     write(t)
+    event("comment", a.id, who, t.get("terminal") or "", " ".join(a.text))
     print(f"{a.id}: Verlauf, {len(entries(t))} Einträge")
 
 
@@ -2118,6 +2194,7 @@ def cmd_dispatch(a):
              terminal=out["address"], space=space, tab=tab)
     set_status(t, "doing")
     write(t)
+    event("dispatch", a.id, agent_key, out["address"], f"{agent_key} in {branch or folder}")
     print(json.dumps({"ticket": a.id, "terminal": out["address"], "name": name, "agent": agent_key,
                       "folder": folder, "branch": branch}, ensure_ascii=False))
 
@@ -2205,6 +2282,7 @@ def cmd_review_start(a):
     out = json.loads(r.stdout)
     t.update(reviewer=key, reviewer_name=agent_name(key), review_terminal=out["address"])
     write(t)
+    event("review", a.id, key, out["address"], "Prüfstation gestartet")
     print(json.dumps({"ticket": a.id, "terminal": out["address"], "name": name, "folder": folder,
                       "branch": branch, "base": base, "agent": key, "reviewer_name": t["reviewer_name"]},
                      ensure_ascii=False))
@@ -2233,6 +2311,8 @@ def cmd_review_verdict(a):
     if a.verdict == "fail":
         set_status(t, "doing")
     write(t)
+    event("verdict", a.id, t.get("reviewer") or "", t.get("review_terminal") or "",
+          f"{a.verdict} · Runde {n}")
     notified = False
     if a.verdict == "fail" and t.get("terminal") and is_live(t["terminal"]):
         notified = send_agent(t["terminal"], f"{a.id}: Review rot — {summary}. Befunde im Verlauf; "
@@ -2312,6 +2392,8 @@ def cmd_verify(a):
     set_prufung(t, f"- {t['checks_at']} · {'pass' if ok else 'fail'} · {duration:.1f} s · exit {r.returncode} · "
                    f"HEAD {(head or '?')[:7]} · {label}\n\n{fence}text\n{chr(10).join(tail)}\n{fence}")
     write(t)
+    event("verify", a.id, t.get("agent") or "", t.get("terminal") or "",
+          f"{'pass' if ok else 'fail'} · {duration:.1f} s · {label}")
     print(f"{a.id}: Checks {'pass' if ok else 'fail'} · {duration:.1f} s · exit {r.returncode} · "
           f"HEAD {(head or '?')[:7]} ({len(tail)} Zeilen Ausgabe unter ## Prüfung)")
 
@@ -2386,6 +2468,7 @@ def cmd_review(a):
         t["body"] += f"\n{verlauf}\n"
     set_status(t, "review")
     write(t)
+    event("review", a.id, t.get("agent") or "", t.get("terminal") or "", "Übergabe an den Menschen")
     print(f"{a.id}: review")
 
 
@@ -2394,6 +2477,7 @@ def cmd_done(a):
     res = cleanup_ticket(t, keep_worktree=a.keep_worktree, keep_space=a.keep_space)
     set_status(t, "done")
     write(t)
+    event("done", a.id, t.get("agent") or "", t.get("terminal") or "", "abgeschlossen")
     print(f"{a.id}: done")
     for n in res["notes"]:
         print(f"  {n}")
@@ -2972,6 +3056,7 @@ def cmd_ci(a):
     res = ci_collect(t)
     state = apply_ci(t, res)
     write(t)
+    event("ci", a.id, t.get("agent") or "", t.get("terminal") or "", state)
     head = (t.get("ci_head") or "")[:7]
     where = (f" · {t['ci_url']}" if t.get("ci_url") else "") + (
         f" · Commit {head}" if head else " · Commit nicht lesbar (Ergebnis zählt nicht)")
@@ -3141,6 +3226,8 @@ def cmd_land(a):
         run(["git", "branch", "-d", branch], on, main, check=False)
     set_status(t, "done")
     write(t)
+    event("land", a.id, t.get("agent") or "", t.get("terminal") or "",
+          t.get("merged") or t.get("pr") or "gelandet")
     # The lesson comes last: the work is landed even when writing the file fails (it is
     # reported then, but the ticket stays accepted and its Verlauf is not half-written).
     learned = [add_lesson(t.get("repo") if on else os.path.abspath(t["repo"]), a.id, "human", text, on) for text in (a.lesson or [])]
@@ -3373,6 +3460,288 @@ def cmd_stats(a):
           f"{today_row['rework']} Nacharbeit · ${today_row['cost']:.2f}")
     print("Letzte 7 Tage: " + " · ".join(f"{h['date'][5:]} {h['done']}/{h['rework']}" for h in history)
           + " (erledigt/Nacharbeit)")
+
+
+# ---- timeline: lanes over time, the data behind the workflow visualiser
+
+SUBAGENTS = os.path.join(APP, "data", "agent-cards", "subagents.jsonl")
+CARD_STORE = os.path.join(APP, "data", "agent-cards", "store.json")
+TIMELINE_HTML = os.path.join(APP, "data", "orchestra", "timeline.html")
+SINCE_UNITS = {"m": 60 * 1000, "h": 60 * 60 * 1000, "d": 24 * 60 * 60 * 1000}
+
+
+def num_ms(value):
+    """Milliseconds from a number or a numeric string, None when it is neither."""
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def since_ms(value):
+    """Epoch milliseconds a window starts at (`24h`, `7d`, `1h`, `30m`), None for all."""
+    v = (value or "all").strip().lower()
+    if v in ("", "all", "0"):
+        return None
+    m = re.fullmatch(r"(\d+)([mhd])", v)
+    if not m:
+        die("--since erwartet 24h, 7d, 1h, 30m oder all")
+    return now_ms() - int(m.group(1)) * SINCE_UNITS[m.group(2)]
+
+
+def identities():
+    """The names agent-cards published in shared("agents.identity"), as it persists them."""
+    try:
+        with open(CARD_STORE, encoding="utf-8") as f:
+            raw = json.load(f).get("avatars") or {}
+        if isinstance(raw, str):
+            raw = json.loads(raw)
+        return {str(k): v for k, v in raw.items() if isinstance(v, dict)}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def read_subagents():
+    """The subagents agent-cards recorded, one JSON object per line; missing is no error."""
+    rows = []
+    try:
+        with open(SUBAGENTS, encoding="utf-8") as f:
+            text = f.read()
+    except OSError:
+        return rows
+    for line in text.splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        rows.append({"id": str(row.get("id") or row.get("name") or ""),
+                     "title": str(row.get("title") or ""),
+                     "started": num_ms(row.get("started")),
+                     "ended": num_ms(row.get("ended")),
+                     "terminal": str(row.get("terminal") or row.get("parent") or ""),
+                     "agent": str(row.get("agent") or "")})
+    return rows
+
+
+def orch_address():
+    """The orchestrator's terminal: the `hub.role=orchestrator` label, else its name.
+
+    `hc ls` may omit labels, so HC_TERMINAL_ID only counts when `hc get` confirms the
+    role or the name — never just because hub happens to run in that terminal."""
+    try:
+        out = json.loads(subprocess.run(["hc", "ls", "--json"], capture_output=True, text=True).stdout)
+    except (OSError, ValueError):
+        out = {}
+    terminals = out.get("terminals") or []
+    for x in terminals:
+        if (x.get("labels") or {}).get("hub.role") == "orchestrator":
+            return x.get("address") or ""
+    for x in terminals:
+        if x.get("name") == "orchestrator":
+            return x.get("address") or ""
+    me = os.environ.get("HC_TERMINAL_ID") or ""
+    if me:
+        info = hc_term(me)
+        if (info.get("labels") or {}).get("hub.role") == "orchestrator" or info.get("name") == "orchestrator":
+            return me
+    return ""
+
+
+def lane_status(info):
+    """`working`, `waiting`, `done`, … from hc's status object, else its state."""
+    st = (info or {}).get("status")
+    if isinstance(st, dict) and st.get("state"):
+        return str(st["state"])
+    return str((info or {}).get("state") or "")
+
+
+def ticket_marks(t):
+    """The ticket's own status moves as timeline entries (derived, kind `status`).
+
+    They are not written to events.jsonl: the status_log already holds them, and
+    copying them would duplicate every move."""
+    agent = t.get("agent") or t.get("assignee") or ""
+    term = t.get("terminal") or ""
+    return [{"at": int(sec * 1000), "kind": "status", "ticket": t["id"], "agent": agent,
+             "terminal": term, "text": state} for sec, state in timeline(t)]
+
+
+def lane(parent_of, ticket, terminal, kind, label, start, end, status, cost):
+    return {"id": terminal or kind, "label": label or "—", "kind": kind, "parent": parent_of or "",
+            "ticket": ticket or "", "terminal": terminal or "", "start": start, "end": end,
+            "status": status or "", "cost": round(float(cost or 0), 2), "events": [], "subagents": []}
+
+
+def build_timeline(ticket="", since="all"):
+    """The lanes and events `hub timeline` prints: one lane per terminal plus the orchestrator."""
+    now, floor = now_ms(), since_ms(since)
+    tickets = [t for t in all_tickets() if not ticket or t["id"] == ticket]
+    events = read_events()
+    derived = [m for t in tickets for m in ticket_marks(t)]
+    addresses = []
+    for t in tickets:
+        for addr in (t.get("terminal"), t.get("review_terminal")):
+            if addr and addr not in addresses:
+                addresses.append(addr)
+    infos = {addr: hc_term(addr) for addr in addresses[:100]}
+    cost_rows = costs()
+    per_ticket, per_terminal = cost_rows.get("tickets") or {}, cost_rows.get("perTerminal") or {}
+    ident = identities()
+    subagents = read_subagents()
+
+    # The orchestrator: its own terminal when known, otherwise the lane that carries
+    # every entry without a terminal (a night run's stop, a hub-wide comment).
+    orch_addr = orch_address()
+    orch_info = hc_term(orch_addr) if orch_addr else {}
+    first = min((e["at"] for e in events + derived), default=now)
+    orch = lane("", "", orch_addr, "orchestrator",
+                ((ident.get(orch_addr) or {}).get("name") or orch_info.get("name") or "Orchestrator"),
+                num_ms(orch_info.get("created_ms")) or first,
+                now if (not orch_info or orch_info.get("state") == "live") else
+                (num_ms(orch_info.get("finished_ms")) or now),
+                lane_status(orch_info) or ("live" if orch_info else ""),
+                cost_rows.get("orchestrator"))
+    lanes, by_terminal = [orch], {}
+    if orch_addr:
+        by_terminal[orch_addr] = orch
+
+    for t in tickets:
+        marks = ticket_marks(t)
+        first_mark = min((m["at"] for m in marks), default=None)
+        for addr, kind, agent_key in ((t.get("terminal") or "", "agent", t.get("agent") or t.get("assignee") or ""),
+                                      (t.get("review_terminal") or "", "reviewer", t.get("reviewer") or "")):
+            if not addr or addr in by_terminal:
+                continue
+            info = infos.get(addr) or {}
+            live = info.get("state") == "live"
+            start = num_ms(info.get("created_ms")) or first_mark
+            end = now if live else (num_ms(info.get("finished_ms")) or
+                                    (marks[-1]["at"] if marks else start))
+            cost_key = f"{t['id']}|{addr}"
+            cost = per_terminal.get(cost_key)
+            if cost is None:
+                cost = per_ticket.get(t["id"]) if kind == "agent" else 0
+            by_terminal[addr] = lane(info.get("parent"), t["id"], addr, kind,
+                                     (ident.get(addr) or {}).get("name") or info.get("name") or
+                                     agent_name(agent_key) or ("Prüfer" if kind == "reviewer" else "Agent"),
+                                     start, end, lane_status(info) or ("" if info else "beendet"), cost)
+            lanes.append(by_terminal[addr])
+
+    # A terminal only the log knows (an agent whose ticket field was cleared) still shows.
+    for e in events:
+        addr = e["terminal"]
+        if not addr or addr in by_terminal or (ticket and e["ticket"] != ticket):
+            continue
+        by_terminal[addr] = lane("", e["ticket"], addr, "reviewer" if e["kind"] == "verdict" else "agent",
+                                 (ident.get(addr) or {}).get("name") or agent_name(e["agent"]) or addr,
+                                 e["at"], e["at"], "", per_ticket.get(e["ticket"]) if e["ticket"] else 0)
+        lanes.append(by_terminal[addr])
+
+    # Parents point at lane ids, not at raw terminal addresses.
+    ids = {l["terminal"]: l["id"] for l in lanes if l["terminal"]}
+    for l in lanes:
+        if orch_addr and l["parent"] == orch_addr:
+            l["parent"] = orch["id"]
+        elif l["parent"] in ids:
+            l["parent"] = ids[l["parent"]]
+
+    everything = sorted(events + derived, key=lambda e: e["at"])
+    if floor is not None:
+        everything = [e for e in everything if e["at"] >= floor]
+    if ticket:
+        everything = [e for e in everything if e["ticket"] == ticket]
+    kept = []
+    for l in lanes:
+        if ticket and l["ticket"] != ticket:
+            continue
+        if floor is not None and l is not orch and (l["end"] or l["start"] or 0) < floor:
+            continue
+        l["events"] = [e for e in everything if (l is orch and not e["terminal"]) or
+                       (l["terminal"] and e["terminal"] == l["terminal"])]
+        l["subagents"] = [{"id": s["id"], "title": s["title"], "started": s["started"],
+                           "ended": s["ended"]} for s in subagents
+                          if l["terminal"] and s["terminal"] == l["terminal"]]
+        kept.append(l)
+    kept.sort(key=lambda l: (l["kind"] != "orchestrator", l["start"] is None, l["start"] or 0,
+                             l["label"].casefold()))
+    return {"now": now, "since": floor or 0, "lanes": kept, "events": everything}
+
+
+def stamp_ms(ms):
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(ms / 1000)) if ms else "—"
+
+
+def timeline_html(report):
+    """A self-contained table with a bar per lane; no script, no external resource."""
+    lanes = report["lanes"]
+    now = report["now"]
+    starts = [l["start"] for l in lanes if l["start"]]
+    ends = [l["end"] for l in lanes if l["end"]] + [now]
+    t0, t1 = (min(starts) if starts else now), max(ends)
+    span = max(1, t1 - t0)
+    rows = []
+    for l in lanes:
+        start, end = l["start"] or t0, l["end"] or now
+        left = max(0.0, (start - t0) / span * 100)
+        width = min(100.0 - left, max(1.0, (end - start) / span * 100))
+        minutes = max(0.0, (end - start) / 60000)
+        rows.append(
+            f"<tr class=\"{html.escape(l['kind'])}\"><td>{html.escape(l['label'])}</td>"
+            f"<td>{html.escape(l['ticket'] or '—')}</td>"
+            f"<td>{html.escape(stamp_ms(l['start']))}</td>"
+            f"<td>{html.escape(stamp_ms(l['end']))}</td>"
+            f"<td class=\"num\">{html.escape(dur(minutes))}</td>"
+            f"<td>{html.escape(l['status'] or '—')}</td>"
+            f"<td>{html.escape(l['parent'] or '—')}</td>"
+            f"<td class=\"num\">${l['cost']:.2f}</td>"
+            f"<td class=\"bar\"><span style=\"left:{left:.2f}%;width:{width:.2f}%\"></span></td></tr>")
+    return (
+        "<!doctype html>\n<html lang=\"de\"><meta charset=\"utf-8\">\n"
+        "<title>Herdr Timeline</title>\n<style>\n"
+        "body{font:14px/1.45 system-ui,sans-serif;margin:24px;color:#222;background:#fff}\n"
+        "h1{font-size:18px;margin:0 0 4px}p{color:#666;margin:0 0 18px}\n"
+        "table{border-collapse:collapse;width:100%}\n"
+        "th,td{text-align:left;padding:5px 8px;border-bottom:1px solid #e6e6e6;white-space:nowrap}\n"
+        "th{font-size:12px;text-transform:uppercase;color:#666}\n"
+        ".num{text-align:right}\n"
+        "td.bar{width:32%;min-width:160px}\n"
+        "td.bar span{display:block;height:10px;border-radius:5px;position:relative;min-width:2px}\n"
+        ".orchestrator td.bar span{background:#8b5cf6}\n"
+        ".agent td.bar span{background:#3b82f6}\n"
+        ".reviewer td.bar span{background:#f59e0b}\n"
+        ".subagent td.bar span{background:#10b981}\n"
+        "</style>\n<h1>Timeline</h1>\n"
+        f"<p>{len(lanes)} Lanes · {html.escape(stamp_ms(t0))} bis {html.escape(stamp_ms(t1))}</p>\n"
+        "<table><thead><tr><th>Lane</th><th>Ticket</th><th>Start</th><th>Ende</th><th>Dauer</th>"
+        "<th>Status</th><th>Parent</th><th>Kosten</th><th>Verlauf</th></tr></thead><tbody>\n"
+        + "\n".join(rows) + "\n</tbody></table>\n</html>\n")
+
+
+def cmd_timeline(a):
+    if a.ticket:
+        read(a.ticket)  # an unknown id dies here, with the same message as everywhere else
+    report = build_timeline(a.ticket, a.since)
+    path = ""
+    if a.write:
+        os.makedirs(os.path.dirname(TIMELINE_HTML), exist_ok=True)
+        tmp = TIMELINE_HTML + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(timeline_html(report))
+        os.replace(tmp, TIMELINE_HTML)
+        path = TIMELINE_HTML
+    if a.json:
+        print(json.dumps(report, ensure_ascii=False))
+        if path:
+            sys.stderr.write(f"{path}\n")
+        return
+    for l in report["lanes"]:
+        minutes = max(0.0, ((l["end"] or report["now"]) - (l["start"] or report["now"])) / 60000)
+        print(f"{stamp_ms(l['start'])}–{stamp_ms(l['end'])}  {dur(minutes):>8}  "
+              f"{l['ticket'] or '—':<40} {l['label']:<22} {l['status'] or '—':<9} {l['parent'] or '—'}")
+    if path:
+        print(path)
 
 
 def main():
@@ -3624,6 +3993,12 @@ def main():
     stt.add_argument("--json", action="store_true")
     stt.add_argument("--days", type=int, default=14, metavar="N")
     stt.set_defaults(fn=cmd_stats)
+    tml = sub.add_parser("timeline")
+    tml.add_argument("--json", action="store_true")
+    tml.add_argument("--since", default="all", metavar="24h|7d|all")
+    tml.add_argument("--ticket", default="", metavar="ID")
+    tml.add_argument("--write", action="store_true", help="auch data/orchestra/timeline.html schreiben")
+    tml.set_defaults(fn=cmd_timeline)
     a = p.parse_args()
     a.fn(a)
 
