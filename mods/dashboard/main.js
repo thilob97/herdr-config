@@ -1317,7 +1317,8 @@ export default class Dashboard extends View {
     const tip = ["Heute: Kalendertag aller Sitzungen (omp meldet keinen Space)",
       `Team offen: offene Tickets + Orchestrator der gewählten Spaces / Team-Budget`,
       ...(this.overlay() || this.pick().mode === space.ALL
-        ? ["", ...parts.map((p) => `${p.name}: ${usd(p.cost)}`), ...(orch ? [`Orchestrator: ${usd(orch)}`] : [])]
+        ? ["", ...parts.map((p) => `${p.name}: ${usd(p.cost)}`),
+          ...(orch ? [`${parts.length > 1 ? "Orchestratoren" : "Orchestrator"}: ${usd(orch)}`] : [])]
         : [])].join("\n");
     return ui.card(t, "dash-costs").w(210).p(8).gap(3).cursor_pointer().hover((s) => s.bg(t.hover))
       .tooltip(tip)
