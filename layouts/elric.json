@@ -189,6 +189,13 @@
                               "content": {
                                 "mod": "orchestra"
                               }
+                            },
+                            {
+                              "id": "board",
+                              "type": "block",
+                              "content": {
+                                "mod": "board"
+                              }
                             }
                           ],
                           "active": "filetree"
