@@ -223,11 +223,57 @@ export function isOrchestrator(t) {
 }
 
 const pathKey = (p) => String(p ?? "").replace(/\\/g, "/").replace(/\/+$/, "");
+const inside = (path, dir) => path === dir || path.startsWith(dir.endsWith("/") ? dir : `${dir}/`);
+
+/** Der Workspace eines Tickets, wie `mods/dashboard/spaces.js` (dort die Quelle der
+ *  Wahrheit): `space` samt `space_name`, sonst der Space, dessen Ordner sein `repo`
+ *  enthält; "" heißt „ohne Workspace". */
+export function ticketWorkspace(tk) {
+  const sid = String(tk?.space ?? "").trim();
+  if (sid && String(tk?.space_name ?? "").trim()) return sid;
+  const repo = pathKey(tk?.repo);
+  if (!repo) return "";
+  const hits = spaces().filter((s) => s.folder && inside(repo, pathKey(s.folder))
+    && (!tk.machine || s.machine === tk.machine));
+  return hits.sort((x, y) => pathKey(y.folder).length - pathKey(x.folder).length)[0]?.id ?? "";
+}
+
+/** Die Space-ID, zu der ein Space gehört. Ein Agent-Space ist der Wegwerf-Space eines
+ *  Tickets: sein `agent_space` (ältere Auslieferungen: ein Terminal mit `hub.ticket`)
+ *  nennt das Ticket, dessen Workspace gilt. Jeder andere Space ist sein eigener. Ein
+ *  Space, den ein Ticket als Workspace nennt, bleibt Workspace — wie `hub spaces`. */
+export function workspaceId(sid) {
+  const id = String(sid ?? "").trim();
+  if (!id) return "";
+  const tks = shared("orchestra.tickets") ?? [];
+  if (tks.some((t) => String(t.space ?? "").trim() === id && String(t.space_name ?? "").trim())) return id;
+  const mine = tks.find((t) => String(t.agent_space ?? "").trim() === id);
+  if (mine) {
+    const ws = ticketWorkspace(mine);
+    if (ws && ws !== id) return ws;
+  }
+  for (const x of terminals()) {
+    if ((x.space ?? x.labels?.["herdr.space"]) !== id) continue;
+    const tk = tks.find((t) => t.id === x.labels?.["hub.ticket"]);
+    const ws = tk ? ticketWorkspace(tk) : "";
+    if (ws && ws !== id) return ws;
+  }
+  return id;
+}
+
+/** Der Workspace eines Agenten: der seines Tickets — auch eines erledigten —, sonst
+ *  der seines Herdr-Space; "" ohne beides. */
+export function agentWorkspace(a) {
+  const tks = shared("orchestra.tickets") ?? [];
+  const tk = tks.find((t) => t?.terminal && t.terminal === a?.address);
+  return (tk ? ticketWorkspace(tk) : "") || workspaceId(a?.space ?? a?.space_id ?? "");
+}
 
 /** Gehört das Ticket zur Fabrik des aktiven Workspace?
  *  - ohne aktiven Space: ja (dann gibt es nichts zu filtern),
  *  - ohne `space`: Altbestand, bleibt sichtbar,
- *  - mit `space` und `space_name`: nur der eigene Workspace,
+ *  - im eigenen Workspace: ja (ein Agent-Space zählt als der Workspace seines Tickets),
+ *  - mit `space_name`: eine andere Fabrik,
  *  - altes `space` ohne `space_name` (damals der Agent-Space): über `repo` im Space-Ordner.
  *  So zeigt keine Liste fremde Fabriken, und nichts Altes fällt still heraus. */
 export function inScope(tk) {
@@ -235,10 +281,10 @@ export function inScope(tk) {
   if (!sp || !tk) return true;
   const sid = String(tk.space ?? "").trim();
   if (!sid) return true;
-  if (sid === sp.id) return true;
+  if (workspaceId(sid) === workspaceId(sp.id)) return true;
   if (String(tk.space_name ?? "").trim()) return false;
   const repo = pathKey(tk.repo), folder = pathKey(sp.folder);
-  return !repo || !folder ? true : repo === folder || repo.startsWith(`${folder}/`);
+  return !repo || !folder ? true : inside(repo, folder);
 }
 
 /** Ruhiger Bereichs-Chip im Kopf: „<Space-Name>“, Tooltip „Fabrik dieses Workspace“.

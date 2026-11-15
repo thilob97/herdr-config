@@ -213,7 +213,8 @@ export default class Launcher extends View {
         // Until a ticket exists, the Inbox says the order is with the orchestrator (B, optional gap).
         const list = shared("quests.pending") ?? [];
         setShared("quests.pending", [...list.slice(-4),
-          { key: `auftrag:${Date.now()}`, id: "", url: "", source: "text", title: text.split("\n")[0].slice(0, 80), at: Date.now() }]);
+          { key: `auftrag:${Date.now()}`, id: "", url: "", source: "text", title: text.split("\n")[0].slice(0, 80), at: Date.now(),
+            space: ui.workspaceId(this.space()?.id ?? "") }]);
         notify({ title: "Auftrag an das Team", body: text.split("\n")[0].slice(0, 200), level: "success", timeout: 6000, action: { name: "tabs-graph.panel-team" } });
       }
     });

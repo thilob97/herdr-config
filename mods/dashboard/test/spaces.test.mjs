@@ -204,6 +204,34 @@ test("Orchestrator-Kosten je Space, mit einer Zahl als Rückfall", () => {
   assert.equal(orchestratorCost(null), 0);
 });
 
+test("ein Orchestrator ohne Space-Label zählt für den eigenen Workspace", () => {
+  const rows = [
+    { id: "spa", name: "Alpha", kind: "workspace", cost_open: 2 },
+    { id: "spb", name: "Beta", kind: "workspace", cost_open: 5 },
+  ];
+  const own = costSplit(rows, { ids: new Set(["spa"]), ownId: "spa", orchestrators: { "": 1.5 } });
+  assert.equal(own.orch, 1.5, "die Zeile \"\" gehört dem eigenen Space (wie der alte eine Wert)");
+  assert.equal(own.team, 3.5);
+  assert.deepEqual(own.orchParts, [{ name: "Alpha", cost: 1.5 }]);
+  // Ein fremder Space übernimmt die ungelabelte Zeile nicht.
+  assert.equal(costSplit(rows, { ids: new Set(["spb"]), ownId: "spa", orchestrators: { "": 1.5 } }).orch, 0);
+  // "Alle" zählt sie einmal, nicht je Space.
+  assert.equal(costSplit(rows, { all: true, ids: new Set(), ownId: "spa", orchestrators: { "": 1.5 } }).orch, 1.5);
+});
+
+test("der Tooltip nennt je Space mit Orchestrator-Kosten seinen Anteil", () => {
+  const rows = [
+    { id: "spa", name: "Alpha", cost_open: 2 },
+    { id: "spb", name: "Beta", cost_open: 0 },
+    { id: "spc", name: "Gamma", cost_open: 0 },
+  ];
+  const out = costSplit(rows, { all: true, ids: new Set(), ownId: "spa", orchestrators: { spa: 0.3, spb: 0.2, spc: 0 } });
+  assert.deepEqual(out.orchParts, [{ name: "Alpha", cost: 0.3 }, { name: "Beta", cost: 0.2 }]);
+  assert.equal(out.orch, 0.5);
+  // Ein altes costs.json ohne Aufteilung bleibt eine Zeile (keine Anteile).
+  assert.deepEqual(costSplit(rows, { all: true, ids: new Set(), ownId: "spa", orchestrator: 1.5 }).orchParts, []);
+});
+
 test("Workspaces-Zeile zeigt offen, der Tooltip die Gesamtkosten", () => {
   const row = { id: "spa", cost: 7, cost_open: 2 };
   assert.equal(openCost(row), 2);

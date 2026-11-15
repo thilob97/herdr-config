@@ -57,11 +57,17 @@ function diffRows(lines) {
   });
 }
 
-// Tells the orchestrator (if it runs); a blocked one waits on a question, so --force.
-async function tellOrchestrator(text) {
-  const o = terminals().find((x) => x.name === ORCH && x.state === "live");
+// Tells the orchestrator of the ticket's factory (if it runs); a blocked one waits on a
+// question, so --force. The terminal address is the destination, never the shared name:
+// several spaces name their orchestrator "orchestrator".
+async function tellOrchestrator(text, space) {
+  const own = ui.workspaceId(space ?? "");
+  const live = terminals().filter((x) => x.name === ORCH && x.state === "live");
+  const o = own
+    ? live.find((x) => ui.workspaceId(x.labels?.["hub.space"] || x.labels?.["herdr.space"] || "") === own)
+    : live[0];
   if (!o) return false;
-  const r = await hc(["send", ORCH, text, ...(o.status === "blocked" ? ["--force"] : [])]);
+  const r = await hc(["send", o.address, text, ...(o.status === "blocked" ? ["--force"] : [])]);
   if (r.code !== 0) throw new Error(lastLine(r));
   return true;
 }
@@ -390,7 +396,7 @@ export default class Review extends View {
         const err = errorText(lastLine(r));
         if (/merge conflict/.test(err)) {
           await hub(["ticket", "set", tk.id, "status=doing"]);
-          const told = await tellOrchestrator(`Merge-Konflikt bei Ticket ${tk.id} „${tk.title}“: ${err}. Lass den Agent rebasen, prüfe erneut und gib es wieder zum Review.`);
+          const told = await tellOrchestrator(`Merge-Konflikt bei Ticket ${tk.id} „${tk.title}“: ${err}. Lass den Agent rebasen, prüfe erneut und gib es wieder zum Review.`, tk.space);
           this.settled = true;
           return told ? "Merge-Konflikt: an den Orchestrator zurückgegeben (Rebase)" : "Merge-Konflikt: Ticket zurück auf „in Arbeit“; der Orchestrator läuft nicht";
         }
@@ -398,7 +404,7 @@ export default class Review extends View {
       }
       const out = JSON.parse(r.stdout.trim().split("\n").pop());
       this.settled = true;
-      await tellOrchestrator(`Ticket ${tk.id} „${tk.title}“ wurde abgenommen und ${out.merged ? `gemergt (${out.merged})` : `als Pull Request eingereicht: ${out.pr}`}. Agent und Worktree sind aufgeräumt.`).catch(() => false);
+      await tellOrchestrator(`Ticket ${tk.id} „${tk.title}“ wurde abgenommen und ${out.merged ? `gemergt (${out.merged})` : `als Pull Request eingereicht: ${out.pr}`}. Agent und Worktree sind aufgeräumt.`, tk.space).catch(() => false);
       return out.pr ? `PR erstellt: ${out.pr}` : `Gemergt: ${out.merged}`;
     });
   }
@@ -409,7 +415,7 @@ export default class Review extends View {
     this.act(cx, "accept", async () => {
       await hub(["done", tk.id]);
       this.settled = true;
-      await tellOrchestrator(`Ticket ${tk.id} „${tk.title}“ wurde vom Menschen abgenommen (ohne Merge).`).catch(() => false);
+      await tellOrchestrator(`Ticket ${tk.id} „${tk.title}“ wurde vom Menschen abgenommen (ohne Merge).`, tk.space).catch(() => false);
       return "Abgenommen (ohne Merge; Branch und Worktree bleiben)";
     });
   }
@@ -439,7 +445,7 @@ export default class Review extends View {
     const tk = this.ticket(), text = this.changesInput.value().trim();
     if (!tk || !text) return;
     this.act(cx, "changes", async () => {
-      if (!(await tellOrchestrator(`Feedback vom Menschen zu Ticket ${tk.id} „${tk.title}“: ${text}`))) throw new Error("Der Orchestrator läuft nicht (Team-Panel: Starten).");
+      if (!(await tellOrchestrator(`Feedback vom Menschen zu Ticket ${tk.id} „${tk.title}“: ${text}`, tk.space))) throw new Error("Der Orchestrator läuft nicht (Team-Panel: Starten).");
       await hub(["ticket", "set", tk.id, "status=doing"]);
       this.changesInput.set_value("");
       this.asking = false;

@@ -809,14 +809,14 @@ export default class Dashboard extends View {
     cx.notify();
     cx.spawn(async (cx) => {
       try {
-        const r = await hc(["send", ORCH, text, ...(o.status === "blocked" ? ["--force"] : [])]);
+        const r = await hc(["send", o.address, text, ...(o.status === "blocked" ? ["--force"] : [])]);
         if (r.code !== 0) throw new Error(errorLine(r));
         this.order.set_value("");
         this.note = { ok: true, text: "Auftrag ist beim Orchestrator." };
         // As the Auftrag dialog does: until a ticket exists, the Inbox shows it is under way.
         const list = shared("quests.pending") ?? [];
         setShared("quests.pending", [...list.slice(-4),
-          { key: `auftrag:${Date.now()}`, id: "", url: "", source: "text", title: text.split("\n")[0].slice(0, 80), at: Date.now() }]);
+          { key: `auftrag:${Date.now()}`, id: "", url: "", source: "text", title: text.split("\n")[0].slice(0, 80), at: Date.now(), space: this.ownSpaceId() }]);
       } catch (err) { this.note = { ok: false, text: errorText(err) }; }
       this.sending = false;
       this.handle.focus();
@@ -867,7 +867,7 @@ export default class Dashboard extends View {
     const agent = shared("orchestra.agent") ?? "omp";
     const r = await exec(HUB(), ["orchestrator", "start", "--agent", agent, ...(sid ? ["--space", sid] : [])], { timeout: 60000 });
     if (r.code !== 0) throw new Error(errorLine(r));
-    setShared("orchestra.autostart", true);
+    setShared(`orchestra.autostart.${sid ?? ""}`, true);
     try { return JSON.parse(r.stdout || "{}"); } catch { return {}; }
   }
 
@@ -1303,7 +1303,7 @@ export default class Dashboard extends View {
   // are sums and the tooltip names each space. A click opens the Team panel.
   costsCard(t) {
     const c = this.costs();
-    const { team, parts, orch } = this.costSplit();
+    const { team, parts, orch, orchParts } = this.costSplit();
     const budget = this.teamBudget();
     const over = budget != null && team > budget;
     const pct = budget > 0 ? Math.min(100, Math.max(0, (team / budget) * 100)) : 0;
@@ -1318,7 +1318,10 @@ export default class Dashboard extends View {
       `Team offen: offene Tickets + Orchestrator der gewählten Spaces / Team-Budget`,
       ...(this.overlay() || this.pick().mode === space.ALL
         ? ["", ...parts.map((p) => `${p.name}: ${usd(p.cost)}`),
-          ...(orch ? [`${parts.length > 1 ? "Orchestratoren" : "Orchestrator"}: ${usd(orch)}`] : [])]
+          ...(orch
+            ? [`${(orchParts?.length ?? 0) > 1 ? "Orchestratoren" : "Orchestrator"}: ${usd(orch)}`,
+              ...(orchParts ?? []).map((p) => `  ${p.name}: ${usd(p.cost)}`)]
+            : [])]
         : [])].join("\n");
     return ui.card(t, "dash-costs").w(210).p(8).gap(3).cursor_pointer().hover((s) => s.bg(t.hover))
       .tooltip(tip)
