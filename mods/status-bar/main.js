@@ -8,7 +8,7 @@ import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, HoverCard } from "gpui-base";
 import { spaces, agents, terminals, theme, run, window, keys, exec, machines, appHome, readTextFile, shared, setShared, nextCommand, notify, focused, playSound } from "herdr";
 // Costs in one format everywhere (B9, same copy as in mods/orchestra/ui.js).
-import { usd, calm, activeSpace, inScope } from "./ui.js";
+import { usd, calm, activeSpace, inScope, isOrchestrator } from "./ui.js";
 
 // Tokens (docs/ui-spec.md, 5).
 const GAP_XS = 4, GAP_S = 6, GAP_M = 8, GAP_L = 12, GAP_XL = 16;
@@ -37,10 +37,10 @@ function until(ms) {
   return d >= 2 ? `${d} T` : d ? `${d} T ${h} h` : h ? `${h}:${String(m).padStart(2, "0")} h` : `${m} min`;
 }
 
-// Ist im Workspace ein Orchestrator live? Labels wie `hub orchestrator start` sie setzt.
+// Ist im Workspace ein Orchestrator live? Label oder Name, siehe `ui.isOrchestrator`.
 const orchestratorHere = (id) => !id || terminals().some((x) => x.state === "live"
   && (x.labels?.["hub.space"] === id || x.labels?.["herdr.space"] === id)
-  && (x.labels?.["hub.role"] === "orchestrator" || x.name === "orchestrator"));
+  && isOrchestrator(x));
 
 // Team spend against the team budget, for the factory of this window's workspace: its open
 // tickets plus its orchestrator. `total` counts the whole home, for the tooltip. The

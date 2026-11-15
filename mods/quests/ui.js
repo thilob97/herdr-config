@@ -210,6 +210,18 @@ export function activeSpace() {
   return s ? { id: s.id, name: s.name ?? "", folder: s.folder ?? "", machine: s.machine ?? null } : null;
 }
 
+// ---------- Fabrik (Orchestrator) ----------
+
+/** Ist dieses Terminal ein Orchestrator? Das Label `hub.role=orchestrator` (so setzt
+ *  `hub orchestrator start` es), sonst der Name `orchestrator` oder
+ *  `orchestrator-<space>` — dieselbe Regel wie `hub` (`is_orchestrator`) für `hc ls`. */
+export function isOrchestrator(t) {
+  if (!t) return false;
+  if (t.labels?.["hub.role"] === "orchestrator") return true;
+  const name = String(t.name ?? "");
+  return name === "orchestrator" || name.startsWith("orchestrator-");
+}
+
 const pathKey = (p) => String(p ?? "").replace(/\\/g, "/").replace(/\/+$/, "");
 
 /** Gehört das Ticket zur Fabrik des aktiven Workspace?

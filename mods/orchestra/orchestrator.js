@@ -3,6 +3,7 @@
 // copied from mods/orchestra/orchestrator.md, labels hub.role=orchestrator and
 // hub.space=<space id>), so the app and the command line take the same path.
 import { terminals, exec, hc, appHome, spaces, focused, shared, setShared } from "herdr";
+import { isOrchestrator } from "./ui.js";
 
 export const NAME = "orchestrator";
 export const agentKey = () => shared("orchestra.agent") ?? "omp";
@@ -15,19 +16,17 @@ export function spaceId() {
 /** The orchestrator of the current space — never another factory's. */
 export const find = () => {
   const sid = spaceId();
-  const live = terminals().filter((x) => x.state === "live");
-  const role = (x) => x.labels?.["hub.role"] === "orchestrator" || x.name === NAME;
-  if (sid) return live.find((x) => (x.labels?.["hub.space"] === sid || x.labels?.["herdr.space"] === sid) && role(x)) ?? null;
+  const live = terminals().filter((x) => x.state === "live" && isOrchestrator(x));
+  if (sid) return live.find((x) => x.labels?.["hub.space"] === sid || x.labels?.["herdr.space"] === sid) ?? null;
   // A home without space labels keeps the one orchestrator it has.
-  return live.find((x) => !x.labels?.["hub.space"] && role(x)) ?? null;
+  return live.find((x) => !x.labels?.["hub.space"]) ?? null;
 };
 
 /** Every live orchestrator, at most one per space. A home without space labels keeps
  *  its one orchestrator under `spaceId` "". */
 export function all() {
-  const role = (x) => x.labels?.["hub.role"] === "orchestrator" || x.name === NAME;
   const seen = new Set(), out = [];
-  for (const x of terminals().filter((t) => t.state === "live" && role(t))) {
+  for (const x of terminals().filter((t) => t.state === "live" && isOrchestrator(t))) {
     const sid = x.labels?.["hub.space"] || x.labels?.["herdr.space"] || "";
     if (seen.has(sid)) continue;
     seen.add(sid);

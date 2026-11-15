@@ -69,7 +69,7 @@ Die Oberfläche folgt einer Fabrik: **Eingang** (Auftrag-Dialog, Quests) → **S
 
 **Auftrag** (`cmd-shift-n` oder Knopf **Auftrag** in der Tab-Leiste) ist der einzige Eingang für neue Arbeit, ein Dialog mit zwei Modi (Umschalter oben; Standard „Ans Team“, wenn ein Orchestrator läuft):
 
-- **Ans Team:** ein Textfeld, **An das Team** schickt es an den Orchestrator (`hc send orchestrator`; wartet er auf eine Antwort, mit `--force`). Läuft keiner, steht dort ein Hinweis aufs Team-Panel.
+- **Ans Team:** ein Textfeld, **An das Team** schickt es an den Orchestrator **dieses Workspace** per Adresse — die Adresse nennt `hub orchestrator list --json` (`terminal`); wartet er auf eine Antwort, mit `--force`. `hc send orchestrator` per Name trifft in einem Haus mit mehreren Fabriken den falschen. Läuft keiner, steht dort ein Hinweis aufs Team-Panel.
 - **Selbst starten:** Vorlage, Space (bestimmt Maschine und Ordner), ein oder mehrere Agents (mehrere = je einer pro Agent, parallel), wo: neuer Tab im Space oder je ein eigener Git-Worktree unter `~/.herdr/worktrees/<repo>/` mit eigenem Space (bei mehreren Agents bekommt der Branch `-<agent>` angehängt). Tab-Name und erste Nachricht sind vorbelegt; `{folder}`, `{branch}`, `{branchnote}` und `{space}` werden beim Start ersetzt. Gestartet wird über `herdr-app do tab.new|space.new`. „Als Team beobachten“ legt aus den gestarteten Agents ein Team an.
 
 Aufrufe mit Ticket (aus Quests): `openOverlay({ mod: "launcher", kind: "dialog", width: 860, height: 680, props: { mode: "team" | "self", ticket } })` füllt Text, Tab-Namen und Branch vor. Was daraus gestartet wird, gibt der Dialog über `shared("quests.handover")` an Quests zurück (siehe Quests).
