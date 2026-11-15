@@ -17,13 +17,15 @@ import { View, div } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
 import { exec, appHome, readTextFile, shared, theme, layout, run, notify, nextCommand, openOverlay, settings } from "herdr";
 import * as ui from "./ui.js";
-import { T_XS, T_S, GAP_S, GAP_M, INSET_PANEL, H_SECTION, usd, at } from "./ui.js";
+import { T_XS, T_S, GAP_S, GAP_M, INSET_PANEL, H_SECTION, H_ROW, usd, at } from "./ui.js";
 import { STAGES, stageOf, stageColor, ticketCard, blockersOf } from "./card.js";
 
 const HUB = () => `${appHome()}/mods/orchestra/bin/hub`;
 const REFRESH = 5000, GATE_REFRESH = 15000, COST_REFRESH = 30000, WIP_REFRESH = 30000;
 // `hub wip --json` owns the limits (data/orchestra/wip.json); these are its defaults.
 const WIP_DEFAULT = { arbeit: 3, pruefung: 2 };
+// Fertig bleibt eine Spalte, keine Liste: die letzten Abnahmen stehen, der Rest klappt zu.
+const DONE_SHOW = 5;
 const errorText = (e) => String(e?.message ?? e ?? "fehlgeschlagen").replace(/^Error: /, "");
 
 function find(node, id) {
@@ -50,6 +52,8 @@ export default class Board extends View {
     this.hovered = null;
     this.reveal = null;
     this.width = 0;
+    // Auf-/Zuklappen gilt für die Sitzung (localStorage), nicht für ein Ticket.
+    try { this.doneAll = localStorage.getItem("doneAll") === "1"; } catch { this.doneAll = false; }
     this.loaded = false;
     this.note = null;
     this.readingT = false;
@@ -231,9 +235,24 @@ export default class Board extends View {
 
   flat(by) { return STAGES.flatMap((s) => by[s.key]); }
 
+  /** Karten, die im eingeklappten Fertig verborgen sind (alle außer den fünf jüngsten). */
+  foldedDone(id) {
+    if (this.doneAll) return false;
+    const done = this.columns().done;
+    return done.length > DONE_SHOW && done.slice(0, -DONE_SHOW).some((tk) => tk.id === id);
+  }
+
+  toggleDone(cx) {
+    this.doneAll = !this.doneAll;
+    try { localStorage.setItem("doneAll", this.doneAll ? "1" : "0"); } catch {}
+    cx.notify();
+  }
+
   pick(list, i, cx) {
     if (!list.length) return;
     this.selected = list[(i + list.length) % list.length].id;
+    // Die Tastatur erreicht jedes Ticket; ein verborgenes klappt die Spalte auf.
+    if (this.foldedDone(this.selected)) this.toggleDone(cx);
     this.reveal = this.selected;
     this.handle.focus();
     cx.notify();
@@ -275,7 +294,7 @@ export default class Board extends View {
     });
   }
 
-  column(t, key, list, { grow }) {
+  column(t, key, list, { grow, onToggle }) {
     const s = STAGES.find((x) => x.key === key);
     const sum = list.reduce((n, tk) => n + this.spentOf(tk), 0);
     // WIP: the head carries `n/limit`; a full stage dims its name and turns the count
@@ -286,15 +305,25 @@ export default class Board extends View {
     const countTip = limit == null ? `${list.length} Tickets`
       : full ? `WIP-Limit ${limit}: voll — hub dispatch startet nichts Neues (hub wip ${key === "doing" ? "arbeit" : "pruefung"}=${limit + 1})`
         : `${list.length} von ${limit} (WIP-Limit)`;
+    // Fertig zeigt die fünf jüngsten nach `status_at` (sortCards: älteste zuerst, also
+    // die letzten fünf); darunter klappt eine Zeile den Rest auf. Der Kopf zählt weiter alle.
+    const folded = key === "done" && list.length > DONE_SHOW && !this.doneAll;
+    const shown = folded ? list.slice(-DONE_SHOW) : list;
     const body = v_flex().id(`col-${key}-body`).gap(GAP_S).px(GAP_S).pb(GAP_S);
     if (grow) body.flex_1().min_h(0).overflow_y_scrollbar().track_scroll(this.scrolls[key]);
     if (!list.length) body.child(ui.empty(t, s.empty, { row: true }));
     else {
       let n = 0;
-      for (const tk of list) {
+      for (const tk of shown) {
         if (grow && this.reveal === tk.id) { this.scrolls[key].scroll_to_item(n); this.reveal = null; }
         body.child(this.card(t, tk));
         n++;
+      }
+      if (key === "done" && list.length > DONE_SHOW) {
+        const rest = list.length - DONE_SHOW;
+        body.child(div().id("col-done-more").h(H_ROW).flex_none().px(GAP_S).flex().items_center()
+          .child(ui.link(t, "board-done-more", folded ? `+${rest} ältere anzeigen` : `−${rest} ältere ausblenden`,
+            () => onToggle(), { tip: folded ? "alle Abnahmen dieser Sitzung zeigen" : "auf die fünf jüngsten zurück" })));
       }
     }
     return v_flex().id(`col-${key}`).min_w(0).rounded(8).bg(t.background).border_1().border_color(t.border)
@@ -339,16 +368,16 @@ export default class Board extends View {
       .text_color(this.note.ok === false ? t.blocked : this.note.ok ? t.muted : t.dim)
       .tooltip(this.note.text).child(this.note.text));
     right.push(div().id("board-total").flex_none().text_size(T_XS).text_color(t.muted)
-      .tooltip("Offene Tickets · Kostensumme aller Karten").child(`${open} offen · Σ ${usd(total)}`));
+      .tooltip("Offene Tickets · Kostensumme aller Karten im Board").child(`${open} offen · Σ ${usd(total)} gesamt`));
 
     let body;
     if (mode === "4") {
       body = h_flex().id("board-cols").flex_1().min_h(0).items_stretch().p(INSET_PANEL).gap(GAP_M)
-        .children(STAGES.map((s) => this.column(t, s.key, by[s.key], { grow: true })));
+        .children(STAGES.map((s) => this.column(t, s.key, by[s.key], { grow: true, onToggle: () => this.toggleDone(cx) })));
     } else if (mode === "2") {
       const row = (a, b) => h_flex().flex_1().min_h(0).items_stretch().gap(GAP_M)
-        .child(this.column(t, a, by[a], { grow: true }))
-        .child(this.column(t, b, by[b], { grow: true }));
+        .child(this.column(t, a, by[a], { grow: true, onToggle: () => this.toggleDone(cx) }))
+        .child(this.column(t, b, by[b], { grow: true, onToggle: () => this.toggleDone(cx) }));
       body = v_flex().id("board-grid").flex_1().min_h(0).p(INSET_PANEL).gap(GAP_M)
         .child(row("todo", "doing")).child(row("review", "done"));
     } else {
@@ -356,7 +385,7 @@ export default class Board extends View {
       if (this.reveal) { this.outer.scroll_to_item(Math.max(0, at0)); this.reveal = null; }
       body = v_flex().id("board-stack").flex_1().min_h(0).overflow_y_scrollbar().track_scroll(this.outer)
         .p(INSET_PANEL).gap(GAP_M)
-        .children(STAGES.map((s) => this.column(t, s.key, by[s.key], { grow: false })));
+        .children(STAGES.map((s) => this.column(t, s.key, by[s.key], { grow: false, onToggle: () => this.toggleDone(cx) })));
     }
 
     return v_flex().id("board").track_focus(this.handle).size_full().min_h(0).rounded(10).overflow_hidden()

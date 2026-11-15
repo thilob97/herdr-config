@@ -459,18 +459,19 @@ export default class Timeline extends View {
   eventMark(t, ev, slot) {
     if (!this.inView(ev.at)) return null;
     const map = {
-      dispatch: { glyph: "▲", word: "Dispatch", color: t.accent },
-      check: { glyph: "✓", word: "Prüfung", color: t.working },
-      verdict: { glyph: "◆", word: "Urteil", color: t.done },
-      ci: { glyph: "●", word: "CI", color: t.working },
-      land: { glyph: "→", word: "Landen", color: t.done },
-      other: { glyph: "·", word: "Ereignis", color: t.dim },
-    }[ev.kind] ?? { glyph: "·", word: "Ereignis", color: t.dim };
+      dispatch: { word: "Dispatch", color: t.accent },
+      check: { word: "Prüfung", color: t.working },
+      verdict: { word: "Urteil", color: t.done },
+      ci: { word: "CI", color: t.working },
+      land: { word: "Landen", color: t.done },
+      other: { word: "Ereignis", color: t.dim },
+    }[ev.kind] ?? { word: "Ereignis", color: t.dim };
     const tip = `${clock(ev.at)} · ${map.word}${ev.text ? ` · ${ev.text}` : ""}`;
-    const mark = div().absolute().left(`${this.pct(ev.at)}%`).top(1 + slot * 9).size(10).flex_none()
-      .flex().items_center().justify_center().rounded(3).bg(t.background)
-      .border_1().border_color(map.color).text_size(9).text_color(map.color)
-      .cursor_pointer().tooltip(tip).child(map.glyph);
+    // 6 px an der Unterkante der Zeile, unter dem Balken: das Ereignis markiert die Zeit,
+    // ohne den Balken zu verdecken. Die Art trägt die Farbe, der Tooltip den Rest.
+    const mark = div().absolute().left(`${this.pct(ev.at)}%`).bottom(1 + slot * 7).size(6).flex_none()
+      .rounded(2).bg(map.color)
+      .cursor_pointer().tooltip(tip);
     return ev.ticket ? mark.on_click((_e, cx) => { cx.stop_propagation(); this.openReview(ev.ticket); }) : mark;
   }
 
@@ -479,7 +480,7 @@ export default class Timeline extends View {
     if (!this.inView(s.started)) return null;
     const ended = s.ended != null;
     const tip = `${s.title} · ${durText((s.ended ?? now) - (s.started ?? now))}${ended ? "" : " · läuft"}`;
-    return div().absolute().left(`${this.pct(s.started)}%`).top(31).size(6).flex_none().rounded_full()
+    return div().absolute().left(`${this.pct(s.started)}%`).bottom(1).size(6).flex_none().rounded_full()
       .bg(ended ? t.done : t.working).opacity(ended ? 0.7 : 1).tooltip(tip);
   }
 
@@ -494,8 +495,12 @@ export default class Timeline extends View {
     // markiert den Schnitt; der Tooltip nennt den echten Start.
     const clipStart = this.viewStart();
     const clipped = lane.start < clipStart - 1;
-    const top = thin ? 10 : 12, h = thin ? 4 : 18;
-    // In einem 4-px-Balken wäre der Text nur ein Stummel; der Tooltip trägt ihn.
+    // Beide Balken sind 10 px hoch: ein 10-Minuten-Lauf bleibt so ein Balken, kein
+    // Punktmuster. Unter dem Balken bleibt Platz für die Ereignis-Marker an der Unterkante.
+    const top = thin ? 3 : 8, h = 10;
+    // Ein Rand erst ab 2 % Breite; darunter wirkt er als Kästchen um einen Stummel.
+    const wide = right - left >= 2;
+    // Unter 28 px wäre der Text ein Stummel; der Tooltip trägt ihn.
     const showLabel = !thin && ((right - left) / 100) * this.chartPx() >= 28;
     const tip = [
       lane.label,
@@ -510,13 +515,14 @@ export default class Timeline extends View {
     return div().absolute().left(`${left}%`).top(top).h(h).w(`${Math.max(0, right - left)}%`).min_w(4)
       .when(live, (el) => el.child(div().absolute().inset_0().rounded_full().border_1().border_color(color)
         .loop("opacity", { from: 0.15, to: 1, period: 1400 })))
-      .child(div().absolute().inset_0().rounded_full().bg(color + "33").border_1().border_color(color + "88")
+      .child(div().absolute().inset_0().rounded_full().bg(color + "66")
+        .when(wide, (el) => el.border_1().border_color(color + "88"))
         .overflow_hidden().tooltip(tip).cursor_pointer()
         .on_click((_e, cx) => { cx.stop_propagation(); this.openTerminal(lane); })
         .when(showLabel, (el) => el.flex().items_center().px(clipped ? 12 : 6)
-          .child(div().min_w(0).truncate().text_size(T_XS).text_color(t.foreground).child(lane.label))))
+          .child(div().min_w(0).truncate().text_size(9).line_height(1).text_color(t.foreground).child(lane.label))))
       // Die Kappe sitzt über dem linken, abgeschnittenen Ende: ein „<" im Balken, bei
-      // Sub-Agent-Strichen (4 px) eine kurze Kante in der Statusfarbe.
+      // Sub-Agent-Balken eine kurze Kante in der Statusfarbe.
       .when(clipped, (el) => el.child(thin
         ? div().absolute().left(0).top(0).bottom(0).w(2).bg(color).tooltip(cutTip)
         : div().absolute().left(0).top(0).bottom(0).w(9).flex().items_center().justify_center()
