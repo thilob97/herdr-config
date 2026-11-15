@@ -388,5 +388,91 @@ class HubBugsTest(unittest.TestCase):
         self.assertIn(tid, [row["id"] for row in data["tickets"] if not row.get("invalid")])
 
 
+    # ---- 11: `memory --repo` names an existing, writable directory, never a traceback
+
+    def test_memory_add_on_a_missing_repo_reports_it_like_lesson(self):
+        r = self.hub("memory", "add", "--repo", "/nope", "kurz")
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(r.stderr.strip(), "hub: kein Repo: /nope")
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_memory_add_on_a_read_only_repo_is_refused(self):
+        if os.geteuid() == 0:
+            self.skipTest("root darf in jedes Verzeichnis schreiben")
+        folder = os.path.join(self.base, "read-only")
+        os.makedirs(folder)
+        os.chmod(folder, 0o555)
+        self.addCleanup(os.chmod, folder, 0o755)
+        r = self.hub("memory", "add", "--repo", folder, "kurz")
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(r.stderr.strip(), f"hub: kein Repo: {folder} (nicht schreibbar)")
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_memory_add_writes_into_a_writable_repo(self):
+        repo = self.repo()
+        r = self.hub("memory", "add", "--repo", repo, "kurz")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(os.path.join(repo, ".herdr", "memory.md"), encoding="utf-8") as f:
+            self.assertIn("· kurz", f.read())
+
+    # ---- 12: `ticket new --title` cannot be blank
+
+    def test_a_blank_title_creates_no_ticket(self):
+        repo = self.repo()
+        for title in ("", "   ", "\t"):
+            with self.subTest(title=title):
+                r = self.hub("ticket", "new", "--title", title, "--repo", repo)
+                self.assertEqual(r.returncode, 1)
+                self.assertIn("--title darf nicht leer sein", r.stderr)
+                self.assertNotIn("Traceback", r.stderr)
+        path = self.tickets_dir()
+        self.assertEqual(os.listdir(path) if os.path.isdir(path) else [], [])
+
+    # ---- 13: `status` shows only foreign owners; own, empty and `mensch` follow the spec
+
+    def test_status_owner_column_hides_own_and_shows_foreign(self):
+        repo = self.repo()
+        self.orchestrator("t2c")
+        own = self.ticket("Eigen", repo)
+        foreign = self.ticket("Fremd", repo)
+        self.assertEqual(self.hub("ticket", "set", foreign, "owner=t40").returncode, 0)
+        empty = self.ticket("Leer", repo)
+        self.assertEqual(self.hub("ticket", "set", empty, "owner=").returncode, 0)
+        human = self.ticket("Mensch", repo)
+        self.assertEqual(self.hub("ticket", "set", human, "owner=mensch").returncode, 0)
+        r = self.hub("status", "--all", env={"HC_TERMINAL_ID": "t2c"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        who = {line.split()[0]: line.split()[2] for line in r.stdout.splitlines()
+               if line.split() and line.split()[0] in (own, foreign, empty, human)}
+        self.assertEqual(who[own], "–", "das eigene Ticket nennt keinen Besitzer")
+        self.assertEqual(who[foreign], "t40", "ein fremder Orchestrator bleibt sichtbar")
+        self.assertEqual(who[empty], "–")
+        self.assertEqual(who[human], "mensch")
+
+    # ---- 14: a base that is neither a branch nor a commit warns, but is still stored
+
+    def test_an_unknown_base_warns_but_is_stored(self):
+        repo = self.repo()
+        tid = self.ticket("Basis", repo)
+        head = self.git("rev-parse", "HEAD", cwd=repo).stdout.strip()
+
+        r = self.hub("ticket", "set", tid, "base=unbekannt")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stderr.strip(), "Basis 'unbekannt' ist im Repo nicht bekannt")
+        self.assertEqual(self.meta_of(tid)["base"], "unbekannt", "der Wert wird trotzdem gesetzt")
+
+        r = self.hub("ticket", "set", tid, "base=main")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stderr, "")
+
+        r = self.hub("ticket", "set", tid, f"base={head}")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stderr, "", "ein Commit ist eine gültige Basis")
+
+        r = self.hub("ticket", "set", tid, "base=")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stderr, "", "eine leere Basis räumt nur ab")
+
+
 if __name__ == "__main__":
     unittest.main()

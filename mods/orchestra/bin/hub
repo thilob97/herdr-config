@@ -1300,29 +1300,45 @@ def memory_section(name):
     return "## Was du hier gelernt hast\n\n" + "\n".join(memory_line(x) for x in items)
 
 
-def memory_selector(a):
+def memory_selector(a, write=False):
+    """(path, label) for `--agent`/`--repo`; a repo path must exist and, for a write, be writable.
+
+    `hub memory add --repo /nope` used to reach `os.makedirs` and die with a traceback, so the
+    check happens here, before the lock: the same clear line `hub lesson` prints."""
     if a.agent:
         return memory_path_agent(a.agent), f"Agent {a.agent}"
     if a.repo:
-        return memory_path_repo(a.repo), f"Repo {a.repo}"
+        repo = os.path.abspath(os.path.expanduser(a.repo))
+        if not os.path.isdir(repo):
+            die(f"kein Repo: {a.repo}")
+        folder = os.path.join(repo, ".herdr")
+        if write and not os.access(folder if os.path.isdir(folder) else repo, os.W_OK):
+            die(f"kein Repo: {a.repo} (nicht schreibbar)")
+        return os.path.join(folder, "memory.md"), f"Repo {a.repo}"
     return None, ""
 
 
 def cmd_memory(a):
-    path, label = memory_selector(a)
+    path, label = memory_selector(a, write=a.mcmd in ("add", "clear"))
     if a.mcmd == "add":
         if not path:
             die("hub memory add braucht --agent NAME oder --repo PFAD")
-        with hub_lock():
-            item, cut = add_memory(path, a.ticket or "", " ".join(a.text))
+        try:
+            with hub_lock():
+                item, cut = add_memory(path, a.ticket or "", " ".join(a.text))
+        except OSError as e:
+            die(f"Gedächtnis nicht schreibbar: {path}: {e.strerror or e}")
         print(f"{label}: {len(read_memory(path))}/{MEMORY_MAX} Einträge ({path})")
         if cut:
             print(f"Hinweis: Text auf {MEMORY_TEXT_MAX} Zeichen gekürzt (mit „…“).")
         return
     if a.mcmd == "clear":
         if path:
-            with hub_lock():
-                write_memory(path, [])
+            try:
+                with hub_lock():
+                    write_memory(path, [])
+            except OSError as e:
+                die(f"Gedächtnis nicht schreibbar: {path}: {e.strerror or e}")
             print(f"{label}: geleert")
             return
         if os.path.isdir(MEMORY):
@@ -1947,6 +1963,8 @@ def cmd_night(a):
 # ---- commands
 
 def cmd_new(a):
+    if not (a.title or "").strip():
+        die("--title darf nicht leer sein")
     body = a.body
     if a.body_file:
         body = open(a.body_file, encoding="utf-8").read()
@@ -2264,7 +2282,14 @@ def cmd_agent_rm(a):
     print(f"Agent {cur['name']} gelöscht")
 
 
+def base_known(base, folder, on=None):
+    """True when `base` names a branch or commit in the ticket's repo (no fetch)."""
+    r = run(["git", "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}"], on, folder, check=False)
+    return r.returncode == 0
+
+
 def cmd_set(a):
+    unknown_base, folder, on = "", None, None
     with hub_lock():
         t = load(a.id)
         moved = None
@@ -2277,10 +2302,19 @@ def cmd_set(a):
             if k == "status":
                 moved = v
             else:
+                if k == "base":
+                    unknown_base = v.strip()
                 t[k] = v
         if moved is not None:
             set_status(t, moved)
         write(t)
+        if unknown_base:
+            on = t.get("machine") or None
+            folder = target_of(t, on)
+    # `base` may name a commit, so an unknown value is a warning, not an error. The git
+    # check runs after the lock: a slow remote repo must not block another hub command.
+    if unknown_base and folder and not base_known(unknown_base, folder, on):
+        print(f"Basis '{unknown_base}' ist im Repo nicht bekannt", file=sys.stderr)
 
 
 def is_live(address):
@@ -3658,8 +3692,9 @@ def cmd_status(a):
     for t in open:
         term = t.get("terminal", "")
         owner = (t.get("owner") or "").strip()
-        # The owner is only worth printing when it is not this orchestrator's own work.
-        who = "–" if owner in ("", "mensch", me) else owner
+        # Only a foreign owner is worth a column: this orchestrator's own work and
+        # ownerless old tickets read `–`; `mensch` stays visible as the person.
+        who = "–" if owner in ("", me) else owner
         ci = f"CI {CI_MARK.get(t.get('ci'), '–')}"
         cost = f"${per[t['id']]:.2f}" if t["id"] in per else "-"
         # Age since the last status change (tickets from before the log fall back to `updated`).
