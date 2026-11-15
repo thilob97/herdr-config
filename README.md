@@ -297,6 +297,18 @@ Feste Agents liegen versioniert in `agents/roster.json`: Name, Rolle, Programm, 
 
 Das Fenster **Team-Hub** (Knopf „Team-Hub“ in der Tab-Leiste, `⌘⌥9`, sonst `mod.open:teams`) zeigt die Agents als Karten mit Avatar in Agent-Farbe, Rolle, Programm/Modell, Repo sowie Einsätzen und Kosten; ein Klick zeigt die laufenden Tickets und startet auf Wunsch einen vorbelegten Auftrag. Anlegen, Bearbeiten und Löschen passieren im selben Fenster. `hub stats agents` zeigt Einsätze und Kosten je Roster-Agent.
 
+## Triage, Preflight, Stockt, Nachtschicht, Gedächtnis
+
+Fünf Kommandos, die den Fluss tragen (Ideen und Bewertung: `docs/features-20.md`):
+
+- **`hub triage <id> [--apply]`** erkennt Typ (bug/feature/chore), Größe (S/M/L) und Priorität (p1–p3) aus Titel und Text und ergänzt die Spec-Vorlage. Tickets mit `source` (GitHub, Asana, Trilium, Quests) brauchen `triaged`, sonst verweigert der Dispatch.
+- **`hub preflight <id>`** prüft die **Basis** (`base_head`) in einem temporären Worktree mit `.herdr/verify.sh`, bevor ein Agent startet. Fehlt der Preflight, holt `hub dispatch` ihn automatisch nach; rot verweigert den Start mit der Ausgabe.
+- **`hub stalls [--doing 45] [--review 120] [--todo 1440]`** listet Tickets, die in ihrer Stufe hängen; **`hub nudge <id>`** fragt den Agenten nach dem Stand und schreibt die Antwort ins Ticket.
+- **`hub night [--until 06:00|--for 90|--max 3|--dry-run]`** arbeitet die Warteschlange ab: startet einzeln, respektiert Spec, Preflight, Stufen- und Agent-WIP; protokolliert im Abschnitt `## Nachtschicht`.
+- **`hub memory add/list`** (je Agent `agents/memory/<name>.md`, sonst `.herdr/memory.md`): der Dispatch hängt die letzten fünf Einträge als „Was du hier gelernt hast" an — Selbstwissen des Agenten, getrennt von den Review-Lehren.
+
+Board und Dashboard zeigen Priorität/Größe, Preflight-Zustand, die Karte **Stockt** und den Nachtschicht-Lauf; der Team-Hub hat einen Gedächtnis-Abschnitt.
+
 ## Harness je Agent (Roster v2)
 
 Jeder Agent im Team-Hub ist ein vollständiges Profil in `agents/roster.json`:
