@@ -3,12 +3,15 @@
 // ticket questions, questions from agents), "Team" (who works on what: identity,
 // status, space/tab, ticket, duration, cost, teams as group rows) with "Letzte
 // Aktivität" beside it, "Fabrik" (the pipeline, the oldest tickets in work and
-// the cost card) and "Auftrag" (send to the orchestrator). Rows open their place;
-// ↑↓ choose, ↵ opens, g w goes to the workspace, Esc clears the choice. Every
-// number comes from the same sources Team, Inbox and the status bar read: the
-// ticket files (data/quests/tickets, re-read every 5 s), agents(),
+// the cost card) and "Auftrag" (send to the orchestrator). Rows open their place
+// as a peek (`terminal.peek`, the dashboard stays); the small "Zum Space" button
+// switches to layout elric. ↑↓ choose, ↵ opens, g w goes to the workspace, Esc
+// clears the choice. Every number comes from the same sources Team, Inbox and the
+// status bar read: shared("orchestra.tickets") / the ticket files
+// (data/quests/tickets, only while the daemon's heartbeat is stale), agents(),
 // shared("orchestra.costs"), shared("orchestra.budget"), shared("orchestra.groups"),
-// the status bar's omp helper for "Heute" and attention.since.
+// shared("orchestra.spaces"), the status bar's omp helper for "Heute" and
+// attention.since.
 //
 // The dashboard is the one place where the factories of several spaces lie on top of
 // one another (docs/ui/notes-SPACE.md): the head carries a chip row — "Dieser
@@ -49,6 +52,10 @@ const STALL_REFRESH = 10000;
 // Spaces, ihre Orchestratoren, offenen Stufen und Kosten kommen aus `hub spaces
 // --json`; die Wahl im Kopf holt `hub stats` je Space (derselbe Takt, im Cache).
 const SPACES_REFRESH = 30000;
+// Der HubDaemon (dashboard- und elric-Layout) veröffentlicht tickets, gates, stats und
+// spaces; `orchestra.spaces.at` ist sein Herzschlag. Frisch (< 12 s) heißt: diese
+// Ansicht liest shared und startet keinen eigenen Subprozess.
+const SHARED_FRESH_MS = 12000;
 // Schlüssel der Sammel-Abfrage "Alle": hubs eigene Summe über alle Spaces, die
 // Gruppe "ohne Workspace" eingeschlossen.
 const ALL_SPACES = "__all";
@@ -222,6 +229,12 @@ export default class Dashboard extends View {
     cx.timer.every(SPEND_REFRESH, (cx) => this.fetchToday(cx));
     cx.timer.every(SPACES_REFRESH, (cx) => { this.readSpaces(cx); this.fetchStats(cx); });
     cx.timer.every(20000, (cx) => cx.notify()); // the clock
+    // Der Nachtschicht-Eintrag steht nur im Ticket-Text; shared trägt ihn nicht. Einmal
+    // beim Start lesen, damit die Karte auch bei frischem shared stimmt.
+    cx.spawn(async (cx) => {
+      const list = await tickets.read().catch(() => null);
+      if (list) { this.noteNights(list); cx.notify(); }
+    });
   }
 
   // ---------- data ----------
@@ -310,11 +323,33 @@ export default class Dashboard extends View {
     cx.notify();
   }
 
-  // Fresh from disk (the dashboard layout runs no orchestra daemon); shared is only the
-  // first paint before that read lands, so the screen is never empty for a moment.
+  // Fresh from disk while the daemon's heartbeat is stale (a layout without a daemon
+  // block); fresh shared("orchestra.tickets") otherwise. Null before the first read.
   tickets() { return this.tks ?? shared("orchestra.tickets") ?? []; }
   costs() { return shared("orchestra.costs") ?? {}; }
   stats() { return shared("orchestra.stats") ?? null; }
+
+  /** The daemon's heartbeat, `orchestra.spaces.at`. 0 = no daemon has published yet. */
+  sharedAt() { return Number(shared("orchestra.spaces")?.at ?? 0) || 0; }
+  sharedFresh() { const at = this.sharedAt(); return at > 0 && Date.now() - at < SHARED_FRESH_MS; }
+
+  /** Take a ticket list (shared or files) without a second read. Notifies only when
+   *  the snapshot or the freshness dot changed. */
+  applyTickets(list, cx) {
+    if (this.markFresh("tickets")) cx.notify();
+    const json = JSON.stringify(list);
+    if (json === this.tksJson) return;
+    this.tksJson = json;
+    this.tks = list;
+    this.noteNights(list);
+    cx.notify();
+  }
+
+  /** The night-shift record lives only in the ticket text, which shared does not
+   *  carry; keep the last one seen from the files instead of losing the card. */
+  noteNights(list) {
+    for (const tk of list) if (tk.night) (this.nights ??= new Map()).set(tk.id, tk.night);
+  }
 
   /** Ein Leseversuch ist durch: Erfolg stempelt den Zeitpunkt und löscht den Fehler;
    *  ein Fehlschlag merkt den ersten Fehlertext. true = der Punkt im Kopf ändert sich. */
@@ -327,19 +362,17 @@ export default class Dashboard extends View {
   }
 
   // Ticket files every five seconds; a changed snapshot is the only reason to redraw.
+  // While the daemon's heartbeat is fresh, its shared list is the source: no file read.
   refreshTickets(cx) {
+    const fromDaemon = shared("orchestra.tickets");
+    if (Array.isArray(fromDaemon) && this.sharedFresh()) { this.applyTickets(fromDaemon, cx); return; }
     if (this.readingTks) return;
     this.readingTks = true;
     cx.spawn(async (cx) => {
       try {
         const list = await tickets.read();
         if (!list) { if (this.markFresh("tickets", "Ticket-Ordner nicht lesbar")) cx.notify(); return; }
-        if (this.markFresh("tickets")) cx.notify();
-        const json = JSON.stringify(list);
-        if (json === this.tksJson) return;
-        this.tksJson = json;
-        this.tks = list;
-        cx.notify();
+        this.applyTickets(list, cx);
       } catch (e) { if (this.markFresh("tickets", e)) cx.notify(); }
       finally { this.readingTks = false; }
     });
@@ -372,7 +405,19 @@ export default class Dashboard extends View {
 
   // `hub spaces --json` every 30 s: the window's spaces with their orchestrator, open
   // tickets per station and costs, plus the row of the tickets without a workspace.
+  // Fresh shared("orchestra.spaces") (the daemon publishes it) means: no subprocess.
   readSpaces(cx) {
+    const fromDaemon = shared("orchestra.spaces");
+    if (fromDaemon?.spaces && this.sharedFresh()) {
+      if (this.markFresh("spaces")) cx.notify();
+      const json = JSON.stringify(fromDaemon.spaces);
+      if (json === this.spaceRowsJson) return;
+      this.spaceRowsJson = json;
+      this.spaceRows = fromDaemon;
+      cx.notify();
+      this.fetchStats(cx); // ein neuer Space braucht seine Zahlen
+      return;
+    }
     if (this.readingSpaces) return;
     this.readingSpaces = true;
     cx.spawn(async (cx) => {
@@ -462,7 +507,7 @@ export default class Dashboard extends View {
   nightRecord() {
     let best = null;
     for (const tk of this.tickets()) {
-      const n = tk.night;
+      const n = tk.night ?? this.nights?.get(tk.id);
       if (n && (!best || n.end > best.end)) best = n;
     }
     return best;
@@ -667,8 +712,8 @@ export default class Dashboard extends View {
   open(e) {
     if (!e) return;
     if (e.kind === "ticket" || e.kind === "ask") return this.openReview(e.tk);
-    if (e.kind === "doing") { if (e.tk.terminal) this.openAgent(e.tk.terminal); return; }
-    ui.focusAgent(e.address); // an agent without a pane opens as a peek
+    if (e.kind === "doing") { if (e.tk.terminal) this.peekAgent(e.tk.terminal); return; }
+    this.peekAgent(e.address);
   }
 
   openReview(tk) {
@@ -689,13 +734,22 @@ export default class Dashboard extends View {
     else open();
   }
 
-  // To an agent: the Workspace layout, its tab and pane (the Team panel's click).
-  openAgent(address) {
+  /** An agent without leaving the dashboard: a peek at its terminal. A gone agent has
+   *  nothing to peek at (its ticket row still opens the review window). */
+  peekAgent(address) {
+    if (!address) return;
+    if (!agents().some((a) => a.address === address) && !terminals().some((x) => x.address === address)) return;
+    run("terminal.peek", { terminal: address });
+  }
+
+  // The deliberate step into the workspace: layout elric, the agent's tab and pane
+  // (the Team panel's click). The dashboard's own row click only peeks.
+  openSpaceAndTerminal(address) {
     run("layout.switch", { name: "elric" });
     const a = agents().find((x) => x.address === address);
     if (a?.tab) run("tab.select", { id: a.tab });
     if (a?.pane) run("pane.focus", { pane: a.pane });
-    else run("terminal.peek", { terminal: address });
+    else if (address) run("terminal.peek", { terminal: address });
   }
 
   // The last events: one per ticket (its newest Verlauf line — a finished agent's
@@ -703,11 +757,13 @@ export default class Dashboard extends View {
   // blocked agents and budget stops, newest first.
   activity() {
     const out = [];
-    const push = (time, text) => { if (time || text) out.push({ time, text }); };
+    // `address` makes the row a peek at that agent; events without one stay text.
+    const push = (time, text, address) => { if (time || text) out.push({ time, text, address: address || null }); };
     for (const tk of this.tickets()) {
       if (!this.inSelTicket(tk)) continue;
       const last = (tk.verlauf ?? []).at(-1);
-      if (last) push(at(last.ts), `Ticket ${tk.id} · ${last.role}: ${last.text}`);
+      if (last) push(at(last.ts), `Ticket ${tk.id} · ${last.role}: ${last.text}`,
+        this.agentOfRole(last.role, tk)?.address);
       else {
         const time = at(tk.updated);
         const name = tk.terminal ? ui.identity(tk.terminal).name : "Orchestrator";
@@ -715,13 +771,13 @@ export default class Dashboard extends View {
         push(time, stage === "review" ? `${name} hat Ticket ${tk.id} nach Prüfung geschoben`
           : stage === "doing" ? `${name} arbeitet an Ticket ${tk.id}`
             : stage === "done" ? `Ticket ${tk.id} ist fertig`
-              : `Ticket ${tk.id} ist geplant`);
+              : `Ticket ${tk.id} ist geplant`, tk.terminal);
       }
     }
     const seen = shared("attention.since") ?? {};
     for (const a of agents()) {
       if (this.statusOf(a) === "blocked" && this.inSel(this.agentSpace(a.address)))
-        push(seen[a.address]?.at, `${ui.identity(a.address).name} wartet auf dich`);
+        push(seen[a.address]?.at, `${ui.identity(a.address).name} wartet auf dich`, a.address);
     }
     const c = this.costs();
     const allSpaces = this.pick().mode === space.ALL;
@@ -729,7 +785,7 @@ export default class Dashboard extends View {
       if (!on) continue;
       if (id === "__team") { if (allSpaces) push(c.at, "Team-Budget erreicht"); continue; }
       if (allSpaces || this.tickets().some((tk) => tk.id === id && this.inSelTicket(tk)))
-        push(c.at, `Budget für Ticket ${id} erreicht`);
+        push(c.at, `Budget für Ticket ${id} erreicht`, this.tickets().find((tk) => tk.id === id)?.terminal);
     }
     return out.sort((x, y) => y.time - x.time).slice(0, 5);
   }
@@ -1003,12 +1059,16 @@ export default class Dashboard extends View {
     return ui.card(t, `dash-question-${rid(e.address)}`)
       .when(on, (el) => el.bg(t.selected))
       .on_click((_ev, cx) => { this.key = e.key; this.handle.focus(); cx.notify(); })
-      .child(h_flex().gap(ui.GAP_S).items_center()
+      .child(h_flex().gap(ui.GAP_S).items_center().cursor_pointer()
+        .tooltip("Klicken: Agent als Peek ansehen (Dashboard bleibt)")
+        .on_click((_ev, cx) => { cx.stop_propagation(); this.key = e.key; this.handle.focus(); this.peekAgent(e.address); cx.notify(); })
         .child(ui.identityChip(t, `dash-q-who-${rid(e.address)}`, e.address))
         .when(Boolean(tag), (el) => el.child(tag))
         .child(div().flex_1().min_w(0).max_h(30).overflow_hidden().text_size(T_S)
           .text_color(slot?.error ? t.blocked : t.foreground).child(text))
-        .child(div().flex_none().text_size(T_XS).text_color(t.muted).child(ago(this.attentionAt(e.a ?? { address: e.address, status: "blocked" })))))
+        .child(div().flex_none().text_size(T_XS).text_color(t.muted).child(ago(this.attentionAt(e.a ?? { address: e.address, status: "blocked" }))))
+        .child(ui.button(t, `dash-q-space-${rid(e.address)}`, "Zum Space", () => this.openSpaceAndTerminal(e.address),
+          { small: true, tip: "Layout elric: Workspace, Tab und Pane des Agents" })))
       .when(Boolean(input), (el) => el.child(ui.inputBox(t, `dash-answer-${rid(e.address)}`, Input.new(input), {
         focused: this.focus.has(`dash-answer-${rid(e.address)}`),
         send: ui.sendButton(t, `dash-answer-send-${rid(e.address)}`, SEND_ICON, "Antwort senden (↵)", (cx) => this.answer(e.address, cx)),
@@ -1123,14 +1183,18 @@ export default class Dashboard extends View {
     return h_flex().id(`dash-doing-${rid(tk.id)}`).h(ui.H_ROW2).flex_none().px(ui.INSET_CARD).gap(ui.GAP_M).items_center().rounded(6)
       .bg(on ? t.selected : t.surface).border_1().border_color(t.border)
       .when(Boolean(tk.terminal), (el) => el.cursor_pointer().hover((s) => s.bg(t.hover))
-        .tooltip("Klicken: zum Agent").on_click((_e, cx) => { cx.stop_propagation(); this.key = `doing:${tk.id}`; this.handle.focus(); this.openAgent(tk.terminal); }))
+        .tooltip("Klicken: Agent als Peek ansehen (Dashboard bleibt)")
+        .on_click((_e, cx) => { cx.stop_propagation(); this.key = `doing:${tk.id}`; this.handle.focus(); this.peekAgent(tk.terminal); }))
       .child(ui.statusIcon(t, st))
       .child(div().flex_1().min_w(0).truncate().text_size(T_M).text_color(t.foreground).child(tk.title))
       .when(Boolean(tag), (el) => el.child(tag))
       .when(Boolean(tk.terminal), (el) => el.child(div().flex_none().max_w(150).child(ui.identityChip(t, `dash-doing-who-${rid(tk.id)}`, tk.terminal, { status: st }))))
       .child(div().w(64).flex_none().justify_end().text_size(T_XS).text_color(t.muted).child(dur || "—"))
       .child(div().w(56).flex_none().justify_end().text_size(T_XS).text_color(t.muted)
-        .tooltip("Kosten dieses Tickets (nur omp meldet Kosten)").child(cost != null ? usd(cost) : "—"));
+        .tooltip("Kosten dieses Tickets (nur omp meldet Kosten)").child(cost != null ? usd(cost) : "—"))
+      .when(Boolean(tk.terminal), (el) => el.child(ui.button(t, `dash-doing-space-${rid(tk.id)}`, "Zum Space",
+        () => this.openSpaceAndTerminal(tk.terminal),
+        { small: true, tip: "Layout elric: Workspace, Tab und Pane des Agents" })));
   }
 
   // ---------- team ----------
@@ -1182,8 +1246,8 @@ export default class Dashboard extends View {
     const tip = [label, named ? null : "Programm, keine veröffentlichte Identität", word, where,
       tk ? `Ticket ${tk.id}: ${tk.title}` : null].filter(Boolean).join(" · ");
     return h_flex().id(`dash-team-${rid(a.address)}`).h(ui.H_ROW).flex_none().px(ui.GAP_S).gap(ui.GAP_S).items_center().rounded(6)
-      .cursor_pointer().hover((s) => s.bg(t.hover)).tooltip(`${tip}\nKlicken: Workspace, Tab des Agents`)
-      .on_click((_e, cx) => { cx.stop_propagation(); this.openAgent(a.address); })
+      .cursor_pointer().hover((s) => s.bg(t.hover)).tooltip(`${tip}\nKlicken: Agent als Peek ansehen (Dashboard bleibt)`)
+      .on_click((_e, cx) => { cx.stop_propagation(); this.peekAgent(a.address); })
       .child(div().w(COL_WHO).flex_none().min_w(0)
         .child(h_flex().h(22).max_w(COL_WHO).px(6).gap(ui.GAP_XS).items_center().rounded(6).bg(t.raised)
           .when(Boolean(pic), (el) => el.child(pic))
@@ -1198,7 +1262,10 @@ export default class Dashboard extends View {
         .tooltip(`Status seit ${word}: ${since ? ago(since) : "noch nicht beobachtet"} (Statusleiste; nach einem Neustart erste Sicht dieses Fensters)`)
         .child(since ? ago(since) : "—"))
       .child(div().w(COL_COST).flex_none().justify_end().text_size(T_XS).text_color(t.muted)
-        .tooltip("Kosten dieses Agents an seinem Ticket (nur omp meldet Kosten)").child(cost != null ? usd(cost) : "—"));
+        .tooltip("Kosten dieses Agents an seinem Ticket (nur omp meldet Kosten)").child(cost != null ? usd(cost) : "—"))
+      .child(ui.button(t, `dash-team-space-${rid(a.address)}`, "Zum Space",
+        () => this.openSpaceAndTerminal(a.address),
+        { small: true, tip: "Layout elric: Workspace, Tab und Pane des Agents" }));
   }
 
   // A done agent has finished its turn; whether its pane still shows the last screen
@@ -1232,6 +1299,9 @@ export default class Dashboard extends View {
       .child(ui.sectionHeader(t, "Letzte Aktivität", {}))
       .when(!events.length, (el) => el.child(ui.empty(t, "Noch keine Ereignisse.", { row: true })))
       .children(events.map((e, i) => h_flex().id(`dash-activity-${i}`).h(22).flex_none().gap(ui.GAP_S).items_center()
+        .when(Boolean(e.address), (el) => el.cursor_pointer().hover((s) => s.bg(t.hover))
+          .tooltip("Klicken: Agent als Peek ansehen (Dashboard bleibt)")
+          .on_click((_ev, cx) => { cx.stop_propagation(); this.peekAgent(e.address); }))
         .child(div().flex_1().min_w(0).truncate().text_size(T_S).text_color(t.muted).tooltip(e.text).child(e.text))
         .when(Boolean(e.time), (el) => el.child(div().flex_none().text_size(T_XS).text_color(t.dim).child(ago(e.time))))));
   }
