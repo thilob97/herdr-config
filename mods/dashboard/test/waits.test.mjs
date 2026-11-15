@@ -32,6 +32,8 @@ export const openOverlay = none;
 export const knownAgents = async () => [];
 export const appHome = () => "/tmp";
 export const home = () => "/tmp";
+export const machines = () => [];
+export const readTextFile = async () => null;
 `);
 
 const REWRITE = new Set(["gpui-kit", "gpui-base", "herdr"]);
