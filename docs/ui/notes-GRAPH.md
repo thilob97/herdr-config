@@ -85,6 +85,29 @@ Spalte je Wurzel + Einrückung, Ticket-Bögen (gestrichelt bei erledigtem
 Blocker), fremder Blocker als Chip, Sub-Agent-Fenster, Zeitfenster- und
 Statusfilter, Kantensegmente, Determinismus.
 
+## Screenshots (`/tmp/ui-graph/`)
+
+`docs/ui-preview.sh up`, dann im Test-Home (nur Demo-Daten, keine Repo-Datei):
+
+```sh
+hub ticket set demo-1 terminal=t2 blocked_by=demo-4 \
+  space=<demo-app-id> space_name=demo-app
+hub ticket set demo-2 blocked_by=demo-3 space=… space_name=demo-app
+hub ticket set demo-3 terminal=t3 blocked_by=demo-1 space=… space_name=demo-app
+hub ticket set demo-4 terminal=t5 space=… space_name=demo-app
+# Sub-Agent-Zeiten, die hub heute nicht aus agent-cards bekommt (siehe unten):
+printf '%s\n' '{"id":"sa-search","title":"Suche nach Aufrufen","started":…,"ended":…,"terminal":"t1"}' \
+  '{"id":"sa-tests","title":"Tests für quests","started":…,"terminal":"t1"}' > data/agent-cards/subagents.jsonl
+hc run --bg --name orchestrator --label hub.role=orchestrator --label hub.space=<demo-app-id> \
+  -- <test-home>/demo/agent.sh working omp "Orchestrator: verteilt Tickets"
+```
+
+Dann `do tabs-graph.panel-factory`, `do graph.filter-done` /
+`graph.window-1h` für die Zustände, `do space.select --index 2` für den leeren
+Workspace, `shot graph-full|graph-narrow|graph-done|graph-empty|graph-key`.
+Ohne die Demo-Seeds zeigt der Graph nur die Lanes, deren Tickets einen
+Terminal nennen.
+
 ## Bekannte Lücke (nicht in diesem Ticket lösbar)
 
 `hub timeline` liest Sub-Agent-Zeiten aus Feldern `started`/`ended` in
