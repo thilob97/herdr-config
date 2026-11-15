@@ -108,7 +108,8 @@
     "cmd-alt-6": "tabs-graph.panel-quests",
     "cmd-alt-7": "tabs-graph.panel-team",
     "cmd-alt-8": "board.panel",
-    "cmd-alt-9": "mod.open:teams"
+    "cmd-alt-9": "mod.open:teams",
+    "cmd-alt-0": "tabs-graph.panel-timeline"
   },
   "layout:quests": {
     "ctrl-shift-q": "layout.switch:elric"

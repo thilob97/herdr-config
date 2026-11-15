@@ -196,6 +196,13 @@
                               "content": {
                                 "mod": "board"
                               }
+                            },
+                            {
+                              "id": "timeline",
+                              "type": "block",
+                              "content": {
+                                "mod": "timeline"
+                              }
                             }
                           ],
                           "active": "filetree"

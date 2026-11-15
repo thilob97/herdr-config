@@ -16,6 +16,7 @@ const FABRIK = [
   { id: "quests", label: "Quests", icon: "mods/quests/icon.svg", key: 6, tip: "Quests: alle Signale und Tickets" },
   { id: "team", label: "Team", icon: "mods/orchestra/icon.svg", key: 7, tip: "Team: Pipeline der Tickets" },
   { id: "board", label: "Board", icon: "mods/board/icon.svg", fallback: "mods/tabs-graph/board.svg", cmd: "board.panel", panel: true, key: 8, tip: "Board: Tickets auf dem Brett" },
+  { id: "timeline", label: "Timeline", icon: "mods/timeline/icon.svg", panel: true, cmd: "timeline.panel", key: 0, tip: "Timeline: wer wann woran gearbeitet hat" },
   { id: "teams", label: "Team-Hub", icon: "mods/teams/icon.svg", fallback: "mods/tabs-graph/teams.svg", cmd: "mod.open", key: 9, tip: "Team-Hub: Teams, Rollen und Arbeit" },
 ];
 const WERKZEUGE = [
