@@ -101,6 +101,7 @@ const normEvent = (e) => ({
   ticket: e?.ticket ?? null,
   agent: e?.agent ?? null,
   terminal: e?.terminal ?? null,
+  space: String(e?.space ?? ""),
   text: String(e?.text ?? e?.message ?? "").trim(),
 });
 const normSub = (s) => ({
@@ -120,6 +121,7 @@ const normLane = (l) => ({
   end: sec(l?.end),
   status: ["working", "blocked", "done", "idle"].includes(l?.status) ? l.status : null,
   cost: Number.isFinite(Number(l?.cost)) ? Number(l.cost) : null,
+  space: String(l?.space ?? ""),
   events: Array.isArray(l?.events) ? l.events.map(normEvent).filter((e) => e.at != null) : [],
   subagents: Array.isArray(l?.subagents) ? l.subagents.map(normSub).filter((s) => s.started != null) : [],
 });
@@ -162,6 +164,7 @@ export default class Timeline extends View {
       ? localStorage.getItem("timeline.zoom") : "auto";
     this.ticket = p.ticket ? String(p.ticket) : null;
     this.scope = this.ticket ? "ticket" : "all";
+    this.space = ui.activeSpace()?.id ?? "";
     this.sharedTicket = shared("timeline.ticket") ?? null;
     this.width = 0;
     this.scroll = ScrollHandle.new();
@@ -195,14 +198,19 @@ export default class Timeline extends View {
     this.reading = true;
     cx.spawn(async (cx) => {
       try {
-        const r = await exec(HUB(), ["timeline", "--json"], { timeout: 15000 });
+        // `--all` und hier filtern: so hängt die Sicht am aktiven Workspace des Fensters,
+        // nicht am Space, aus dem der App-Prozess zufällig läuft. Alt-Lanes ohne `space`
+        // bleiben sichtbar (ui.inScope für Tickets, dieselbe Regel hier).
+        const r = await exec(HUB(), ["timeline", "--json", "--all"], { timeout: 15000 });
         if (r.code === 0) {
           const d = JSON.parse(r.stdout || "{}");
+          const sp = ui.activeSpace();
+          const here = (x) => !sp || !x.space || x.space === sp.id;
           this.data = {
             now: sec(d.now) ?? Date.now() / 1000,
             since: sec(d.since),
-            lanes: (Array.isArray(d.lanes) ? d.lanes : []).map(normLane).filter((l) => l.id),
-            events: (Array.isArray(d.events) ? d.events : []).map(normEvent).filter((e) => e.at != null),
+            lanes: (Array.isArray(d.lanes) ? d.lanes : []).map(normLane).filter((l) => l.id && here(l)),
+            events: (Array.isArray(d.events) ? d.events : []).map(normEvent).filter((e) => e.at != null && here(e)),
           };
           this.received = Date.now() / 1000;
           this.loaded = true;
@@ -631,6 +639,9 @@ export default class Timeline extends View {
   render(cx) {
     if (this.menu) return this.renderMenu();
     const t = theme();
+    // Space-Wechsel (spaces() zeichnet neu): die Lanes des neuen Workspace sofort lesen.
+    const sid = ui.activeSpace()?.id ?? "";
+    if (sid !== this.space) { this.space = sid; this.read(cx); }
     const now = this.now();
     const all = this.ordered(this.visible());
     const visible = all.map((x) => x.lane);
@@ -657,9 +668,10 @@ export default class Timeline extends View {
       .child(div().flex_1())
       .when(Boolean(note), (el) => el.child(note));
 
+    const scope = ui.spaceChip(t);
     const header = props()?.overlay
-      ? ui.windowHeader(t, "Timeline", [this.ticketChip(t)], () => closeOverlay(props().overlay), { meta, metaTip: "Lanes im gewählten Zeitraum" })
-      : ui.panelHeader(t, "Timeline", [this.ticketChip(t), div().flex_none().text_size(T_XS).text_color(t.dim).child(`seit ${since}`)],
+      ? ui.windowHeader(t, "Timeline", [scope, this.ticketChip(t)].filter(Boolean), () => closeOverlay(props().overlay), { meta, metaTip: "Lanes im gewählten Zeitraum" })
+      : ui.panelHeader(t, "Timeline", [scope, this.ticketChip(t), div().flex_none().text_size(T_XS).text_color(t.dim).child(`seit ${since}`)].filter(Boolean),
         { count: `${count} Lanes` });
 
     const rows = all.map((x, i) => this.row(t, x.lane, x.depth, marks, now, i));

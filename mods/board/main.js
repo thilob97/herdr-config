@@ -63,8 +63,9 @@ const sortCards = (a, b) => at(a.status_at || a.updated || a.created) - at(b.sta
 export default class Board extends View {
   init(_props, cx) {
     this.handle = cx.focus_handle();
-    this.tickets = (shared("orchestra.tickets") ?? []).map(normalize);
+    this.tickets = (shared("orchestra.tickets") ?? []).map(normalize).filter(ui.inScope);
     this.gates = shared("orchestra.gates") ?? [];
+    this.space = ui.activeSpace()?.id ?? "";
     this.costFile = null;
     this.wip = { ...WIP_DEFAULT };
     this.selected = null;
@@ -142,11 +143,19 @@ export default class Board extends View {
       try {
         const r = await exec(HUB(), ["ticket", "list", "--all", "--json"], { timeout: 20000 });
         if (r.code !== 0) throw new Error((r.stderr || r.stdout || `Exit ${r.code}`).trim().split("\n").pop());
-        this.tickets = JSON.parse(r.stdout || "[]").map(normalize);
+        // Alle lesen, auf die Fabrik des aktiven Workspace filtern: Alt-Tickets ohne
+        // `space` bleiben sichtbar (ui.inScope), fremde Spaces nicht.
+        this.tickets = JSON.parse(r.stdout || "[]").map(normalize).filter(ui.inScope);
         this.loaded = true;
         this.seen("tickets");
       } catch (e) { this.seen("tickets", e); } finally { this.readingT = false; cx.notify(); }
     });
+  }
+
+  /** `--space` dieses Workspace; ohne Space alles (dann gibt es nichts zu wählen). */
+  scopeArgs(flag = "--space") {
+    const sid = ui.activeSpace()?.id;
+    return sid ? [flag, sid] : ["--all"];
   }
 
   readGates(cx) {
@@ -154,7 +163,7 @@ export default class Board extends View {
     this.readingG = true;
     cx.spawn(async (cx) => {
       try {
-        const r = await exec(HUB(), ["gates", "--json"], { timeout: 20000 });
+        const r = await exec(HUB(), ["gates", "--json", ...this.scopeArgs()], { timeout: 20000 });
         if (r.code !== 0) throw new Error((r.stderr || r.stdout || `Exit ${r.code}`).trim().split("\n").pop());
         this.gates = JSON.parse(r.stdout || "[]");
         this.seen("gates");
@@ -184,7 +193,7 @@ export default class Board extends View {
     this.readingW = true;
     cx.spawn(async (cx) => {
       try {
-        const r = await exec(HUB(), ["wip", "--json"], { timeout: 20000 });
+        const r = await exec(HUB(), ["wip", "--json", ...this.scopeArgs()], { timeout: 20000 });
         if (r.code !== 0) throw new Error((r.stderr || r.stdout || `Exit ${r.code}`).trim().split("\n").pop());
         this.wip = { ...WIP_DEFAULT, ...JSON.parse(r.stdout || "{}") };
         this.seen("wip");
@@ -471,6 +480,15 @@ export default class Board extends View {
 
   render(cx) {
     const t = theme();
+    // Space-Wechsel (spaces() zeichnet neu): Board, Gates und WIP sofort für den neuen
+    // Workspace lesen — kein Neustart, kein zusätzlicher Timer.
+    const sid = ui.activeSpace()?.id ?? "";
+    if (sid !== this.space) {
+      this.space = sid;
+      this.readTickets(cx);
+      this.readGates(cx);
+      this.readWip(cx);
+    }
     const by = this.columns();
     const flat = this.flat(by);
     if (this.selected && !flat.some((x) => x.id === this.selected)) this.selected = null;
@@ -479,6 +497,7 @@ export default class Board extends View {
     const total = flat.reduce((n, tk) => n + this.spentOf(tk), 0);
 
     const right = [];
+    const scope = ui.spaceChip(t);
     const fresh = this.freshChip(t);
     if (fresh) right.push(fresh);
     if (this.note) right.push(div().id("board-note").max_w(230).min_w(0).flex_shrink_1().truncate().text_size(T_XS)
@@ -497,6 +516,7 @@ export default class Board extends View {
     const header = h_flex().id("board-header").h(H_HEADER).flex_none().px(INSET_PANEL).gap(GAP_M).items_center()
       .border_b(1).border_color(t.border)
       .child(div().flex_none().text_size(T_L).font_semibold().text_color(t.foreground).child("Board"))
+      .when(Boolean(scope), (el) => el.child(scope))
       .child(div().id("board-count").flex_none().text_size(T_XS).text_color(t.dim)
         .when(Boolean(this.filter), (el) => el.tooltip(`${flat.length} von ${this.tickets.length} Tickets passen zum Filter`))
         .child(count))

@@ -9,10 +9,16 @@
 
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
-import { agents, theme, shared, setShared, props } from "herdr";
+import { agents, terminals, theme, shared, setShared, props, settings } from "herdr";
 import { HubDaemon, HubSection, STAGES, stageOf } from "./hubview.js";
 import * as ui from "./ui.js";
 import { T_XS, T_S, T_L } from "./ui.js";
+
+// Der Space einer Adresse: laufender Agent, sonst das Terminal-Label (wie
+// `hub orchestrator start` es setzt). null, wenn beides fehlt (beendet, ohne Label).
+const spaceOfAddress = (address) => agents().find((a) => a.address === address)?.space
+  ?? terminals().find((x) => x.address === address)?.labels?.["hub.space"]
+  ?? terminals().find((x) => x.address === address)?.labels?.["herdr.space"] ?? null;
 
 export default class Orchestra extends View {
   init(_props, cx) {
@@ -26,8 +32,22 @@ export default class Orchestra extends View {
     cx.timer.every(60000, (cx) => cx.notify());
   }
 
-  groups() { return shared("orchestra.groups") ?? []; }
+  allGroups() { return shared("orchestra.groups") ?? []; }
   setGroups(list) { setShared("orchestra.groups", list); }
+
+  // Ein Team gehört zum Workspace seiner Mitglieder: im Team-Panel steht nur, was in
+  // diesem Space läuft. Ohne feststellbaren Space (alle Mitglieder beendet) bleibt es
+  // sichtbar — ein fertiges Team soll nicht stillschweigend verschwinden.
+  groups() {
+    const sp = ui.activeSpace();
+    const list = this.allGroups();
+    if (!sp) return list;
+    return list.filter((g) => {
+      if (g.space) return g.space === sp.id;
+      const known = (g.members ?? []).map(spaceOfAddress).filter(Boolean);
+      return !known.length || known.includes(sp.id);
+    });
+  }
 
   // ---------- view ----------
 
@@ -35,11 +55,14 @@ export default class Orchestra extends View {
   // (`99+`). When the panel is too narrow for the labels, the bar shows counters only
   // (`12 · 1 · 1 · 1`): no stage ever falls away, each counter names its stage in the
   // tooltip (B5, dritter Durchgang).
-  stages(t, counts) {
+  // `reserve` ist der Platz, den der Space-Chip im Kopf braucht: ohne ihn schnitt die
+  // Stufenzeile bei 400 px Panelbreite ab (…Prüfung 0 › Fer). Reicht der Platz nicht,
+  // zeigt die Leiste nur Zähler, nie ein abgeschnittenes Wort.
+  stages(t, counts, reserve = 0) {
     const count = (n) => (n > 99 ? "99+" : String(n));
     const all = STAGES.map((s) => ({ ...s, n: counts[s.key] ?? 0 }));
     const est = (s) => s.label.length * 6.6 + count(s.n).length * 6.6 + 12;
-    const room = Math.max(120, (this.width || 368) - 14 * 2 - 32 - 8);
+    const room = Math.max(120, (this.width || 368) - 14 * 2 - 32 - 8 - reserve);
     const full = all.reduce((w, s) => w + est(s), 0) + (all.length - 1) * 10 <= room;
     const sep = (x) => div().flex_none().text_size(T_S).text_color(t.dim).child(x);
     const parts = [];
@@ -63,7 +86,7 @@ export default class Orchestra extends View {
     const active = members.filter((m) => m.st === "working" || m.st === "blocked").length;
     const waiting = members.filter((m) => m.st === "blocked").length;
     const finished = active === 0;
-    const patch = (p) => this.setGroups(this.groups().map((x) => (x.id === g.id ? { ...x, ...p } : x)));
+    const patch = (p) => this.setGroups(this.allGroups().map((x) => (x.id === g.id ? { ...x, ...p } : x)));
     return ui.card(t, `grp-${g.id}`)
       .child(h_flex().h(ui.H_BTN_S).gap(ui.GAP_S).items_center()
         .child(div().flex_1().min_w(0).truncate().text_size(T_L).font_semibold().text_color(t.foreground).child(g.name))
@@ -73,7 +96,7 @@ export default class Orchestra extends View {
           g.watch ? "Wird beobachtet: Meldung, wenn alle fertig sind (klicken: aus)" : "Beobachten: Meldung, wenn alle fertig sind",
           () => patch({ watch: !g.watch, notified: false }), { small: true, active: g.watch }))
         .child(ui.iconButton(t, `grp-x-${g.id}`, "mods/workspace-chrome/x.svg", "Team auflösen (die Agents laufen weiter)",
-          () => this.setGroups(this.groups().filter((x) => x.id !== g.id)), { small: true })))
+          () => this.setGroups(this.allGroups().filter((x) => x.id !== g.id)), { small: true })))
       // One segment per member in its status color: progress and who is still busy at a glance.
       .child(h_flex().h(4).gap(2).children(members.map((m) => div().flex_1().h(4).rounded(4)
         .bg(m.st === "blocked" ? t.blocked : m.st === "working" ? t.working : t.done))))
@@ -83,6 +106,7 @@ export default class Orchestra extends View {
   render(cx) {
     if (this.daemon) { this.daemon.watch(cx); return div(); }
     const t = theme();
+    this.hub.sync(cx);
     const all = this.hub.all();
     const by = { todo: [], doing: [], review: [], done: [] };
     for (const tk of all) by[stageOf(tk)].push(tk);
@@ -128,9 +152,17 @@ export default class Orchestra extends View {
     }
     if (this.jump && at[this.jump] != null) { this.scroll.scroll_to_item(at[this.jump]); this.jump = null; }
 
+    // Der Chip sitzt im Kopf; sein Platz wird von der Stufenzeile freigehalten.
+    const scope = ui.spaceChip(t, { maxW: 120 });
+    const reserve = scope ? Math.min(120, (ui.activeSpace()?.name?.length ?? 0) * 6.2 + 18) : 0;
+
     return v_flex().id("orchestra").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground)
-      .on_size_change((size, cx) => { const w = Math.round(size.width); if (w !== this.width) { this.width = w; cx.notify(); } })
-      .child(ui.panelHeader(t, "Team", [this.hub.freshChip(t), this.stages(t, counts)].filter(Boolean)))
+      // on_size_change meldet echte Pixel; Kopf und Stufenzeile rechnen in Layout-Pixeln.
+      .on_size_change((size, cx) => {
+        const w = Math.round(size.width / (settings().zoom || 1));
+        if (w !== this.width) { this.width = w; cx.notify(); }
+      })
+      .child(ui.panelHeader(t, "Team", [scope, this.hub.freshChip(t), this.stages(t, counts, reserve)].filter(Boolean)))
       .child(body);
   }
 }

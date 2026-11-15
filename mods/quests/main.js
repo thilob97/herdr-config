@@ -186,6 +186,9 @@ class Board {
   stageOf(tk) { const team = this.team(tk); return team ? pipeline(team.status) : stage(tk); }
 
   matches(tk) {
+    // Nur die lokale Quelle ist eine Fabrik-Liste: GitHub-, Asana- und Trilium-Quests
+    // gehören keinem Workspace. Lokale Tickets ohne `space` (Altbestand) bleiben sichtbar.
+    if (tk.source === "plain" && !ui.inScope(tk)) return false;
     const st = this.stageOf(tk);
     if (this.stage === "todo" && st !== "todo") return false;
     if (this.stage === "doing" && st !== "doing" && st !== "review" && !liveState(this.record(tk))?.alive) return false;
@@ -391,12 +394,12 @@ class Board {
   }
 
   header(t, title) {
-    return ui.panelHeader(t, title, [
+    return ui.panelHeader(t, title, [ui.spaceChip(t),
       iconBtn(t, "h-new", `${WC}/plus.svg`, "Neues lokales Ticket", () => openEdit()),
       iconBtn(t, "h-refresh", "mods/orchestra/icons/restart.svg", "Neu laden", (cx) => this.reload(cx, true)),
       iconBtn(t, "h-settings", `${WC}/settings.svg`, "Quellen und Zugangsdaten", () => openSettings()),
       ...(this.view === "panel" ? [btn(t, "h-page", "Seite", () => run("layout.switch", { name: "quests" }), { tip: "Quests als ganze Seite (Layout quests, ⌃⇧Q)" })] : []),
-    ]);
+    ].filter(Boolean));
   }
 
   filterRow(t) {

@@ -115,14 +115,22 @@ function nested(all, address) {
   return false;
 }
 
-// Spec 7.3, literally: the same number as the tab bar's Inbox badge.
+// Spec 7.3, literally: the same number as the tab bar's Inbox badge, but for the factory
+// of this window's workspace. `total` counts the whole home, for the tooltip.
 export function inboxCount() {
-  const all = agents();
-  const orchestratorBlocked = terminals().some((x) => x.name === ORCH && x.state === "live" && x.status === "blocked");
-  const blocked = all.filter((a) => a.status === "blocked").length + (orchestratorBlocked ? 1 : 0);
-  const review = (shared("orchestra.tickets") ?? []).filter((t) => t.status === "review").length;
-  const done = all.filter((a) => a.status === "done").length;
-  return { blocked, review, done };
+  const sp = ui.activeSpace();
+  const counts = (space) => {
+    const all = agents();
+    const scoped = (a) => !space || !a.space || a.space === space.id;
+    const orchestratorBlocked = terminals().some((x) => x.name === ORCH && x.state === "live" && x.status === "blocked"
+      && (!space || x.labels?.["hub.space"] === space.id || x.labels?.["herdr.space"] === space.id));
+    return {
+      blocked: all.filter((a) => a.status === "blocked" && scoped(a)).length + (orchestratorBlocked ? 1 : 0),
+      review: (shared("orchestra.tickets") ?? []).filter((t) => t.status === "review" && (!space || ui.inScope(t))).length,
+      done: all.filter((a) => a.status === "done" && scoped(a)).length,
+    };
+  };
+  return { ...counts(sp), total: counts(null) };
 }
 
 export default class Inbox extends View {
@@ -149,25 +157,29 @@ export default class Inbox extends View {
     cx.timer.every(REFRESH, (cx) => { const e = this.entry(); if (e?.address) this.load(e.address, cx, true); });
   }
 
-  // Everything in the inbox, grouped and ordered: oldest first within a group.
+  // Everything in the inbox, grouped and ordered: oldest first within a group. Only the
+  // factory of this window's workspace: agents, the orchestrator and the tickets of other
+  // spaces stay out (ui.inScope keeps old tickets without `space`).
   entries() {
+    const sp = ui.activeSpace();
     const since = shared("attention.since") ?? {};
     const at = (a) => (since[a.address]?.status === a.status ? since[a.address].at : null);
     const group = { blocked: "ask", done: "done", working: "work" };
     const all = agents(), terms = terminals(), subs = shared("omp.subagents") ?? {};
-    const list = all.filter((a) => !nested(terms, a.address))
+    const list = all.filter((a) => !nested(terms, a.address) && (!sp || !a.space || a.space === sp.id))
       .map((a) => ({ a, st: effectiveStatus(a, terms, subs) }))
       .filter(({ st }) => st in group)
       .map(({ a, st }) => ({ kind: "agent", key: a.address, address: a.address, group: group[st], a, st, since: at({ ...a, status: st }), order: at(a) ?? a.seq }));
-    const o = terminals().find((x) => x.name === ORCH && x.state === "live");
+    const o = terminals().find((x) => x.name === ORCH && x.state === "live"
+      && (!sp || x.labels?.["hub.space"] === sp.id || x.labels?.["herdr.space"] === sp.id));
     if (o?.status === "blocked" && !list.some((e) => e.address === o.address)) {
       list.push({ kind: "orch", key: "orch", address: ORCH, group: "ask", o, since: null, order: -1 });
     }
-    for (const tk of (shared("orchestra.tickets") ?? []).filter((x) => x.status === "review")) {
+    for (const tk of (shared("orchestra.tickets") ?? []).filter((x) => x.status === "review" && ui.inScope(x))) {
       list.push({ kind: "ticket", key: `ticket:${tk.id}`, group: "review", tk, order: tk.updated ?? "" });
     }
     // Open questions to the human live in the ticket: one row per ticket, answered there.
-    for (const tk of (shared("orchestra.tickets") ?? []).filter((x) => x.question && x.status !== "done" && !this.answered.has(x.id))) {
+    for (const tk of (shared("orchestra.tickets") ?? []).filter((x) => x.question && x.status !== "done" && !this.answered.has(x.id) && ui.inScope(x))) {
       list.push({ kind: "question", key: `q:${tk.id}`, group: "ask", tk, q: tk.question, order: tk.updated ?? "" });
     }
     for (const p of (shared(PENDING) ?? [])) {
@@ -458,9 +470,10 @@ export default class Inbox extends View {
     let i = list.findIndex((e) => e.key === this.key);
     if (i < 0 && list.length) { i = 0; this.key = list[0].key; if (list[0].address) this.load(list[0].address, cx, false); }
     const sel = i >= 0 ? list[i] : null;
-    const { blocked, review, done } = inboxCount();
+    const { blocked, review, done, total } = inboxCount();
     const waits = blocked + review;
     const questions = list.filter((e) => e.kind === "question").length;
+    const scope = ui.spaceChip(t);
 
     const col = v_flex().id("ib-list").w(320).flex_none().h_full().min_h(0).pr(ui.GAP_M).overflow_y_scrollbar().track_scroll(this.scroll)
       .border_r(1).border_color(t.border);
@@ -484,8 +497,11 @@ export default class Inbox extends View {
       .on_key_down((ev, cx) => this.onKey(ev, cx, list, sel))
       .child(h_flex().h(28).flex_none().gap(ui.GAP_M).items_center()
         .child(div().flex_none().text_size(T_XL).font_semibold().text_color(t.foreground).child("Inbox"))
-        .when(waits > 0, (el) => el.child(ui.counterBadge(t, waits, t.blocked)))
-        .when(!waits && done > 0, (el) => el.child(ui.counterBadge(t, done, t.done)))
+        .when(Boolean(scope), (el) => el.child(scope))
+        .when(waits > 0, (el) => el.child(div().id("ib-waits").tooltip(`Diesem Workspace: ${waits} wartend · gesamt ${total.blocked + total.review}`)
+          .child(ui.counterBadge(t, waits, t.blocked))))
+        .when(!waits && done > 0, (el) => el.child(div().id("ib-done").tooltip(`Diesem Workspace: ${done} fertig · gesamt ${total.done}`)
+          .child(ui.counterBadge(t, done, t.done))))
         .when(questions > 0, (el) => el.child(div().id("ib-verlauf-note").flex_none().text_size(T_XS).text_color(t.dim)
           .tooltip(`Inbox ${waits} (Rückfragen + Abnahmen) + ${questions} Frage${questions === 1 ? "" : "n"} aus dem Ticket-Verlauf = ${list.length} Zeilen`)
           .child(`+ ${questions} Verlauf`)))

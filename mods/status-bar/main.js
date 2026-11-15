@@ -8,7 +8,7 @@ import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, HoverCard } from "gpui-base";
 import { spaces, agents, terminals, theme, run, window, keys, exec, machines, appHome, readTextFile, shared, setShared, nextCommand, notify, focused, playSound } from "herdr";
 // Costs in one format everywhere (B9, same copy as in mods/orchestra/ui.js).
-import { usd, calm } from "./ui.js";
+import { usd, calm, activeSpace, inScope } from "./ui.js";
 
 // Tokens (docs/ui-spec.md, 5).
 const GAP_XS = 4, GAP_S = 6, GAP_M = 8, GAP_L = 12, GAP_XL = 16;
@@ -37,12 +37,22 @@ function until(ms) {
   return d >= 2 ? `${d} T` : d ? `${d} T ${h} h` : h ? `${h}:${String(m).padStart(2, "0")} h` : `${m} min`;
 }
 
-// Team spend against the team budget (as the Team panel computes them), or null before any.
+// Ist im Workspace ein Orchestrator live? Labels wie `hub orchestrator start` sie setzt.
+const orchestratorHere = (id) => !id || terminals().some((x) => x.state === "live"
+  && (x.labels?.["hub.space"] === id || x.labels?.["herdr.space"] === id)
+  && (x.labels?.["hub.role"] === "orchestrator" || x.name === "orchestrator"));
+
+// Team spend against the team budget, for the factory of this window's workspace: its open
+// tickets plus its orchestrator. `total` counts the whole home, for the tooltip.
 function teamBudget() {
   const c = shared("orchestra.costs");
   if (!c) return null;
   const budget = { team: 20, ...(shared("orchestra.budget") ?? {}) }.team ?? c.teamBudget;
-  return { cost: c.teamCost ?? 0, budget, over: budget != null && (c.teamCost ?? 0) > budget };
+  const sp = activeSpace();
+  const cost = !sp ? c.teamCost ?? 0
+    : (shared("orchestra.tickets") ?? []).filter((t) => t.status !== "done" && inScope(t))
+      .reduce((n, t) => n + (c.tickets?.[t.id] ?? 0), 0) + (orchestratorHere(sp.id) ? c.orchestrator ?? 0 : 0);
+  return { cost, total: c.teamCost ?? 0, budget, over: budget != null && cost > budget };
 }
 
 // Attention order: blocked before finished, the longest waiting first.
@@ -421,7 +431,8 @@ export default class StatusBar extends View {
         .cursor_pointer().bg(team.over ? t.blocked + "26" : t.raised).text_color(team.over ? t.blocked : t.muted)
         .when(team.over, e => e.font_medium())
         .hover(s => s.bg(team.over ? t.blocked + "55" : t.hover).text_color(team.over ? t.blocked : t.foreground))
-        .tooltip(team.over ? "Team-Budget überschritten: Team-Panel öffnen (⌘⌥7)" : "Kosten offener Tickets + Orchestrator / Team-Budget: Team-Panel öffnen (⌘⌥7)")
+        .tooltip(team.over ? `Team-Budget überschritten (gesamt ${dollars(team.total)}): Team-Panel öffnen (⌘⌥7)`
+          : `Offene Tickets + Orchestrator dieses Workspace · gesamt ${dollars(team.total)} / ${dollars(team.budget)}: Team-Panel öffnen (⌘⌥7)`)
         .on_click(() => run("tabs-graph.panel-team"))
         .child(teamText)))
       // The keyboard hint is what the person acts on: muted (dim is below 4.5:1).
