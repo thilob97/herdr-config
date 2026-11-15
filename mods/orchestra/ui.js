@@ -44,15 +44,22 @@ export function minutesSince(ts) {
   return ms ? Math.max(0, Math.round((Date.now() - ms) / 60000)) : null;
 }
 
-/** Kurze Dauer: „jetzt", „42 min", „3 h", „2 d"; „—" ohne Zeitstempel. */
+/** Kurze Dauer in einer Sprache, überall gleich: „gerade", „42 min", „2 h",
+ *  „> 1 Tag", „3 T"; „—" ohne Zeitstempel. Alles über 24 h ist eine Untergrenze,
+ *  deshalb sagt der erste Tag „> 1 Tag"; danach zählt „n T" statt des winzigen „n d". */
 export const dur = (min) => (min == null ? "—"
-  : min < 1 ? "jetzt" : min < 60 ? `${min} min` : min < 1440 ? `${Math.floor(min / 60)} h` : `${Math.floor(min / 1440)} d`);
+  : min < 1 ? "gerade" : min < 60 ? `${min} min` : min < 1440 ? `${Math.floor(min / 60)} h`
+    : Math.floor(min / 1440) < 2 ? "> 1 Tag" : `${Math.floor(min / 1440)} T`);
 
-/** „vor 42 min" / „gerade eben"; leer ohne Zeitstempel. */
+/** Alter eines Zeitstempels („JJJJ-MM-TT HH:MM") in derselben Sprache wie `dur`;
+ *  leer ohne Zeitstempel. */
 export const age = (ts) => {
   const min = minutesSince(ts);
-  return min == null ? "" : min < 1 ? "gerade eben" : `vor ${dur(min)}`;
+  return min == null ? "" : dur(min);
 };
+
+/** Alter in Minuten seit einem ms-Zeitstempel (z. B. `attention.since`); leer ohne Wert. */
+export const ageMs = (ms) => (ms ? dur(Math.max(0, Math.round((Date.now() - ms) / 60000))) : "");
 
 export const STAGE_WORD = { todo: "geplant", doing: "in Arbeit", review: "in Prüfung", done: "fertig" };
 
@@ -63,7 +70,8 @@ export function staged(tk) {
   const key = ["todo", "review", "done"].includes(tk?.status) ? tk.status : "doing";
   const since = tk?.status_at || tk?.updated || tk?.created || null;
   const min = minutesSince(since);
-  return { key, since, min, text: min == null ? "Stufe unbekannt" : `${STAGE_WORD[key]} seit ${dur(min)}` };
+  return { key, since, min, text: min == null ? "Stufe unbekannt"
+    : min < 1 ? `${STAGE_WORD[key]} gerade eben` : `${STAGE_WORD[key]} seit ${dur(min)}` };
 }
 
 /** Fokus je Eingabe (5.6: mit Fokus `border(accent)`): in init `this.focus = ui.focusFields()`,
@@ -87,6 +95,11 @@ export function statusIcon(t, st) {
   if (st === "done" || st === "error") return box().child(div().size(7).rounded_full().bg(statusColor(t, st)));
   return box().child(div().size(7).rounded_full().border(1.5).border_color(t.idle ?? t.dim));
 }
+
+/** Whether a run's recorded HEAD belongs to another commit than the worktree's now.
+ *  Short SHAs match by prefix (`hub` records either form). No HEAD on either side: not stale. */
+export const headStale = (current, recorded) => Boolean(current && recorded)
+  && !(current === recorded || current.startsWith(recorded) || recorded.startsWith(current));
 
 /** Chip mit Statuswort (h 18, Tönung 26). `color` überschreibt die Statusfarbe (z. B. t.dim). */
 export function chip(t, text, color, { icon, tip, id } = {}) {
@@ -161,12 +174,15 @@ export function gateChips(t, tk, gate) {
   return out;
 }
 
-/** CI-Chip (5.6): pass/fail/running/unknown aus `hub ci`; `pr`/`ci_at` erklärt er im Tooltip. */
-export function ciChip(t, tk) {
+/** CI-Chip (5.6): pass/fail/running/unknown aus `hub ci`; `pr`/`ci_at` erklärt er im Tooltip.
+ *  `stale`: the run belongs to an older HEAD than the worktree's, so it proves nothing now. */
+export function ciChip(t, tk, { stale = false } = {}) {
   const [text, color] = {
     pass: ["CI ✓", t.done], fail: ["CI ✗", t.blocked],
     running: ["CI …", t.working], unknown: ["CI ?", t.muted],
   }[tk.ci] ?? ["CI –", t.muted];
+  if (stale) return chip(t, `${tk.ci === "fail" ? "CI rot" : text} (veraltet)`, t.muted,
+    { tip: "neuer Commit seit dem Lauf — neu prüfen" });
   return chip(t, text, color, { tip: tk.ci_at ? `PR-Checks: zuletzt geprüft ${tk.ci_at}` : "PR-Checks: noch nicht geprüft" });
 }
 
@@ -309,20 +325,22 @@ export const loading = (t, text = "lädt …") => h_flex().gap(GAP_S).items_cent
 // ---------- Identität (7.1) und Identitäts-Chip (5.6) ----------
 
 /** Wer hinter einer Adresse steckt: Name und Avatar ausschließlich aus
- *  shared("agents.identity"). Fehlt der Name, bleibt das Programm ein Programm
- *  (`programKey` klein, `named: false`) und wird nie als Agent ausgegeben. */
+ *  shared("agents.identity"). Fehlt der Name, steht `name` als Programm-Kürzel
+ *  (`omp` klein) bzw. als Adresse — nie der Programmname („Oh My Pi") — und
+ *  `named: false` sagt, dass es keine veröffentlichte Identität ist. */
 export function identity(address) {
   const a = agents().find((x) => x.address === address) ?? null;
   const x = a ? null : terminals().find((y) => y.address === address && y.state === "live") ?? null;
   const known = (shared("agents.identity") ?? {})[address];
   const program = a?.program ?? x?.program ?? null;
+  const programKey = program?.key ? String(program.key).toLowerCase() : null;
   return {
     address,
-    name: known?.name ?? null,
+    name: known?.name ?? programKey ?? address,
     named: Boolean(known?.name),
     avatar: known?.avatar ?? null,
     program,
-    programKey: program?.key ? String(program.key).toLowerCase() : null,
+    programKey,
     status: a?.status ?? x?.status ?? null,
     pane: a?.pane ?? null,
     space: a?.space_name ?? (x?.where ?? "").split(" / ")[0] ?? "",
