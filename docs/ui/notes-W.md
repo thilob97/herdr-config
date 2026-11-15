@@ -30,6 +30,11 @@ das Ticket selbst aus der Zählung, damit ein toter `doing`-Agent neu startbar i
 `hub wip` akzeptiert ganze Zahlen 0–99; alles andere (Buchstaben, negativ, `foo=…`,
 fehlendes `=`) endet mit Exit 1 und lässt die Datei unberührt.
 
+Das **Agent-Limit aus dem Roster v2** (`hub agent add … --wip N`, gezählt in dessen
+`doing`-Tickets) bleibt daneben bestehen: `dispatch` prüft zuerst Spec und globales
+Stufenlimit, danach das Agent-Limit. Letzteres ist hart (kein `--force`), wie es main
+vorgibt; `--force --reason` gilt nur für das globale Gate.
+
 **Spec-Vorlage ist ein Platzhalter.** `hub spec <id>` ergänzt fehlende `## Ziel`,
 `## Abnahmekriterien`, `## Grenzen` in dieser Reihenfolge am Body-Ende (vor `## Verlauf`);
 vorhandene Abschnitte bleiben Byte für Byte stehen. Die Abnahme-Vorlage ist
