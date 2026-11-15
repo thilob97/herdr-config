@@ -203,6 +203,13 @@
                               "content": {
                                 "mod": "timeline"
                               }
+                            },
+                            {
+                              "id": "factory",
+                              "type": "block",
+                              "content": {
+                                "mod": "graph"
+                              }
                             }
                           ],
                           "active": "filetree"

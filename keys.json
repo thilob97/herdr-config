@@ -107,7 +107,8 @@
     "cmd-alt-4": "tabs-graph.panel-blueprint",
     "cmd-alt-5": "tabs-graph.panel-docker",
     "cmd-alt-6": "tabs-graph.panel-quests",
-    "cmd-alt-7": "tabs-graph.panel-team",
+    "cmd-alt-7": "tabs-graph.panel-factory",
+    "cmd-alt-shift-7": "tabs-graph.panel-team",
     "cmd-alt-8": "board.panel",
     "cmd-alt-9": "mod.open:teams",
     "cmd-alt-0": "tabs-graph.panel-timeline"

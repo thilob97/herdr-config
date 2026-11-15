@@ -48,7 +48,7 @@ Aktiv ist das Layout `elric` (Klon von `main`), daneben `quests`. Eigene Mods:
 | `space-folders` | Spaces nach Maschine und Ordner in der Seitenleiste (extern, siehe unten) |
 | `agent-cards` | Die eine Agent-Darstellung (Klon von `agents`): Karten mit Avatar, Status, OMP-Modell, Kontext, Kosten, Sub-Agents; Mehrfachauswahl mit Auswahlleiste; veröffentlicht `shared("agents.identity")`, siehe Seitenleiste |
 | `sidebar-footer` | Kopf der Seitenleiste (Logo, Suche, ein-/ausklappen) und ihr Fuß als eine Icon-Zeile: Einstellungen, Marketplaces, MCP-Server, Maschine hinzufügen, Tastenkürzel (Klon von `workspace-chrome`), siehe Seitenleiste |
-| `tabs-graph` | Tab-Leiste (Klon von `tabs`): Tabs, „+“ direkt dahinter, rechts **Auftrag**, **Inbox** mit Zähler, **Review**, dann die Panels als zwei Gruppen *Fabrik* (Quests, Team) und *Werkzeuge* (Changes, Git, Tree, Blueprint, Docker); das offene zeigt seinen Namen, Tooltip mit Taste |
+| `tabs-graph` | Tab-Leiste (Klon von `tabs`): Tabs, „+“ direkt dahinter, rechts **Auftrag**, **Inbox** mit Zähler, **Review**, dann die Panels als zwei Gruppen *Fabrik* (Quests, Team, Fabrik-Graph) und *Werkzeuge* (Changes, Git, Tree, Blueprint, Docker); das offene zeigt seinen Namen, Tooltip mit Taste |
 | `status-bar` | Statusleiste (Klon von `workspace-status`): Maschine und Branch, Limits, Kosten heute, Team-Budget-Chip |
 | `inbox` | Freigabe-Stelle (Popup): Rückfragen, Abnahmen, Fertiges, siehe Agent-Zentrale |
 | `review` | Review-Fenster: Abnahme eines Tickets (Ticket-Modus, mit Reviewer-Urteil und Befunden) oder Änderungen eines Agents, siehe Agent-Zentrale |
@@ -57,6 +57,7 @@ Aktiv ist das Layout `elric` (Klon von `main`), daneben `quests`. Eigene Mods:
 | `launcher` | Auftrag-Dialog: „Ans Team“ (an den Orchestrator) oder „Selbst starten“ mit Prompt-Vorlagen aus `mods/launcher/templates/*.md`, siehe Agent-Zentrale |
 | `orchestra` | Team-Panel: Pipeline der Tickets, Orchestrator (Agent, der Tickets anlegt, verteilt und prüft), Teams, Budgets, siehe Agent-Zentrale |
 | `quests` | Ticket-Eingang (GitHub, Asana, Trilium, lokal), siehe Quests |
+| `graph` | Fabrik-Graph: der Baum des aktiven Workspace von oben nach unten — Orchestrator, Agents, Sub-Agents, Ticket-Kürzel und `blocked_by`-Pfeile; Layout-Tests mit `node --test mods/graph/test/*.test.mjs` |
 | `docker` | Panel mit Containern, Compose-Gruppen und Aktionen |
 | `marketplaces`, `mcp-servers` | Fenster für Agent-Plugin-Marketplaces und MCP-Server je Host, Maschine und Projekt |
 | `blueprint`, `filetree`, `file-icons`, `git-graph` | Extern, siehe unten |
@@ -352,6 +353,14 @@ Haupt-Checkout auf dem Basis-Branch); Board und Dashboard zeigen den Space noch 
 Panel **Timeline** (`⌘⌥0`, Gruppe *Fabrik*, Block `timeline` in `elric`): eine Gantt-Achse über die Arbeit der Fabrik. Zeilen sind Lanes — oben der Orchestrator, darunter je Agent ein Balken von Start bis Ende (live: bis jetzt, mit pulsierendem Rand), Sub-Agents eingerückt unter ihrem Eltern-Agenten. Rechts an jedem Balken die Dauer, links Identität, Ticket-Kürzel und Status; Farben: arbeitet / wartet / fertig. Der Kopf schaltet **1 h · 24 h · 7 Tage · Alles** und filtert auf **Alle · Ticket**; Ereignisse (Dispatch, Prüfung, Urteil, CI, Landen) sitzen als Marker auf der Zeile und nennen im Tooltip Zeit und Text. Klick auf einen Agentenbalken öffnet dessen Terminal.
 
 Datenquelle ist `hub timeline --json`: Lanes und Events kommen aus den Ticket-Zeiten (`created`, `status_log`), den Terminal-Metadaten von `hc` (`created_ms`, `finished_ms`, `parent`, `hub.ticket`) und dem Ereignisprotokoll `data/orchestra/events.jsonl`, das `hub` ab jetzt bei dispatch/nudge/review/verdict/land/done/verify/ci/night schreibt (Rotation auf die letzten 2000 Zeilen). `hub timeline --write` erzeugt zusätzlich eine selbsttragende HTML-Datei für den Blick ohne App. Sub-Agent-Geburten und -Enden schreibt `agent-cards` nach `data/agent-cards/subagents.jsonl`; sie erscheinen als SUB-Lane bzw. Marker.
+
+## Fabrik-Graph: der Baum der Fabrik
+
+Panel **Fabrik-Graph** (`⌘⌥7`, Gruppe *Fabrik*, Block `factory` in `elric`, als Fenster `mod.open:graph`): dieselbe Fabrik wie die Timeline, nur von oben nach unten. Oben der Orchestrator des aktiven Workspace (Krone), darunter seine Agents als Karten — Avatar in der Agent-Farbe, Name, Status-Chip (arbeitet / wartet / fertig, gleiche Farben wie die Timeline) und das Ticket-Kürzel —, Sub-Agents eingerückt unter ihrem Parent. Je Wurzel eine Spalte, kompakt und ohne Kolonien.
+
+Pfeile: **Dispatch** vom Orchestrator zu seinen Agents, **Parent** vom Agent zu seinen Sub-Agents, dazu dünne **Ticket→Ticket**-Bögen aus `blocked_by` — gestrichelt, wenn der Blocker erledigt ist. Liegt ein Blocker außerhalb des Scopes (andere Fabrik, anderer Space), malt der Graph keinen Bogen; der Chip sagt „wartet auf <Kürzel>“. Der Kopf filtert **Alle · läuft · wartet · fertig** und schaltet **1 h · 24 h · 7 Tage · Alles** (nur Agents mit Tätigkeit im Fenster); der Scope-Chip nennt den Workspace. Klick auf eine Karte öffnet das Terminal ihres Agents, Klick auf den Ticket-Chip das Review-Fenster; Hover hebt die eingehenden Pfeile hervor. Ohne Agents im Workspace steht dort „Noch keiner in diesem Workspace“ mit **Orchestrator starten** (`hub orchestrator start --space …`, wie das Team-Panel).
+
+Daten: `hub timeline --json --all` alle 15 s (Scope im Fenster: `ui.inScope` für Tickets, Agent-Space→Workspace über `ui.workspaceId`) plus `shared("orchestra.tickets")` für Titel, Status und `blocked_by`. Ruhige Anzeige: keine Animation, laufende Karten tragen nur Farbe und Rand. Layout und Kanten sind reine Rechnung in `mods/graph/layout.js` (`node --test mods/graph/test/*.test.mjs`), der Renderer in `mods/graph/main.js` malt Karten als divs und Linien als `paint_path` wie `git-graph`.
 
 ## Triage, Preflight, Stockt, Nachtschicht, Gedächtnis
 

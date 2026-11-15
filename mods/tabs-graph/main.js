@@ -14,7 +14,8 @@ const RESERVED = 26 + 40 + 2 * 4;
 // placeholder icon draws their spot (fallback) and their own command opens the panel.
 const FABRIK = [
   { id: "quests", label: "Quests", icon: "mods/quests/icon.svg", key: 6, tip: "Quests: alle Signale und Tickets" },
-  { id: "team", label: "Team", icon: "mods/orchestra/icon.svg", key: 7, tip: "Team: Pipeline der Tickets" },
+  { id: "team", label: "Team", icon: "mods/orchestra/icon.svg", key: null, chord: "⌘⌥⇧7", tip: "Team: Pipeline der Tickets" },
+  { id: "factory", label: "Fabrik", icon: "mods/graph/icon.svg", panel: true, cmd: "factory.panel", key: 7, tip: "Fabrik: Agents und Tickets von oben nach unten" },
   { id: "board", label: "Board", icon: "mods/board/icon.svg", fallback: "mods/tabs-graph/board.svg", cmd: "board.panel", panel: true, key: 8, tip: "Board: Tickets auf dem Brett" },
   { id: "timeline", label: "Timeline", icon: "mods/timeline/icon.svg", panel: true, cmd: "timeline.panel", key: 0, tip: "Timeline: wer wann woran gearbeitet hat" },
   { id: "teams", label: "Team-Hub", icon: "mods/teams/icon.svg", fallback: "mods/tabs-graph/teams.svg", cmd: "mod.open", key: 9, tip: "Team-Hub: Teams, Rollen und Arbeit" },
@@ -284,7 +285,7 @@ export default class Tabs extends View {
         .justify_center().gap(GAP_XS).flex_none().items_center().rounded(6).text_size(T_S)
         .bg(on ? t.selected : t.background).text_color(on ? t.foreground : t.muted)
         .hover(s => s.bg(on ? t.selected : t.hover).text_color(t.foreground)).on_mouse_down("left", stop)
-        .tooltip(`${p.tip} (⌘⌥${p.key})`)
+        .tooltip(p.chord ? `${p.tip} (${p.chord})` : `${p.tip} (⌘⌥${p.key})`)
         .on_click(() => (p.panel ? this.openPanel(p.id) : p.cmd ? run(p.cmd, p.cmd === "mod.open" ? { name: p.id } : undefined) : this.togglePanel(p.id)))
         .child(svg(this.icons[p.id] ?? p.icon).size(14).flex_none()).when(on, el => el.child(p.label));
     };
