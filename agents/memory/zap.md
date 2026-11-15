@@ -1,0 +1,1 @@
+- 2026-11-15 · - · Beim Board zuerst den kalten Zugang prüfen: layout.show + select, dann mod-Kommando.
