@@ -753,15 +753,24 @@ export class HubSection {
   // fügt diese Marke weiter nach „In Arbeit" ein; sie bleibt deshalb leer.
   budgetChips() { return div(); }
 
-  // Budget per ticket and for the whole team (open tickets + orchestrator); click to change.
+  // Budget per ticket and for the whole team; click to change (the budget itself is one
+  // setting for the home). The spend shown is this workspace's factory — open tickets of
+  // the space plus its orchestrator; the tooltip names the whole home.
   budgetRow(t) {
     const b = costs.budget(), c = costs.costs();
-    const over = (c.teamCost ?? 0) > b.team;
+    const sp = ui.activeSpace();
+    const open = this.all().filter((tk) => tk.status !== "done");
+    const spend = sp
+      ? open.reduce((n, tk) => n + (c.tickets?.[tk.id] ?? 0), 0) + (orch.find() ? c.orchestrator ?? 0 : 0)
+      : c.teamCost ?? 0;
+    const over = spend > b.team;
+    const total = c.teamCost ?? 0;
     const chip = (id, text, tip, kind) => div().id(id).flex_none().h(ui.H_CHIP).px(6).gap(ui.GAP_XS).flex().items_center().rounded(4).bg(t.raised).text_size(T_XS).text_color(over && kind === "team" ? t.blocked : t.muted).cursor_pointer().hover((s) => s.text_color(t.foreground)).tooltip(tip)
       .on_click((_e, cx) => { costs.cycle(kind); cx.notify(); })
       .child(svg(`${WC}/square-pen.svg`).size(12).flex_none()).child(text);
     return h_flex().id("bud").h(ui.H_CHIP).flex_none().gap(ui.GAP_XS).items_center().justify_end()
       .child(chip("bud-ticket", `${usd(b.ticket)}/Ticket`, "Klicken: erhöhen. Budget pro Ticket; darüber wird der Agent angehalten.", "ticket"))
-      .child(chip("bud-team", `Team ${usd(c.teamCost ?? 0)} / ${usd(b.team)}`, "Klicken: erhöhen. Kosten offener Tickets + Orchestrator / Team-Budget; darüber wird alles angehalten.", "team"));
+      .child(chip("bud-team", `Team ${usd(spend)} / ${usd(b.team)}`,
+        `Klicken: erhöhen. Kosten offener Tickets + Orchestrator dieses Workspace (gesamt ${usd(total)}) / Team-Budget; darüber wird alles angehalten.`, "team"));
   }
 }

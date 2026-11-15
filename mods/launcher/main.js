@@ -27,7 +27,6 @@ import { T_XS, T_S, T_M } from "./ui.js";
 
 const WC = "mods/workspace-chrome";
 const TEMPLATES = () => `${appHome()}/mods/launcher/templates`;
-const ORCH = "orchestrator";
 // Results for Quests: [{ at, mode: "team" | "self", quest, writeback, terminal?, starts?: [{ branch,
 // worktree, folder, machine, space, tab, terminal, agent }] }]. Quests takes entries out and handles them.
 const HANDOVER = "quests.handover";
@@ -42,7 +41,28 @@ function parseTemplate(file, text) {
 const stamp = () => { const d = new Date(), p = (n) => String(n).padStart(2, "0"); return `${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`; };
 const fill = (text, vars) => text.replace(/\{(folder|branch|branchnote|space)\}/g, (_m, k) => vars[k] ?? "");
 const errorText = (e) => String(e?.message ?? e ?? "fehlgeschlagen").replace(/^Error: /, "");
-const orchestrator = () => terminals().find((x) => x.name === ORCH && x.state === "live") ?? null;
+const orchestrator = () => {
+  // Der Orchestrator des aktiven Workspace, nie der einer fremden Fabrik: Label
+  // hub.space/herdr.space wie `hub orchestrator start` es setzt. Ohne Space-Modell
+  // (kein Label irgendwo) bleibt der eine namenlose Orchestrator adressierbar.
+  const sp = spaces().find((s) => s.active) ?? null;
+  const live = terminals().filter((x) => x.state === "live"
+    && (x.labels?.["hub.role"] === "orchestrator" || x.name === "orchestrator" || /^orchestrator-/.test(x.name ?? "")));
+  if (!sp) return live.find((x) => !x.labels?.["hub.space"] && !x.labels?.["herdr.space"]) ?? null;
+  return live.find((x) => x.labels?.["hub.space"] === sp.id || x.labels?.["herdr.space"] === sp.id) ?? null;
+};
+
+// Startet den Orchestrator dieses Workspace über denselben Weg wie das Team-Panel
+// (`hub orchestrator start --space …`): kein eigener Start-Pfad, kein fremder Space.
+async function startOrchestrator() {
+  const sp = spaces().find((s) => s.active) ?? null;
+  if (!sp) throw new Error("Kein aktiver Space: der Orchestrator braucht einen Workspace.");
+  // `hub orchestrator start` druckt immer JSON; ein `--json` kennt es nicht.
+  const argv = ["orchestrator", "start", "--space", sp.id];
+  const r = await exec(`${appHome()}/mods/orchestra/bin/hub`, argv);
+  if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim().split("\n").pop() || "Orchestrator nicht startbar");
+  return sp;
+}
 
 // What the team gets for a ticket when the caller brought no text of its own.
 const teamText = (tk) => `${[`Neuer Auftrag: „${tk.title}“`, tk.url && `Quelle: ${tk.url}`, tk.repo && `Checkout: ${tk.repo}`].filter(Boolean).join("\n")}\n\n${
@@ -52,7 +72,7 @@ export default class Launcher extends View {
   init(_props, cx) {
     const p = props() ?? {};
     this.ticket = p.ticket ?? null;
-    this.mode = p.mode === "team" || p.mode === "self" ? p.mode : orchestrator() ? "team" : "self";
+    this.mode = p.mode === "team" || p.mode === "self" ? p.mode : "team";
     this.templates = [];
     this.template = null;
     this.agents = null;     // installed agents on the space's machine
@@ -185,8 +205,8 @@ export default class Launcher extends View {
     if (!text) return;
     this.go(cx, async () => {
       const o = orchestrator();
-      if (!o) throw new Error("Der Orchestrator läuft nicht. Starte ihn im Team-Panel.");
-      const r = await hc(["send", ORCH, text, ...(o.status === "blocked" ? ["--force"] : [])]);
+      if (!o) throw new Error("Kein Orchestrator in diesem Workspace. Starte ihn mit „Orchestrator starten“.");
+      const r = await hc(["send", o.address, text, ...(o.status === "blocked" ? ["--force"] : [])]);
       if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim().split("\n").pop() || "Senden fehlgeschlagen");
       if (this.ticket?.quest) this.handOver({ mode: "team", terminal: o.address });
       else {
@@ -239,7 +259,11 @@ export default class Launcher extends View {
     if (this.team && made.length) {
       const groups = shared("orchestra.groups") ?? [];
       const id = `g${Date.now().toString(36)}`;
-      setShared("orchestra.groups", [...groups, { id, name: tabBase, members: made.map((m) => m.address), at: Date.now(), watch: true, notified: false }]);
+      // Ein Team aus einem Space trägt ihn; eines über mehrere Worktree-Spaces bleibt
+      // ohne `space`, dann entscheiden die Mitglieder (Team-Panel filtert danach).
+      const spacesOf = [...new Set(made.map((m) => m.space).filter(Boolean))];
+      setShared("orchestra.groups", [...groups, { id, name: tabBase, members: made.map((m) => m.address), at: Date.now(), watch: true, notified: false,
+        ...(spacesOf.length === 1 ? { space: spacesOf[0] } : {}) }]);
     }
     if (this.ticket?.quest) {
       this.handOver({ mode: "self", starts: made.map((m) => ({ branch: m.branch ?? base, worktree: Boolean(m.branch), folder: m.folder, machine: on,
@@ -296,17 +320,33 @@ export default class Launcher extends View {
 
   teamBody(t) {
     const o = orchestrator();
+    const sp = spaces().find((s) => s.active) ?? null;
     const hint = o
-      ? `Der Orchestrator plant Tickets, verteilt sie ans Team und bringt die Arbeit geprüft zu dir (Inbox).${o.status === "blocked" ? " Er wartet gerade auf eine Antwort: dein Text beantwortet seine Frage." : ""}`
-      : "Kein Orchestrator läuft. Starte ihn im Team-Panel (Orchestrator-Karte) oder starte selbst.";
+      ? `Der Orchestrator dieses Workspace plant Tickets, verteilt sie ans Team und bringt die Arbeit geprüft zu dir (Inbox).${o.status === "blocked" ? " Er wartet gerade auf eine Antwort: dein Text beantwortet seine Frage." : ""}`
+      : sp ? `Kein Orchestrator in diesem Workspace (${sp.name}). Starte ihn hier — oder starte selbst.`
+        : "Kein Space aktiv: es gibt keine Fabrik, an die der Auftrag gehen könnte.";
     return v_flex().flex_1().min_h(0).gap(ui.GAP_M)
       .child(h_flex().gap(ui.GAP_M).items_center()
-        .child(div().flex_1().min_w(0).text_size(T_S).text_color(o ? t.muted : t.blocked).child(hint))
-        .when(!o, (el) => el.child(ui.link(t, "ln-team-panel", "Team-Panel öffnen", () => { closeOverlay(props().overlay); run("tabs-graph.panel-team"); }))))
+        .child(div().flex_1().min_w(0).text_size(T_S).text_color(o ? t.muted : t.blocked).child(hint)))
       .child(this.area(t, this.ask, this.focus.has("ln-ask")))
-      .child(this.footer(t, null,
-        ui.button(t, "ln-send", "An das Team", (cx) => this.sendTeam(cx), { kind: "primary", enabled: Boolean(o) && !this.busy,
-          tip: "Per hc send an den Orchestrator" })));
+      .child(this.footer(t, null, o
+        ? ui.button(t, "ln-send", "An das Team", (cx) => this.sendTeam(cx), { kind: "primary", enabled: !this.busy,
+          tip: "Per hc send an den Orchestrator dieses Workspace" })
+        : ui.button(t, "ln-orch-start", "Orchestrator starten", (cx) => this.startTeamOrch(cx), { kind: "primary", enabled: !this.busy && Boolean(sp),
+          tip: sp ? `hub orchestrator start --space ${sp.id}: die Fabrik dieses Workspace` : "Kein aktiver Space" })));
+  }
+
+  // Startet den Orchestrator dieses Workspace; danach nimmt dieselbe Dialogseite den Auftrag.
+  startTeamOrch(cx) {
+    if (this.busy) return;
+    this.busy = true; this.error = "";
+    cx.notify();
+    cx.spawn(async (cx) => {
+      try { await startOrchestrator(); }
+      catch (e) { this.error = errorText(e); }
+      this.busy = false;
+      cx.notify();
+    });
   }
 
   selfBody(t) {

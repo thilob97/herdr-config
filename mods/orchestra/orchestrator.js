@@ -23,7 +23,8 @@ export const find = () => {
 };
 
 export async function start() {
-  const argv = ["orchestrator", "start", "--agent", agentKey(), "--json"];
+  // `hub orchestrator start` druckt immer JSON; ein `--json` kennt es nicht.
+  const argv = ["orchestrator", "start", "--agent", agentKey()];
   const sid = spaceId();
   if (sid) argv.push("--space", sid);
   const r = await exec(`${appHome()}/mods/orchestra/bin/hub`, argv);

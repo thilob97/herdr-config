@@ -12,7 +12,7 @@ jedem `ui.js` (Master: `mods/orchestra/ui.js`; alle elf Dateien sind byte-identi
 |---|---|
 | `activeSpace()` | `{ id, name, folder, machine }` des aktiven Space aus `spaces()`, sonst `null`. |
 | `inScope(ticket)` | Gehört das Ticket zur Fabrik dieses Workspace? |
-| `spaceChip(t)` | Ruhiger Chip „<Space-Name>“ (h 18, Tooltip „Fabrik dieses Workspace“). |
+| `spaceChip(t, { maxW })` | Ruhiger Chip „<Space-Name>“ (h 18, Tooltip „Fabrik dieses Workspace“); der Name kürzt sich, `maxW` (Standard 140) hält ihn schmal. |
 
 `inScope` ist bewusst großzügig, damit kein Altbestand still verschwindet:
 
@@ -53,6 +53,18 @@ aktiven Space. `hub stats --json` und `hub gates --json` laufen mit `--space <id
   warf, `publishing` blieb `true`, und das Panel zeigte für immer den alten Stand von
   `orchestra.tickets` (im Testfenster die Demo-Tickets). Jetzt steht `subFresh` vor dem ersten
   `publish()`; das Panel veröffentlicht seine Tickets wie im Kommentar beschrieben.
+- Kopf: der Space-Chip sitzt vor der Stufenzeile; sein Platz wird der Stufenzeile abgezogen
+  (`stages(t, counts, reserve)`). Reicht der Platz nicht (z. B. 400 px Panelbreite), zeigt die
+  Leiste nur Zähler (`1 · 2 · 0`), nie ein abgeschnittenes Wort. Die Krone am
+  Orchestrator-Terminal aus `notes-ORCH-MARK.md` bleibt unverändert.
+- Die Budgetzeile (`$3/Ticket`, `Team $x / $y`) zeigt die Kosten der Fabrik dieses Workspace
+  (offene Tickets + Orchestrator); der Tooltip nennt die Gesamtsumme des Hauses. Der Klick
+  ändert weiter das eine Budget des Hauses.
+- Der Abschnitt **Teams** folgt dem Workspace: Ein Team mit `space` erscheint nur dort, sonst
+  entscheidet der Space seiner Mitglieder (Agent bzw. `hub.space`/`herdr.space`-Label des
+  Terminals). Sind alle Mitglieder beendet und kein Space mehr feststellbar, bleibt das Team
+  sichtbar; Bearbeiten (Beobachten, Auflösen) schreibt immer die ganze Liste, nicht nur die
+  sichtbaren Teams. Der Launcher schreibt den Space beim Start in die Gruppe.
 
 **Inbox** (`mods/inbox`) — Einträge kommen nur aus dem aktiven Space: Agents über `a.space`,
 der wartende Orchestrator über sein `hub.space`/`herdr.space`-Label, Tickets und Fragen über
@@ -69,17 +81,23 @@ Summe der Kosten offener Tickets dieses Space (`shared("orchestra.costs").ticket
 Orchestrator, wenn im Space einer läuft. Der Tooltip nennt die Gesamtsumme des Hauses. Ohne
 Space bleibt es die Gesamtsumme.
 
-## Nicht in diesem Ticket (Grenzen)
+**Launcher** (`mods/launcher`, `⌘⇧N`) — `orchestrator()` nimmt nur den Terminal des aktiven
+Workspace (`hub.role=orchestrator` und `hub.space`/`herdr.space` = aktiver Space, Name
+`orchestrator[-<space>]`). Der Dialog öffnet auf „Ans Team“; ohne Orchestrator zeigt er den
+Satz „Kein Orchestrator in diesem Workspace (<Name>). Starte ihn hier — oder starte selbst.“
+und als Primärknopf **Orchestrator starten** (`hub orchestrator start --space <id> --json`,
+derselbe Weg wie das Team-Panel). Gesendet wird per `hc send <address>` an genau diesen
+Terminal, nie per Name an einen fremden. Ein Home ohne Space-Labels behält den einen
+namenlosen Orchestrator.
 
-Diese Stellen zeigen weiter das ganze Haus; sie liegen außerhalb der Ticket-Grenzen:
+**Tab-Leiste** (`mods/tabs-graph`) — der Inbox-Zähler zählt die Fabrik des aktiven Workspace
+(Agents, wartender Orchestrator, Review-Tickets); der Tooltip nennt Space und Gesamtsumme
+(„Inbox · Beta: 1 warten in diesem Workspace · gesamt 3“). Das Modul hält seine Tokens selbst,
+deshalb steht die kleine Scope-Regel dort lokal (gleiche Regel wie `ui.inScope`).
 
-- `mods/launcher` (`⌘⇧N`): `orchestrator()` sucht den Terminal mit Namen `orchestrator` im
-  ganzen Haus. Mit dem Space-Modell heißen sie `orchestrator-<space>`; der Dialog findet dann
-  keinen und bietet „Selbst starten“ an. Der workspace-treue Auftrag steht im Team-Panel.
-- `mods/tabs-graph`: der Inbox-Zähler in der Tab-Leiste hat eine eigene Kopie der Zählung und
-  zählt weiter das ganze Haus. Der Zähler der Inbox (Popup-Kopf) ist der gescopte.
-- `mods/dashboard`: liest `shared("orchestra.stats")`, das jetzt pro aktivem Space gefüllt
-  wird; die Dashboard-Karten selbst sind nicht angefasst.
+**Dashboard** (`mods/dashboard`) — nicht Teil dieses Tickets; es liest `shared("orchestra.stats")`
+und `orchestra.costs`, die jetzt pro aktivem Space gefüllt werden. Die Karten selbst sind
+unverändert.
 
 ## Prüfung
 
@@ -91,12 +109,20 @@ docs/ui-preview.sh do space.new --folder "$T/demo/repo" --name Alpha --tab shell
 docs/ui-preview.sh hub ticket new --title "Alpha: …" --repo "$T/demo/repo" --space Alpha
 docs/ui-preview.sh hub spaces --adopt --yes        # Altbestand per Repo übernehmen
 docs/ui-preview.sh hub orchestrator start --space Alpha
+# Kopf bei 400 px: Chip sitzt vor der Stufenzeile, die dann nur Zähler zeigt
+docs/ui-preview.sh do layout.resize --id panel --px 400
+# Auftrag ohne Orchestrator (Space Gamma): Dialog bietet „Orchestrator starten“
+docs/ui-preview.sh do mod.open --name launcher
 ```
 
-Belege in `/tmp/ui-space/`: `alpha-{board,timeline,team,inbox,quests}`, `beta-{…}` und
-`gamma-team` (Space ohne Orchestrator: leerer Zustand mit „Orchestrator starten“). Alpha zeigt
-sechs Tickets ($2.87 Team), Beta zwei ($0.41 Team), Gamma null; Board, Timeline, Team, Inbox und
-die lokale Quests-Liste wechseln mit dem Space im selben Fenster.
+Belege in `/tmp/ui-space/`: `alpha-{board,timeline,team,inbox,quests}`, `beta-{…}`,
+`gamma-team` (Space ohne Orchestrator: leerer Zustand mit „Orchestrator starten“),
+`gamma-auftrag` (Launcher ohne Orchestrator: Start statt fremdem Senden) und
+`beta-team-400` (Panel auf 400 px: Stufenzeile nur Zähler, nichts abgeschnitten). Alpha zeigt
+sechs Tickets ($2.87 Team), Beta zwei ($0.41 Team), Gamma null; Board, Timeline, Team, Inbox,
+lokale Quests-Liste und der Inbox-Zähler der Tab-Leiste wechseln mit dem Space im selben
+Fenster. Das Team „UI-Umbau“ (Agents im Space `demo-app`) erscheint in Alpha und Beta nicht
+mehr.
 
-`herdr-app check` (über `docs/ui-preview.sh check <mod>`) ist für `board`, `timeline`,
-`orchestra`, `inbox`, `quests` und `status-bar` grün; `errors: []`.
+`herdr-app check` (über `docs/ui-preview.sh check <mod>`) ist für alle elf Mods mit `ui.js`
+sowie `tabs-graph` grün; `errors: []`; alle `mods/*/ui.js` byte-identisch.

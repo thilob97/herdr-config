@@ -229,11 +229,14 @@ export function inScope(tk) {
   return !repo || !folder ? true : repo === folder || repo.startsWith(`${folder}/`);
 }
 
-/** Ruhiger Bereichs-Chip im Kopf: „<Space-Name>“, Tooltip „Fabrik dieses Workspace“. */
-export function spaceChip(t) {
+/** Ruhiger Bereichs-Chip im Kopf: „<Space-Name>“, Tooltip „Fabrik dieses Workspace“.
+ *  Der Name kürzt sich (max_w), damit er bei schmalem Panel nie die Zeile sprengt. */
+export function spaceChip(t, { maxW = 140 } = {}) {
   const sp = activeSpace();
   if (!sp) return null;
-  return chip(t, sp.name || "Ohne Space", t.muted, { id: "space-scope", tip: "Fabrik dieses Workspace" });
+  return h_flex().id("space-scope").flex_none().max_w(maxW).h(H_CHIP).px(6).gap(GAP_XS).items_center().rounded(4)
+    .bg(t.muted + "26").text_size(T_XS).font_medium().text_color(t.muted).tooltip("Fabrik dieses Workspace")
+    .child(div().min_w(0).truncate().child(sp.name || "Ohne Space"));
 }
 
 // ---------- Knöpfe (5.6 Knöpfe) ----------

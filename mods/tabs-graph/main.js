@@ -46,14 +46,35 @@ function statusMark(t, status) {
   return null;
 }
 
-// Inbox count (contract 7.3): what waits for the person, else what finished.
+// Der aktive Workspace und seine Tickets: dieselbe Regel wie `ui.inScope` in den Panels.
+// Dieses Modul hält seine Tokens selbst, deshalb steht der kleine Helfer hier.
+const activeSpace = () => spaces().find((s) => s.active) ?? null;
+function inScope(tk, sp) {
+  if (!sp) return true;
+  const at = (p) => String(p ?? "").replace(/\\/g, "/").replace(/\/+$/, "");
+  const sid = String(tk?.space ?? "").trim();
+  if (!sid || sid === sp.id) return true;
+  if (String(tk?.space_name ?? "").trim()) return false;
+  const repo = at(tk?.repo), folder = at(sp.folder);
+  return !repo || !folder ? true : repo === folder || repo.startsWith(`${folder}/`);
+}
+
+// Inbox count (contract 7.3): what waits for the person in this workspace's factory,
+// else what finished. `total` is the whole home, for the tooltip.
 function inboxCount() {
-  const list = agents();
-  const orch = terminals().find(x => x.name === "orchestrator" && x.state === "live" && x.status === "blocked");
-  const blocked = list.filter(a => a.status === "blocked").length + (orch && !list.some(a => a.address === orch.address) ? 1 : 0);
-  const review = (shared("orchestra.tickets") ?? []).filter(x => x.status === "review").length;
-  const done = list.filter(a => a.status === "done").length;
-  return blocked + review > 0 ? { n: blocked + review, color: "blocked" } : done > 0 ? { n: done, color: "done" } : null;
+  const count = (sp) => {
+    const list = agents();
+    const scoped = (a) => !sp || !a.space || a.space === sp.id;
+    const o = terminals().find((x) => x.state === "live" && x.status === "blocked"
+      && (x.name === "orchestrator" || x.labels?.["hub.role"] === "orchestrator" || /^orchestrator-/.test(x.name ?? ""))
+      && (!sp || x.labels?.["hub.space"] === sp.id || x.labels?.["herdr.space"] === sp.id));
+    const blocked = list.filter((a) => a.status === "blocked" && scoped(a)).length + (o && !list.some((a) => a.address === o.address) ? 1 : 0);
+    const review = (shared("orchestra.tickets") ?? []).filter((x) => x.status === "review" && (!sp || inScope(x, sp))).length;
+    const done = list.filter((a) => a.status === "done" && scoped(a)).length;
+    return blocked + review > 0 ? { n: blocked + review, color: "blocked" } : done > 0 ? { n: done, color: "done" } : null;
+  };
+  const mine = count(activeSpace());
+  return mine ? { ...mine, total: count(null) } : null;
 }
 
 function find(node, id) {
@@ -277,11 +298,16 @@ export default class Tabs extends View {
       .tooltip("Auftrag: neue Arbeit ans Team oder selbst starten (⌘⇧N)")
       .on_mouse_down("left", stop).on_click(() => run("mod.open", { name: "launcher" }))
       .child(svg("mods/launcher/icon.svg").size(14).flex_none()).child("Auftrag");
-    // Bar button (5.6) with the inbox count (7.3), the only waiting number outside the inbox.
+    // Bar button (5.6) with the inbox count (7.3), the only waiting number outside the
+    // inbox: this workspace's factory; the tooltip names the whole home.
     const count = inboxCount();
+    const sp = activeSpace();
+    const total = count?.total?.n ?? null;
     const inbox = h_flex().id("hub-inbox").h(H_BTN).px(8).gap(GAP_S).flex_none().items_center().rounded(6)
       .text_size(T_M).text_color(t.muted).hover(s => s.bg(t.hover).text_color(t.foreground))
-      .tooltip("Inbox: was auf dich wartet (⌘⇧J, nächster wartender Agent: ⌘J)")
+      .tooltip(count
+        ? `Inbox${sp ? ` · ${sp.name}` : ""}: ${count.n} warten in diesem Workspace${total != null && total !== count.n ? ` · gesamt ${total}` : ""} (⌘⇧J, nächster wartender Agent: ⌘J)`
+        : "Inbox: was auf dich wartet (⌘⇧J, nächster wartender Agent: ⌘J)")
       .on_mouse_down("left", stop).on_click(() => run("mod.open", { name: "inbox" }))
       .child(svg("mods/inbox/icon.svg").size(14).flex_none()).child("Inbox")
       .when(Boolean(count), el => el.child(div().h(H_BADGE).px(5).flex().items_center().rounded(8).bg(t[count.color])
