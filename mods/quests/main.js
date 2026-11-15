@@ -28,6 +28,13 @@ const HANDOVER = "quests.handover";
 // Handovers to the orchestrator without a ticket yet (read by the Inbox, pruned here).
 const PENDING = "quests.pending";
 const keyOf = (t) => `${t.source}:${t.id}`;
+// Die lokale Quelle ist die Fabrik dieses Workspace, keine externe Quest-Quelle:
+// so steht sie in der linken Spalte und im Abschnittskopf, nie verwechselbar mit
+// GitHub, Asana oder Trilium.
+const SOURCE_WORD = { plain: "Fabrik (lokal)" };
+const sourceName = (key) => SOURCE_WORD[key] ?? label(key);
+// Der direkte Weg von der lokalen Fabrik-Liste ins Brett.
+const openBoard = () => run("tabs-graph.panel-board");
 // One language with the Team panel and the Inbox (B1): Geplant / In Arbeit / Prüfung / Fertig.
 const STAGE_WORD = { todo: "Geplant", doing: "In Arbeit", review: "Prüfung", done: "Fertig" };
 // A team ticket's status as a pipeline stage (unknown values run).
@@ -383,7 +390,7 @@ class Board {
       if (!S || (this.only && this.only !== key)) continue;
       const shown = S.tickets.filter((tk) => this.matches(tk));
       const open = !this.folded.has(key);
-      out.push(ui.sectionHeader(t, label(key), {
+      out.push(ui.sectionHeader(t, sourceName(key), {
         id: `g-${key}`, count: shown.length, open, px: 8,
         onClick: (cx) => { open ? this.folded.add(key) : this.folded.delete(key); cx.notify(); },
         right: S.loading ? spinner(t) : key === "plain" ? iconBtn(t, "g-plain-new", `${WC}/plus.svg`, "Neues lokales Ticket", () => openEdit(), true) : null,
@@ -412,6 +419,9 @@ class Board {
 
   header(t, title) {
     return ui.panelHeader(t, title, [ui.spaceChip(t),
+      // Bei der lokalen Fabrik-Liste: derselbe Vorrat als Brett, ein Klick statt ⌘⌥8.
+      ...(this.only === "plain"
+        ? [ui.button(t, "h-board", "Board öffnen", openBoard, { small: true, tip: "Im Board öffnen: die Tickets der Fabrik als Brett (⌘⌥8)" })] : []),
       iconBtn(t, "h-new", `${WC}/plus.svg`, "Neues lokales Ticket", () => openEdit()),
       iconBtn(t, "h-refresh", "mods/orchestra/icons/restart.svg", "Neu laden", (cx) => this.reload(cx, true)),
       iconBtn(t, "h-settings", `${WC}/settings.svg`, "Quellen und Zugangsdaten", () => openSettings()),
@@ -461,7 +471,7 @@ class Board {
       .child(ui.panelHeader(t, "Quellen"))
       .child(v_flex().px(6).pt(ui.GAP_M).gap(2).flex_none()
         .child(row(null, "Alle Quellen", null, true))
-        .children(SOURCES.map((s) => row(s.key, s.label, this.src[s.key], Boolean(this.settings?.[s.key]?.enabled)))))
+        .children(SOURCES.map((s) => row(s.key, sourceName(s.key), this.src[s.key], Boolean(this.settings?.[s.key]?.enabled)))))
       .child(h_flex().px(ui.INSET_PANEL).py(ui.GAP_M).gap(ui.GAP_S).flex_none()
         .child(btn(t, "l-new", "Neues Ticket", () => openEdit(), { icon: `${WC}/plus.svg`, tip: "Neues lokales Ticket" }))
         .child(btn(t, "l-settings", "Quellen", () => openSettings(), { icon: `${WC}/settings.svg`, tip: "Quellen und Zugangsdaten" })))
