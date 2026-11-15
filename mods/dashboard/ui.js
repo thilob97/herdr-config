@@ -26,6 +26,10 @@ export const plain = (s) => (s ?? "").replace(/[\uE000-\uF8FF\u{10000}-\u{10FFFF
 export const STATUS_WORD = { working: "arbeitet", blocked: "wartet", done: "fertig", idle: "ruhig", error: "Fehler" };
 export const statusColor = (t, st) => (st === "error" ? t.blocked : t[st] ?? t.dim);
 
+/** Ruhige Anzeige (shared "ui.calm", default on): keine Spinner, kein Pulsen.
+ *  `false` lässt die Animationen wieder laufen; ⌘⇧A schaltet (tabs-graph.calm). */
+export const calm = () => shared("ui.calm") ?? true;
+
 /** Ein Zahlenformat für Kosten (B9): Cent unter $10, sonst ganze Dollar. */
 export const usd = (n) => { const v = Number(n ?? 0); return `$${Math.abs(v) < 10 && v % 1 !== 0 ? v.toFixed(2) : Math.round(v)}`; };
 
@@ -85,13 +89,18 @@ export function focusFields() {
   };
 }
 
-/** Die eine Statusanzeige, Box 12×12. */
+/** Die eine Statusanzeige, Box 12×12. Ruhig: gefüllter Punkt (arbeits), Ring (wartet),
+ *  Punkt (fertig), hohler Punkt (ruhig) — gleiche Größen, ohne Animation. */
 export function statusIcon(t, st) {
   const box = () => div().size(12).flex_none().flex().items_center().justify_center();
-  if (st === "working") return svg(`${WC}/spinner.svg`).size(12).flex_none().text_color(t.working).spin(900);
-  if (st === "blocked") return box().relative()
-    .child(div().absolute().inset_0().rounded_full().bg(t.blocked + "55").loop("opacity", { from: 0, to: 1, period: 900 }))
-    .child(div().size(7).rounded_full().bg(t.blocked));
+  if (st === "working") return calm()
+    ? box().child(div().size(7).rounded_full().bg(t.working))
+    : svg(`${WC}/spinner.svg`).size(12).flex_none().text_color(t.working).spin(900);
+  if (st === "blocked") return calm()
+    ? box().child(div().size(7).rounded_full().border(1.5).border_color(t.blocked))
+    : box().relative()
+      .child(div().absolute().inset_0().rounded_full().bg(t.blocked + "55").loop("opacity", { from: 0, to: 1, period: 900 }))
+      .child(div().size(7).rounded_full().bg(t.blocked));
   if (st === "done" || st === "error") return box().child(div().size(7).rounded_full().bg(statusColor(t, st)));
   return box().child(div().size(7).rounded_full().border(1.5).border_color(t.idle ?? t.dim));
 }
@@ -318,9 +327,10 @@ export function empty(t, text, { icon, row = false, action } = {}) {
     .when(Boolean(action), (el) => el.child(action));
 }
 
-/** Wartezustand: Spinner 12 + „lädt …“. */
+/** Wartezustand: Spinner 12 + „lädt …“; ruhig als „…“ statt Animation. */
 export const loading = (t, text = "lädt …") => h_flex().gap(GAP_S).items_center().text_size(T_S).text_color(t.dim)
-  .child(svg(`${WC}/spinner.svg`).size(12).text_color(t.dim).spin(900)).child(text);
+  .child(calm() ? div().size(12).flex_none().flex().items_center().justify_center().child("…")
+    : svg(`${WC}/spinner.svg`).size(12).text_color(t.dim).spin(900)).child(text);
 
 // ---------- Identität (7.1) und Identitäts-Chip (5.6) ----------
 

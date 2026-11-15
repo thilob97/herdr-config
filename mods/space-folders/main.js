@@ -30,6 +30,8 @@ const URGENT = ["blocked", "done", "working"];
 // in a folder has its header at 26 and what's under it a step further, at 44.
 const STEP = 18;
 const indent = (folder, nested) => 8 + (nested ? 2 * STEP : 0) + (folder ? STEP : 0);
+// Calm display (shared "ui.calm", default on): a still mark instead of a spinner.
+const calm = () => shared("ui.calm") ?? true;
 
 async function readFolders(machine) {
   const r = await exec("sh", ["-c", `cat ${FILE} 2>/dev/null`], { on: machine });
@@ -598,7 +600,9 @@ export default class Spaces extends View {
       .child(tile)
       .child(div().flex_1().min_w(0).truncate().font_medium().child(f.name))
       // Folded, it still says when something in it is running or needs you.
-      .when(f.folded && status === "working", (el) => el.child(svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.working).spin(900)))
+      .when(f.folded && status === "working", (el) => el.child(calm()
+        ? div().size(12).flex_none().flex().items_center().justify_center().text_color(t.working).child("…")
+        : svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.working).spin(900)))
       .when(f.folded && Boolean(status) && status !== "working", (el) => el.child(div().flex_none().text_color(tone(t, status)).child(glyph(status))))
       .child(iconBtn(t, `folder-add-${f.id}`, "plus", "Neuer Space in diesem Ordner", () => newSpaceIn(machine, f.id)))
       .child(div().flex_none().text_size(T_XS).text_color(t.dim).child(String(inside.length)))

@@ -8,7 +8,7 @@ import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, HoverCard } from "gpui-base";
 import { spaces, agents, terminals, theme, run, window, keys, exec, machines, appHome, readTextFile, shared, setShared, nextCommand, notify, focused, playSound } from "herdr";
 // Costs in one format everywhere (B9, same copy as in mods/orchestra/ui.js).
-import { usd } from "./ui.js";
+import { usd, calm } from "./ui.js";
 
 // Tokens (docs/ui-spec.md, 5).
 const GAP_XS = 4, GAP_S = 6, GAP_M = 8, GAP_L = 12, GAP_XL = 16;
@@ -213,9 +213,10 @@ export default class StatusBar extends View {
       .child(div().h(4).rounded(4).w(Math.round(w * Math.min(100, Math.max(0, pct)) / 100)).bg(color));
   }
 
-  // Status dot (5.6); breathes while a limit is (nearly) used up, as the blocked indicator does.
+  // Status dot (5.6); breathes while a limit is (nearly) used up, as the blocked
+  // indicator does. Calm keeps it a still dot.
   dot(color, hot) {
-    return hot
+    return hot && !calm()
       ? div().relative().size(12).flex_none().flex().items_center().justify_center()
         .child(div().absolute().inset_0().rounded_full().bg(color + "55").loop("opacity", { from: 0, to: 1, period: 900 }))
         .child(div().size(7).rounded_full().bg(color))
@@ -283,7 +284,8 @@ export default class StatusBar extends View {
   loading(busy, t) {
     return busy
       ? h_flex().gap(GAP_S).items_center().text_size(T_S).text_color(t.dim)
-        .child(svg("mods/workspace-chrome/spinner.svg").size(12).text_color(t.dim).spin(900)).child("lädt …")
+        .child(calm() ? div().size(12).flex_none().flex().items_center().justify_center().child("…")
+          : svg("mods/workspace-chrome/spinner.svg").size(12).text_color(t.dim).spin(900)).child("lädt …")
       : div().text_size(T_S).text_color(t.dim).child("—");
   }
 

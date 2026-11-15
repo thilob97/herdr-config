@@ -93,14 +93,20 @@ const SECTION_STATUS = { 4: "blocked", 3: "done", 2: "working" };
 // The word for a status, where one is needed (docs/ui-spec.md 5.6).
 const WORD = { working: "arbeitet", blocked: "wartet", done: "fertig", idle: "ruhig", error: "Fehler" };
 
-// The status mark, the same everywhere: a 12×12 box.
+// The status mark, the same everywhere: a 12×12 box. Calm (shared "ui.calm",
+// default on) keeps the mark still; `false` brings back spinner and pulse.
+const calm = () => shared("ui.calm") ?? true;
 function statusMark(t, status) {
   const box = () => div().size(12).flex_none().flex().items_center().justify_center();
-  if (status === "working") return svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.working).spin(900);
+  if (status === "working") return calm()
+    ? box().child(div().size(7).rounded_full().bg(t.working))
+    : svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.working).spin(900);
   if (status === "blocked") {
-    return box().relative()
-      .child(div().absolute().inset_0().rounded_full().bg(t.blocked + "55").loop("opacity", { from: 0, to: 1, period: 900 }))
-      .child(div().size(7).rounded_full().bg(t.blocked));
+    return calm()
+      ? box().child(div().size(7).rounded_full().border(1.5).border_color(t.blocked))
+      : box().relative()
+        .child(div().absolute().inset_0().rounded_full().bg(t.blocked + "55").loop("opacity", { from: 0, to: 1, period: 900 }))
+        .child(div().size(7).rounded_full().bg(t.blocked));
   }
   if (status === "done") return box().child(div().size(7).rounded_full().bg(t.done));
   if (status === "error") return box().child(div().size(7).rounded_full().bg(t.blocked));
@@ -431,9 +437,9 @@ export default class Agents extends View {
     }
     const n = this.avatars[a.address]?.n ?? 0;
     const sprite = image(AVATARS[n]).w(24).h(24).absolute().left(1)
-      .when(a.status === "working", (el) => el.loop("top", { from: 3, to: 0, period: 700 }))
-      .when(a.status !== "working", (el) => el.top(1))
-      .when(a.status === "blocked", (el) => el.loop("opacity", { from: 0.35, to: 1, period: 900 }))
+      .when(a.status === "working" && !calm(), (el) => el.loop("top", { from: 3, to: 0, period: 700 }))
+      .when(a.status !== "working" || calm(), (el) => el.top(1))
+      .when(a.status === "blocked" && !calm(), (el) => el.loop("opacity", { from: 0.35, to: 1, period: 900 }))
       .when(a.status === "idle" && !a.focused, (el) => el.opacity(0.6));
     return div().relative().size(28).flex_none().rounded(6).bg(t.background).border_1().border_color(t.border).overflow_hidden().child(sprite);
   }
@@ -662,7 +668,8 @@ export default class Agents extends View {
         .child(div().id("ag-sel-clear").flex_none().text_color(t.dim).cursor_pointer().hover((s) => s.text_color(t.foreground))
           .on_click((_e, cx) => { this.selected.clear(); this.note = null; cx.notify(); }).child("aufheben"))
         .when(this.busy, (el) => el.child(h_flex().pl(GAP_S).flex_1().min_w(0).gap(GAP_XS).items_center().text_size(T_XS).text_color(t.dim)
-          .child(svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.dim).spin(900)).child("läuft …")))
+          .child(calm() ? div().size(12).flex_none().flex().items_center().justify_center().child("…")
+            : svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.dim).spin(900)).child("läuft …")))
         .when(!this.busy && Boolean(this.note), (el) => el.child(div().pl(GAP_S).flex_1().min_w(0).truncate().text_size(T_XS)
           .text_color(this.note.ok ? t.muted : t.blocked).child(this.note.text)))
         .when(!this.busy && !this.note, (el) => el.child(div().flex_1()))

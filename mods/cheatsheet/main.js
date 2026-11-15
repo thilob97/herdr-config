@@ -33,6 +33,7 @@ const DESC = {
   "space-folders.next": "Nächster Space (Seitenleisten-Reihenfolge)", "space-folders.prev": "Vorheriger Space (Seitenleisten-Reihenfolge)",
   "pane.close": "Pane schließen", "pane.zoom": "Pane zoomen / zurück",
   "tabs-graph.panel": "Rechtes Panel ein/aus",
+  "tabs-graph.calm": "Ruhige Anzeige an/aus (Spinner und Pulsen)",
   "layout.toggle:sidebar": "Seitenleiste ein/aus", "layout.switch": "Nächstes Layout",
   "mod.open:picker": "Gehe zu… (Tab, Space, Agent)", "app.palette": "Befehlspalette",
   "mod.open:marketplaces": "Marketplaces", "mod.open:mcp-servers": "MCP-Server",
