@@ -50,22 +50,27 @@ reports into it) and show in the Team-Panel under it.
                                             `hub verify` passed and the reviewer's verdict is pass on the
                                             worktree's HEAD; --force needs --reason and writes it to the
                                             Verlauf; --evidence replaces the files
-  hub land ID --merge | --pr [--wait-ci] [--lesson "text"]...
+  hub land ID --merge | --pr [--wait-ci] [--lesson "text"]... [--force --reason TEXT]
                                             after acceptance: merge into its base branch, or push and open a
                                             pull request (gh); then end its agent and remove its worktree.
-                                            --wait-ci polls the PR's checks (30 s, max 20 min) and only
-                                            finishes a green ticket; --lesson writes the lesson and names it
-                                            in the ticket's Verlauf
+                                            --merge refuses when `ci` is red or its recorded `ci_head` is
+                                            not the worktree's HEAD; --force needs --reason and writes it
+                                            to the Verlauf. --wait-ci polls the PR's checks (30 s, max
+                                            20 min) and only finishes a green ticket; --lesson writes the
+                                            lesson and names it in the ticket's Verlauf
   hub ci ID                                 gh pr checks for the ticket's PR: pass|fail|running|unknown in
-                                            the ticket, failures as a Verlauf comment (--from ci) and back
-                                            to the agent
+                                            the ticket, bound to the worktree's HEAD as `ci_head`;
+                                            failures as a Verlauf comment (--from ci) and back to the agent
   hub done ID [--keep-worktree] [--keep-space]
                                             accepted without landing; ends the agent, removes the
                                             clean worktree and closes the ticket's space/tab (branch
                                             stays); the flags keep one of them
-  hub cleanup [--dry-run]                   remove leftovers: worktrees without a ticket, spaces
-                                            without live terminals that belong to a ticket, finished
-                                            agents older than an hour
+  hub cleanup [--yes] [--root PATH]         remove this home's leftovers: worktrees it derived from
+                                            its tickets' repo+branch, review checkouts, spaces without
+                                            live terminals, finished agents older than an hour; without
+                                            --yes only a dry run. --root defaults to
+                                            $HOME/.herdr/worktrees and is never searched beyond the
+                                            tickets' own paths
   hub status                                tickets with their agents' live status, CI, age (since the
                                             last status change) and cost so far; done tickets are
                                             listed only while something is left
@@ -80,7 +85,7 @@ APP = os.environ.get("HERDR_APP_HOME") or os.path.expanduser("~/.config/herdr-ap
 TICKETS = os.path.join(APP, "data", "quests", "tickets")
 FIELDS = ["title", "status", "repo", "labels", "due", "machine", "agent", "branch", "base", "base_head", "worktree", "terminal",
           "space", "tab", "source", "checks", "checks_head", "checks_at", "checks_duration", "checks_exit", "checks_cmd", "verify",
-          "evidence", "merged", "pr", "ci", "ci_at", "ci_url", "ci_details",
+          "evidence", "merged", "pr", "ci", "ci_head", "ci_at", "ci_url", "ci_details",
           "review", "review_head", "review_at", "review_summary", "review_rounds", "reviewer", "review_terminal",
           "assignee", "blocked_by", "tags", "waiting", "by", "updated", "created", "status_at", "status_log"]
 COSTS = os.path.join(APP, "data", "orchestra", "costs.json")  # written by the Team panel's watcher
@@ -369,6 +374,15 @@ def head_of(t, on=None):
     if r.returncode != 0:
         return None, f"HEAD nicht lesbar in {folder}: {(r.stderr or r.stdout).strip()}"
     return r.stdout.strip(), None
+
+
+def worktree_head(t, on=None):
+    """HEAD of the ticket's own worktree, else None (no fallback to the repo)."""
+    wt = t.get("worktree") or ""
+    if not wt or run(["test", "-d", wt], on, check=False).returncode != 0:
+        return None
+    r = run(["git", "rev-parse", "HEAD"], on, wt, check=False)
+    return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else None
 
 
 def gate(t):
@@ -1224,40 +1238,44 @@ def worktree_state(t, tickets, on=None):
     return main, None
 
 
-def review_worktree_path(t, on=None):
-    """The ticket's Prüfstation checkout, named exactly like `hub review-start` does."""
-    repo = t.get("repo")
+def worktrees_root(value=None, on=None):
+    """The own world's worktree root: --root, else the home's ~/.herdr/worktrees."""
+    if value:
+        return os.path.abspath(os.path.expanduser(value))
+    return os.path.join(home_of(on), ".herdr", "worktrees")
+
+
+def repo_key(t, on=None):
+    """The directory `hub dispatch` gives a repo's worktrees: basename of its main checkout."""
+    repo = t.get("repo") or ""
     if not repo:
         return None
-    top = run(["git", "rev-parse", "--show-toplevel"], on, repo, check=False)
-    if top.returncode != 0 or not top.stdout.strip():
-        return None
-    common = run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], on, top.stdout.strip(), check=False)
-    if common.returncode != 0 or not common.stdout.strip():
-        return None
-    main = common.stdout.strip()
-    if main.endswith("/.git"):
-        main = main[:-5]
-    return f"{home_of(on)}/.herdr/worktrees/{os.path.basename(main)}/review-{slug(t['id'], 48)}"
+    r = run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], on, repo, check=False)
+    if r.returncode == 0 and r.stdout.strip():
+        main = r.stdout.strip()
+        if main.endswith("/.git"):
+            main = main[:-5]
+        return os.path.basename(main)
+    return os.path.basename(os.path.normpath(repo))
 
 
-def remove_review_checkout(t, on=None, keep=False):
-    """Remove the ticket's review checkout when its reviewer is not running. (ok, message) or None."""
-    if keep:
+def worktree_path(t, root, on=None):
+    """The worktree `hub dispatch` made for this ticket: <root>/<repo>/<branch slug>."""
+    key, branch = repo_key(t, on), t.get("branch") or ""
+    if not key or not branch:
         return None
-    path = review_worktree_path(t, on)
-    if not path or run(["test", "-d", path], on, check=False).returncode != 0:
-        return None
-    rv = t.get("review_terminal") or ""
-    if rv and is_live(rv):
-        return False, f"Prüf-Worktree {path} bleibt: Reviewer {rv} läuft"
-    main, why = worktree_state({"id": t["id"], "worktree": path}, [], on)
-    if why:
-        return False, f"Prüf-Worktree {path} bleibt: {why}"
-    r = run(["git", "worktree", "remove", path], on, main, check=False)
-    if r.returncode != 0:
-        return False, f"Prüf-Worktree {path} bleibt: {(r.stderr or r.stdout).strip()}"
-    return True, f"Prüf-Worktree {path} entfernt"
+    return os.path.join(root, key, slug(branch.replace("/", "-"), 60))
+
+
+def review_worktree_path(t, root, on=None):
+    """The ticket's Prüfstation checkout, named exactly like `hub review-start` does."""
+    key = repo_key(t, on)
+    return os.path.join(root, key, f"review-{slug(t['id'], 48)}") if key else None
+
+
+def inside(path, folder):
+    path, folder = os.path.realpath(path), os.path.realpath(folder)
+    return path == folder or path.startswith(folder + os.sep)
 
 
 def close_space(t, space):
@@ -1347,9 +1365,6 @@ def cleanup_ticket(t, tickets=None, keep_worktree=False, keep_space=False):
                 removed = True
             else:
                 skipped.append(f"Worktree {wt} bleibt: {(r.stderr or r.stdout).strip()}")
-    review = remove_review_checkout(t, on, keep=keep_worktree)
-    if review:
-        (notes if review[0] else skipped).append(review[1])
     if not keep_space:
         spaces = app_spaces()
         if spaces is None:
@@ -1381,37 +1396,38 @@ def expired_at(info, now_ms):
         return False
 
 
-def local_worktrees():
-    """The worktrees hub made: ~/.herdr/worktrees/<repo>/<branch>."""
-    root = os.path.join(os.path.expanduser("~"), ".herdr", "worktrees")
+def own_worktrees(tickets, root, on=None):
+    """(ticket, path, kind) for this home's tickets only: paths derived from repo + branch.
+
+    The root is never searched; a checkout only exists here if a ticket of this home
+    names the repo and branch that produce it. kind is "worktree" or "review".
+    """
     out = []
-    try:
-        repos = list(os.scandir(root))
-    except OSError:
-        return out
-    for repo in repos:
-        if not repo.is_dir(follow_symlinks=False):
-            continue
-        try:
-            children = list(os.scandir(repo.path))
-        except OSError:
-            continue
-        for child in children:
-            if child.is_dir(follow_symlinks=False) and os.path.exists(os.path.join(child.path, ".git")):
-                out.append(child.path)
+    for t in tickets:
+        if t.get("machine"):
+            continue  # another machine's home: its paths are not ours to judge here
+        path = worktree_path(t, root, on)
+        if path:
+            out.append((t, path, "worktree"))
+        path = review_worktree_path(t, root, on)
+        if path:
+            out.append((t, path, "review"))
     return out
 
 
 def cmd_cleanup(a):
     tickets = all_tickets()
     now = int(time.time() * 1000)
-    dry = a.dry_run
+    root = worktrees_root(a.root)
+    dry = not a.yes
     done_actions, skipped, changed = [], [], {}
 
+    term_rows = []
     infos = {}
     try:
         listed = json.loads(subprocess.run(["hc", "ls", "--all", "--json"], capture_output=True, text=True).stdout)
-        for x in listed.get("terminals", []):
+        term_rows = listed.get("terminals", [])
+        for x in term_rows:
             addr = x.get("address")
             if addr:
                 info = dict(hc_term(addr) or {})
@@ -1481,30 +1497,53 @@ def cmd_cleanup(a):
                 t["space"] = t["tab"] = ""
                 changed[t["id"]] = t
 
-    claimed = [t.get("worktree") for t in tickets if t.get("worktree")]
-    for wt in local_worktrees():
-        if any(same_path(wt, c) for c in claimed):
+    live_cwds = [(x.get("address") or "?", x.get("cwd") or "") for x in term_rows
+                 if x.get("state") == "live" and x.get("cwd")]
+    by_path = {}
+    for t, path, kind in own_worktrees(tickets, root):
+        by_path.setdefault(os.path.realpath(path), []).append((t, path, kind))
+    for group in by_path.values():
+        t, path, kind = group[0]
+        if not os.path.isdir(path):
             continue
-        base = os.path.basename(wt)
-        owner = next((t for t in tickets if base == f"review-{slug(t['id'], 48)}"), None) if base.startswith("review-") else None
-        if owner and owner.get("status") != "done":
-            skipped.append(f"Worktree {wt} gehört zur Prüfstation von {owner['id']} ({owner.get('status', '?')}); bleibt")
+        what = "Prüf-Worktree" if kind == "review" else "Worktree"
+        owners = sorted({x[0]["id"] for x in group})
+        branch = t.get("branch") or "—"
+        where = (f"Prüfstation von {t['id']}, Branch {branch}" if kind == "review"
+                 else f"Ticket {t['id']}, Branch {branch}")
+        label = f"{what} {path} ({where})"
+        if len(owners) > 1:
+            skipped.append(f"{what} {path}: von mehreren Tickets genannt ({', '.join(owners)}); bleibt")
             continue
-        if owner:
-            rv = owner.get("review_terminal") or ""
-            if rv and is_live(rv):
-                skipped.append(f"Worktree {wt}: Reviewer {rv} läuft; bleibt")
+        if t.get("status") != "done":
+            skipped.append(f"{label}: Ticket ist {t.get('status', '?')}; bleibt")
+            continue
+        if kind == "worktree" and t.get("worktree") and not same_path(t["worktree"], path):
+            skipped.append(f"{label}: Ticket trägt {t['worktree']}; bleibt")
+            continue
+        if kind == "worktree":
+            actual = run(["git", "rev-parse", "--abbrev-ref", "HEAD"], None, path, check=False).stdout.strip()
+            if actual != (t.get("branch") or ""):
+                skipped.append(f"{label}: Branch {actual or '?'} gehört nicht diesem Ticket; bleibt")
                 continue
-        where = f"Prüfstation von {owner['id']}" if owner else "ohne Ticket"
-        action = f"Worktree {wt} entfernen ({where})"
-        main, why = worktree_state({"id": "", "worktree": wt}, [], None)
-        if why:
-            skipped.append(f"{action}: {why}")
+        if kind == "review":
+            rv = t.get("review_terminal") or ""
+            if rv and is_live(rv):
+                skipped.append(f"{label}: Reviewer {rv} läuft; bleibt")
+                continue
+        busy = next(((addr, cwd) for addr, cwd in live_cwds if inside(cwd, path)), None)
+        if busy:
+            skipped.append(f"{label}: Terminal {busy[0]} mit cwd {busy[1]} lebt; bleibt")
             continue
+        main, why = worktree_state({"id": "", "worktree": path}, [], None)
+        if why:
+            skipped.append(f"{label}: {why}")
+            continue
+        action = f"{label} entfernen"
         if dry:
             done_actions.append(action)
             continue
-        r = run(["git", "worktree", "remove", wt], None, main, check=False)
+        r = run(["git", "worktree", "remove", path], None, main, check=False)
         if r.returncode != 0:
             skipped.append(f"{action}: {(r.stderr or r.stdout).strip()}")
             continue
@@ -1513,7 +1552,8 @@ def cmd_cleanup(a):
     if not dry:
         for t in changed.values():
             write(t)
-    print(f"Aufräumen{' (dry run)' if dry else ''}:")
+    print(f"Aufräumen{' (dry run)' if dry else ''} in {root} "
+          f"(nur Tickets dieses Homes; ohne --yes ändert sich nichts):")
     if not done_actions and not skipped:
         print("  Nichts zu tun.")
     for line in done_actions:
@@ -1622,10 +1662,17 @@ def send_agent(address, text):
 
 
 def apply_ci(t, res, feedback=True):
-    """Write the result into the ticket. Red reopens it and goes back to its live agent."""
+    """Write the result into the ticket, bound to the worktree's HEAD. Red reopens it and
+    goes back to its live agent. A result without a readable HEAD binds to nothing, so it
+    can never count as current."""
     state = res["state"]
+    head = worktree_head(t, t.get("machine") or None)
     t["ci"] = state
     t["ci_at"] = time.strftime("%Y-%m-%d %H:%M")
+    if head:
+        t["ci_head"] = head
+    else:
+        t.pop("ci_head", None)
     if res.get("url"):
         t["ci_url"] = res["url"]
     if state == "fail":
@@ -1667,7 +1714,9 @@ def cmd_ci(a):
     res = ci_collect(t)
     state = apply_ci(t, res)
     write(t)
-    where = f" · {t['ci_url']}" if t.get("ci_url") else ""
+    head = (t.get("ci_head") or "")[:7]
+    where = (f" · {t['ci_url']}" if t.get("ci_url") else "") + (
+        f" · Commit {head}" if head else " · Commit nicht lesbar (Ergebnis zählt nicht)")
     if state == "unknown":
         print(f"{a.id}: CI unbekannt: {res.get('error') or 'keine Antwort'}")
     elif state == "fail":
@@ -1679,6 +1728,8 @@ def cmd_ci(a):
         print(f"{a.id}: CI läuft: {res['open']} offen{where}")
     else:
         print(f"{a.id}: CI grün ({res['total']} Checks){where}")
+
+
 def cmd_lesson_add(a):
     target = a.target
     tid = (a.ticket or "").strip()
@@ -1772,6 +1823,19 @@ def cmd_land(a):
     base = t.get("base") or run(["git", "rev-parse", "--abbrev-ref", "HEAD"], on, main).stdout.strip()
     result = {"ticket": a.id, "merged": None, "pr": None, "ci": None}
     if a.merge:
+        head = run(["git", "rev-parse", "HEAD"], on, wt).stdout.strip()
+        ci = t.get("ci") or ""
+        stale = bool(ci) and (t.get("ci_head") or "") != head
+        if ci == "fail" or stale:
+            why = (f"CI rot ({t.get('ci_at') or 'Zeit unbekannt'})" if ci == "fail"
+                   else f"CI {ci} gilt für {(t.get('ci_head') or 'keinen Commit')[:7]}, HEAD ist {head[:7]}")
+            if a.force:
+                if not a.reason.strip():
+                    die("--force verlangt --reason \"…\": der Grund gehört in den Verlauf")
+                add_comment(t, "hub", f"CI-Gate überfahren ({why}): {a.reason.strip()}")
+            else:
+                die(f"{a.id}: {why}. Landen verweigert: hub ci {a.id} erneut ausführen "
+                    f"oder --force --reason \"…\".")
         here = run(["git", "rev-parse", "--abbrev-ref", "HEAD"], on, main).stdout.strip()
         if here != base:
             die(f"the main checkout {main} is on {here}, not on {base}; switch it to {base} first")
@@ -1788,7 +1852,7 @@ def cmd_land(a):
             die("no remote 'origin' to push to")
         run(["git", "push", "-u", "origin", branch], on, wt)
         # A pushed branch starts a new check round: the old red is stale until `hub ci` says otherwise.
-        for k in ("ci", "ci_at", "ci_details", "ci_url"):
+        for k in ("ci", "ci_head", "ci_at", "ci_details", "ci_url"):
             t.pop(k, None)
         if not t.get("pr"):
             summary = re.search(r"(?ms)^## Zusammenfassung \(Orchestrator\)\n(.*?)(?=\n## |\Z)", t["body"])
@@ -2141,12 +2205,15 @@ def main():
     ld.add_argument("--keep-space", action="store_true", help="Space und Tab des Tickets offen lassen")
     ld.add_argument("--lesson", action="append", metavar="TEXT",
                     help="Lehre für dieses Repo schreiben und im Verlauf nennen (mehrfach möglich)")
+    ld.add_argument("--force", action="store_true", help="CI-Gate beim --merge überfahren (verlangt --reason)")
+    ld.add_argument("--reason", default="", metavar="TEXT")
     ld.set_defaults(fn=cmd_land)
     ci = sub.add_parser("ci")
     ci.add_argument("id")
     ci.set_defaults(fn=cmd_ci)
     cl = sub.add_parser("cleanup")
-    cl.add_argument("--dry-run", action="store_true", help="nur zeigen, was aufgeräumt würde")
+    cl.add_argument("--yes", action="store_true", help="wirklich löschen; ohne --yes nur Dry-Run")
+    cl.add_argument("--root", metavar="PATH", help="Worktree-Wurzel (Standard $HOME/.herdr/worktrees)")
     cl.set_defaults(fn=cmd_cleanup)
     sub.add_parser("status").set_defaults(fn=cmd_status)
     stt = sub.add_parser("stats")
