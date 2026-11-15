@@ -169,3 +169,24 @@ test("the count is the number of rows, and the Verlauf questions are the differe
   assert.equal(diff, 1);            // the difference the header names
   assert.equal(inbox + diff, out.length);
 });
+
+// Fremder Besitzer: die Zeile nennt ihn, eigene und herrenlose Tickets nicht. Ohne
+// lebenden Orchestrator gibt es nichts zu vergleichen — dann kein Chip.
+const owning = (orch) => Object.assign(Object.create(Dashboard.prototype), {
+  tickets: () => [],
+  orchestrator: () => orch,
+});
+
+test("a foreign owner is named, own and unowned tickets are not", () => {
+  const d = owning({ address: "t7" });
+  assert.equal(d.foreignOwner({ owner: "t9z" }), "t9z");
+  assert.equal(d.foreignOwner({ owner: "t7" }), null);
+  assert.equal(d.foreignOwner({ owner: "" }), null);
+  assert.equal(d.foreignOwner({ owner: "mensch" }), null);
+  assert.equal(d.foreignOwner({}), null);
+});
+
+test("without a live orchestrator no ticket looks foreign", () => {
+  const d = owning(null);
+  assert.equal(d.foreignOwner({ owner: "t9z" }), null);
+});
