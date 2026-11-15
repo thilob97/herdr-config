@@ -22,6 +22,7 @@ export const Input = {}, Textarea = {};
 export const agents = () => globalThis.__dashAgents ?? [];
 export const terminals = () => globalThis.__dashTerminals ?? [];
 export const spaces = () => [];
+export const panes = () => globalThis.__dashPanes ?? [];
 export const run = none;
 export const hc = async () => ({ code: 1, stdout: "", stderr: "" });
 export const exec = async () => ({ code: 1, stdout: "", stderr: "" });

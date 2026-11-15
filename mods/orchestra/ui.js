@@ -4,7 +4,7 @@
 
 import { div, svg, image } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { run, shared, agents, terminals, spaces } from "herdr";
+import { run, shared, agents, terminals, spaces, panes } from "herdr";
 
 // 5.1 Abstände und Größen
 export const GAP_XS = 4, GAP_S = 6, GAP_M = 8, GAP_L = 12, GAP_XL = 16;
@@ -18,8 +18,43 @@ export const T_XS = 10.5, T_S = 11, T_M = 12, T_L = 13, T_XL = 15;
 const WC = "mods/workspace-chrome";
 export const ICON_CLOSE = "mods/pane/close.svg";
 
+// Titel tragen vorne die Marke des Programms: `π > ` (pi), `✳ ` (claude), ein
+// Nerd-Font-Icon oder ein Emoji. Erst das weg, dann die Icons im Text.
+const TITLE_PREFIX = /^(\s*(?:[π✳✦●▪▸>]|[\uE000-\uF8FF\u{10000}-\u{10FFFF}])\s*)+/gu;
 // Titles and screens carry Nerd Font icons and emoji the UI font can't draw.
-export const plain = (s) => (s ?? "").replace(/[\uE000-\uF8FF\u{10000}-\u{10FFFF}]\s*/gu, "").trim();
+export const plain = (s) => (s ?? "").replace(TITLE_PREFIX, "").replace(/[\uE000-\uF8FF\u{10000}-\u{10FFFF}]\s*/gu, "").trim();
+
+// ---------- Host-Brücke (ein Satz Kopien je Render-Pass) ----------
+
+// spaces(), terminals() und panes() kopieren bei jedem Aufruf die ganze Liste über die
+// Host-Brücke. activeSpace(), workspaceId(), inScope(), isOrchestrator() und die Chips
+// fragen sie aber mehrfach je Rendern — deshalb ein kurzer Tick-Cache: derselbe Pass
+// sieht einen Satz Kopien, der nächste (ein Wechsel zeichnet neu) liest frisch.
+const HOST_TICK = 25;
+const host = { at: 0, spaces: null, terminals: null, panes: null, paneSpace: null };
+function hostTick() {
+  if (Date.now() - host.at < HOST_TICK && host.spaces) return;
+  host.at = Date.now();
+  host.spaces = host.terminals = host.panes = host.paneSpace = null;
+}
+const hostSpaces = () => (hostTick(), (host.spaces ??= spaces()));
+const hostTerminals = () => (hostTick(), (host.terminals ??= terminals()));
+const hostPanes = () => (hostTick(), (host.panes ??= panes()));
+
+/** Der Space einer Terminal-Adresse: über den Tab in `panes()`, sonst null (der
+ *  Aufrufer fällt dann auf `terminal.space` bzw. das Label `herdr.space` zurück). */
+export function paneSpaceOf(address) {
+  hostTick();
+  if (!host.paneSpace) {
+    const ofTab = new Map();
+    for (const s of hostSpaces()) for (const tb of s.tabs ?? []) ofTab.set(tb.id, s.id);
+    const map = new Map();
+    for (const p of hostPanes()) if (p.terminal && ofTab.has(p.tab)) map.set(p.terminal, ofTab.get(p.tab));
+    host.paneSpace = map;
+  }
+  return host.paneSpace.get(address) ?? null;
+}
+const spaceOfTerminal = (x) => paneSpaceOf(x.address) ?? x.space ?? x.labels?.["herdr.space"] ?? "";
 
 // ---------- Status (5.6 Statusanzeige) ----------
 
@@ -144,7 +179,7 @@ export function gateChip(t, tk, gate) {
  *  ein laufender Prüfer-Terminal geht vor (er prüft gerade eine neue Runde). */
 export function reviewChip(t, tk, gate) {
   const live = tk.review_terminal
-    ? terminals().find((x) => x.address === tk.review_terminal && x.state === "live") : null;
+    ? hostTerminals().find((x) => x.address === tk.review_terminal && x.state === "live") : null;
   if (live) return chip(t, "Prüfung läuft", t.working,
     { tip: `Prüfung läuft${tk.reviewer_name ? ` (${tk.reviewer_name})` : ""} · ${tk.review_terminal}` });
   const r = gate?.review ?? null;
@@ -165,7 +200,7 @@ export function reviewChip(t, tk, gate) {
  *  (`reviewer_name`); `review_terminal` bleibt dem Live-Zustand vorbehalten. */
 export function reviewerChip(t, id, tk, { maxW = 160, name } = {}) {
   const live = tk.review_terminal
-    ? terminals().find((x) => x.address === tk.review_terminal && x.state === "live") : null;
+    ? hostTerminals().find((x) => x.address === tk.review_terminal && x.state === "live") : null;
   if (live) return div().flex_none().max_w(maxW).child(identityChip(t, id, tk.review_terminal));
   const label = name || tk.reviewer_name || tk.reviewer;
   if (!label) return null;
@@ -206,7 +241,7 @@ export function counterBadge(t, n, color) {
 /** Der aktive Workspace dieses Fensters: { id, name, folder, machine }, sonst null.
  *  `spaces()` zeichnet die Mods bei jedem Wechsel neu — kein eigener Timer nötig. */
 export function activeSpace() {
-  const s = spaces().find((x) => x.active) ?? null;
+  const s = hostSpaces().find((x) => x.active) ?? null;
   return s ? { id: s.id, name: s.name ?? "", folder: s.folder ?? "", machine: s.machine ?? null } : null;
 }
 
@@ -233,7 +268,7 @@ export function ticketWorkspace(tk) {
   if (sid && String(tk?.space_name ?? "").trim()) return sid;
   const repo = pathKey(tk?.repo);
   if (!repo) return "";
-  const hits = spaces().filter((s) => s.folder && inside(repo, pathKey(s.folder))
+  const hits = hostSpaces().filter((s) => s.folder && inside(repo, pathKey(s.folder))
     && (!tk.machine || s.machine === tk.machine));
   return hits.sort((x, y) => pathKey(y.folder).length - pathKey(x.folder).length)[0]?.id ?? "";
 }
@@ -268,8 +303,8 @@ export function workspaceId(sid, tks) {
       const tk_ws = ticketWorkspace(mine);
       if (tk_ws && tk_ws !== id) ws = tk_ws;
     } else {
-      for (const x of terminals()) {
-        if ((x.space ?? x.labels?.["herdr.space"]) !== id) continue;
+      for (const x of hostTerminals()) {
+        if (spaceOfTerminal(x) !== id) continue;
         const tk = list.find((t) => t?.id === x.labels?.["hub.ticket"]);
         const tk_ws = tk ? ticketWorkspace(tk) : "";
         if (tk_ws && tk_ws !== id) { ws = tk_ws; break; }
@@ -456,7 +491,7 @@ export const loading = (t, text = "lädt …") => h_flex().gap(GAP_S).items_cent
  *  `named: false` sagt, dass es keine veröffentlichte Identität ist. */
 export function identity(address) {
   const a = agents().find((x) => x.address === address) ?? null;
-  const x = a ? null : terminals().find((y) => y.address === address && y.state === "live") ?? null;
+  const x = a ? null : hostTerminals().find((y) => y.address === address && y.state === "live") ?? null;
   const known = (shared("agents.identity") ?? {})[address];
   const program = a?.program ?? x?.program ?? null;
   const programKey = program?.key ? String(program.key).toLowerCase() : null;
