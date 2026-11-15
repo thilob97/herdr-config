@@ -53,6 +53,11 @@ const eventColor = (t, kind) => (kind === "dispatch" ? t.accent
   : kind === "check" || kind === "ci" ? t.working
     : kind === "verdict" || kind === "land" ? t.done : t.dim);
 const errorText = (e) => String(e?.message ?? e ?? "fehlgeschlagen").replace(/^Error: /, "").replace(/^hub: /, "");
+// Alter des letzten Erfolgs für den Fehlerhinweis („zuletzt vor 2 min“).
+const shortAge = (ms) => {
+  const s = Math.max(0, Math.round(ms / 1000));
+  return s < 60 ? `${s} s` : s < 3600 ? `${Math.round(s / 60)} min` : `${Math.floor(s / 3600)} h`;
+};
 const lastLine = (r) => (r.stderr || r.stdout || `Exit ${r.code}`).trim().split("\n").pop().slice(0, 240);
 
 // ---- Zeit ----------------------------------------------------------------
@@ -151,6 +156,7 @@ export default class Timeline extends View {
     this.received = 0;            // Date.now()/1000 when the data arrived (live growth)
     this.loaded = false;
     this.error = null;
+    this.lastOk = null;           // Date.now() des letzten erfolgreichen Lesens
     this.reading = false;
     this.zoom = ZOOMS.some((z) => z.value === localStorage.getItem("timeline.zoom"))
       ? localStorage.getItem("timeline.zoom") : "auto";
@@ -201,6 +207,7 @@ export default class Timeline extends View {
           this.received = Date.now() / 1000;
           this.loaded = true;
           this.error = null;
+          this.lastOk = Date.now();
         } else {
           const msg = lastLine(r);
           this.error = /invalid choice|unrecognized arguments/.test(msg)
@@ -594,7 +601,7 @@ export default class Timeline extends View {
           : this.scope === "ticket"
             ? ui.link(t, "tl-empty-tickets", "Alle Tickets", () => { this.scope = "all"; cx.notify(); })
             : null;
-      return ui.empty(t, this.error ? `Timeline nicht lesbar: ${this.error}` : "Keine Agenten in diesem Zeitraum.", {
+      return ui.empty(t, this.error ? `Timeline nicht lesbar: ${this.error}${this.lastOk ? ` · zuletzt vor ${shortAge(Date.now() - this.lastOk)}` : ""}` : "Keine Agenten in diesem Zeitraum.", {
         icon: "mods/workspace-chrome/clock.svg",
         action,
       });

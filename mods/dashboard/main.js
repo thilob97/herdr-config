@@ -45,6 +45,13 @@ const STALL_REFRESH = 10000;
 const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 const errorLine = (r) => (r.stderr || r.stdout || `exit ${r.code}`).trim().split("\n").pop().slice(0, 160);
 const errorText = (e) => String(e?.message ?? e ?? "fehlgeschlagen").replace(/^Error: /, "");
+// Datenfrische: der Punkt im Kopf zeigt, wie alt die Zahlen sind. Kein eigener Timer:
+// die bestehenden Leser (5/10/30 s) stempeln hier; grün < 10 s, gelb > 30 s, rot Fehler.
+const FRESH_MS = 10000, STALE_MS = 30000;
+const shortAge = (ms) => {
+  const s = Math.max(0, Math.round(ms / 1000));
+  return s < 60 ? `${s} s` : s < 3600 ? `${Math.round(s / 60)} min` : `${Math.floor(s / 3600)} h`;
+};
 
 // Today (calendar day, local time) in dollars, summed over the machines the status bar
 // reads: the same helper, the same DB, so both screens carry one number. Null when no
@@ -181,6 +188,8 @@ export default class Dashboard extends View {
     this.sending = false;
     this.starting = false;
     this.statsBusy = false;
+    // at: letzter Erfolg (ms), err: erster Fehlertext seit diesem Erfolg.
+    this.fresh = { tickets: { at: 0, err: null }, stalls: { at: 0, err: null }, stats: { at: 0, err: null } };
     this.note = null;           // { ok: true|false|null, text }
     this.armed = null;          // "g" waits for "w"
     this.handle = cx.focus_handle();
@@ -222,6 +231,16 @@ export default class Dashboard extends View {
   costs() { return shared("orchestra.costs") ?? {}; }
   stats() { return shared("orchestra.stats") ?? null; }
 
+  /** Ein Leseversuch ist durch: Erfolg stempelt den Zeitpunkt und löscht den Fehler;
+   *  ein Fehlschlag merkt den ersten Fehlertext. true = der Punkt im Kopf ändert sich. */
+  markFresh(key, err = null) {
+    const f = this.fresh[key];
+    const was = Boolean(f.err) || (f.at > 0 && Date.now() - f.at > STALE_MS);
+    if (err == null) { f.at = Date.now(); f.err = null; }
+    else if (!f.err) f.err = errorText(err).slice(0, 160);
+    return was !== (Boolean(f.err) || (f.at > 0 && Date.now() - f.at > STALE_MS));
+  }
+
   // Ticket files every five seconds; a changed snapshot is the only reason to redraw.
   refreshTickets(cx) {
     if (this.readingTks) return;
@@ -229,13 +248,14 @@ export default class Dashboard extends View {
     cx.spawn(async (cx) => {
       try {
         const list = await tickets.read();
-        if (!list) return;
+        if (!list) { if (this.markFresh("tickets", "Ticket-Ordner nicht lesbar")) cx.notify(); return; }
+        if (this.markFresh("tickets")) cx.notify();
         const json = JSON.stringify(list);
         if (json === this.tksJson) return;
         this.tksJson = json;
         this.tks = list;
         cx.notify();
-      } catch {}
+      } catch (e) { if (this.markFresh("tickets", e)) cx.notify(); }
       finally { this.readingTks = false; }
     });
   }
@@ -273,13 +293,14 @@ export default class Dashboard extends View {
     cx.spawn(async (cx) => {
       try {
         const r = await exec(`${appHome()}/mods/orchestra/bin/hub`, ["stats", "--json", "--days", "14"], { timeout: 20000 });
-        if (r.code !== 0) return;
+        if (r.code !== 0) throw new Error((r.stderr || r.stdout || `Exit ${r.code}`).trim().split("\n").pop());
         const next = JSON.parse(r.stdout || "{}");
+        if (this.markFresh("stats")) cx.notify();
         if (JSON.stringify({ ...next, at: 0 }) !== JSON.stringify({ ...(this.stats() ?? {}), at: 0 })) {
           setShared("orchestra.stats", next);
           cx.notify();
         }
-      } catch {}
+      } catch (e) { if (this.markFresh("stats", e)) cx.notify(); }
       finally { this.statsBusy = false; }
     });
   }
@@ -294,14 +315,15 @@ export default class Dashboard extends View {
     cx.spawn(async (cx) => {
       try {
         const r = await exec(HUB(), ["stalls", "--json"], { timeout: 15000 });
-        if (r.code !== 0) return;
+        if (r.code !== 0) throw new Error((r.stderr || r.stdout || `Exit ${r.code}`).trim().split("\n").pop());
         const next = JSON.parse(r.stdout || "[]");
+        if (this.markFresh("stalls")) cx.notify();
         const json = JSON.stringify(next);
         if (json === this.stallsJson) return;
         this.stallsJson = json;
         this.stalls = next;
         cx.notify();
-      } catch {}
+      } catch (e) { if (this.markFresh("stalls", e)) cx.notify(); }
       finally { this.readingStalls = false; }
     });
   }
@@ -700,11 +722,31 @@ export default class Dashboard extends View {
     return `${WEEKDAY[d.getDay()]}, ${d.getDate()}. ${MONTH[d.getMonth()]} · ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
   }
 
+  /** Frische der Dashboard-Zahlen als Punkt: grün < 10 s (Tickets), gelb > 30 s, rot bei
+   *  einem Lesefehler, sonst blass (noch kein Wert oder 10–30 s). Der Tooltip nennt
+   *  jede Quelle mit Alter und dem ersten Fehlertext. */
+  freshDot(t) {
+    const now = Date.now();
+    const srcs = [["Tickets", this.fresh.tickets], ["Stillstände", this.fresh.stalls], ["Messwerte", this.fresh.stats]];
+    const anyErr = srcs.some(([, f]) => f.err);
+    const age = (f) => (f.at ? now - f.at : null);
+    const tk = this.fresh.tickets;
+    // Themes without success/warning (the app's default) fall back instead of failing.
+    const color = anyErr ? t.blocked
+      : tk.at && age(tk) < FRESH_MS ? t.success ?? t.done
+        : age(tk) == null ? t.dim
+          : age(tk) > STALE_MS ? t.warning ?? t.unknown ?? t.muted : t.dim;
+    const tip = srcs.map(([label, f]) =>
+      `${label}: ${f.at ? `vor ${shortAge(age(f))}` : "noch kein Erfolg"}${f.err ? ` · ${f.err}` : ""}`).join("\n");
+    return div().id("dash-fresh").size(7).flex_none().rounded_full().bg(color).tooltip(tip);
+  }
+
   header(t) {
     return h_flex().h(28).flex_none().gap(ui.GAP_M).items_center()
       .child(image("frame/welcome/herdr.png").size(20).rounded(4).flex_none())
       .child(div().flex_none().text_size(T_XL).font_semibold().text_color(t.foreground).child("Herdr"))
       .child(div().flex_1())
+      .child(this.freshDot(t))
       .child(div().flex_none().text_size(T_XS).text_color(t.dim).child("⌘⇧0 Workspace"))
       .child(div().flex_none().text_size(T_S).text_color(t.muted).child(this.clockText()))
       .child(ui.button(t, "dash-workspace", "Workspace", () => this.workspace(false),
