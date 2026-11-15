@@ -8,7 +8,9 @@
 // number comes from the same sources Team, Inbox and the status bar read: the
 // ticket files (data/quests/tickets, re-read every 5 s), agents(),
 // shared("orchestra.costs"), shared("orchestra.budget"), shared("orchestra.groups"),
-// the status bar's omp helper for "Heute" and attention.since.
+// the status bar's omp helper for "Heute" and attention.since. A ticket owned by
+// another orchestrator carries a small "von <owner>" chip in its row (tooltip
+// "anderer Orchestrator"); the orchestrator's own tickets do not.
 
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea } from "gpui-base";
@@ -200,6 +202,20 @@ export default class Dashboard extends View {
   // ---------- data ----------
 
   orchestrator() { return terminals().find((x) => x.name === ORCH && x.state === "live") ?? null; }
+  // A ticket belongs to another orchestrator when its `owner` names a different
+  // terminal; hub writes this orchestrator's own terminal there, `hub status` hides
+  // own and `mensch` the same way. Without a live orchestrator there is nothing to
+  // compare against, so no chip (own tickets must never look foreign).
+  foreignOwner(tk) {
+    const owner = String(tk?.owner ?? "").trim();
+    const me = this.orchestrator()?.address;
+    return owner && me && owner !== me && owner !== "mensch" ? owner : null;
+  }
+
+  ownerChip(t, tk, id) {
+    const owner = this.foreignOwner(tk);
+    return owner ? ui.chip(t, `von ${owner}`, t.muted, { tip: "anderer Orchestrator", id }) : null;
+  }
   // Fresh from disk (the dashboard layout runs no orchestra daemon); shared is only the
   // first paint before that read lands, so the screen is never empty for a moment.
   tickets() { return this.tks ?? shared("orchestra.tickets") ?? []; }
@@ -700,12 +716,14 @@ export default class Dashboard extends View {
   reviewRow(t, tk, on) {
     const who = tk.terminal ?? null;
     const age = ticketAge(tk);
+    const owner = this.ownerChip(t, tk, `dash-owner-review-${rid(tk.id)}`);
     return h_flex().id(`dash-review-${rid(tk.id)}`).min_h(ui.H_ROW2).flex_none().py(4).px(ui.INSET_CARD).gap(ui.GAP_M).items_center().rounded(6)
       .bg(on ? t.selected : t.surface).border_1().border_color(t.border)
       .cursor_pointer().hover((s) => s.bg(t.hover))
       .on_click((_e, cx) => { this.key = `ticket:${tk.id}`; this.handle.focus(); this.openReview(tk); cx.stop_propagation(); })
       .when(Boolean(who), (el) => el.child(h_flex().flex_none().max_w(150).child(ui.identityChip(t, `dash-who-${rid(tk.id)}`, who))))
       .child(div().flex_1().min_w(0).max_h(30).overflow_hidden().text_size(T_S).text_color(t.foreground).child(tk.title))
+      .when(Boolean(owner), (el) => el.child(owner))
       .children(ui.gateChips(t, tk))
       .when(Boolean(age), (el) => el.child(div().flex_none().text_size(T_XS).text_color(t.muted).child(age)))
       .child(ui.button(t, `dash-check-${rid(tk.id)}`, "Prüfen", () => this.openReview(tk),
@@ -832,12 +850,14 @@ export default class Dashboard extends View {
     const st = live?.status ?? "idle";
     const cost = this.costs().tickets?.[tk.id];
     const dur = live ? ago(this.attentionAt(live)) : "";
+    const owner = this.ownerChip(t, tk, `dash-owner-doing-${rid(tk.id)}`);
     return h_flex().id(`dash-doing-${rid(tk.id)}`).h(ui.H_ROW2).flex_none().px(ui.INSET_CARD).gap(ui.GAP_M).items_center().rounded(6)
       .bg(on ? t.selected : t.surface).border_1().border_color(t.border)
       .when(Boolean(tk.terminal), (el) => el.cursor_pointer().hover((s) => s.bg(t.hover))
         .tooltip("Klicken: zum Agent").on_click((_e, cx) => { cx.stop_propagation(); this.key = `doing:${tk.id}`; this.handle.focus(); this.openAgent(tk.terminal); }))
       .child(ui.statusIcon(t, st))
       .child(div().flex_1().min_w(0).truncate().text_size(T_M).text_color(t.foreground).child(tk.title))
+      .when(Boolean(owner), (el) => el.child(owner))
       .when(Boolean(tk.terminal), (el) => el.child(div().flex_none().max_w(150).child(ui.identityChip(t, `dash-doing-who-${rid(tk.id)}`, tk.terminal, { status: st }))))
       .child(div().w(64).flex_none().justify_end().text_size(T_XS).text_color(t.muted).child(dur || "—"))
       .child(div().w(56).flex_none().justify_end().text_size(T_XS).text_color(t.muted)
