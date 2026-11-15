@@ -22,7 +22,7 @@ export class TextareaState { static new() { return { on() {} }; } }
 export const Input = {}, Textarea = {};
 export const agents = () => globalThis.__dashAgents ?? [];
 export const terminals = () => globalThis.__dashTerminals ?? [];
-export const spaces = () => [];
+export const spaces = () => [], panes = () => [];
 export const run = (name, args) => { (globalThis.__runs ??= []).push({ name, args }); };
 export const hc = async () => ({ code: 1, stdout: "", stderr: "" });
 export const exec = async () => ({ code: 1, stdout: "", stderr: "" });
