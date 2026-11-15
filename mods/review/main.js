@@ -658,15 +658,34 @@ export default class Review extends View {
         .children(findings.map((v) => this.verlaufLine(t, v)))));
   }
 
+  // Die Zeiten des Tickets als Chips unter dem Titel: erstellt, in der Stufe, zuletzt
+  // bearbeitet, Prüfung. Alles aus dem Frontmatter, kein eigenes Feld und kein Timer:
+  // die Werte werden bei jedem Rendern gerechnet und flackern daher nicht.
+  timeChips(t, tk) {
+    const st = ui.staged(tk);
+    const chips = [];
+    if (tk.created) chips.push(ui.chip(t, `erstellt ${ui.age(tk.created)}`, t.muted,
+      { id: "rv-time-created", tip: `erstellt ${tk.created}` }));
+    if (st.min != null) chips.push(ui.chip(t, st.text, t.muted,
+      { id: "rv-time-stage", tip: `${ui.STAGE_WORD[st.key]} seit ${st.since}` }));
+    if (tk.updated) chips.push(ui.chip(t, `zuletzt bearbeitet ${ui.age(tk.updated)}`, t.muted,
+      { id: "rv-time-updated", tip: `zuletzt bearbeitet ${tk.updated}` }));
+    if (tk.review_at) chips.push(ui.chip(t, `Prüfung seit ${ui.dur(ui.minutesSince(tk.review_at))}`, t.muted,
+      { id: "rv-time-review", tip: `Prüfung seit ${tk.review_at}` }));
+    return chips.length ? h_flex().id("rv-times").flex_wrap().gap(ui.GAP_XS).items_center().children(chips) : null;
+  }
+
   // Fixed top: title, gate chips and the orchestrator's summary. It never grows with the
   // accordions below, so the diff and the footer keep their room at every window height.
   ticketHead(t, tk) {
+    const times = this.timeChips(t, tk);
     return v_flex().id("rv-head").flex_none().px(ui.INSET_PANEL).py(ui.GAP_M).gap(ui.GAP_S).border_b(1).border_color(t.border)
       .child(h_flex().gap(ui.GAP_M).items_center()
         .child(ui.statusIcon(t, tk.status === "review" ? "blocked" : tk.status === "done" ? "done" : tk.status === "doing" ? "working" : "idle"))
         .child(div().flex_1().min_w(0).truncate().text_size(T_L).font_semibold().text_color(t.foreground).child(tk.title))
         .when(Boolean(tk.terminal), (el) => el.child(div().flex_none().max_w(180).child(ui.identityChip(t, "rv-who", tk.terminal))))
         .children(ui.gateChips(t, tk, tk.status === "done" ? null : this.gate)))
+      .when(Boolean(times), (el) => el.child(times))
       .when(this.gate?.base?.ok === false, (el) => el.child(div().id("rv-base-drift").text_size(T_S).text_color(t.blocked)
         .child(`Basis veraltet: im Worktree \`git rebase ${this.gate.base.base || tk.base}\` ausführen, dann erneut prüfen (oder hub rebase ${tk.id}).`)))
       .child(div().id("rv-summary").max_h(36).overflow_hidden().text_size(T_S).text_color(tk.summary ? t.muted : t.dim)

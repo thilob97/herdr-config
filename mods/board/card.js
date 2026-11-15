@@ -1,11 +1,13 @@
 // Die Ticket-Karte (Board und Team-Panel), kompakt für ein Kanban: Zeile 1 ID-Chip,
 // Labels und Alter; Titel über zwei Zeilen; Zeile 3 Identität, Gates als Symbole,
 // Kommentar-/Nachweis-Zahlen und Kosten. Statuswort, Bearbeitungszeit und die Stufen-
-// Dauer stehen im Spaltenkopf bzw. im Tooltip. Beim Hover kommen Branch und die
-// Aktionen Öffnen / Agent (dazu die nächste erlaubte Stufe) hinzu.
+// Dauer stehen im Spaltenkopf bzw. im Tooltip. Beim Hover kommen Branch, erstellt /
+// zuletzt bearbeitet und die Aktionen Öffnen / Agent (dazu die nächste erlaubte Stufe)
+// hinzu.
 //
 // Herdr kennt kein Modul über Mod-Ordner hinweg: dieselbe Karte steht als Kopie in
-// mods/orchestra/hubview.js (ticketCard). Änderungen immer in beiden Dateien.
+// mods/orchestra/hubview.js (ticketCard). Änderungen immer in beiden Dateien; dort
+// zeigt Zeile 1 statt der nackten Dauer „in <Stufe> seit …" (Team-Panel).
 import { div, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { settings, terminals } from "herdr";
@@ -41,26 +43,10 @@ export function splitList(v) {
   return (Array.isArray(v) ? v : String(v ?? "").split(/[,\s]+/)).map((s) => String(s).trim()).filter(Boolean);
 }
 
-// Ticket-Zeitstempel sind "JJJJ-MM-TT HH:MM" (lokal).
-export function at(ts) {
-  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/.exec(String(ts ?? ""));
-  return m ? new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]).getTime() : 0;
-}
-
-const STAGE_AGE = { todo: "geplant", doing: "in Arbeit", review: "in Prüfung", done: "fertig" };
-const shortDur = (min) => (min < 1 ? "jetzt" : min < 60 ? `${min} min` : min < 1440 ? `${Math.floor(min / 60)} h` : `${Math.floor(min / 1440)} d`);
-const minutesSince = (ts) => {
-  const ms = at(ts);
-  return ms ? Math.max(0, Math.round((Date.now() - ms) / 60000)) : null;
-};
-const stageAge = (tk, stage) => {
-  const min = minutesSince(tk.status_at || tk.updated || tk.created);
-  return min == null ? "Stufe unbekannt" : `${STAGE_AGE[stage]} seit ${shortDur(min)}`;
-};
-const ageText = (tk) => {
-  const min = minutesSince(tk.status_at || tk.updated || tk.created);
-  return min == null ? "—" : shortDur(min);
-};
+// Ticket-Zeiten rechnet ui.js: `staged` liest `status_at` mit Rückfall auf
+// `updated`/`created`, `age`/`dur` schreiben „vor 3 h" bzw. „3 h".
+const stageAge = (tk) => ui.staged(tk).text;
+const ageText = (tk) => ui.dur(ui.staged(tk).min);
 const updatedStamp = (tk) => String(tk.updated || "nie bearbeitet");
 
 // Titel auf zwei Zeilen mit „…" an einer Wortgrenze. `per` ist die Zeichenzahl je
@@ -191,7 +177,7 @@ export function ticketCard(t, tk, o = {}) {
   const shownLabels = blocked.length ? labels.slice(0, 1) : labels;
 
   const ageLine = div().flex_none().text_size(T_XS).text_color(t.dim)
-    .tooltip(`${stageAge(tk, stage)} · zuletzt bearbeitet ${updatedStamp(tk)}`).child(ageText(tk).replace(" ", ""));
+    .tooltip(`${stageAge(tk)} · zuletzt bearbeitet ${updatedStamp(tk)}`).child(ageText(tk).replace(" ", ""));
 
   const row1 = h_flex().gap(2).items_center().min_w(0)
     .child(h_flex().flex_none().h(18).px(3).items_center().rounded(4).bg(t.raised)
@@ -232,13 +218,19 @@ export function ticketCard(t, tk, o = {}) {
     .child(div().flex_none().min_w(0).truncate().text_size(T_XS).font_family(settings().font_family)
       .text_color(t.dim).tooltip(tk.branch || tk.repo || "kein Branch")
       .child(tk.branch || String(tk.repo ?? "").split("/").filter(Boolean).pop() || "kein Branch"))
+    // Alter in der Stufe steht schon in Zeile 1 (ageText); hier kommen Erstellung und
+    // letzte Bearbeitung dazu, damit die Karte wie ein Arbeitsobjekt liest. Die Zeile
+    // bricht in schmalen Spalten um, statt „zuletzt …" abzuschneiden.
+    .child(div().flex_none().w_full().text_size(T_XS).text_color(t.muted)
+      .tooltip(`erstellt ${tk.created || "unbekannt"} · zuletzt bearbeitet ${updatedStamp(tk)}`)
+      .child(`erstellt ${ui.age(tk.created) || "unbekannt"} · zuletzt ${ui.age(tk.updated) || "unbekannt"}`))
     .child(actions);
 
   return v_flex().id(`tk-${tk.id}`).relative().flex_none().p(8).gap(GAP_XS).rounded(8)
     .bg(box ?? t.surface).border_1()
     .border_color(selected ? t.accent : blocked.length ? t.blocked : t.border)
     .cursor_pointer().hover((s) => s.bg(box ?? t.hover))
-    .tooltip(`${stageLabel(stage)} · ${stageAge(tk, stage)} · zuletzt bearbeitet ${updatedStamp(tk)}`)
+    .tooltip(`${stageLabel(stage)} · ${stageAge(tk)} · zuletzt bearbeitet ${updatedStamp(tk)}`)
     .on_hover((on, cx) => o.onHover?.(on, cx))
     .on_click((_e, cx) => o.onOpen?.(cx))
     .child(row1).child(title).child(row3)

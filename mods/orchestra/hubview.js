@@ -31,7 +31,9 @@ export const stageOf = (tk) => (["todo", "review", "done"].includes(tk.status) ?
 const stageLabel = (key) => STAGES.find((s) => s.key === key)?.label ?? "In Arbeit";
 
 // ---------- Ticket-Karte (Kopie aus mods/board/card.js: Herdr kennt kein Modul über
-// Mod-Ordner hinweg; Optik und Verhalten müssen in beiden Dateien gleich bleiben) ----------
+// Mod-Ordner hinweg; Optik und Verhalten müssen in beiden Dateien gleich bleiben.
+// Einzige Ausnahme: Zeile 1 zeigt hier „in <Stufe> seit …" statt der nackten Dauer,
+// weil das Team-Panel die Stufe nicht wie das Board im Spaltenkopf hat) ----------
 
 const STOP = new Set(["und", "im", "in", "der", "die", "das", "ein", "eine", "zu", "mit", "fur", "für", "von", "the", "a", "an", "of"]);
 const shortId = (id) => {
@@ -43,24 +45,9 @@ const shortId = (id) => {
   return s || "TICKET";
 };
 const splitList = (v) => (Array.isArray(v) ? v : String(v ?? "").split(/[,\s]+/)).map((s) => String(s).trim()).filter(Boolean);
-const at = (ts) => {
-  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/.exec(String(ts ?? ""));
-  return m ? new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]).getTime() : 0;
-};
-const STAGE_AGE = { todo: "geplant", doing: "in Arbeit", review: "in Prüfung", done: "fertig" };
-const shortDur = (min) => (min < 1 ? "jetzt" : min < 60 ? `${min} min` : min < 1440 ? `${Math.floor(min / 60)} h` : `${Math.floor(min / 1440)} d`);
-const minutesSince = (ts) => {
-  const ms = at(ts);
-  return ms ? Math.max(0, Math.round((Date.now() - ms) / 60000)) : null;
-};
-const stageAge = (tk, stage) => {
-  const min = minutesSince(tk.status_at || tk.updated || tk.created);
-  return min == null ? "Stufe unbekannt" : `${STAGE_AGE[stage]} seit ${shortDur(min)}`;
-};
-const ageText = (tk) => {
-  const min = minutesSince(tk.status_at || tk.updated || tk.created);
-  return min == null ? "—" : shortDur(min);
-};
+// Ticket-Zeiten (erstellt, Stufe, zuletzt) rechnet ui.js. Das Team-Panel zeigt in
+// Zeile 1 „in <Stufe> seit …" statt der nackten Dauer des Boards.
+const stageAge = (tk) => ui.staged(tk).text;
 const updatedStamp = (tk) => String(tk.updated || "nie bearbeitet");
 const PRIO = /^(p[0-3]|prio[-:]?[0-3]|kritisch|hoch|urgent)$/i;
 const prioColor = (t, l) => (/^(p0|prio[-:]?0|kritisch|urgent)$/i.test(l) ? t.blocked : t.working);
@@ -175,8 +162,9 @@ function ticketCard(t, tk, o = {}) {
   const box = selected ? t.selected : undefined;
   const shownLabels = blocked.length ? labels.slice(0, 1) : labels;
 
+  // Team-Panel: „in Arbeit seit 42 min" statt nur „42 min" (Ticket-Zeiten).
   const ageLine = div().flex_none().text_size(T_XS).text_color(t.dim)
-    .tooltip(`${stageAge(tk, stage)} · zuletzt bearbeitet ${updatedStamp(tk)}`).child(ageText(tk).replace(" ", ""));
+    .tooltip(`${stageAge(tk)} · zuletzt bearbeitet ${updatedStamp(tk)}`).child(stageAge(tk));
 
   const row1 = h_flex().gap(2).items_center().min_w(0)
     .child(h_flex().flex_none().h(18).px(3).items_center().rounded(4).bg(t.raised)
@@ -219,7 +207,7 @@ function ticketCard(t, tk, o = {}) {
     .bg(box ?? t.surface).border_1()
     .border_color(selected ? t.accent : blocked.length ? t.blocked : t.border)
     .cursor_pointer().hover((s) => s.bg(box ?? t.hover))
-    .tooltip(`${stageLabel(stage)} · ${stageAge(tk, stage)} · zuletzt bearbeitet ${updatedStamp(tk)}`)
+    .tooltip(`${stageLabel(stage)} · ${stageAge(tk)} · zuletzt bearbeitet ${updatedStamp(tk)}`)
     .on_hover((on, cx) => o.onHover?.(on, cx))
     .on_click((_e, cx) => o.onOpen?.(cx))
     .child(row1).child(title).child(row3)
