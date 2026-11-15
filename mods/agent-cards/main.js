@@ -46,12 +46,17 @@ function find(node, id) {
 }
 
 // The workspace's orchestration mark (docs/ui/notes-ORCH-MARK.md): one live terminal
-// carries it, label hub.role=orchestrator else the name "orchestrator"; its tab and
-// space come from the panes. Identical in tabs-graph, space-folders, agent-cards.
+// carries it, label hub.role=orchestrator else the name "orchestrator"/"orchestrator-<space>";
+// its tab and space come from the panes. Identical in tabs-graph, space-folders, agent-cards.
 const ORCH_ICON = "mods/orchestra/orchestrator.svg";
 const ORCH_TIP = "Orchestrator dieses Workspace";
+// Orchestrator: label hub.role=orchestrator, sonst der Name `orchestrator` bzw.
+// `orchestrator-<space>` — dieselbe Regel wie `ui.isOrchestrator` in
+// mods/orchestra/ui.js (dieser Klon hat keine ui.js-Kopie).
+const isOrchestrator = (x) => x.labels?.["hub.role"] === "orchestrator"
+  || x.name === "orchestrator" || String(x.name ?? "").startsWith("orchestrator-");
 function orchestration() {
-  const live = terminals().filter((x) => x.state === "live" && (x.labels?.["hub.role"] === "orchestrator" || x.name === "orchestrator"));
+  const live = terminals().filter((x) => x.state === "live" && isOrchestrator(x));
   const tabOf = new Map(panes().filter((p) => p.terminal).map((p) => [p.terminal, p.tab]));
   const tabs = new Set(live.map((x) => tabOf.get(x.address)).filter(Boolean));
   const spaceIds = new Set(spaces().filter((s) => (s.tabs ?? []).some((tb) => tabs.has(tb.id))).map((s) => s.id));

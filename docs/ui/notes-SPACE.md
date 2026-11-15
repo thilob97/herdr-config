@@ -194,20 +194,26 @@ alte `mine[<terminal>]`-Einträge werden weiter gelesen, der Space gewinnt.)
     {
       "id": "spaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "name": "Alpha",
       "folder": "/tmp/hub-notes.Hxswce/repos/alpha", "machine": "",
+      "kind": "workspace", "workspace": "",
       "orchestrator": "t-orch-a", "live": true, "tickets": 1,
-      "open": { "todo": 0, "doing": 1, "review": 0 }, "cost": 0.0
+      "open": { "todo": 0, "doing": 1, "review": 0 }, "cost": 0.0, "cost_open": 0.0
     },
     {
       "id": "spbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "name": "Beta",
       "folder": "/tmp/hub-notes.Hxswce/repos/beta", "machine": "agentic-vm",
+      "kind": "workspace", "workspace": "",
       "orchestrator": "agentic-vm/t-orch-b", "live": true, "tickets": 2,
-      "open": { "todo": 1, "doing": 0, "review": 1 }, "cost": 0.0
+      "open": { "todo": 1, "doing": 0, "review": 1 }, "cost": 0.0, "cost_open": 0.0
     }
   ]
 }
 ```
 
-`cost` summiert `data/orchestra/costs.json` je Space; `orchestrator` ist leer, wenn dort
+`cost` summiert `data/orchestra/costs.json` je Space; `cost_open` nur die Tickets, die
+nicht `done` sind (dieselbe Regel wie die Budget-Zeile in `hub status`). `kind` ist
+`workspace` für eine Fabrik und `agent` für den Wegwerf-Space, in dem das Ticket eines
+Agents läuft; `workspace` nennt dann dessen Workspace, sonst leer — beides wie in
+`notes-SPACE-FIX.md`. `orchestrator` ist leer, wenn dort
 keiner läuft. Ein Space, den das Fenster nicht mehr listet, dessen Tickets aber `space`
 tragen, erscheint mit leerem `folder` weiter.
 

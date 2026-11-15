@@ -66,7 +66,7 @@ function inboxCount() {
     const list = agents();
     const scoped = (a) => !sp || !a.space || a.space === sp.id;
     const o = terminals().find((x) => x.state === "live" && x.status === "blocked"
-      && (x.name === "orchestrator" || x.labels?.["hub.role"] === "orchestrator" || /^orchestrator-/.test(x.name ?? ""))
+      && isOrchestrator(x)
       && (!sp || x.labels?.["hub.space"] === sp.id || x.labels?.["herdr.space"] === sp.id));
     const blocked = list.filter((a) => a.status === "blocked" && scoped(a)).length + (o && !list.some((a) => a.address === o.address) ? 1 : 0);
     const review = (shared("orchestra.tickets") ?? []).filter((x) => x.status === "review" && (!sp || inScope(x, sp))).length;
@@ -87,12 +87,17 @@ function find(node, id) {
 }
 
 // The workspace's orchestration mark (docs/ui/notes-ORCH-MARK.md): one live terminal
-// carries it, label hub.role=orchestrator else the name "orchestrator"; its tab and
-// space come from the panes. Identical in tabs-graph, space-folders, agent-cards.
+// carries it, label hub.role=orchestrator else the name "orchestrator"/"orchestrator-<space>";
+// its tab and space come from the panes. Identical in tabs-graph, space-folders, agent-cards.
 const ORCH_ICON = "mods/orchestra/orchestrator.svg";
 const ORCH_TIP = "Orchestrator dieses Workspace";
+// Orchestrator: label hub.role=orchestrator, sonst der Name `orchestrator` bzw.
+// `orchestrator-<space>` — dieselbe Regel wie `ui.isOrchestrator` in
+// mods/orchestra/ui.js (dieser Klon hat keine ui.js-Kopie).
+const isOrchestrator = (x) => x.labels?.["hub.role"] === "orchestrator"
+  || x.name === "orchestrator" || String(x.name ?? "").startsWith("orchestrator-");
 function orchestration() {
-  const live = terminals().filter((x) => x.state === "live" && (x.labels?.["hub.role"] === "orchestrator" || x.name === "orchestrator"));
+  const live = terminals().filter((x) => x.state === "live" && isOrchestrator(x));
   const tabOf = new Map(panes().filter((p) => p.terminal).map((p) => [p.terminal, p.tab]));
   const tabs = new Set(live.map((x) => tabOf.get(x.address)).filter(Boolean));
   const spaceIds = new Set(spaces().filter((s) => (s.tabs ?? []).some((tb) => tabs.has(tb.id))).map((s) => s.id));

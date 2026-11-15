@@ -85,7 +85,7 @@ Space bleibt es die Gesamtsumme.
 Workspace (`hub.role=orchestrator` und `hub.space`/`herdr.space` = aktiver Space, Name
 `orchestrator[-<space>]`). Der Dialog öffnet auf „Ans Team“; ohne Orchestrator zeigt er den
 Satz „Kein Orchestrator in diesem Workspace (<Name>). Starte ihn hier — oder starte selbst.“
-und als Primärknopf **Orchestrator starten** (`hub orchestrator start --space <id> --json`,
+und als Primärknopf **Orchestrator starten** (`hub orchestrator start --space <id>`,
 derselbe Weg wie das Team-Panel). Gesendet wird per `hc send <address>` an genau diesen
 Terminal, nie per Name an einen fremden. Ein Home ohne Space-Labels behält den einen
 namenlosen Orchestrator.
