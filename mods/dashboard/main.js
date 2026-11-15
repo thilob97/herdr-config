@@ -30,7 +30,7 @@ const SPEND_REFRESH = 120000;
 const SPEND_HELPER = () => `${appHome()}/mods/status-bar/helpers/usage.py`;
 const DOING_MAX = 5;
 // Team rows keep these columns aligned; the two middle ones share what is left.
-const COL_WHO = 132, COL_STATUS = 68, COL_TIME = 40, COL_COST = 46;
+const COL_WHO = 132, COL_STATUS = 68, COL_TIME = 80, COL_COST = 46;
 const SEND_ICON = "mods/orchestra/icons/send.svg";
 
 // Same quoting as mods/orchestra/orchestrator.js, whose start this copies.
@@ -95,6 +95,22 @@ const STAGES = [
 ];
 const stageOf = (tk) => (["todo", "review", "done"].includes(tk.status) ? tk.status : "doing");
 const STATUS_RANK = { blocked: 0, working: 1, idle: 2, done: 3 };
+// The sidebar's state rule, copied from inbox/main.js: a card's state is its own or the
+// most urgent of its sub-agents (terminals it started and omp's task sub-agents), so
+// the Team block says "arbeitet" when the sidebar and Inbox do (R3-11).
+const RANK = { blocked: 4, done: 3, working: 2, idle: 1 };
+const SUB_STATUS = { running: "working", pending: "idle", completed: "done", failed: "blocked", cancelled: "blocked", aborted: "blocked" };
+const moreUrgent = (x, y) => ((RANK[y] ?? 0) > (RANK[x] ?? 0) ? y : x);
+function effectiveStatus(a, terms, subs) {
+  const kid = (t) => (t.status === "error" ? "blocked" : t.status === "done" ? "idle" : t.status ?? "idle");
+  let st = a.status ?? "idle";
+  const walk = (addr) => {
+    for (const k of terms.filter((x) => x.parent === addr && x.state !== "finished")) { st = moreUrgent(st, kid(k)); walk(k.address); }
+    for (const s of subs[addr] ?? []) st = moreUrgent(st, s.status === "completed" ? "idle" : SUB_STATUS[s.status] ?? "idle");
+  };
+  walk(a.address);
+  return st;
+}
 
 // ---------- Wartet-Regel ----------
 // A completion report is never a question, even when a "?" sits inside it: agents end
@@ -201,7 +217,7 @@ export default class Dashboard extends View {
   // five-second pace, but only when their signature actually moved.
   watchLive(cx) {
     const o = this.orchestrator();
-    const sig = JSON.stringify([agents().map((a) => [a.address, this.statusOf(a), a.tab ?? "", a.pane ?? ""]),
+    const sig = JSON.stringify([agents().map((a) => [a.address, this.effective(a), a.tab ?? "", a.pane ?? ""]),
       o?.address ?? null, o?.status ?? null, this.costs().at ?? 0, this.waitsOnMe().length]);
     if (sig === this.liveSig) return;
     this.liveSig = sig;
@@ -274,10 +290,13 @@ export default class Dashboard extends View {
     return t?.status ?? a.status;
   }
 
+  // The status the Team block shows: the agent's own, or a working/blocked child's.
+  effective(a) { return effectiveStatus(a, terminals(), shared("omp.subagents") ?? {}); }
+
   // Since when the agent is in this state: the status bar keeps it for every mod,
   // the local first sight fills the gap right after a start.
   attentionAt(a) {
-    const st = this.statusOf(a);
+    const st = this.effective(a);
     const s = (shared("attention.since") ?? {})[a.address];
     if (s && (s.status === st || (st === "idle" && s.status === "done"))) return s.at;
     return this.since(a.address, st);
@@ -592,7 +611,7 @@ export default class Dashboard extends View {
   // A ticket ready to check: the author's identity, the title (two lines at most),
   // its gates, the age and "Prüfen".
   reviewRow(t, tk, primary, on) {
-    const who = tk.terminal ?? (tk.by === ORCH ? this.orchestrator()?.address ?? null : null);
+    const who = tk.terminal ?? null;
     const age = ago(at(tk.updated));
     return h_flex().id(`dash-review-${rid(tk.id)}`).min_h(ui.H_ROW2).flex_none().py(4).px(ui.INSET_CARD).gap(ui.GAP_M).items_center().rounded(6)
       .bg(on ? t.selected : t.surface).border_1().border_color(t.border)
@@ -695,7 +714,7 @@ export default class Dashboard extends View {
     const st = live?.status ?? "idle";
     const cost = this.costs().tickets?.[tk.id];
     const dur = live ? ago(this.attentionAt(live)) : "";
-    return h_flex().id(`dash-doing-${rid(tk.id)}`).h(40).flex_none().px(ui.INSET_CARD).gap(ui.GAP_M).items_center().rounded(6)
+    return h_flex().id(`dash-doing-${rid(tk.id)}`).h(ui.H_ROW2).flex_none().px(ui.INSET_CARD).gap(ui.GAP_M).items_center().rounded(6)
       .bg(on ? t.selected : t.surface).border_1().border_color(t.border)
       .when(Boolean(tk.terminal), (el) => el.cursor_pointer().hover((s) => s.bg(t.hover))
         .tooltip("Klicken: zum Agent").on_click((_e, cx) => { cx.stop_propagation(); this.key = `doing:${tk.id}`; this.handle.focus(); this.openAgent(tk.terminal); }))
@@ -711,12 +730,12 @@ export default class Dashboard extends View {
 
   // The row above the groups: what each column says, in T_XS like other meta.
   teamColumns(t) {
-    return h_flex().h(16).flex_none().px(ui.GAP_S).gap(ui.GAP_S).items_center().text_size(T_XS).text_color(t.dim)
+    return h_flex().h(ui.H_CHIP).flex_none().px(ui.GAP_S).gap(ui.GAP_S).items_center().text_size(T_XS).text_color(t.dim)
       .child(div().w(COL_WHO).flex_none().child("Agent"))
       .child(div().w(COL_STATUS).flex_none().child("Status"))
       .child(div().flex_1().min_w(0).child("Space / Tab"))
       .child(div().flex_1().min_w(0).child("Ticket"))
-      .child(div().w(COL_TIME).flex_none().justify_end().child("Dauer"))
+      .child(div().w(COL_TIME).flex_none().pr(ui.GAP_S).justify_end().tooltip("Seit wann der Agent in diesem Zustand ist: Wechsel aus der Statusleiste, sonst erste Sicht des Dashboards").child("Status seit"))
       .child(div().w(COL_COST).flex_none().justify_end().child("Kosten"));
   }
 
@@ -724,7 +743,7 @@ export default class Dashboard extends View {
   // watched team first, the rest by space.
   teamGroupHead(t, g) {
     const rank = { blocked: 0, working: 1, idle: 2, done: 3 };
-    const top = g.members.reduce((m, a) => { const st = this.statusOf(a); return (rank[st] ?? 9) < (rank[m] ?? 9) ? st : m; }, "idle");
+    const top = g.members.reduce((m, a) => { const st = this.effective(a); return (rank[st] ?? 9) < (rank[m] ?? 9) ? st : m; }, "idle");
     return h_flex().h(ui.H_SECTION).flex_none().px(ui.GAP_S).gap(ui.GAP_S).items_center().text_size(T_S).font_medium()
       .child(div().flex_none().max_w(320).truncate().text_color(g.team ? t.foreground : t.muted).child(g.label))
       .child(div().flex_none().text_color(t.dim).child(String(g.members.length)))
@@ -741,7 +760,7 @@ export default class Dashboard extends View {
     const alone = tk ? this.tickets().filter((x) => x.id === tk.id && x.terminal).length <= 1 : false;
     const cost = tk ? this.costs().perTerminal?.[key] ?? (alone ? this.costs().tickets?.[tk.id] : null) : null;
     const since = this.attentionAt(a);
-    const st = this.statusOf(a);
+    const st = this.effective(a);
     const word = ui.STATUS_WORD[st] ?? st;
     const pic = who.avatar ? image(who.avatar).w(16).h(16).flex_none()
       : who.program?.icon ? (who.program.tint ? svg(who.program.icon).size(16).flex_none().text_color(t.muted)
@@ -761,7 +780,9 @@ export default class Dashboard extends View {
       .child(div().flex_1().min_w(0).truncate().text_size(T_XS).text_color(t.muted).child(where || "—"))
       .child(div().flex_1().min_w(0).truncate().text_size(T_XS).text_color(tk ? t.muted : t.dim)
         .when(Boolean(tk), (el) => el.tooltip(tk.title)).child(tk ? `${tk.id} · ${tk.title}` : "—"))
-      .child(div().w(COL_TIME).flex_none().justify_end().text_size(T_XS).text_color(t.muted).child(since ? ago(since) : "—"))
+      .child(div().w(COL_TIME).flex_none().pr(ui.GAP_S).justify_end().text_size(T_XS).text_color(t.muted)
+        .tooltip(`Status seit ${word}: ${since ? ago(since) : "noch nicht beobachtet"} (Statusleiste; nach einem Neustart erste Sicht dieses Fensters)`)
+        .child(since ? ago(since) : "—"))
       .child(div().w(COL_COST).flex_none().justify_end().text_size(T_XS).text_color(t.muted)
         .tooltip("Kosten dieses Agents an seinem Ticket (nur omp meldet Kosten)").child(cost != null ? usd(cost) : "—"));
   }
@@ -827,7 +848,7 @@ export default class Dashboard extends View {
         .child(h_flex().gap(ui.GAP_M).items_end()
           .child(metric("Nacharbeit", String(d.rework), d.rework ? t.blocked : undefined))
           .child(metric("Ticket-Kosten", usd(d.cost))))
-        .child(h_flex().h(18).gap(1).items_end()
+        .child(h_flex().h(ui.H_CHIP).gap(1).items_end()
           .children(hist.map((h, i) => div().w(12).flex_none().text_size(T_S).text_center()
             .text_color(i === hist.length - 1 ? t.foreground : t.muted)
             .tooltip(`${h.date}: ${h.done} erledigt · ${h.rework} Nacharbeit · Median ${span(h.median_min)}`)
@@ -869,7 +890,7 @@ export default class Dashboard extends View {
         .child(div().h(2).rounded_full().w(`${pct}%`).bg(over ? t.blocked : t.done)))
       .child(div().text_size(T_XS).text_color(t.dim).child("pro Ticket"))
       .when(!shown.length, (el) => el.child(div().text_size(T_XS).text_color(t.dim).child("Noch keine offenen Tickets.")))
-      .children(shown.map(({ tk, n }) => h_flex().id(`dash-cost-${rid(tk.id)}`).h(15).flex_none().gap(ui.GAP_S).items_center()
+      .children(shown.map(({ tk, n }) => h_flex().id(`dash-cost-${rid(tk.id)}`).h(ui.H_CHIP).flex_none().gap(ui.GAP_S).items_center()
         .child(div().flex_1().min_w(0).truncate().text_size(T_XS).text_color(t.muted).tooltip(tk.title).child(tk.id))
         .child(div().flex_none().text_size(T_XS).text_color(n != null ? t.foreground : t.dim).child(n != null ? usd(n) : "—"))))
       .when(more > 0, (el) => el.child(div().text_size(T_XS).text_color(t.dim).child(`+${more} weitere`)));
@@ -918,7 +939,10 @@ export default class Dashboard extends View {
       .child(h_flex().size_full().min_h(0).justify_center().items_start().p(PAD)
         .child(v_flex().id("dash-card").w_full().max_w(MAXW).h_full().min_h(0).rounded(10).overflow_hidden()
           .bg(t.background).border_1().border_color(t.border)
-          .child(v_flex().id("dash-body").flex_1().min_h(0).overflow_y_scrollbar().p(16).gap(ui.GAP_L)
+          .child(v_flex().id("dash-body").flex_1().min_h(0).overflow_y_scrollbar()
+            // Above the toast surface: the toast sits 36 px off the window bottom and its
+            // card is ~47 px tall, so the last row (Auftrag/Senden) keeps 80 px below it (R3-14).
+            .px(16).pt(16).pb(80).gap(ui.GAP_L)
             .child(this.header(t))
             .child(this.waitingSection(t, waits))
             .child(h_flex().gap(ui.GAP_L).items_start()
