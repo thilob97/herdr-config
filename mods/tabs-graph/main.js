@@ -1,6 +1,6 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { spaces, panes, agents, terminals, shared, run, openOverlay, theme, window, layout, settings, nextCommand } from "herdr";
+import { spaces, panes, agents, terminals, shared, run, openOverlay, theme, window, layout, settings, nextCommand, appHome, readTextFile } from "herdr";
 
 // Tokens (docs/ui-spec.md, 5).
 const GAP_XS = 4, GAP_S = 6, GAP_M = 8;
@@ -9,10 +9,14 @@ const T_XS = 10.5, T_S = 11, T_M = 12;
 // Room the strip leaves for "+" (26), the overflow chip (40) and their gaps.
 const RESERVED = 26 + 40 + 2 * 4;
 
-// Panel group by factory role: Fabrik (Quests, Team) ‖ Werkzeuge. Keys stay ⌘⌥1 … ⌘⌥7.
+// Panel group by factory role: Fabrik (Quests, Team, Board, Team-Hub) ‖ Werkzeuge.
+// Keys stay ⌘⌥1 … ⌘⌥9. Board and Team-Hub ship with their packages; until then a local
+// placeholder icon draws their spot (fallback) and their own command opens the panel.
 const FABRIK = [
   { id: "quests", label: "Quests", icon: "mods/quests/icon.svg", key: 6, tip: "Quests: alle Signale und Tickets" },
   { id: "team", label: "Team", icon: "mods/orchestra/icon.svg", key: 7, tip: "Team: Pipeline der Tickets" },
+  { id: "board", label: "Board", icon: "mods/board/icon.svg", fallback: "mods/tabs-graph/board.svg", cmd: "board.panel", key: 8, tip: "Board: Tickets auf dem Brett" },
+  { id: "teams", label: "Team-Hub", icon: "mods/teams/icon.svg", fallback: "mods/tabs-graph/teams.svg", cmd: "teams.panel", key: 9, tip: "Team-Hub: Teams, Rollen und Arbeit" },
 ];
 const WERKZEUGE = [
   { id: "changes", label: "Changes", icon: "mods/changes/changes.svg", key: 1, tip: "Changes: Arbeitskopie" },
@@ -62,6 +66,20 @@ export default class Tabs extends View {
     this.stripW = 0;
     this.hidden = 0;
     this.panels = JSON.parse(localStorage.getItem("panels") ?? "{}");
+    // A panel icon exists only once its package ships; the local placeholder keeps the
+    // button readable until then (one check per lookup, the result stays).
+    this.icons = {};
+    cx.spawn(async () => {
+      const found = {};
+      for (const p of FABRIK) {
+        if (!p.fallback) continue;
+        let text = null;
+        try { text = await readTextFile(`${appHome()}/${p.icon}`); } catch { text = null; }
+        found[p.id] = text ? p.icon : p.fallback;
+      }
+      this.icons = found;
+      cx.notify();
+    });
     // Keys: tabs-graph.panel toggles the side panel, tabs-graph.panel-<id> toggles one panel.
     cx.spawn(async () => {
       for (;;) {
@@ -182,11 +200,18 @@ export default class Tabs extends View {
         .bg(on ? t.selected : t.background).text_color(on ? t.foreground : t.muted)
         .hover(s => s.bg(on ? t.selected : t.hover).text_color(t.foreground)).on_mouse_down("left", stop)
         .tooltip(`${p.tip} (⌘⌥${p.key})`)
-        .on_click(() => this.togglePanel(p.id))
-        .child(svg(p.icon).size(14).flex_none()).when(on, el => el.child(p.label));
+        .on_click(() => (p.cmd ? run(p.cmd) : this.togglePanel(p.id)))
+        .child(svg(this.icons[p.id] ?? p.icon).size(14).flex_none()).when(on, el => el.child(p.label));
     };
     const segment = (id, list) => h_flex().id(id).h(H_BTN).p(2).gap(2).flex_none().items_center().rounded(8)
       .bg(t.background).border_1().border_color(t.border).children(list.map(segEntry));
+    // The dashboard is reachable without knowing the chord: same segment shape as the
+    // panel groups, never primary. The dashboard carries the reverse ("Workspace").
+    const dashboard = h_flex().id("hub-dashboard").h(H_BTN).px(8).gap(GAP_S).flex_none().items_center().rounded(8)
+      .bg(t.background).border_1().border_color(t.border).text_size(T_S).text_color(t.muted)
+      .hover(s => s.bg(t.hover).text_color(t.foreground)).tooltip("Dashboard: Startbildschirm (⌘⇧0)")
+      .on_mouse_down("left", stop).on_click(() => run("layout.switch", { name: "dashboard" }))
+      .child(svg("mods/dashboard/icon.svg").size(14).flex_none()).child("Dashboard");
     // Primary button (5.6): the one way in for new work.
     const auftrag = h_flex().id("hub-auftrag").h(H_BTN).px(10).gap(GAP_S).flex_none().items_center().rounded(6)
       .bg(t.solid).text_color(t.solid_foreground).text_size(T_M).font_medium().hover(s => s.opacity(0.85))
@@ -212,7 +237,7 @@ export default class Tabs extends View {
         this.rightW = s.width;
         cx.notify();
       })
-      .children([auftrag, inbox,
+      .children([dashboard, auftrag, inbox,
         iconButton("hub-review", svg("mods/review/icon.svg").size(14), "Review des fokussierten Terminals (⌘⇧R)", () => run("mod.open", { name: "review" })),
         segment("panels-fabrik", FABRIK), segment("panels-werkzeuge", WERKZEUGE)])
       .when(winButtons.length > 0, el => el.child(h_flex().flex_none().gap(GAP_XS).children(winButtons)));
