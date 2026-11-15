@@ -3,20 +3,22 @@
 // copied from mods/orchestra/orchestrator.md, labels hub.role=orchestrator and
 // hub.space=<space id>), so the app and the command line take the same path.
 import { terminals, exec, hc, appHome, spaces, focused, shared, setShared } from "herdr";
-import { isOrchestrator } from "./ui.js";
+import * as ui from "./ui.js";
 
 export const NAME = "orchestrator";
 export const agentKey = () => shared("orchestra.agent") ?? "omp";
 
-/** The space this window shows: the active one, else the focused terminal's. */
+/** The space this window shows: the active one, else the focused terminal's. An agent
+ *  worktree space is the throwaway space of a ticket; its workspace is the factory. */
 export function spaceId() {
-  return spaces().find((s) => s.active)?.id ?? focused()?.space ?? "";
+  const sid = spaces().find((s) => s.active)?.id ?? focused()?.space ?? "";
+  return ui.workspaceId(sid);
 }
 
 /** The orchestrator of the current space — never another factory's. */
 export const find = () => {
   const sid = spaceId();
-  const live = terminals().filter((x) => x.state === "live" && isOrchestrator(x));
+  const live = terminals().filter((x) => x.state === "live" && ui.isOrchestrator(x));
   if (sid) return live.find((x) => x.labels?.["hub.space"] === sid || x.labels?.["herdr.space"] === sid) ?? null;
   // A home without space labels keeps the one orchestrator it has.
   return live.find((x) => !x.labels?.["hub.space"]) ?? null;
@@ -26,7 +28,7 @@ export const find = () => {
  *  its one orchestrator under `spaceId` "". */
 export function all() {
   const seen = new Set(), out = [];
-  for (const x of terminals().filter((t) => t.state === "live" && isOrchestrator(t))) {
+  for (const x of terminals().filter((t) => t.state === "live" && ui.isOrchestrator(t))) {
     const sid = x.labels?.["hub.space"] || x.labels?.["herdr.space"] || "";
     if (seen.has(sid)) continue;
     seen.add(sid);
@@ -97,5 +99,8 @@ export function digest(lines) {
   return { step, message: message.slice(-5) };
 }
 
-export function setAutostart(on) { setShared("orchestra.autostart", on); }
-export const autostart = () => shared("orchestra.autostart") !== false;
+/** Autostart is a property of one factory: stopping it in space A must not keep space B
+ *  from starting its own. Missing entry = on (a home from before the split autostarts). */
+export const autostartKey = (sid = spaceId()) => `orchestra.autostart.${sid ?? ""}`;
+export function setAutostart(on, sid = spaceId()) { setShared(autostartKey(sid), Boolean(on)); }
+export const autostart = (sid = spaceId()) => shared(autostartKey(sid)) !== false;

@@ -116,14 +116,16 @@ function nested(all, address) {
 }
 
 // Spec 7.3, literally: the same number as the tab bar's Inbox badge, but for the factory
-// of this window's workspace. `total` counts the whole home, for the tooltip.
+// of this window's workspace. A dispatched agent lives in a throwaway space; its ticket
+// names the workspace. `total` counts the whole home, for the tooltip.
 export function inboxCount() {
   const sp = ui.activeSpace();
   const counts = (space) => {
+    const own = space ? ui.workspaceId(space.id) : "";
     const all = agents();
-    const scoped = (a) => !space || !a.space || a.space === space.id;
+    const scoped = (a) => { const ws = ui.agentWorkspace(a); return !own || !ws || ws === own; };
     const orchestratorBlocked = terminals().some((x) => x.name === ORCH && x.state === "live" && x.status === "blocked"
-      && (!space || x.labels?.["hub.space"] === space.id || x.labels?.["herdr.space"] === space.id));
+      && (!own || ui.workspaceId(x.labels?.["hub.space"] || x.labels?.["herdr.space"] || "") === own));
     return {
       blocked: all.filter((a) => a.status === "blocked" && scoped(a)).length + (orchestratorBlocked ? 1 : 0),
       review: (shared("orchestra.tickets") ?? []).filter((t) => t.status === "review" && (!space || ui.inScope(t))).length,
@@ -131,6 +133,21 @@ export function inboxCount() {
     };
   };
   return { ...counts(sp), total: counts(null) };
+}
+
+/** The head's equation, one term per group: blocked agents and the orchestrator,
+ *  questions from tickets, review tickets, finished and working agents (with their
+ *  handover lines). Built from the list itself, so it adds up to its length. */
+export function inboxNote(list) {
+  const count = (f) => (list ?? []).filter(f).length;
+  const ask = count((e) => e.group === "ask" && e.kind !== "question");
+  const questions = count((e) => e.kind === "question");
+  const review = count((e) => e.group === "review");
+  const done = count((e) => e.group === "done");
+  const work = count((e) => e.group === "work");
+  const total = (list ?? []).length;
+  return { ask, questions, review, done, work, total,
+    text: `Inbox ${ask} Rückfragen + ${questions} Fragen + ${review} Abnahmen + ${done} fertig + ${work} in Arbeit/unterwegs = ${total} Zeilen` };
 }
 
 export default class Inbox extends View {
@@ -159,21 +176,24 @@ export default class Inbox extends View {
 
   // Everything in the inbox, grouped and ordered: oldest first within a group. Only the
   // factory of this window's workspace: agents, the orchestrator and the tickets of other
-  // spaces stay out (ui.inScope keeps old tickets without `space`).
+  // spaces stay out (ui.inScope keeps old tickets without `space`). A dispatched agent
+  // lives in a throwaway space; `ui.agentWorkspace` maps it to its ticket's workspace.
   entries() {
     const sp = ui.activeSpace();
+    const own = sp ? ui.workspaceId(sp.id) : "";
     const since = shared("attention.since") ?? {};
     const at = (a) => (since[a.address]?.status === a.status ? since[a.address].at : null);
     const group = { blocked: "ask", done: "done", working: "work" };
     const all = agents(), terms = terminals(), subs = shared("omp.subagents") ?? {};
-    const list = all.filter((a) => !nested(terms, a.address) && (!sp || !a.space || a.space === sp.id))
+    const mine = (a) => { const ws = ui.agentWorkspace(a); return !own || !ws || ws === own; };
+    const list = all.filter((a) => !nested(terms, a.address) && mine(a))
       .map((a) => ({ a, st: effectiveStatus(a, terms, subs) }))
       .filter(({ st }) => st in group)
       .map(({ a, st }) => ({ kind: "agent", key: a.address, address: a.address, group: group[st], a, st, since: at({ ...a, status: st }), order: at(a) ?? a.seq }));
     const o = terminals().find((x) => x.name === ORCH && x.state === "live"
-      && (!sp || x.labels?.["hub.space"] === sp.id || x.labels?.["herdr.space"] === sp.id));
+      && (!own || ui.workspaceId(x.labels?.["hub.space"] || x.labels?.["herdr.space"] || "") === own));
     if (o?.status === "blocked" && !list.some((e) => e.address === o.address)) {
-      list.push({ kind: "orch", key: "orch", address: ORCH, group: "ask", o, since: null, order: -1 });
+      list.push({ kind: "orch", key: "orch", address: o.address, group: "ask", o, since: null, order: -1 });
     }
     for (const tk of (shared("orchestra.tickets") ?? []).filter((x) => x.status === "review" && ui.inScope(x))) {
       list.push({ kind: "ticket", key: `ticket:${tk.id}`, group: "review", tk, order: tk.updated ?? "" });
@@ -185,6 +205,9 @@ export default class Inbox extends View {
     for (const p of (shared(PENDING) ?? [])) {
       // A handover line lives at most 15 minutes: after that the crew had its chance.
       if (Date.now() - (p.at ?? 0) > 15 * 60000) continue;
+      // An Auftrag belongs to the workspace it was sent from; old lines without a
+      // space stay visible, like old tickets in ui.inScope.
+      if (own && p.space && p.space !== own) continue;
       list.push({ kind: "pending", key: `pending:${p.key}`, group: "work", p, order: p.at ?? "" });
     }
     const rank = Object.fromEntries(GROUPS.map((g, i) => [g.key, i]));
@@ -472,7 +495,8 @@ export default class Inbox extends View {
     const sel = i >= 0 ? list[i] : null;
     const { blocked, review, done, total } = inboxCount();
     const waits = blocked + review;
-    const questions = list.filter((e) => e.kind === "question").length;
+    const note = inboxNote(list);
+    const questions = note.questions;
     const scope = ui.spaceChip(t);
 
     const col = v_flex().id("ib-list").w(320).flex_none().h_full().min_h(0).pr(ui.GAP_M).overflow_y_scrollbar().track_scroll(this.scroll)
@@ -503,7 +527,7 @@ export default class Inbox extends View {
         .when(!waits && done > 0, (el) => el.child(div().id("ib-done").tooltip(`Diesem Workspace: ${done} fertig · gesamt ${total.done}`)
           .child(ui.counterBadge(t, done, t.done))))
         .when(questions > 0, (el) => el.child(div().id("ib-verlauf-note").flex_none().text_size(T_XS).text_color(t.dim)
-          .tooltip(`Inbox ${waits} (Rückfragen + Abnahmen) + ${questions} Frage${questions === 1 ? "" : "n"} aus dem Ticket-Verlauf = ${list.length} Zeilen`)
+          .tooltip(note.text)
           .child(`+ ${questions} Verlauf`)))
         .child(div().flex_1())
         .child(div().flex_none().text_size(T_XS).text_color(t.muted).child("↑↓ wählen · ↵ öffnen · r antworten · v Review"))

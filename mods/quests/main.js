@@ -258,7 +258,8 @@ class Board {
             await store.addStarted({ key: keyOf(tk), source: tk.source, id: tk.id, title: tk.title, url: tk.url, branch: "beim Orchestrator", worktree: false,
               folder: repo ?? "", machine: sp?.machine ?? null, space: null, tab: null, terminal: h.terminal, agent: "Orchestrator", at: h.at });
             setShared(PENDING, [...(shared(PENDING) ?? []).filter((p) => p.key !== keyOf(tk)),
-              { key: keyOf(tk), id: tk.id, url: tk.url ?? "", source: tk.source, title: tk.title, at: h.at ?? Date.now() }]);
+              { key: keyOf(tk), id: tk.id, url: tk.url ?? "", source: tk.source, title: tk.title, at: h.at ?? Date.now(),
+                space: ui.workspaceId(ui.activeSpace()?.id ?? "") }]);
             notify({ title: "An den Orchestrator übergeben", body: tk.title, level: "success", timeout: 6000, action: { name: "tabs-graph.panel-team" } });
           } else {
             let lines = [], wrote = false;
