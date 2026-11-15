@@ -4,7 +4,8 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { pickOf, effective, toggle, seriesOf, ticketSpace, mergeStats, median, OWN, SOME, ALL } from "../spaces.js";
+import { pickOf, effective, toggle, seriesOf, ticketSpace, mergeStats, median, OWN, SOME, ALL,
+  workspaceRows, workspaceOf, agentWorkspace } from "../spaces.js";
 
 const SPACES = [
   { id: "spa", name: "Alpha", folder: "/repos/alpha" },
@@ -120,4 +121,45 @@ test("Tickets von gestern zählen nicht in den Median von heute", () => {
     { id: "t2", status: "done", done_at: at(14, 9), lead_min: 90 },
   ] });
   assert.equal(mergeStats([a, b]).today.median_min, 30);
+});
+
+// ---------- Agent-Spaces (Workspace-Fabrik 4) ----------
+
+const ROWS = [
+  { id: "spa", name: "Alpha", folder: "/repos/alpha", kind: "workspace" },
+  { id: "spb", name: "Beta", folder: "/repos/beta", kind: "workspace" },
+  { id: "spag", name: "feat-agent", folder: "/wt/agent", kind: "agent", workspace: "spa" },
+  { id: "", name: "ohne Workspace", folder: "", kind: "workspace" },
+];
+
+test("Chips und Workspaces-Karte zeigen nur kind workspace", () => {
+  assert.deepEqual(workspaceRows(ROWS).map((r) => r.id), ["spa", "spb", ""]);
+  assert.deepEqual(workspaceRows(null), []);
+  // Ein Alt-Home ohne `kind` bleibt ein Workspace.
+  assert.deepEqual(workspaceRows([{ id: "spx" }]).map((r) => r.id), ["spx"]);
+});
+
+test("ein Agent-Space nennt seinen Workspace, ein Workspace sich selbst", () => {
+  assert.equal(workspaceOf(ROWS, "spag"), "spa");
+  assert.equal(workspaceOf(ROWS, "spb"), "spb");
+  assert.equal(workspaceOf(ROWS, "spa"), "spa");
+  assert.equal(workspaceOf(ROWS, ""), "");
+  assert.equal(workspaceOf(null, "spa"), "spa");
+});
+
+test("Agents zählen zum Workspace ihres Tickets, nicht zum Agent-Space", () => {
+  const tickets = [
+    { id: "t1", status: "doing", space: "spa", space_name: "Alpha", repo: "/repos/alpha/wt",
+      terminal: "t-a", agent_space: "spag" },
+    { id: "t2", status: "done", space: "spb", space_name: "Beta", repo: "/repos/beta",
+      terminal: "t-done", agent_space: "spag" },
+  ];
+  // Selbst ein erledigtes Ticket bindet seinen Agenten an den Workspace.
+  assert.equal(agentWorkspace({ address: "t-a", space: "spag" }, tickets, ROWS, "spb"), "spa");
+  assert.equal(agentWorkspace({ address: "t-done", space: "spag" }, tickets, ROWS, "spa"), "spb");
+  // Ohne Ticket zählt die Kennung; ein Agent-Space wird zu seinem Workspace.
+  assert.equal(agentWorkspace({ address: "t-x", space: "spag" }, tickets, ROWS, "spb"), "spa");
+  assert.equal(agentWorkspace({ address: "t-y", space: "spb" }, tickets, ROWS, "spa"), "spb");
+  // Ohne Space und ohne Ticket bleibt der eigene Workspace.
+  assert.equal(agentWorkspace({ address: "t-z" }, tickets, ROWS, "spb"), "spb");
 });

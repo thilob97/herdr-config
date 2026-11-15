@@ -430,6 +430,63 @@ class HubSpaceTest(unittest.TestCase):
         self.assertEqual(rows[SP_B]["cost"], 2.0)
         self.assertEqual(report["space"], SP_A)
 
+    def test_spaces_and_orchestrator_list_share_one_detection(self):
+        # `hc ls` carries no labels and a second orchestrator may carry a space suffix;
+        # both views must still name it and count it as live.
+        self.terminal(ORCH_B, name="orchestrator-beta", state="live",
+                      labels={"hub.role": "orchestrator", "hub.space": SP_B, "herdr.space": SP_B})
+        self.write_json(self.ls_file, {"terminals": [
+            {"address": ORCH_A, "name": "orchestrator", "state": "live"},
+            {"address": ORCH_B, "name": "orchestrator-beta", "state": "live"},
+            {"address": "t-agent", "name": "agent", "state": "live"},
+        ]})
+        rows = {r["id"]: r for r in self.json_cmd("spaces")["spaces"]}
+        self.assertEqual(rows[SP_A]["orchestrator"], ORCH_A)
+        self.assertTrue(rows[SP_A]["live"])
+        self.assertEqual(rows[SP_B]["orchestrator"], ORCH_B,
+                         "ein Orchestrator mit Space-Suffix wird gefunden")
+        self.assertTrue(rows[SP_B]["live"])
+        listing = {r["space"]: r for r in self.json_cmd("orchestrator", "list")["orchestrators"]}
+        self.assertEqual(listing[SP_A]["terminal"], ORCH_A)
+        self.assertEqual(listing[SP_B]["terminal"], ORCH_B)
+        self.assertTrue(listing[SP_B]["live"])
+
+    def test_agent_spaces_are_hidden_unless_requested(self):
+        own = self.ticket("Eigenes Ticket", self.alpha)
+        agent_space = "sp" + "c" * 32
+        self.hub("ticket", "set", own, f"agent_space={agent_space}")
+        self.terminal("t-agent", name="workspace-fabrik", state="live",
+                      labels={"herdr.space": agent_space, "hub.ticket": own})
+        self.spaces([
+            {"id": SP_A, "name": "Alpha", "folder": self.alpha, "machine": None,
+             "tabs": [{"id": "tb-a", "terminals": [{"terminal": ORCH_A}, {"terminal": "t-agent"}]}]},
+            {"id": agent_space, "name": "feat-agent", "folder": self.alpha + "-worktree", "machine": None,
+             "tabs": [{"id": "tb-g", "terminals": [{"terminal": "t-agent"}]}]},
+            {"id": SP_B, "name": "Beta", "folder": self.beta, "machine": None,
+             "tabs": [{"id": "tb-b", "terminals": [{"terminal": ORCH_B}]}]},
+        ])
+        rows = {r["id"]: r for r in self.json_cmd("spaces")["spaces"]}
+        self.assertNotIn(agent_space, rows, "der Agent-Space ist kein Workspace")
+        self.assertEqual(rows[SP_A]["kind"], "workspace")
+        self.assertEqual(rows[SP_B]["kind"], "workspace",
+                         "ein Space ohne Tickets und ohne Orchestrator bleibt Workspace")
+        with_agents = {r["id"]: r for r in self.json_cmd("spaces", "--agents")["spaces"]}
+        self.assertEqual(with_agents[agent_space]["kind"], "agent")
+        self.assertEqual(with_agents[agent_space]["workspace"], SP_A,
+                         "--agents nennt den Workspace des Tickets")
+
+    def test_a_team_agent_ticket_inherits_its_own_workspace(self):
+        parent = self.ticket("Eltern", self.alpha)
+        agent_space = "sp" + "d" * 32
+        self.terminal("t-team", name="team", state="live",
+                      labels={"herdr.space": agent_space, "hub.ticket": parent})
+        r = self.hub("ticket", "new", "--title", "Kind", "--repo", self.alpha,
+                     who="t-team", env={"HERDR_SPACE": agent_space})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        meta, _ = self.fields(r.stdout.strip())
+        self.assertEqual(meta["space"], SP_A,
+                         "der Agent-Space des Terminals erbt nicht in das neue Ticket")
+
     # ---- orchestrator per space
 
     def test_orchestrator_start_refuses_a_second_and_restart_replaces_it(self):
