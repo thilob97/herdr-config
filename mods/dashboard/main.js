@@ -1286,11 +1286,13 @@ export default class Dashboard extends View {
   costSplit() {
     const rows = this.spaceList();
     if (!rows) return { team: Number(this.costs().teamCost ?? 0), parts: [], orch: 0 };
+    const c = this.costs();
     return space.costSplit(rows, {
       all: this.pick().mode === space.ALL,
       ids: this.selIds(),
       ownId: this.ownSpaceId(),
-      orchestrator: this.costs().orchestrator ?? 0,
+      orchestrators: c.orchestrators ?? {},
+      orchestrator: c.orchestrator ?? 0,
     });
   }
 

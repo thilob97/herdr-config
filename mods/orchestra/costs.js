@@ -18,7 +18,18 @@ export const TEAM_STEPS = [5, 10, 20, 50, 100];
 export const budget = () => ({ ticket: 3, team: 20, ...(shared("orchestra.budget") ?? {}) });
 export const extra = (id) => (shared("orchestra.budgetExtra") ?? {})[id] ?? 0;
 export const ticketLimit = (id) => budget().ticket + extra(id);
-export const costs = () => shared("orchestra.costs") ?? { tickets: {}, orchestrator: 0, teamCost: 0, stopped: {} };
+export const costs = () => shared("orchestra.costs") ?? { tickets: {}, orchestrator: 0, orchestrators: {}, teamCost: 0, stopped: {} };
+
+/** The orchestrator's cost in one space (`orchestrators` in costs.json). A file from
+ *  before the split carries one number for the whole home: it belongs to that space —
+ *  and to "no space" (""), where it is the sum. A space with its own entry never sees
+ *  another space's money. */
+export function orchestratorCost(sid = "") {
+  const c = costs();
+  const per = c.orchestrators ?? {};
+  if (!Object.keys(per).length) return Number(c.orchestrator) || 0;
+  return sid ? Number(per[sid]) || 0 : Number(c.orchestrator) || 0;
+}
 
 const machineOf = (a) => (a.includes("/") ? a.slice(0, a.indexOf("/")) : null);
 const py = {};
@@ -51,7 +62,9 @@ export async function poll() {
   const tickets = (shared("orchestra.tickets") ?? []).filter((t) => t.terminal && t.status !== "done");
   const live = new Set(terminals().filter((x) => x.state === "live").map((x) => x.address));
   const o = orch.find();
-  const targets = [...tickets.filter((t) => live.has(t.terminal)).map((t) => t.terminal), ...(o ? [o.address] : [])];
+  // Every space's orchestrator, not only this window's: its money belongs to its space.
+  const os = orch.all();
+  const targets = [...tickets.filter((t) => live.has(t.terminal)).map((t) => t.terminal), ...os.map((x) => x.address)];
   const byMachine = new Map();
   for (const a of targets) {
     const on = machineOf(a);
@@ -75,10 +88,15 @@ export async function poll() {
     ticketCost[id] = (ticketCost[id] ?? 0) + c;
   }
   const open = new Set((shared("orchestra.tickets") ?? []).filter((t) => t.status !== "done").map((t) => t.id));
-  const orchestrator = o && found[o.address] != null ? found[o.address] : prev.orchestrator ?? 0;
+  // Per space; the last known figure stays when an orchestrator is not live (as tickets do).
+  const orchestrators = { ...(prev.orchestrators ?? {}) };
+  for (const x of os) if (found[x.address] != null) orchestrators[x.spaceId ?? ""] = found[x.address];
+  const orchestrator = Object.keys(orchestrators).length
+    ? Object.values(orchestrators).reduce((n, x) => n + (Number(x) || 0), 0)
+    : Number(prev.orchestrator) || 0;
   const teamCost = [...open].reduce((n, id) => n + (ticketCost[id] ?? 0), 0) + orchestrator;
   const b = budget();
-  const next = { tickets: ticketCost, perTerminal, orchestrator, teamCost, ticketBudget: b.ticket, teamBudget: b.team, stopped: { ...(prev.stopped ?? {}) }, at: Date.now() };
+  const next = { tickets: ticketCost, perTerminal, orchestrator, orchestrators, teamCost, ticketBudget: b.ticket, teamBudget: b.team, stopped: { ...(prev.stopped ?? {}) }, at: Date.now() };
   await enforce(next, tickets, live, o);
   if (JSON.stringify({ ...next, at: 0 }) !== JSON.stringify({ ...prev, at: 0 })) {
     setShared("orchestra.costs", next);

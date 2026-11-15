@@ -22,6 +22,20 @@ export const find = () => {
   return live.find((x) => !x.labels?.["hub.space"] && role(x)) ?? null;
 };
 
+/** Every live orchestrator, at most one per space. A home without space labels keeps
+ *  its one orchestrator under `spaceId` "". */
+export function all() {
+  const role = (x) => x.labels?.["hub.role"] === "orchestrator" || x.name === NAME;
+  const seen = new Set(), out = [];
+  for (const x of terminals().filter((t) => t.state === "live" && role(t))) {
+    const sid = x.labels?.["hub.space"] || x.labels?.["herdr.space"] || "";
+    if (seen.has(sid)) continue;
+    seen.add(sid);
+    out.push({ ...x, spaceId: sid });
+  }
+  return out;
+}
+
 export async function start() {
   // `hub orchestrator start` druckt immer JSON; ein `--json` kennt es nicht.
   const argv = ["orchestrator", "start", "--agent", agentKey()];

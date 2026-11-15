@@ -620,7 +620,7 @@ export class HubSection {
     if (!o) return this.startCard(t);
     const st = o.status ?? null;
     const name = this.known.find((a) => a.key === orch.agentKey())?.name ?? orch.agentKey();
-    const cost = costs.costs().orchestrator ?? 0;
+    const cost = costs.orchestratorCost(orch.spaceId());
     const { step, message } = this.digest;
     const blocked = st === "blocked";
     const restart = (cx) => this.act(cx, "neu gestartet", async () => { await orch.stop(); await orch.start(); });
@@ -761,7 +761,7 @@ export class HubSection {
     const sp = ui.activeSpace();
     const open = this.all().filter((tk) => tk.status !== "done");
     const spend = sp
-      ? open.reduce((n, tk) => n + (c.tickets?.[tk.id] ?? 0), 0) + (orch.find() ? c.orchestrator ?? 0 : 0)
+      ? open.reduce((n, tk) => n + (c.tickets?.[tk.id] ?? 0), 0) + (orch.find() ? costs.orchestratorCost(sp.id) : 0)
       : c.teamCost ?? 0;
     const over = spend > b.team;
     const total = c.teamCost ?? 0;

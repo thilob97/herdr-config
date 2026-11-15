@@ -43,15 +43,19 @@ const orchestratorHere = (id) => !id || terminals().some((x) => x.state === "liv
   && (x.labels?.["hub.role"] === "orchestrator" || x.name === "orchestrator"));
 
 // Team spend against the team budget, for the factory of this window's workspace: its open
-// tickets plus its orchestrator. `total` counts the whole home, for the tooltip.
+// tickets plus its orchestrator. `total` counts the whole home, for the tooltip. The
+// orchestrator's money is kept per space (costs.json `orchestrators`, as mods/orchestra/
+// costs.js writes it); an older file has only one number, which belongs to this space.
 function teamBudget() {
   const c = shared("orchestra.costs");
   if (!c) return null;
   const budget = { team: 20, ...(shared("orchestra.budget") ?? {}) }.team ?? c.teamBudget;
   const sp = activeSpace();
+  const per = c.orchestrators ?? {};
+  const own = Object.keys(per).length ? per[sp?.id] ?? 0 : c.orchestrator ?? 0;
   const cost = !sp ? c.teamCost ?? 0
     : (shared("orchestra.tickets") ?? []).filter((t) => t.status !== "done" && inScope(t))
-      .reduce((n, t) => n + (c.tickets?.[t.id] ?? 0), 0) + (orchestratorHere(sp.id) ? c.orchestrator ?? 0 : 0);
+      .reduce((n, t) => n + (c.tickets?.[t.id] ?? 0), 0) + (orchestratorHere(sp.id) ? own : 0);
   return { cost, total: c.teamCost ?? 0, budget, over: budget != null && cost > budget };
 }
 
