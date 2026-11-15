@@ -1,6 +1,6 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { spaces, panes, agents, terminals, shared, run, openOverlay, theme, window, layout, settings, nextCommand, appHome, readTextFile } from "herdr";
+import { spaces, panes, agents, terminals, shared, setShared, run, openOverlay, theme, window, layout, settings, nextCommand, appHome, readTextFile, notify } from "herdr";
 
 // Tokens (docs/ui-spec.md, 5).
 const GAP_XS = 4, GAP_S = 6, GAP_M = 8;
@@ -28,13 +28,19 @@ const WERKZEUGE = [
 ];
 const PANELS = [...WERKZEUGE, ...FABRIK].map(p => p.id);
 
-// Status indicator (5.6): one look everywhere, box 12×12.
+// Status indicator (5.6): one look everywhere, box 12×12. Calm (shared "ui.calm",
+// default on) shows the same mark without spinner or pulse; ⌘⇧A toggles (calm).
+const calm = () => shared("ui.calm") ?? true;
 function statusMark(t, status) {
   const box = div().size(12).flex_none().flex().items_center().justify_center();
-  if (status === "working") return box.child(svg("mods/workspace-chrome/spinner.svg").size(12).text_color(t.working).spin(900));
-  if (status === "blocked") return box.relative()
-    .child(div().absolute().size(12).rounded_full().bg(t.blocked + "55").loop("opacity", { from: 0, to: 1, period: 900 }))
-    .child(div().size(7).rounded_full().bg(t.blocked));
+  if (status === "working") return calm()
+    ? box.child(div().size(7).rounded_full().bg(t.working))
+    : box.child(svg("mods/workspace-chrome/spinner.svg").size(12).text_color(t.working).spin(900));
+  if (status === "blocked") return calm()
+    ? box.child(div().size(7).rounded_full().border(1.5).border_color(t.blocked))
+    : box.relative()
+      .child(div().absolute().size(12).rounded_full().bg(t.blocked + "55").loop("opacity", { from: 0, to: 1, period: 900 }))
+      .child(div().size(7).rounded_full().bg(t.blocked));
   if (status === "done") return box.child(div().size(7).rounded_full().bg(t.done));
   if (status === "idle") return box.child(div().size(7).rounded_full().border(1.5).border_color(t.idle));
   return null;
@@ -86,8 +92,20 @@ export default class Tabs extends View {
       for (;;) {
         const c = await nextCommand();
         if (c === "panel") this.togglePanel(null);
+        else if (c === "calm") this.toggleCalm();
         else if (c.startsWith("panel-") && PANELS.includes(c.slice(6))) this.togglePanel(c.slice(6));
       }
+    });
+  }
+
+  toggleCalm() {
+    const on = !calm();
+    setShared("ui.calm", on);
+    notify({
+      title: on ? "Ruhige Anzeige an" : "Ruhige Anzeige aus",
+      body: on ? "Keine Spinner und Pulse" : "Animationen laufen wieder",
+      level: "info",
+      timeout: 2000,
     });
   }
 

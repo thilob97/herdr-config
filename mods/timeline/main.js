@@ -537,7 +537,7 @@ export default class Timeline extends View {
     ].filter(Boolean).join(" · ");
     const cutTip = `Anfang vor dem Fenster · seit ${clock(lane.start)}`;
     return div().absolute().left(`${left}%`).top(top).h(h).w(`${Math.max(0, right - left)}%`).min_w(4)
-      .when(live, (el) => el.child(div().absolute().inset_0().rounded_full().border_1().border_color(color)
+      .when(live && !ui.calm(), (el) => el.child(div().absolute().inset_0().rounded_full().border_1().border_color(color)
         .loop("opacity", { from: 0.15, to: 1, period: 1400 })))
       .child(div().absolute().inset_0().rounded_full().bg(color + "66")
         .when(wide, (el) => el.border_1().border_color(color + "88"))

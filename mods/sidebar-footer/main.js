@@ -45,8 +45,11 @@ const TOOLS = [
   { id: "mcp-servers", icon: "plug", label: "MCP-Server", key: "⌃⇧Y", action: () => run("mod.open", { name: "mcp-servers" }) },
   { id: "machine", icon: "server", label: "Maschine hinzufügen", key: null, action: () => run("mod.open", { name: "machine-add" }) },
   { id: "cheatsheet", icon: "mods/cheatsheet/icon.svg", label: "Tastenkürzel", key: "⌘/", action: () => run("mod.open", { name: "cheatsheet" }) },
+  { id: "calm", icon: "circle-check", label: "Ruhige Anzeige", key: "⌘⇧A", toggle: true, action: () => run("tabs-graph.calm") },
 ];
-const tip = (tool, ready) => `${tool.label}${tool.key ? ` (${tool.key})` : ""}${ready ? " · Update bereit" : ""}`;
+// Calm display: on unless shared "ui.calm" says otherwise (tabs-graph.calm toggles it).
+const calmOn = () => shared("ui.calm") ?? true;
+const tip = (tool, ready) => `${tool.label}${tool.key ? ` (${tool.key})` : ""}${tool.toggle ? (calmOn() ? " · an" : " · aus") : ""}${ready ? " · Update bereit" : ""}`;
 
 export default class WorkspaceChrome extends View {
   // An icon button: 26 in the head, 22 in the foot; icon 14 in both.
@@ -68,7 +71,9 @@ export default class WorkspaceChrome extends View {
         .on_click(() => { closeOverlay(overlay); tool.action(); })
         .child(svg(icon(tool.icon)).size(14).flex_none().text_color(t.muted))
         .child(div().flex_1().truncate().child(tool.label))
-        .when(Boolean(tool.key), (el) => el.child(div().flex_none().text_size(10.5).text_color(t.dim).child(tool.key)))));
+        .when(Boolean(tool.key), (el) => el.child(div().flex_none().text_size(10.5).text_color(t.dim).child(tool.key)))
+        .when(Boolean(tool.toggle), (el) => el.child(div().size(12).flex_none().flex().items_center().justify_center()
+          .when(calmOn(), (i) => i.child(svg(icon("check")).size(12).text_color(t.foreground)))))));
   }
 
   footer(t, collapsed) {
@@ -78,11 +83,12 @@ export default class WorkspaceChrome extends View {
       .when(collapsed, (el) => el.px(0).justify_center())
       .children(shown.map((tool) => {
         const b = this.button(`footer-${tool.id}`, H_BTN_S, tool.icon, tip(tool, tool.id === "settings" && ready), tool.action);
-        // Settings carries the dot of an update that's ready.
-        return tool.id === "settings" && ready ? b.child(div().absolute().top(3).right(3).size(6).rounded_full().bg(t.accent)) : b;
+        // Settings carries the dot of an update that's ready; calm a dot while it is on.
+        const dot = (tool.id === "settings" && ready) || (tool.toggle && calmOn());
+        return dot ? b.child(div().absolute().top(3).right(3).size(6).rounded_full().bg(t.accent)) : b;
       }))
       .when(collapsed, (el) => el.child(this.button("footer-more", H_BTN_S, "more", "Marketplaces, MCP-Server, Maschinen, Tastenkürzel",
-        () => openOverlay({ mod: "sidebar-footer", kind: "popup", width: 240, height: 4 * (H_ROW + 2) + 2 * GAP_XS, props: { more: true } }))));
+        () => openOverlay({ mod: "sidebar-footer", kind: "popup", width: 240, height: 5 * (H_ROW + 2) + 2 * GAP_XS, props: { more: true } }))));
   }
 
   render() {

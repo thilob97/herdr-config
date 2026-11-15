@@ -26,6 +26,10 @@ export const plain = (s) => (s ?? "").replace(/[\uE000-\uF8FF\u{10000}-\u{10FFFF
 export const STATUS_WORD = { working: "arbeitet", blocked: "wartet", done: "fertig", idle: "ruhig", error: "Fehler" };
 export const statusColor = (t, st) => (st === "error" ? t.blocked : t[st] ?? t.dim);
 
+/** Ruhige Anzeige (shared "ui.calm", default on): keine Spinner, kein Pulsen.
+ *  `false` lässt die Animationen wieder laufen; ⌘⇧A schaltet (tabs-graph.calm). */
+export const calm = () => shared("ui.calm") ?? true;
+
 /** Ein Zahlenformat für Kosten (B9): Cent unter $10, sonst ganze Dollar. */
 export const usd = (n) => { const v = Number(n ?? 0); return `$${Math.abs(v) < 10 && v % 1 !== 0 ? v.toFixed(2) : Math.round(v)}`; };
 
@@ -85,13 +89,18 @@ export function focusFields() {
   };
 }
 
-/** Die eine Statusanzeige, Box 12×12. */
+/** Die eine Statusanzeige, Box 12×12. Ruhig: gefüllter Punkt (arbeits), Ring (wartet),
+ *  Punkt (fertig), hohler Punkt (ruhig) — gleiche Größen, ohne Animation. */
 export function statusIcon(t, st) {
   const box = () => div().size(12).flex_none().flex().items_center().justify_center();
-  if (st === "working") return svg(`${WC}/spinner.svg`).size(12).flex_none().text_color(t.working).spin(900);
-  if (st === "blocked") return box().relative()
-    .child(div().absolute().inset_0().rounded_full().bg(t.blocked + "55").loop("opacity", { from: 0, to: 1, period: 900 }))
-    .child(div().size(7).rounded_full().bg(t.blocked));
+  if (st === "working") return calm()
+    ? box().child(div().size(7).rounded_full().bg(t.working))
+    : svg(`${WC}/spinner.svg`).size(12).flex_none().text_color(t.working).spin(900);
+  if (st === "blocked") return calm()
+    ? box().child(div().size(7).rounded_full().border(1.5).border_color(t.blocked))
+    : box().relative()
+      .child(div().absolute().inset_0().rounded_full().bg(t.blocked + "55").loop("opacity", { from: 0, to: 1, period: 900 }))
+      .child(div().size(7).rounded_full().bg(t.blocked));
   if (st === "done" || st === "error") return box().child(div().size(7).rounded_full().bg(statusColor(t, st)));
   return box().child(div().size(7).rounded_full().border(1.5).border_color(t.idle ?? t.dim));
 }
@@ -318,17 +327,17 @@ export function empty(t, text, { icon, row = false, action } = {}) {
     .when(Boolean(action), (el) => el.child(action));
 }
 
-/** Wartezustand: Spinner 12 + „lädt …“. */
+/** Wartezustand: Spinner 12 + „lädt …“; ruhig als „…“ statt Animation. */
 export const loading = (t, text = "lädt …") => h_flex().gap(GAP_S).items_center().text_size(T_S).text_color(t.dim)
-  .child(svg(`${WC}/spinner.svg`).size(12).text_color(t.dim).spin(900)).child(text);
+  .child(calm() ? div().size(12).flex_none().flex().items_center().justify_center().child("…")
+    : svg(`${WC}/spinner.svg`).size(12).text_color(t.dim).spin(900)).child(text);
 
 // ---------- Identität (7.1) und Identitäts-Chip (5.6) ----------
 
 /** Wer hinter einer Adresse steckt: Name und Avatar ausschließlich aus
  *  shared("agents.identity"). Fehlt der Name, steht `name` als Programm-Kürzel
- *  (`omp`, klein) oder bleibt leer — nie der Programmname („Oh My Pi") und nie
- *  die rohe Terminal-Adresse; `named: false` sagt, dass es keine veröffentlichte
- *  Identität ist. */
+ *  (`omp` klein) bzw. als Adresse — nie der Programmname („Oh My Pi") — und
+ *  `named: false` sagt, dass es keine veröffentlichte Identität ist. */
 export function identity(address) {
   const a = agents().find((x) => x.address === address) ?? null;
   const x = a ? null : terminals().find((y) => y.address === address && y.state === "live") ?? null;
@@ -337,7 +346,7 @@ export function identity(address) {
   const programKey = program?.key ? String(program.key).toLowerCase() : null;
   return {
     address,
-    name: known?.name ?? programKey ?? "",
+    name: known?.name ?? programKey ?? address,
     named: Boolean(known?.name),
     avatar: known?.avatar ?? null,
     program,
@@ -358,19 +367,18 @@ export function focusAgent(address) {
 
 /** Identitäts-Chip: h 22, Avatar 16 (sonst Programm-Icon), Name T_S, Statusanzeige; Klick fokussiert.
  *  Nur ein Name aus shared("agents.identity") ist eine Identität; sonst steht das
- *  Programm-Kürzel klein und gedämpft (`omp`, „Programm, kein laufender Agent").
- *  Ohne Namen und ohne Programm gibt es keinen Chip — nie die rohe Adresse. */
+ *  Programm-Kürzel klein und gedämpft (`omp`, „Programm, kein laufender Agent"). */
 export function identityChip(t, id, address, { status } = {}) {
   const who = identity(address);
-  if (!who.named && !who.programKey) return null;
   const st = status !== undefined ? status : who.status;
   const p = who.program;
-  const label = who.named ? who.name : who.programKey;
+  const label = who.named ? who.name : who.programKey ?? address;
   const pic = who.named && who.avatar ? image(who.avatar).w(16).h(16).flex_none()
     : p?.icon ? (p.tint ? svg(p.icon).size(16).flex_none().text_color(t.muted) : image(p.icon).w(16).h(16).flex_none())
       : null;
-  const tip = who.named ? [p?.name, who.space].filter(Boolean).join(" · ")
-    : "Programm, kein laufender Agent";
+  const tip = who.named ? [p?.name, who.space, address].filter(Boolean).join(" · ")
+    : who.programKey ? `Programm${who.live ? " ohne veröffentlichte Identität" : ", kein laufender Agent"} · ${address}`
+      : address;
   return stop(h_flex().id(id).flex_none().min_w(0).h(H_BTN_S).px(6).gap(GAP_XS).items_center().rounded(6).bg(t.raised)
     .tooltip(tip).when(who.live, (el) => el.cursor_pointer().hover((s) => s.bg(t.hover))
       .on_click((_e, cx) => { cx.stopPropagation?.(); focusAgent(address); }))

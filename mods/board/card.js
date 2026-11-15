@@ -147,7 +147,7 @@ function gateIcons(t, tk, gate) {
     const color = g.state === "pass" ? t.done : g.state === "fail" ? t.blocked : g.state === "run" ? t.working : t.dim;
     const icon = g.state === "run" ? ICON_SPIN : g.state === "pass" ? ICON_CHECK : g.state === "fail" ? ICON_X : ICON_MINUS;
     return div().id(`tk-gate-${g.key}-${tk.id}`).size(11).flex_none().flex().items_center().justify_center()
-      .tooltip(g.tip).child(svg(icon).size(11).text_color(color).when(g.state === "run", (el) => el.spin(900)));
+      .tooltip(g.tip).child(svg(icon).size(11).text_color(color).when(g.state === "run" && !ui.calm(), (el) => el.spin(900)));
   }));
 }
 

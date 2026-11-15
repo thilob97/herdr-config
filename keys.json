@@ -38,6 +38,7 @@
     "shift-f2": "space.rename",
     "cmd-/": "mod.open:cheatsheet",
     "cmd-shift-/": "app.help",
+    "cmd-shift-a": "tabs-graph.calm",
     "cmd-b": "layout.toggle:sidebar",
     "cmd-=": "app.zoom_in",
     "cmd-+": "app.zoom_in",
