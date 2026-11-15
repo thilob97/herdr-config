@@ -12,12 +12,14 @@
 // ihren Spalten, leere Spalten bleiben sichtbar. Der Filter gilt für die Sitzung
 // (localStorage).
 //
-// Daten: `hub ticket list --all --json` (Ticket-Dateien, alle fünf Sekunden) für die
-// Karten, `hub wip --json` (data/orchestra/wip.json, alle 30 s) für die Limits,
-// shared "orchestra.gates" bzw. `hub gates --json` für die Gates, shared
+// Daten: shared "orchestra.tickets" und shared "orchestra.gates" (der HubDaemon pflegt
+// beide alle 5 bzw. 15 s) für die Karten und Gates; `hub wip --json`
+// (data/orchestra/wip.json, alle 30 s und bei Space-Wechsel) für die Limits, shared
 // "orchestra.costs" (Datei data/orchestra/costs.json als Rückfall) für die Kosten,
-// shared "agents.identity" für Avatare (über ui.identityChip). "board.panel" schaltet
-// das Panel um; die Tab-Leiste trägt der Orchestrator ein (nicht dieser Mod).
+// shared "agents.identity" für Avatare (über ui.identityChip). Eigene `hub ticket
+// list`/`hub gates`-Aufrufe nur, wenn shared noch leer ist (Kaltstart ohne Daemon) und
+// beim Klick auf „Daten alt". "board.panel" schaltet das Panel um; die Tab-Leiste
+// trägt der Orchestrator ein (nicht dieser Mod).
 //
 // Datenfrische: jeder Leseversuch stempelt Erfolg oder den ersten Fehler seit dem letzten
 // Erfolg. Ist eine Quelle älter als 30 s (oder hat sie einen Fehler), steht „Daten alt" in
@@ -57,6 +59,9 @@ function find(node, id) {
 }
 
 const normalize = (t) => ({ ...t, comments: t.comments ?? t.verlauf?.length ?? 0 });
+// Vom HubDaemon gepflegte Listen. Ein nie gesetztes shared (null) ist keine Liste: dann
+// liest das Board selbst, bis der Daemon liefert.
+const sharedList = (key) => { const v = shared(key); return Array.isArray(v) ? v : null; };
 const sortCards = (a, b) => at(a.status_at || a.updated || a.created) - at(b.status_at || b.updated || b.created)
   || String(a.id).localeCompare(String(b.id));
 
@@ -139,18 +144,28 @@ export default class Board extends View {
       || (this.fresh[k].at && now - this.fresh[k].at > STALE_MS));
   }
 
-  readTickets(cx) {
+  applyTickets(tks) {
+    // Alle lesen, auf die Fabrik des aktiven Workspace filtern: Alt-Tickets ohne
+    // `space` bleiben sichtbar (ui.inScope), fremde Spaces nicht.
+    this.tickets = tks.map(normalize).filter((tk) => ui.inScope(tk, tks));
+    this.loaded = true;
+  }
+
+  readTickets(cx, force = false) {
+    const fromDaemon = sharedList("orchestra.tickets");
+    if (fromDaemon && !force) {
+      this.applyTickets(fromDaemon);
+      this.seen("tickets");
+      cx.notify();
+      return;
+    }
     if (this.readingT) return;
     this.readingT = true;
     cx.spawn(async (cx) => {
       try {
         const r = await exec(HUB(), ["ticket", "list", "--all", "--json"], { timeout: 20000 });
         if (r.code !== 0) throw new Error((r.stderr || r.stdout || `Exit ${r.code}`).trim().split("\n").pop());
-        // Alle lesen, auf die Fabrik des aktiven Workspace filtern: Alt-Tickets ohne
-        // `space` bleiben sichtbar (ui.inScope), fremde Spaces nicht.
-        const tks = JSON.parse(r.stdout || "[]");
-        this.tickets = tks.map(normalize).filter((tk) => ui.inScope(tk, tks));
-        this.loaded = true;
+        this.applyTickets(JSON.parse(r.stdout || "[]"));
         this.seen("tickets");
       } catch (e) { this.seen("tickets", e); } finally { this.readingT = false; cx.notify(); }
     });
@@ -162,7 +177,14 @@ export default class Board extends View {
     return sid ? [flag, sid] : ["--all"];
   }
 
-  readGates(cx) {
+  readGates(cx, force = false) {
+    const fromDaemon = sharedList("orchestra.gates");
+    if (fromDaemon && !force) {
+      this.gates = fromDaemon;
+      this.seen("gates");
+      cx.notify();
+      return;
+    }
     if (this.readingG) return;
     this.readingG = true;
     cx.spawn(async (cx) => {
@@ -476,7 +498,7 @@ export default class Board extends View {
       .bg(warn + "26").text_size(T_XS).font_medium().text_color(warn)
       .cursor_pointer().tooltip(`${tip}\n\nKlicken: sofort neu lesen`)
       .on_click((_e, cx) => {
-        this.readTickets(cx); this.readGates(cx); this.readCosts(cx); this.readWip(cx);
+        this.readTickets(cx, true); this.readGates(cx, true); this.readCosts(cx); this.readWip(cx);
         cx.notify();
       })
       .child("Daten alt");

@@ -8,6 +8,12 @@
       "id": "dashboard",
       "type": "block",
       "content": { "mod": "dashboard" }
+    },
+    {
+      "id": "orchestra-daemon",
+      "type": "block",
+      "content": { "mod": "orchestra", "props": { "role": "daemon" } },
+      "size": { "px": 0 }
     }
   ]
 }
