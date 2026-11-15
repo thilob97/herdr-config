@@ -83,6 +83,7 @@ export default class Orchestra extends View {
   render(cx) {
     if (this.daemon) { this.daemon.watch(cx); return div(); }
     const t = theme();
+    this.hub.sync(cx);
     const all = this.hub.all();
     const by = { todo: [], doing: [], review: [], done: [] };
     for (const tk of all) by[stageOf(tk)].push(tk);
@@ -130,7 +131,7 @@ export default class Orchestra extends View {
 
     return v_flex().id("orchestra").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground)
       .on_size_change((size, cx) => { const w = Math.round(size.width); if (w !== this.width) { this.width = w; cx.notify(); } })
-      .child(ui.panelHeader(t, "Team", [this.hub.freshChip(t), this.stages(t, counts)].filter(Boolean)))
+      .child(ui.panelHeader(t, "Team", [ui.spaceChip(t), this.hub.freshChip(t), this.stages(t, counts)].filter(Boolean)))
       .child(body);
   }
 }

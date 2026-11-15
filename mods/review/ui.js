@@ -4,7 +4,7 @@
 
 import { div, svg, image } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { run, shared, agents, terminals } from "herdr";
+import { run, shared, agents, terminals, spaces } from "herdr";
 
 // 5.1 Abstände und Größen
 export const GAP_XS = 4, GAP_S = 6, GAP_M = 8, GAP_L = 12, GAP_XL = 16;
@@ -199,6 +199,41 @@ export function ciChip(t, tk, { stale = false } = {}) {
 export function counterBadge(t, n, color) {
   return div().flex_none().h(16).min_w(16).px(5).flex().items_center().justify_center().rounded(8)
     .bg(color).text_size(T_XS).font_semibold().text_color(t.background).child(String(n));
+}
+
+// ---------- Workspace (Fabrik je Space) ----------
+
+/** Der aktive Workspace dieses Fensters: { id, name, folder, machine }, sonst null.
+ *  `spaces()` zeichnet die Mods bei jedem Wechsel neu — kein eigener Timer nötig. */
+export function activeSpace() {
+  const s = spaces().find((x) => x.active) ?? null;
+  return s ? { id: s.id, name: s.name ?? "", folder: s.folder ?? "", machine: s.machine ?? null } : null;
+}
+
+const pathKey = (p) => String(p ?? "").replace(/\\/g, "/").replace(/\/+$/, "");
+
+/** Gehört das Ticket zur Fabrik des aktiven Workspace?
+ *  - ohne aktiven Space: ja (dann gibt es nichts zu filtern),
+ *  - ohne `space`: Altbestand, bleibt sichtbar,
+ *  - mit `space` und `space_name`: nur der eigene Workspace,
+ *  - altes `space` ohne `space_name` (damals der Agent-Space): über `repo` im Space-Ordner.
+ *  So zeigt keine Liste fremde Fabriken, und nichts Altes fällt still heraus. */
+export function inScope(tk) {
+  const sp = activeSpace();
+  if (!sp || !tk) return true;
+  const sid = String(tk.space ?? "").trim();
+  if (!sid) return true;
+  if (sid === sp.id) return true;
+  if (String(tk.space_name ?? "").trim()) return false;
+  const repo = pathKey(tk.repo), folder = pathKey(sp.folder);
+  return !repo || !folder ? true : repo === folder || repo.startsWith(`${folder}/`);
+}
+
+/** Ruhiger Bereichs-Chip im Kopf: „<Space-Name>“, Tooltip „Fabrik dieses Workspace“. */
+export function spaceChip(t) {
+  const sp = activeSpace();
+  if (!sp) return null;
+  return chip(t, sp.name || "Ohne Space", t.muted, { id: "space-scope", tip: "Fabrik dieses Workspace" });
 }
 
 // ---------- Knöpfe (5.6 Knöpfe) ----------

@@ -308,7 +308,7 @@ export class GateWatcher {
     cx.spawn(async (cx) => {
       const before = freshBad(this.fresh);
       try {
-        const r = await exec(HUB(), ["gates", "--json"], { timeout: 20000 });
+        const r = await exec(HUB(), ["gates", "--json", ...scopeArgs()], { timeout: 20000 });
         if (r.code !== 0) throw new Error((r.stderr || r.stdout || `Exit ${r.code}`).trim().split("\n").pop());
         const slim = JSON.parse(r.stdout || "[]");
         this.fresh.at = Date.now();
@@ -341,7 +341,7 @@ export class StatsWatcher {
     this.busy = true;
     cx.spawn(async () => {
       try {
-        const r = await exec(HUB(), ["stats", "--json", "--days", "14"], { timeout: 20000 });
+        const r = await exec(HUB(), ["stats", "--json", "--days", "14", ...scopeArgs()], { timeout: 20000 });
         if (r.code !== 0) return;
         const next = JSON.parse(r.stdout || "{}");
         if (JSON.stringify({ ...next, at: 0 }) !== JSON.stringify({ ...(shared("orchestra.stats") ?? {}), at: 0 })) {
@@ -363,6 +363,11 @@ export const span = (min) => {
 };
 
 const sid = (s) => String(s ?? "").replace(/[^a-zA-Z0-9_.-]+/g, "-");
+// `--space` dieses Workspace; ohne Space alles (dann gibt es nichts zu wählen).
+const scopeArgs = () => {
+  const sp = ui.activeSpace()?.id;
+  return sp ? ["--space", sp] : ["--all"];
+};
 
 export class HubDaemon {
   constructor(cx) {
@@ -378,6 +383,7 @@ export class HubDaemon {
     cx.timer.every(30000, (cx) => this.pollCosts(cx));
     this.gates = new GateWatcher(cx);
     this.stats = new StatsWatcher(cx);
+    this.space = ui.activeSpace()?.id ?? "";
   }
 
   pollCosts(cx) {
@@ -416,6 +422,9 @@ export class HubDaemon {
 
   // Called on every render (live data changed): the orchestrator ending a turn.
   watch(cx) {
+    // Space-Wechsel: Gates und Kennzahlen des neuen Workspace sofort lesen.
+    const sid = ui.activeSpace()?.id ?? "";
+    if (sid !== this.space) { this.space = sid; this.gates.refresh(cx); this.stats.refresh(cx); }
     const o = orch.find(), st = o?.status ?? null;
     const was = this.lastStatus;
     this.lastStatus = st;
@@ -436,11 +445,17 @@ export class HubSection {
     this.note = null;
     this.busy = false;
     this.known = [];
-    this.reply = InputState.new({ placeholder: "Antwort an den Orchestrator… (↵ senden)" });
+    this.reply = InputState.new({ placeholder: "Auftrag oder Antwort an den Orchestrator… (↵ senden)" });
     this.reply.on("submit", (_e, cx) => this.sendReply(cx));
     this.hoveredTicket = null;      // ticket id under the pointer (Hover-Aktionen)
     this.focus = ui.focusFields();
     this.focus.track(this.reply, "hub-reply");
+    // Vor dem ersten publish: es liest subFresh für den „Daten alt“-Chip. Stand es
+    // danach, warf der erste Lauf und `publishing` blieb für immer true — das Panel
+    // zeigte dann den alten Stand statt der Tickets dieses Workspace.
+    this.subFresh = { at: 0, err: null };   // tickets.publish(), für den „Daten alt“-Chip
+    this.showStats = false;         // the head line's breakdown is folded
+    this.space = ui.activeSpace()?.id ?? "";
     cx.spawn(async (cx) => { this.known = (await knownAgents().catch(() => [])).filter((a) => a.installed); cx.notify(); });
     this.poll(cx);
     cx.timer.every(3000, (cx) => this.poll(cx));
@@ -448,8 +463,16 @@ export class HubSection {
     cx.timer.every(5000, (cx) => this.publish(cx));
     this.gates = new GateWatcher(cx);
     this.stats = new StatsWatcher(cx);
-    this.subFresh = { at: 0, err: null };   // tickets.publish(), für den „Daten alt“-Chip
-    this.showStats = false;         // the head line's breakdown is folded
+  }
+
+  /** Space-Wechsel (spaces() zeichnet neu): Gates und Kennzahlen sofort für den neuen
+   *  Workspace lesen. Kein Neustart, kein eigener Timer, keine fremde Fabrik. */
+  sync(cx) {
+    const sid = ui.activeSpace()?.id ?? "";
+    if (sid === this.space) return;
+    this.space = sid;
+    this.gates.refresh(cx);
+    this.stats.refresh(cx);
   }
 
   poll(cx) {
@@ -518,7 +541,7 @@ export class HubSection {
   sendReply(cx) {
     const text = this.reply.value().trim();
     if (!text) return;
-    this.act(cx, "Antwort gesendet", async () => { await orch.send(text); this.reply.set_value(""); });
+    this.act(cx, "Gesendet", async () => { await orch.send(text); this.reply.set_value(""); });
   }
 
   cycleAgent() {
@@ -527,7 +550,9 @@ export class HubSection {
     setShared("orchestra.agent", keys[(keys.indexOf(orch.agentKey()) + 1) % keys.length]);
   }
 
-  all() { return shared("orchestra.tickets") ?? []; }
+  // The factory of this window's workspace: the orchestrator's tickets, filtered like
+  // every list here (ui.inScope keeps old tickets without `space`).
+  all() { return (shared("orchestra.tickets") ?? []).filter(ui.inScope); }
 
   // ---------- Messwerte ----------
 
@@ -571,51 +596,68 @@ export class HubSection {
 
   // ---------- orchestrator card ----------
 
+  // Kein Orchestrator in diesem Workspace: ein leerer Zustand mit dem einen Weg —
+  // „Orchestrator starten“ ruft orch.start() (hub orchestrator start --space …), also
+  // genau diesen Space. Ein fremder Orchestrator kommt nie in Frage.
+  startCard(t) {
+    const sp = ui.activeSpace();
+    const start = (cx) => this.act(cx, "Orchestrator startet", async () => { orch.setAutostart(true); await orch.start(); });
+    return ui.card(t, "hub-card")
+      .child(h_flex().gap(ui.GAP_S).items_center()
+        .child(svg("mods/orchestra/icon.svg").size(14).flex_none().text_color(t.dim))
+        .child(div().flex_none().text_size(T_L).font_semibold().text_color(t.foreground).child("Orchestrator"))
+        .child(ui.chip(t, orch.autostart() ? "startet gleich" : "aus", t.muted)))
+      .child(div().text_size(T_S).text_color(t.muted)
+        .child(sp ? `Noch keiner in diesem Workspace (${sp.name}).` : "Noch keiner in diesem Workspace."))
+      .child(h_flex().gap(ui.GAP_M).items_center()
+        .child(ui.button(t, "hub-start", "Orchestrator starten", start, { kind: "primary", small: true, enabled: !this.busy,
+          tip: `hub orchestrator start --space ${sp?.id ?? "<space>"}: die Fabrik dieses Workspace` })))
+      .when(Boolean(this.note), (el) => el.child(div().text_size(T_XS).text_color(this.note.ok === false ? t.blocked : t.muted).child(this.note.text)));
+  }
+
   card(t) {
-    const o = orch.find(), st = o?.status ?? null;
+    const o = orch.find();
+    if (!o) return this.startCard(t);
+    const st = o.status ?? null;
     const name = this.known.find((a) => a.key === orch.agentKey())?.name ?? orch.agentKey();
     const cost = costs.costs().orchestrator ?? 0;
     const { step, message } = this.digest;
     const blocked = st === "blocked";
     const restart = (cx) => this.act(cx, "neu gestartet", async () => { await orch.stop(); await orch.start(); });
-    const chip = !o ? ui.chip(t, orch.autostart() ? "startet gleich" : "aus", t.muted)
-      : ui.statusChip(t, st ?? "idle", st === "working" ? "arbeitet" : blocked ? "wartet" : "bereit");
-    const line = !o
-      ? (orch.autostart() ? "Startet in wenigen Sekunden …" : "Angehalten. Starte ihn, damit er Aufträge annimmt.")
-      : st === "working" ? (step ?? "denkt nach")
-        : message.length ? message.join(" ") : "Bereit. Gib dem Team einen Auftrag (⌘⇧N).";
+    const chip = ui.statusChip(t, st ?? "idle", st === "working" ? "arbeitet" : blocked ? "wartet" : "bereit");
+    const line = st === "working" ? (step ?? "denkt nach")
+      : message.length ? message.join(" ") : "Bereit. Gib dem Team einen Auftrag (⌘⇧N).";
     // Row 1: who and state, with the quiet controls. Row 2: what it does or last said
     // (click: its terminal), with the agent choice and cost at the right; the panel is too
     // narrow to carry those in row 1 next to three icon buttons.
     return ui.card(t, "hub-card", { border: blocked ? t.blocked : undefined })
       .child(h_flex().h(ui.H_BTN_S).gap(ui.GAP_S).items_center()
-        .child(div().flex_none().tooltip("Orchestrator dieses Workspace").child(svg("mods/orchestra/orchestrator.svg").size(14).flex_none().text_color(o ? t.accent : t.dim)))
+        .child(div().flex_none().tooltip("Orchestrator dieses Workspace").child(svg("mods/orchestra/orchestrator.svg").size(14).flex_none().text_color(t.accent)))
         .child(div().flex_none().text_size(T_L).font_semibold().text_color(t.foreground).child("Orchestrator"))
         .child(chip)
         .child(div().flex_1())
-        .when(Boolean(o), (el) => el
-          .child(ui.iconButton(t, "hub-open", "mods/orchestra/icons/open.svg", "Terminal des Orchestrators öffnen", () => run("terminal.peek", { terminal: o.address }), { small: true }))
-          .child(ui.iconButton(t, "hub-restart", "mods/orchestra/icons/restart.svg", "Neu starten (frischer Kontext)", restart, { small: true, enabled: !this.busy }))
-          .child(ui.iconButton(t, "hub-stop", "mods/orchestra/icons/stop.svg", "Anhalten (startet nicht mehr von selbst)",
-            (cx) => this.act(cx, "angehalten", async () => { orch.setAutostart(false); await orch.stop(); }), { small: true, enabled: !this.busy })))
-        .when(!o, (el) => el.child(ui.button(t, "hub-start", "Starten", (cx) => this.act(cx, "gestartet", async () => { orch.setAutostart(true); await orch.start(); }),
-          { small: true, enabled: !this.busy, tip: "Startet den Orchestrator (nicht die Arbeit: die kommt über den Auftrag, ⌘⇧N)" }))))
+        .child(ui.iconButton(t, "hub-open", "mods/orchestra/icons/open.svg", "Terminal des Orchestrators öffnen", () => run("terminal.peek", { terminal: o.address }), { small: true }))
+        .child(ui.iconButton(t, "hub-restart", "mods/orchestra/icons/restart.svg", "Neu starten (frischer Kontext)", restart, { small: true, enabled: !this.busy }))
+        .child(ui.iconButton(t, "hub-stop", "mods/orchestra/icons/stop.svg", "Anhalten (startet nicht mehr von selbst)",
+          (cx) => this.act(cx, "angehalten", async () => { orch.setAutostart(false); await orch.stop(); }), { small: true, enabled: !this.busy })))
       .child(h_flex().gap(ui.GAP_M).items_start()
         .child(div().id("hub-line").flex_1().min_w(0).max_h(36).overflow_hidden().text_size(T_S)
           .text_color(blocked ? t.foreground : t.muted)
-          .when(Boolean(o), (el) => el.cursor_pointer().tooltip("Klicken: Terminal öffnen").on_click(() => run("terminal.peek", { terminal: o.address })))
+          .cursor_pointer().tooltip("Klicken: Terminal öffnen").on_click(() => run("terminal.peek", { terminal: o.address }))
           .child(clip(line, 110)))
         .child(h_flex().flex_none().gap(ui.GAP_XS).items_center().text_size(T_S).text_color(t.muted)
           .child(div().id("hub-agent").h(ui.H_BTN_S).px(6).rounded(6).flex().items_center().bg(t.raised).cursor_pointer()
             .hover((s) => s.text_color(t.foreground))
             .tooltip("Agent des Orchestrators wechseln (gilt beim nächsten Start)").on_click((_e, cx) => { this.cycleAgent(); cx.notify(); })
             .child(`${name} ▾`))
-          .when(Boolean(o) && cost > 0, (el) => el.child(div().child("·"))
+          .when(cost > 0, (el) => el.child(div().child("·"))
             .child(div().text_size(T_XS).tooltip("Kosten der aktuellen Orchestrator-Sitzung").child(usd(cost))))))
-      .when(blocked, (el) => el.child(ui.inputBox(t, "hub-reply", Input.new(this.reply), {
+      // Der Auftrag dieses Workspace: die Eingabe geht über orch.send() an genau diesen
+      // Orchestrator (nie an einen fremden). Wartet er, ist dieselbe Zeile die Antwort.
+      .child(ui.inputBox(t, "hub-reply", Input.new(this.reply), {
         focused: this.focus.has("hub-reply"),
-        send: ui.sendButton(t, "hub-send", "mods/orchestra/icons/send.svg", "Antwort senden (↵)", (cx) => this.sendReply(cx), { enabled: !this.busy }),
-      })))
+        send: ui.sendButton(t, "hub-send", "mods/orchestra/icons/send.svg", "Senden (↵)", (cx) => this.sendReply(cx), { enabled: !this.busy }),
+      }))
       .when(Boolean(this.note), (el) => el.child(div().text_size(T_XS).text_color(this.note.ok ? t.muted : t.blocked).child(this.note.text)));
   }
 
