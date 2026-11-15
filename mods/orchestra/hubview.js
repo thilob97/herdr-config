@@ -8,7 +8,7 @@
 
 import { div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { run, notify, playSound, openOverlay, shared, setShared, knownAgents, agents, terminals, exec, appHome, settings } from "herdr";
+import { run, notify, playSound, openOverlay, shared, setShared, knownAgents, terminals, exec, appHome, settings } from "herdr";
 import * as orch from "./orchestrator.js";
 import * as tickets from "./tickets.js";
 import * as costs from "./costs.js";
@@ -63,40 +63,41 @@ function priorityOf(tk) {
 const priorityColor = (t, p) => (p === "p1" ? t.blocked : p === "p2" ? t.working : t.muted);
 const sizeOf = (tk) => (/^[SML]$/i.test(String(tk.size ?? "").trim()) ? String(tk.size).trim().toUpperCase() : null);
 // Höchstens zwei Chips: bei mehr Labels bleibt eines plus `+n`; die Priorität steht als eigener Chip davor.
-// Die Chips schrumpfen (min_w 0, truncate); alle Labels stehen im Tooltip.
+// Die Chips tragen den vollen Text und schrumpfen selbst (min_w 0, truncate, Ellipse); alle Labels stehen im Tooltip.
 const labelChips = (t, tk) => {
   const ordered = [...new Set([...splitList(tk.labels), ...splitList(tk.tags)])].filter((l) => !PRIO.test(l));
   if (!ordered.length) return [];
   const all = ordered.join(", ");
   const shown = ordered.slice(0, ordered.length > 2 ? 1 : 2);
-  const out = shown.map((l) => ({ text: l.length > 10 ? `${l.slice(0, 9)}…` : l, color: t.muted, tip: all }));
+  const out = shown.map((l) => ({ text: l, color: t.muted, tip: all }));
   if (ordered.length > shown.length) out.push({ text: `+${ordered.length - shown.length}`, color: t.dim, tip: all, fixed: true });
   return out;
 };
 const blockersOf = (tk, all = []) => splitList(tk.blocked_by).map((id) => ({ id, status: all.find((x) => x.id === id)?.status ?? null }))
   .filter((b) => b.status !== "done");
 // Titel auf zwei Zeilen mit „…" an einer Wortgrenze. `per` ist die Zeichenzahl je
-// Zeile; passt der Text in zwei Zeilen, bleibt er unverändert.
+// Zeile; passt der Text in zwei Zeilen, bleibt er unverändert ohne Auslassungszeichen.
+// Kein Wort wird je mitten getrennt: die letzte Zeile hält ein Zeichen für das „…"
+// frei, ein einzelnes zu langes Wort endet mit „…". (Gleich wie mods/board/card.js.)
 const clampTitle = (s, per = 24) => {
   const text = String(s ?? "").replace(/\s+/g, " ").trim();
-  const width = Math.max(8, Math.floor(per));
-  if (text.length <= width * 2) return text;
-  const words = text.split(" ");
+  const budget = Math.max(8, Math.floor(per));
+  const words = text.split(" ").filter(Boolean);
   const lines = [];
   let i = 0;
   for (let li = 0; li < 2 && i < words.length; li++) {
-    if (words[i].length > width) {
-      lines.push(words[i].slice(0, width));
-      words[i] = words[i].slice(width);
-      continue;
+    const room = li === 1 ? Math.max(1, budget - 1) : budget;
+    if (words[i].length > room) {
+      // Ein zu langes Wort bleibt in seiner Zeile; das „…" zählt in die Zeilenbreite.
+      lines.push(`${words[i].slice(0, Math.max(1, room - 1))}…`);
+      return lines.join(" ");
     }
     let line = words[i++];
-    while (i < words.length && `${line} ${words[i]}`.length <= width) line += ` ${words[i++]}`;
+    while (i < words.length && `${line} ${words[i]}`.length <= room) line += ` ${words[i++]}`;
     lines.push(line);
   }
   if (i >= words.length) return lines.join(" ");
-  while (lines[1].length + 1 > width && lines[1].includes(" ")) lines[1] = lines[1].slice(0, lines[1].lastIndexOf(" "));
-  return `${lines[0]} ${lines[1]}…`;
+  return `${lines.join(" ")}…`;
 };
 const evidenceCount = (tk) => (Array.isArray(tk.evidence) ? tk.evidence.length : splitList(tk.evidence).length);
 const commentCount = (tk) => Number(tk.comments ?? tk.verlauf?.length ?? 0);
@@ -143,20 +144,20 @@ const gateIcons = (t, tk, gate) => {
   }));
 };
 
-// Identität aus dem Agenten-Anzeigenamen (Hub), sonst aus dem laufenden Terminal.
+// Identität nur aus shared("agents.identity") (über ui.identity) bzw. dem vom Hub
+// vergebenen Agentennamen (`agent_name`/`assignee`). `tk.agent` ist ein Programm-
+// Kürzel (`omp`), kein Agent: es steht klein und gedämpft, nie als Name.
 // Kein Avatar: die Zeile muss neben Gates und Kosten in eine schmale Karte passen.
 const whoChip = (t, tk) => {
   const live = tk.terminal ? ui.identity(tk.terminal) : null;
-  const liveName = live?.live && live.name !== tk.terminal ? live.name : null;
-  const raw = String(tk.agent_name || tk.assignee || tk.agent || "").trim();
-  const key = raw.split(/\s+/)[0];
-  const program = key ? (agents().find((a) => (a.program?.key ?? a.app) === key)?.program?.name
-    ?? terminals().find((x) => (x.program?.key ?? x.app) === key)?.program?.name) : null;
-  const name = liveName || program || raw;
-  if (!name) return null;
+  const raw = String(tk.agent_name || tk.assignee || "").trim();
+  const name = (live?.named ? live.name : null) || raw || null;
+  const prog = String(live?.programKey || tk.agent || "").trim().toLowerCase() || null;
+  if (!name && !prog) return null;
+  const tip = name ? `${name}${live?.named && live.program ? ` · ${live.program.name}` : ""}` : "Programm, kein laufender Agent";
   return h_flex().flex_none().max_w(72).h(22).px(4).items_center().rounded(4).bg(t.raised)
-    .tooltip(liveName ? `${liveName}${program ? ` · ${program}` : ""}` : name)
-    .child(div().min_w(0).truncate().text_size(T_XS).text_color(t.muted).child(name));
+    .tooltip(tip)
+    .child(div().min_w(0).truncate().text_size(T_XS).text_color(name ? t.muted : t.dim).child(name || prog));
 };
 const countIcon = (t, icon, n, tip) => h_flex().flex_none().gap(1).items_center().tooltip(tip)
   .child(svg(icon).size(9).text_color(t.dim))

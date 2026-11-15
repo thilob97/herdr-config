@@ -70,10 +70,17 @@ const rid = (s) => String(s).replace(/[^a-zA-Z0-9_.-]+/g, "-");
 const pad2 = (n) => String(n).padStart(2, "0");
 const WEEKDAY = ["So", "Mo", "Di", "Mi", "Do", "Fr", "Sa"];
 const MONTH = ["Jan.", "Feb.", "März", "Apr.", "Mai", "Juni", "Juli", "Aug.", "Sept.", "Okt.", "Nov.", "Dez."];
+// Age in one language everywhere ("gerade", "42 min", "2 h", "> 1 Tag", "3 T") — the
+// board's stage age (ui.dur) with days spelled out: a lone "d" reads as a unit nobody
+// can size. A value over 24 h is a lower bound, so the first day says "> 1 Tag".
 function ago(ms) {
   if (!ms) return "";
   const s = Math.max(0, (Date.now() - ms) / 1000);
-  return s < 60 ? "gerade" : s < 3600 ? `${Math.floor(s / 60)} min` : s < 86400 ? `${Math.floor(s / 3600)} h` : `${Math.floor(s / 86400)} d`;
+  if (s < 60) return "gerade";
+  if (s < 3600) return `${Math.floor(s / 60)} min`;
+  if (s < 86400) return `${Math.floor(s / 3600)} h`;
+  const d = Math.floor(s / 86400);
+  return d < 2 ? "> 1 Tag" : `${d} T`;
 }
 
 // Ticket timestamps are "JJJJ-MM-TT HH:MM" (local), `updated` and each Verlauf line.
@@ -81,6 +88,13 @@ function at(ts) {
   const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/.exec(String(ts ?? ""));
   return m ? new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]).getTime() : 0;
 }
+
+// Ticket age from the board's fallback (status_at, then updated, then created), so a
+// ticket without status_at still has an age instead of a dash.
+const ticketAge = (tk) => {
+  const ms = at(tk.status_at || tk.updated || tk.created);
+  return ms ? ago(ms) : "";
+};
 
 const CHEVRON = "mods/workspace-chrome/chevron-right.svg";
 
@@ -685,7 +699,7 @@ export default class Dashboard extends View {
   // its gates, the age and "Prüfen".
   reviewRow(t, tk, on) {
     const who = tk.terminal ?? null;
-    const age = ago(at(tk.updated));
+    const age = ticketAge(tk);
     return h_flex().id(`dash-review-${rid(tk.id)}`).min_h(ui.H_ROW2).flex_none().py(4).px(ui.INSET_CARD).gap(ui.GAP_M).items_center().rounded(6)
       .bg(on ? t.selected : t.surface).border_1().border_color(t.border)
       .cursor_pointer().hover((s) => s.bg(t.hover))
@@ -859,6 +873,12 @@ export default class Dashboard extends View {
   // chip is passive here; the whole row goes to the agent in the Workspace.
   teamRow(t, a) {
     const who = ui.identity(a.address);
+    // Identität nur aus shared("agents.identity") (wie Team-Panel und Karten): ohne
+    // veröffentlichten Namen steht das Programm-Kürzel klein und gedämpft (`omp`) —
+    // ein Programm ist kein Agent.
+    const named = (shared("agents.identity") ?? {})[a.address]?.name ?? null;
+    const progKey = named ? null : String(a.program?.key ?? a.app ?? "").trim().toLowerCase() || null;
+    const label = named ?? progKey ?? who.name;
     const tk = this.openTicket(a.address);
     const key = tk ? `${tk.id}|${a.address}` : "";
     const alone = tk ? this.tickets().filter((x) => x.id === tk.id && x.terminal).length <= 1 : false;
@@ -866,18 +886,19 @@ export default class Dashboard extends View {
     const since = this.attentionAt(a);
     const st = this.effective(a);
     const word = ui.STATUS_WORD[st] ?? st;
-    const pic = who.avatar ? image(who.avatar).w(16).h(16).flex_none()
+    const pic = named && who.avatar ? image(who.avatar).w(16).h(16).flex_none()
       : who.program?.icon ? (who.program.tint ? svg(who.program.icon).size(16).flex_none().text_color(t.muted)
         : image(who.program.icon).w(16).h(16).flex_none()) : null;
     const where = this.where(a);
-    const tip = [who.name, word, where, tk ? `Ticket ${tk.id}: ${tk.title}` : null].filter(Boolean).join(" · ");
+    const tip = [label, named ? null : "Programm, keine veröffentlichte Identität", word, where,
+      tk ? `Ticket ${tk.id}: ${tk.title}` : null].filter(Boolean).join(" · ");
     return h_flex().id(`dash-team-${rid(a.address)}`).h(ui.H_ROW).flex_none().px(ui.GAP_S).gap(ui.GAP_S).items_center().rounded(6)
       .cursor_pointer().hover((s) => s.bg(t.hover)).tooltip(`${tip}\nKlicken: Workspace, Tab des Agents`)
       .on_click((_e, cx) => { cx.stop_propagation(); this.openAgent(a.address); })
       .child(div().w(COL_WHO).flex_none().min_w(0)
         .child(h_flex().h(22).max_w(COL_WHO).px(6).gap(ui.GAP_XS).items_center().rounded(6).bg(t.raised)
           .when(Boolean(pic), (el) => el.child(pic))
-          .child(div().min_w(0).truncate().text_size(T_S).text_color(t.foreground).child(who.name))))
+          .child(div().min_w(0).truncate().text_size(T_S).text_color(named ? t.foreground : t.dim).child(label))))
       .child(h_flex().w(COL_STATUS).flex_none().items_center()
         .tooltip(`${word} · ${since ? ago(since) : "noch nicht beobachtet"}`)
         .child(div().size(7).flex_none().rounded_full().bg(ui.statusColor(t, st))))
