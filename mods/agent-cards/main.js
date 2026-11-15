@@ -75,7 +75,11 @@ function toggleSidebar() {
   run("layout.resize", { id: "sidebar", px: narrow() ? (shared("sidebar.width") ?? 268) : window()?.platform === "macos" ? 76 : 44 });
 }
 
-const clean = (s) => (s ?? "").replace(/^[^\p{L}\p{N}]+/u, "").trim();
+// Terminal-Titel tragen vorne die Marke des Programms (`π > `, `✳ `, ein Nerd-Font-
+// Icon oder ein Emoji); nichts davon sagt etwas über den Tab. Danach fällt auch
+// anderes Zeichen vor dem ersten Wort weg.
+const TITLE_PREFIX = /^(\s*(?:[π✳✦●▪▸>]|[\uE000-\uF8FF\u{10000}-\u{10FFFF}])\s*)+/gu;
+const clean = (s) => (s ?? "").replace(TITLE_PREFIX, "").replace(/^[^\p{L}\p{N}]+/u, "").trim();
 
 function leadPanes(all) {
   const leads = new Map();
@@ -824,7 +828,7 @@ export default class Agents extends View {
     const labels = new Map(list.map(a => {
       const tab = tabs.get(a.tab);
       const many = tabCounts.get(a.tab) > 1;
-      return [a.address, tab ? title(many ? { ...tab, named: false } : tab, many ? a : leads.get(a.tab)) : (a.title || a.program?.name || "")];
+      return [a.address, tab ? title(many ? { ...tab, named: false } : tab, many ? a : leads.get(a.tab)) : (clean(a.title) || a.program?.name || "")];
     }));
     const label = (a) => labels.get(a.address);
     const detail = new Map(list.map(a => [a.address, /^\d+$/.test(label(a)) ? null : label(a)]));

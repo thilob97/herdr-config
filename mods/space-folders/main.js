@@ -670,25 +670,55 @@ export default class Spaces extends View {
         .child(button("folder-save", "Sichern", true, () => this.saveFolder())));
   }
 
-  // Spaces in order, each worktree space moved under its main checkout's.
+  // Spaces in order, each worktree space moved under its main checkout's — or, where
+  // the workspace is no checkout at all (the orchestrator's ~/.herdr/orchestrator),
+  // under the workspace its ticket names.
   ordered() {
     const sp = spaces(), ps = panes();
     const ready = (w) => this.shown.has(w.id) || where(w, ps) in this.git || Date.now() - (this.born[w.id] ??= Date.now()) > 1500;
     for (const w of sp) if (!this.shown.has(w.id) && ready(w)) this.shown.add(w.id);
     const list = sp.map((w, i) => ({ w, i, g: this.git[where(w, ps)] ?? null })).filter((r) => this.shown.has(r.w.id));
-    const mains = new Set(list.filter((r) => r.g && !r.g.linked).map((r) => r.g.repo));
-    const nested = (r) => r.g?.linked && mains.has(r.g.repo);
+    const parent = this.parents(list);
     const out = [];
-    const placed = new Set(); // repos whose worktrees are listed (under the first of its spaces)
     for (const r of list) {
-      if (nested(r)) continue;
+      if (parent.has(r.w.id)) continue;
       out.push({ ...r, tree: null });
-      if (!r.g || r.g.linked || placed.has(r.g.repo)) continue;
-      placed.add(r.g.repo);
-      const kids = list.filter((k) => nested(k) && k.g.repo === r.g.repo);
+      const kids = list.filter((k) => parent.get(k.w.id) === r.w.id);
       kids.forEach((k, n) => out.push({ ...k, tree: n === kids.length - 1 ? "└─" : "├─" }));
     }
     return out;
+  }
+
+  // Who sits under whom. A ticket's agent space goes under its workspace even when
+  // that workspace has no git checkout: the ticket names both sides (`agent_space`,
+  // `space`), and an older dispatch names the space through a terminal with
+  // `hub.ticket`. Otherwise a worktree goes under the first space of its repo. A
+  // space keeps one place, the ticket's (it knows the workspace where git sees none).
+  parents(list) {
+    const ids = new Set(list.map((r) => r.w.id));
+    const known = (id) => list.find((r) => localId(r.w) === String(id ?? "").trim())?.w.id ?? String(id ?? "").trim();
+    const parent = new Map();
+    const under = (child, home) => {
+      const k = known(child);
+      if (k && k !== known(home) && ids.has(k) && ids.has(known(home))) parent.set(k, known(home));
+    };
+    const tickets = shared("orchestra.tickets") ?? [];
+    const byTicket = new Map(tickets.map((tk) => [tk?.id, tk]));
+    for (const tk of tickets) under(tk?.agent_space, tk?.space);
+    for (const x of terminals()) {
+      const tk = byTicket.get(x.labels?.["hub.ticket"]);
+      if (tk) under(x.space ?? x.labels?.["herdr.space"], tk.space);
+    }
+    for (const r of list) {
+      if (!r.g || r.g.linked) continue;
+      for (const k of list) {
+        if (k.g?.linked && k.g.repo === r.g.repo && !parent.has(k.w.id)) parent.set(k.w.id, r.w.id);
+      }
+    }
+    // One level only: a parent that itself sits under something stays where it is,
+    // so a pair of tickets naming each other can't hide both rows.
+    for (const [k, h] of [...parent]) if (parent.has(h)) parent.delete(k);
+    return parent;
   }
 
   // Whether a machine's spaces are still coming in.
