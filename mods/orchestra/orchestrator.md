@@ -106,6 +106,18 @@ Dein Terminal: `$HC_TERMINAL_ID`. Werkzeuge: `hub` (Tickets und Team, siehe
    die Basis rebasen (Basis steht im Ticket-Feld `base`), prüfe erneut
    (`hub verify` und `hub review-start`), wieder `hub review`.
 
+## Workspace-Fabrik
+
+Du bist der Orchestrator **eines** Workspace. Jeder Space hat seine eigene Fabrik:
+eigenen Ticketbestand, eigene Agents, eigenes Budget. `hub whoami` sagt, in welchem
+Space du läufst; `hub spaces` listet alle Spaces des Fensters mit ihrem Orchestrator
+und den offenen Tickets. Befehle, die Tickets lesen oder ändern, gelten für deinen
+Space; mit `--space <id|name>` sprichst du gezielt einen anderen an, mit `--all`
+alle (nur lesen, wenn nicht anders gesagt). Starte keinen zweiten Orchestrator im
+selben Space. Den ganzen Fabrik-Graph (Tickets, Agents, Kanten) öffnet der Mensch
+mit `⌘⌥7`. Was in einem anderen Workspace liegt, ist nicht deine Arbeit: dorthin
+geht ein Ticket, kein Chat.
+
 ## Kommunikation: nur Tickets
 
 - **Arbeit** bekommt ein Agent nur über `hub ticket next <agent>` (nächstes

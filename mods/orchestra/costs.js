@@ -9,6 +9,7 @@
 import { exec, hc, terminals, appHome, readTextFile, shared, setShared, notify } from "herdr";
 import * as fs from "fs/promises";
 import * as orch from "./orchestrator.js";
+import * as ui from "./ui.js";
 
 const HELPER = () => `${appHome()}/mods/agent-cards/helpers/omp-cards.py`;
 const FILE = () => `${appHome()}/data/orchestra/costs.json`;
@@ -61,7 +62,6 @@ export async function load() {
 export async function poll() {
   const tickets = (shared("orchestra.tickets") ?? []).filter((t) => t.terminal && t.status !== "done");
   const live = new Set(terminals().filter((x) => x.state === "live").map((x) => x.address));
-  const o = orch.find();
   // Every space's orchestrator, not only this window's: its money belongs to its space.
   const os = orch.all();
   const targets = [...tickets.filter((t) => live.has(t.terminal)).map((t) => t.terminal), ...os.map((x) => x.address)];
@@ -97,7 +97,7 @@ export async function poll() {
   const teamCost = [...open].reduce((n, id) => n + (ticketCost[id] ?? 0), 0) + orchestrator;
   const b = budget();
   const next = { tickets: ticketCost, perTerminal, orchestrator, orchestrators, teamCost, ticketBudget: b.ticket, teamBudget: b.team, stopped: { ...(prev.stopped ?? {}) }, at: Date.now() };
-  await enforce(next, tickets, live, o);
+  await enforce(next, tickets, live);
   if (JSON.stringify({ ...next, at: 0 }) !== JSON.stringify({ ...prev, at: 0 })) {
     setShared("orchestra.costs", next);
     await fs.mkdir(`${appHome()}/data/orchestra`, { recursive: true }).catch(() => {});
@@ -107,7 +107,7 @@ export async function poll() {
 
 const money = (n) => `$${(n ?? 0).toFixed(2)}`;
 
-async function enforce(c, tickets, live, o) {
+async function enforce(c, tickets, live) {
   for (const t of tickets) {
     const spent = c.tickets[t.id] ?? 0, limit = ticketLimit(t.id);
     // Back under the limit (the budget was raised): the stop is over.
@@ -117,13 +117,16 @@ async function enforce(c, tickets, live, o) {
     await hc(["interrupt", t.terminal]).catch(() => null);
     notify({ title: `Budget erreicht: ${t.title}`.slice(0, 90), body: `${money(spent)} von ${money(limit)} · Agent angehalten. Im Team-Panel freigeben.`,
       level: "warning", timeout: 30000, action: { name: "tabs-graph.panel-team" } });
-    if (o) await orch.send(`Budget-Stopp: Ticket ${t.id} „${t.title}“ hat ${money(spent)} von ${money(limit)} verbraucht, sein Agent wurde angehalten. Schicke ihm nichts Neues, bis der Mensch das Budget erhöht.`).catch(() => null);
+    // The orchestrator of the ticket's workspace, never the active space's.
+    const ws = ui.ticketWorkspace(t);
+    if (orch.find(ws)) await orch.send(`Budget-Stopp: Ticket ${t.id} „${t.title}“ hat ${money(spent)} von ${money(limit)} verbraucht, sein Agent wurde angehalten. Schicke ihm nichts Neues, bis der Mensch das Budget erhöht.`, ws).catch(() => null);
   }
   if (c.teamCost <= c.teamBudget && c.stopped.__team) c.stopped.__team = false;
   if (c.teamCost > c.teamBudget && !c.stopped.__team) {
     c.stopped.__team = true;
     for (const t of tickets) if (live.has(t.terminal)) await hc(["interrupt", t.terminal]).catch(() => null);
-    if (o) await hc(["interrupt", o.address]).catch(() => null);
+    // Every factory stops, not only the one this window shows.
+    for (const x of orch.all()) await hc(["interrupt", x.address]).catch(() => null);
     notify({ title: "Team-Budget erreicht", body: `${money(c.teamCost)} von ${money(c.teamBudget)} · Orchestrator und Team angehalten.`,
       level: "warning", timeout: 30000, action: { name: "tabs-graph.panel-team" } });
   }
@@ -135,7 +138,8 @@ export async function raiseTicket(t) {
   setShared("orchestra.budgetExtra", { ...(shared("orchestra.budgetExtra") ?? {}), [t.id]: extra(t.id) + step });
   const c = costs();
   setShared("orchestra.costs", { ...c, stopped: { ...(c.stopped ?? {}), [t.id]: false } });
-  if (orch.find()) await orch.send(`Budget für Ticket ${t.id} „${t.title}“ auf ${money(ticketLimit(t.id))} erhöht. Lass den Agent weitermachen.`);
+  const ws = ui.ticketWorkspace(t);
+  if (orch.find(ws)) await orch.send(`Budget für Ticket ${t.id} „${t.title}“ auf ${money(ticketLimit(t.id))} erhöht. Lass den Agent weitermachen.`, ws);
 }
 
 export function cycle(kind) {
