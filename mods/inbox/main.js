@@ -372,8 +372,7 @@ export default class Inbox extends View {
     return v_flex().flex_1().min_w(0).min_h(0).gap(ui.GAP_L)
       .child(h_flex().gap(ui.GAP_M).items_center()
         .child(ui.identityChip(t, "ib-who", a.address))
-        .child(div().flex_1().min_w(0).truncate().text_size(T_S).text_color(t.muted).child(`${a.space_name} / ${a.tab_name}`))
-        .child(div().flex_none().text_size(T_XS).text_color(t.dim).child(a.address)))
+        .child(div().flex_1().min_w(0).truncate().text_size(T_S).text_color(t.muted).child(`${a.space_name} / ${a.tab_name}`)))
       .child(this.screen(t, a.address))
       .child(this.replyField(t, e))
       .child(h_flex().gap(ui.GAP_M).items_center()
@@ -389,6 +388,7 @@ export default class Inbox extends View {
     const sel = i >= 0 ? list[i] : null;
     const { blocked, review, done } = inboxCount();
     const waits = blocked + review;
+    const questions = list.filter((e) => e.kind === "question").length;
 
     const col = v_flex().id("ib-list").w(320).flex_none().h_full().min_h(0).pr(ui.GAP_M).overflow_y_scrollbar().track_scroll(this.scroll)
       .border_r(1).border_color(t.border);
@@ -414,6 +414,9 @@ export default class Inbox extends View {
         .child(div().flex_none().text_size(T_XL).font_semibold().text_color(t.foreground).child("Inbox"))
         .when(waits > 0, (el) => el.child(ui.counterBadge(t, waits, t.blocked)))
         .when(!waits && done > 0, (el) => el.child(ui.counterBadge(t, done, t.done)))
+        .when(questions > 0, (el) => el.child(div().id("ib-verlauf-note").flex_none().text_size(T_XS).text_color(t.dim)
+          .tooltip(`Inbox ${waits} (Rückfragen + Abnahmen) + ${questions} Frage${questions === 1 ? "" : "n"} aus dem Ticket-Verlauf = ${list.length} Zeilen`)
+          .child(`+ ${questions} Verlauf`)))
         .child(div().flex_1())
         .child(div().flex_none().text_size(T_XS).text_color(t.muted).child("↑↓ wählen · ↵ öffnen · r antworten · v Review"))
         .child(div().id("ib-esc").flex_none().h(ui.H_CHIP).px(6).flex().items_center().rounded(4).bg(t.raised).text_size(T_XS).text_color(t.dim)

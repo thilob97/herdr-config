@@ -430,7 +430,7 @@ export default class Review extends View {
     if (!tk || this.busy) return;
     this.act(cx, "review-start", async () => {
       const out = await hub(["review-start", tk.id], 60000);
-      return out.split("\n").pop() || "Prüfstation gestartet";
+      return out.split("\n").pop() || "Prüfung gestartet";
     });
   }
 
@@ -554,16 +554,23 @@ export default class Review extends View {
       .when(f.del > 0, (e) => e.child(div().text_size(T_XS).text_color(t.ansi1).child(`−${f.del}`)));
   }
 
-  // Branch, its base and what is uncommitted: the window's meta line.
+  // Branch, its base and what is uncommitted: the window's meta line. A landed ticket
+  // names what happened to it; the (removed) path lives only in the tooltip.
   meta() {
-    const repo = this.repo;
-    if (!repo) return this.target()?.cwd ?? "";
+    const tk = this.ticket(), repo = this.repo;
+    const path = repo?.root ?? this.target()?.cwd ?? null;
+    if (tk?.status === "done") {
+      const text = tk.merged ? `gemergt in ${tk.merged}` : tk.pr ? `als PR eingereicht: ${tk.pr}`
+        : tk.branch ? `abgenommen: ${tk.branch}` : "abgenommen";
+      return { text, tip: path ? `Pfad: ${path}` : null };
+    }
+    if (!repo) return { text: path ?? "", tip: null };
     const parts = [repo.branch ?? "ohne Branch"];
     if (repo.base) parts.push(`gegen ${repo.base.name} · ${repo.base.commits} Commit${repo.base.commits === 1 ? "" : "s"}`);
     if (repo.dirty) parts.push(`${repo.dirty} uncommittet`);
     if (repo.ahead != null && (repo.ahead || repo.behind)) parts.push(`↑${repo.ahead} ↓${repo.behind}`);
     if (repo.on) parts.push(repo.on);
-    return parts.join(" · ");
+    return { text: parts.join(" · "), tip: repo.root };
   }
 
   // A Verlauf line: time and role, then the text with @tags highlighted.
@@ -586,12 +593,12 @@ export default class Review extends View {
       : tk.checks === "pass" ? "bestanden (aufgezeichnet)" : tk.checks === "fail" ? "rot (aufgezeichnet)" : "noch nicht ausgeführt";
     return v_flex().flex_none().gap(ui.GAP_S)
       .child(h_flex().gap(ui.GAP_S).items_center().min_w(0)
-        .child(div().flex_none().text_size(T_S).font_medium().text_color(t.muted).child("Prüfung"))
+        .child(div().flex_none().text_size(T_S).font_medium().text_color(t.muted).child("Checks"))
         .child(div().flex_1().min_w(0).truncate().text_size(T_S).text_color(color).tooltip(state).child(state))
         .child(ui.link(t, "rv-checks", this.showChecks ? "Zeilen ausblenden" : "Letzte Zeilen",
           (cx) => { this.showChecks = !this.showChecks; cx.notify(); },
           { tip: `Die letzten Zeilen von ${g?.cmd ?? tk.checks_cmd ?? ".herdr/verify.sh"}` }))
-        .child(ui.button(t, "rv-verify", this.busy === "verify" ? "Prüft …" : "Prüfung erneut ausführen",
+        .child(ui.button(t, "rv-verify", this.busy === "verify" ? "Prüft …" : "Checks erneut ausführen",
           (cx) => this.runVerify(cx),
           { small: true, enabled: !this.busy && tk.status !== "done",
             tip: `hub verify ${tk.id} im Worktree${tk.machine ? ` auf ${tk.machine}` : ""}; das Gate verlangt diesen Lauf` })))
@@ -610,18 +617,21 @@ export default class Review extends View {
       .child(div().flex_none().text_size(T_XS).text_color(t.dim).tooltip(`Ticket ${l.ticket}`).child(source));
   }
 
-  // The reviewer station: verdict from `hub gate` (it knows the HEAD), the `--from review`
-  // comments as findings, and the button for another round.
+  // The check station: verdict from `hub gate` (it knows the HEAD), the `--from review`
+  // comments as findings, and the button for another round. A landed ticket has no
+  // worktree: its recorded verdict stands, the merge commit is not a new state.
   reviewRow(t, tk, cx) {
     const live = tk.review_terminal
       ? terminals().find((x) => x.address === tk.review_terminal && x.state === "live") : null;
-    const r = this.gate?.review ?? null;
+    const landed = tk.status === "done";
+    const g = landed ? null : this.gate;
+    const r = g?.review ?? null;
     const verdict = r?.verdict ?? tk.review ?? null;
-    const at = r?.at ?? tk.review_at, by = r?.reviewer || tk.reviewer;
-    const stale = ui.headStale(this.headNow(), r?.review_head ?? tk.review_head);
+    const at = r?.at ?? tk.review_at, by = r?.reviewer_name || r?.reviewer || tk.reviewer_name || tk.reviewer;
+    const stale = !landed && ui.headStale(this.headNow(), r?.review_head ?? tk.review_head);
     const [word, color] = live ? ["läuft", t.working]
       : stale ? ["veraltet (neuer Commit)", t.muted]
-        : (r ? r.ok : verdict === "pass") ? ["grün", t.done]
+        : (r ? r.ok : verdict === "pass") ? [landed ? "grün (aufgezeichnet)" : "grün", landed ? t.muted : t.done]
           : verdict === "fail" ? ["rot", t.blocked]
             : verdict === "pass" ? ["grün (aufgezeichnet)", t.muted] : ["noch nicht gestartet", t.muted];
     const why = stale ? "neuer Commit seit dem Lauf — neu prüfen" : r?.reason || tk.review_summary || "";
@@ -629,18 +639,18 @@ export default class Review extends View {
       .filter((v) => v.role === "review" && !v.text.startsWith("Urteil:"));
     return v_flex().id("rv-review").flex_none().gap(ui.GAP_XS)
       .child(h_flex().gap(ui.GAP_S).items_center().min_w(0)
-        .child(div().flex_none().text_size(T_S).font_medium().text_color(t.muted).child("Prüfstation"))
+        .child(div().flex_none().text_size(T_S).font_medium().text_color(t.muted).child("Prüfung"))
         .child(div().flex_none().text_size(T_S).text_color(color).when(Boolean(why), (el) => el.tooltip(why)).child(word))
-        .when(Boolean(tk.review_terminal), (el) => el.child(div().flex_none().max_w(160).child(ui.identityChip(t, "rv-reviewer", tk.review_terminal))))
-        .when(!tk.review_terminal && Boolean(by), (el) => el.child(div().flex_none().text_size(T_S).text_color(t.muted).child(by)))
+        .when(Boolean(tk.review_terminal || by),
+          (el) => el.child(ui.reviewerChip(t, "rv-reviewer", tk, { maxW: 160, name: by })))
         .when(Boolean(at) && !live, (el) => el.child(div().text_size(T_XS).text_color(t.dim).child(at)))
         .when(Boolean(tk.review_rounds), (el) => el.child(div().flex_none().text_size(T_XS).text_color(t.muted).child(`Runde ${tk.review_rounds}`)))
         .when(findings.length > 0, (el) => el.child(ui.link(t, "rv-findings-toggle", `${this.findingsOpen ? "▾" : "▸"} Befunde (${findings.length})`,
           (c2) => { this.findingsOpen = !this.findingsOpen; c2.notify(); },
-          { tip: this.findingsOpen ? "Befunde ausblenden" : "Befunde des Reviewers einblenden" })))
+          { tip: this.findingsOpen ? "Befunde ausblenden" : "Befunde des Prüfers einblenden" })))
         .child(div().flex_1())
         .child(ui.button(t, "rv-review-start", this.busy === "review-start" ? "Startet …" : "Erneut prüfen",
-          (c2) => this.startReview(c2), { small: true, enabled: !this.busy && tk.status !== "done",
+          (c2) => this.startReview(c2), { small: true, enabled: !this.busy && !landed,
             tip: stale ? `Das Urteil ist älter als der Worktree-HEAD: hub review-start ${tk.id} prüft neu`
               : `hub review-start ${tk.id}: ein zweiter Agent prüft Diff und Abnahmekriterien` })))
       .when(this.findingsOpen && findings.length > 0, (el) => el.child(div().id("rv-findings").flex_none().gap(2).p(6).rounded(6)
@@ -714,7 +724,7 @@ export default class Review extends View {
         .when(Boolean(proposal), (x) => x.child(h_flex().gap(ui.GAP_S).items_center()
           .child(div().flex_1().min_w(0).text_size(T_S).text_color(t.foreground).child(`Vorschlag: ${proposal.text}`))
           .child(ui.button(t, "rv-lesson", "Lehre übernehmen", (cx2) => this.confirmLesson(cx2),
-            { kind: "primary", small: true, enabled: !this.busy, tip: "Schreibt die Lehre ins Repo; jeder nächste Auftrag enthält sie" }))))))
+            { small: true, enabled: !this.busy, tip: "Schreibt die Lehre ins Repo; jeder nächste Auftrag enthält sie" }))))))
       .child(h_flex().gap(ui.GAP_M).items_center()
         .child(this.field(t, "rv-comment", this.commentInput, { focused: this.focus.has("rv-comment"),
           send: ui.sendButton(t, "rv-comment-send", "mods/orchestra/icons/send.svg",
@@ -797,7 +807,9 @@ export default class Review extends View {
       ? [div().id("rv-ticket").flex_none().max_w(260).truncate().text_size(T_S).text_color(t.muted)
         .tooltip(`Ticket ${linked.id}: ${linked.title}`).child(`Ticket ${linked.id} · ${linked.title}`)]
       : [];
-    const header = ui.windowHeader(t, "Review", [...ticketTag, ...who, ...stats], () => this.close(), { meta: this.meta() });
+    const m = this.meta();
+    const header = ui.windowHeader(t, "Review", [...ticketTag, ...who, ...stats], () => this.close(),
+      { meta: m.text, metaTip: m.tip });
 
     const body = this.error
       ? ui.empty(t, this.error)

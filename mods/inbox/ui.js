@@ -64,13 +64,13 @@ export const statusChip = (t, st, word) => chip(t, word ?? STATUS_WORD[st] ?? st
 
 // ---------- Gate-Chips (5.6, Felder 7.6) ----------
 
-/** Gate-Chips eines Tickets aus orchestra.tickets: Checks ✓/✗/–, dazu Review offen bzw. abgenommen. */
+/** Gate-Chips eines Tickets aus orchestra.tickets: Checks ✓/✗/–, dazu Abnahme offen bzw. abgenommen. */
 export function gateChips(t, tk) {
   const out = [];
-  if (tk.checks === "pass") out.push(chip(t, "Checks ✓", t.done, { tip: "Checks grün (hub review --checks pass)" }));
-  else if (tk.checks === "fail") out.push(chip(t, "Checks ✗", t.blocked, { tip: "Checks rot (hub review --checks fail)" }));
+  if (tk.checks === "pass") out.push(chip(t, "Checks ✓", t.done, { tip: "Checks grün (hub verify)" }));
+  else if (tk.checks === "fail") out.push(chip(t, "Checks ✗", t.blocked, { tip: "Checks rot (hub verify)" }));
   else out.push(chip(t, "Checks –", t.muted, { tip: "Keine Angabe zu den Checks" }));
-  if (tk.status === "review") out.push(chip(t, "Review offen", t.working, { tip: "Wartet auf deine Abnahme" }));
+  if (tk.status === "review") out.push(chip(t, "Abnahme offen", t.working, { tip: "Wartet auf deine Abnahme" }));
   else if (tk.status === "done") out.push(chip(t, "abgenommen", t.done));
   return out;
 }
@@ -143,10 +143,11 @@ export function panelHeader(t, title, right = [], { count } = {}) {
 }
 
 /** Fenster-Titelzeile: wie Panel-Kopf, bg chrome, als letztes Schließen. */
-export function windowHeader(t, title, right = [], onClose, { meta } = {}) {
+export function windowHeader(t, title, right = [], onClose, { meta, metaTip } = {}) {
   return h_flex().h(H_HEADER).flex_none().px(INSET_PANEL).gap(GAP_M).items_center().bg(t.chrome).border_b(1).border_color(t.border)
     .child(div().flex_none().text_size(T_L).font_semibold().text_color(t.foreground).child(title))
-    .when(Boolean(meta), (el) => el.child(div().flex_1().min_w(0).truncate().text_size(T_S).text_color(t.muted).child(meta)))
+    .when(Boolean(meta), (el) => el.child(div().flex_1().min_w(0).truncate().text_size(T_S).text_color(t.muted)
+      .when(Boolean(metaTip), (x) => x.tooltip(metaTip)).child(meta)))
     .when(!meta, (el) => el.child(div().flex_1()))
     .children(right)
     .child(iconButton(t, "win-close", ICON_CLOSE, "Schließen", () => onClose()));

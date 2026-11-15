@@ -458,6 +458,12 @@ const done    = agents().filter((a) => a.status === "done").length;
 `orchestratorBlocked` = es gibt ein live Terminal mit Namen `orchestrator` und Status `blocked`
 (`terminals()`).
 
+Der Zähler ist **blocked + review** — dieselbe Zahl in Tab-Leiste und Inbox-Kopf. Eine offene Frage
+aus dem Ticket-Verlauf (`question`, 7.1) zählt nicht mit: sie erscheint als eigene Zeile unter
+„Rückfragen“, und der Inbox-Kopf benennt die Differenz wie das Dashboard als **„+ n Verlauf“**
+(Tooltip: `Inbox n (Rückfragen + Abnahmen) + m Fragen aus dem Ticket-Verlauf = Zeilen`). So
+widersprechen sich Badge und Liste nicht still. `done` färbt die Badge nur, wenn nichts wartet.
+
 ### 7.4 Launcher-Aufruf („Auftrag“) — B stellt bereit, A und C rufen auf
 
 ```js
