@@ -25,6 +25,7 @@ const LABEL_W = 140, DUR_W = 48;
 const ROW_H = 38, THIN_H = 24;
 
 const ZOOMS = [
+  { value: "auto", label: "Auto", span: null, tip: "vom frühesten Start bis jetzt, mindestens 30 Minuten" },
   { value: "1h", label: "1 h", span: 3600, tip: "die letzte Stunde, 10-Minuten-Raster" },
   { value: "24h", label: "24 h", span: 86400, tip: "die letzten 24 Stunden, 2-Stunden-Raster" },
   { value: "7d", label: "7 Tage", span: 604800, tip: "die letzten 7 Tage, Tagesraster" },
@@ -137,7 +138,7 @@ export default class Timeline extends View {
     this.error = null;
     this.reading = false;
     this.zoom = ZOOMS.some((z) => z.value === localStorage.getItem("timeline.zoom"))
-      ? localStorage.getItem("timeline.zoom") : "24h";
+      ? localStorage.getItem("timeline.zoom") : "auto";
     this.ticket = p.ticket ? String(p.ticket) : null;
     this.scope = this.ticket ? "ticket" : "all";
     this.sharedTicket = shared("timeline.ticket") ?? null;
@@ -230,7 +231,8 @@ export default class Timeline extends View {
     // alte Balken als Stummel am Rand).
     const start = this.viewStart(), end = this.now();
     return list.filter((l) => {
-      if (l.start == null) return true;
+      // Ohne Start zählt nur, was im Fenster ein Ereignis hat; sonst wäre die Lane leer.
+      if (l.start == null) return l.events.some((e) => e.at >= start && e.at <= end);
       const laneEnd = l.end ?? (l.status === "done" ? l.start : end);
       return laneEnd >= start && l.start <= end;
     });
@@ -305,7 +307,10 @@ export default class Timeline extends View {
     const z = ZOOMS.find((x) => x.value === this.zoom);
     if (z?.span) return z.span;
     const n = this.now();
-    const starts = this.lanes().map((l) => l.start).filter((s) => s != null);
+    const starts = this.lanes().map((l) => l.start).filter((s) => s != null && s <= n);
+    // Auto: der früheste Start bis jetzt, aber nie unter 30 Minuten — sonst teilen
+    // sich zwei gerade gestartete Agents einen fast leeren 24-h-Streifen.
+    if (this.zoom === "auto") return Math.max(1800, n - (starts.length ? Math.min(...starts) : n));
     const first = Math.min(n, this.data?.since ?? n, ...(starts.length ? starts : [n]));
     return Math.max(3600, n - first);
   }
@@ -474,6 +479,8 @@ export default class Timeline extends View {
     const color = statusColor(t, lane.status ?? (live ? "working" : "idle"));
     const left = this.pct(lane.start), right = this.pct(Math.max(lane.start, end));
     const top = thin ? 10 : 12, h = thin ? 4 : 18;
+    // In einem 4-px-Balken wäre der Text nur ein Stummel; der Tooltip trägt ihn.
+    const showLabel = !thin && ((right - left) / 100) * this.chartPx() >= 28;
     const tip = [
       lane.label,
       lane.ticket && `Ticket ${lane.ticket}`,
@@ -482,15 +489,14 @@ export default class Timeline extends View {
       durText(end - lane.start),
       lane.cost ? ui.usd(lane.cost) : null,
     ].filter(Boolean).join(" · ");
-    const label = lane.ticket ? `${lane.label} · ${shortId(lane.ticket)}` : lane.label;
-    return div().absolute().left(`${left}%`).top(top).h(h).w(`${Math.max(0, right - left)}%`).min_w(3)
-      .when(live, (el) => el.child(div().absolute().inset_0().rounded(4).border_1().border_color(color)
+    return div().absolute().left(`${left}%`).top(top).h(h).w(`${Math.max(0, right - left)}%`).min_w(4)
+      .when(live, (el) => el.child(div().absolute().inset_0().rounded_full().border_1().border_color(color)
         .loop("opacity", { from: 0.15, to: 1, period: 1400 })))
-      .child(div().absolute().inset_0().rounded(4).bg(color + "33").border_1().border_color(color + "88")
+      .child(div().absolute().inset_0().rounded_full().bg(color + "33").border_1().border_color(color + "88")
         .overflow_hidden().tooltip(tip).cursor_pointer()
         .on_click((_e, cx) => { cx.stop_propagation(); this.openTerminal(lane); })
-        .when(!thin, (el) => el.flex().items_center().px(5)
-          .child(div().min_w(0).truncate().text_size(T_XS).text_color(t.foreground).child(label))));
+        .when(showLabel, (el) => el.flex().items_center().px(6)
+          .child(div().min_w(0).truncate().text_size(T_XS).text_color(t.foreground).child(lane.label))));
   }
 
   row(t, lane, depth, marks, now, i) {
@@ -498,14 +504,18 @@ export default class Timeline extends View {
     const thin = lane.kind === "subagent";
     const end = lane.end ?? (status === "done" ? lane.start : now);
     const name = lane.label || lane.id;
-    const label = h_flex().w(LABEL_W).flex_none().min_w(0).h_full().items_center().gap(GAP_XS)
-      .pl(8 + depth * 10).pr(4)
-      .child(thin ? div().size(7).flex_none().rounded_full().bg(statusColor(t, status))
-        : ui.statusIcon(t, status))
-      .child(div().flex_1().min_w(0).truncate().text_size(T_S).text_color(thin ? t.muted : t.foreground)
-        .tooltip(`${name}${lane.ticket ? ` · ${lane.ticket}` : ""}`).child(name))
-      .when(Boolean(lane.ticket), (el) => el.child(div().flex_none().text_size(T_XS).text_color(t.dim)
-        .child(shortId(lane.ticket))));
+    const nameText = div().min_w(0).truncate().text_size(T_S).font_semibold()
+      .text_color(thin ? t.muted : t.foreground).tooltip(`${name}${lane.ticket ? ` · ${lane.ticket}` : ""}`).child(name);
+    const label = thin
+      ? h_flex().w(LABEL_W).flex_none().min_w(0).h_full().items_center().gap(GAP_XS).pl(8 + depth * 10).pr(4)
+        .child(div().size(7).flex_none().rounded_full().bg(statusColor(t, status)))
+        .child(nameText)
+      // Zwei Zeilen: Name fett, darunter das Ticket-Kürzel in dim statt einer langen Zeile.
+      : v_flex().w(LABEL_W).flex_none().min_w(0).h_full().justify_center().gap(0).pl(8 + depth * 10).pr(4)
+        .child(h_flex().gap(GAP_XS).items_center().min_w(0)
+          .child(ui.statusIcon(t, status)).child(nameText))
+        .when(Boolean(lane.ticket), (el) => el.child(div().pl(16).min_w(0).truncate().text_size(T_XS)
+          .text_color(t.dim).child(shortId(lane.ticket))));
     // Zwei Ereignisse fast zur selben Zeit liegen versetzt, sonst deckt eines das andere zu.
     const events = marks.get(lane.id) ?? [];
     const track = div().id(`tl-track-${lane.id}`).relative().flex_1().min_w(0).h_full()
