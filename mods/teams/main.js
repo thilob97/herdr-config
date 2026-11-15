@@ -36,6 +36,9 @@ const colorOf = (t, c) => ({ c1: t.accent, c2: t.working, c3: t.done, c4: t.bloc
 const tint = (c, a) => (/^#[0-9a-f]{6}$/i.test(c ?? "") ? c + a : c);
 const same = (a, b) => String(a ?? "").toLowerCase() === String(b ?? "").toLowerCase();
 const programName = (key) => PROGRAMS.find((p) => p.key === key)?.name ?? (key || "—");
+// In Karten und Zeilen steht das Programm-Kürzel (`omp`) klein und gedämpft; der
+// ausgeschriebene Name („Oh My Pi") ist eine Identität, die ein Programm nicht hat.
+const programKey = (key) => String(key ?? "").trim().toLowerCase();
 const tail = (p) => String(p ?? "").replace(/\/+$/, "").split("/").pop() || "—";
 const listOf = (s) => String(s ?? "").split(",").map((x) => x.trim()).filter(Boolean).join(",");
 const clean = (e) => String(e?.message ?? e ?? "fehlgeschlagen")
@@ -466,8 +469,8 @@ export default class Teams extends View {
           .child(h_flex().gap(ui.GAP_S).items_center()
             .child(div().flex_1().min_w(0).truncate().text_size(T_L).font_semibold().text_color(t.foreground).child(agent.name))
             .when(agent.role, (el) => el.child(ui.chip(t, agent.role, color))))
-          .child(div().truncate().text_size(T_S).text_color(t.muted)
-            .child([programName(agent.program), agent.model].filter(Boolean).join(" · ") || "—")))
+          .child(div().truncate().text_size(T_S).text_color(t.dim)
+            .child([programKey(agent.program), agent.model].filter(Boolean).join(" · ") || "—")))
         .when(running > 0, (el) => el.child(ui.counterBadge(t, running, t.working))))
       .child(h_flex().gap(ui.GAP_S).items_center().text_size(T_XS).text_color(t.dim)
         .child(div().flex_1().min_w(0).truncate().tooltip(agent.repo || "kein Repo").child(agent.repo ? tail(agent.repo) : "kein Repo"))
@@ -623,8 +626,8 @@ export default class Teams extends View {
           .child(h_flex().gap(ui.GAP_S).items_center()
             .child(div().text_size(T_XL).font_semibold().text_color(t.foreground).child(agent.name))
             .when(agent.role, (el) => el.child(ui.chip(t, agent.role, color))))
-          .child(div().text_size(T_S).text_color(t.muted)
-            .child([programName(agent.program), agent.model].filter(Boolean).join(" · ") || "Programm offen")))
+          .child(div().text_size(T_S).text_color(t.dim)
+            .child([programKey(agent.program), agent.model].filter(Boolean).join(" · ") || "Programm offen")))
         .child(ui.button(t, "tm-edit", "Bearbeiten", (cx) => this.openForm(cx, agent), { tip: "Name, Rolle, Programm, Modell, Repo, Labels und Notizen ändern" }))
         .child(ui.button(t, "tm-del", "Löschen", (cx) => { this.confirm = agent.name; cx.notify(); }, { tip: "Mit Rückfrage entfernen" })))
       .child(ui.card(t, "tm-detail-card").gap(ui.GAP_S)
@@ -672,6 +675,12 @@ export default class Teams extends View {
       .when(!running.length, (el) => el.child(ui.empty(t, "Keine laufenden Tickets.", { row: true })))
       .children(running.map((tk) => {
         const st = STATUS[tk.status] ?? STATUS.todo;
+        // Wer am Ticket arbeitet: der Roster-Name, den der Hub in `agent` kennt; sonst
+        // die veröffentlichte Identität des Terminals (bzw. dessen Programm-Kürzel).
+        // Ein Programmname („Oh My Pi") ist keine Identität.
+        const known = this.agentOf(tk.agent)?.name ?? null;
+        const who = known ? ui.chip(t, known, t.muted)
+          : tk.terminal ? ui.identityChip(t, `tm-tk-who-${tk.id}`, tk.terminal, { status: null }) : null;
         return h_flex().id(`tm-tk-${tk.id}`).h(ui.H_ROW).flex_none().gap(ui.GAP_S).items_center().rounded(6).px(ui.GAP_XS)
           .cursor_pointer().hover((s) => s.bg(t.hover))
           .on_click((_e, cx) => {
@@ -683,6 +692,7 @@ export default class Teams extends View {
           .child(ui.chip(t, st.label, st.color(t)))
           .child(div().w(150).flex_none().truncate().text_size(T_XS).text_color(t.dim).child(tk.id))
           .child(div().flex_1().min_w(0).truncate().text_size(T_S).text_color(t.foreground).child(tk.title || ""))
+          .when(Boolean(who), (el) => el.child(div().flex_none().max_w(130).child(who)))
           .when(tk.status === "review", (el) => el.child(div().text_size(T_XS).text_color(t.accent).child("prüfen")));
       }))
       .when(this.error && this.mode === "list", (el) => el.child(div().text_size(T_S).text_color(t.blocked).child(this.error)));
