@@ -303,14 +303,26 @@ export default class Timeline extends View {
 
   // ---------- Achse ----------
 
+  /** Frühester Start einer Arbeits-Lane (`agent`, `reviewer`, `subagent`) bis jetzt; nur
+   *  wenn keine bekannte Arbeits-Lane einen Start hat, zählt der Orchestrator. Dessen
+   *  Uptime (oft 18 h) darf das Fenster nicht diktieren: sonst schrumpfen alle
+   *  Agentenläufe zu Strichen am rechten Rand. */
+  autoStart() {
+    const n = this.now();
+    const known = this.lanes().filter((l) => l.start != null && l.start <= n);
+    const work = known.filter((l) => l.kind !== "orchestrator");
+    const pool = work.length ? work : known;
+    return pool.length ? Math.min(...pool.map((l) => l.start)) : n;
+  }
+
   span() {
     const z = ZOOMS.find((x) => x.value === this.zoom);
     if (z?.span) return z.span;
     const n = this.now();
-    const starts = this.lanes().map((l) => l.start).filter((s) => s != null && s <= n);
-    // Auto: der früheste Start bis jetzt, aber nie unter 30 Minuten — sonst teilen
+    // Auto: frühester Start einer Arbeits-Lane, aber nie unter 30 Minuten — sonst teilen
     // sich zwei gerade gestartete Agents einen fast leeren 24-h-Streifen.
-    if (this.zoom === "auto") return Math.max(1800, n - (starts.length ? Math.min(...starts) : n));
+    if (this.zoom === "auto") return Math.max(1800, n - this.autoStart());
+    const starts = this.lanes().map((l) => l.start).filter((s) => s != null && s <= n);
     const first = Math.min(n, this.data?.since ?? n, ...(starts.length ? starts : [n]));
     return Math.max(3600, n - first);
   }
@@ -478,6 +490,10 @@ export default class Timeline extends View {
     const live = lane.end == null && lane.status !== "done";
     const color = statusColor(t, lane.status ?? (live ? "working" : "idle"));
     const left = this.pct(lane.start), right = this.pct(Math.max(lane.start, end));
+    // Beginnt die Lane vor dem Fenster, wird sie links beschnitten und eine kleine Kappe
+    // markiert den Schnitt; der Tooltip nennt den echten Start.
+    const clipStart = this.viewStart();
+    const clipped = lane.start < clipStart - 1;
     const top = thin ? 10 : 12, h = thin ? 4 : 18;
     // In einem 4-px-Balken wäre der Text nur ein Stummel; der Tooltip trägt ihn.
     const showLabel = !thin && ((right - left) / 100) * this.chartPx() >= 28;
@@ -488,15 +504,23 @@ export default class Timeline extends View {
       `${clock(lane.start)} – ${live ? "jetzt" : clock(end)}`,
       durText(end - lane.start),
       lane.cost ? ui.usd(lane.cost) : null,
+      clipped ? `Anfang vor dem Fenster · seit ${clock(lane.start)}` : null,
     ].filter(Boolean).join(" · ");
+    const cutTip = `Anfang vor dem Fenster · seit ${clock(lane.start)}`;
     return div().absolute().left(`${left}%`).top(top).h(h).w(`${Math.max(0, right - left)}%`).min_w(4)
       .when(live, (el) => el.child(div().absolute().inset_0().rounded_full().border_1().border_color(color)
         .loop("opacity", { from: 0.15, to: 1, period: 1400 })))
       .child(div().absolute().inset_0().rounded_full().bg(color + "33").border_1().border_color(color + "88")
         .overflow_hidden().tooltip(tip).cursor_pointer()
         .on_click((_e, cx) => { cx.stop_propagation(); this.openTerminal(lane); })
-        .when(showLabel, (el) => el.flex().items_center().px(6)
-          .child(div().min_w(0).truncate().text_size(T_XS).text_color(t.foreground).child(lane.label))));
+        .when(showLabel, (el) => el.flex().items_center().px(clipped ? 12 : 6)
+          .child(div().min_w(0).truncate().text_size(T_XS).text_color(t.foreground).child(lane.label))))
+      // Die Kappe sitzt über dem linken, abgeschnittenen Ende: ein „<" im Balken, bei
+      // Sub-Agent-Strichen (4 px) eine kurze Kante in der Statusfarbe.
+      .when(clipped, (el) => el.child(thin
+        ? div().absolute().left(0).top(0).bottom(0).w(2).bg(color).tooltip(cutTip)
+        : div().absolute().left(0).top(0).bottom(0).w(9).flex().items_center().justify_center()
+          .bg(t.background).text_size(T_XS).font_medium().text_color(color).tooltip(cutTip).child("<")));
   }
 
   row(t, lane, depth, marks, now, i) {
