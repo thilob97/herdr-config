@@ -1,10 +1,11 @@
 // Fabrik-Graph: die Fabrik des aktiven Workspace als Baum von oben nach unten.
-// Oben der Orchestrator (Krone), darunter seine Agents als Karten — Avatar in
-// Agent-Farbe, Name, Status-Chip (arbeitet/wartet/fertig wie die Timeline) und
-// das Ticket-Kürzel —, Sub-Agents eingerückt unter ihrem Parent. Pfeile:
-// Dispatch Orchestrator→Agent, Parent Agent→Sub-Agent, und dünne Bögen
-// Ticket→Ticket aus `blocked_by` (gestrichelt, wenn der Blocker erledigt ist;
-// liegt der Blocker außerhalb des Scopes, sagt der Chip „wartet auf …“).
+// Oben der Orchestrator (Krone, „verteilt …“), darunter seine Agents in eigenen
+// Spalten über die Panelbreite: eine kompakte Zeile aus Avatar in Agent-Farbe,
+// Name und Status-Chip, darunter der Ticket-Chip mit Kürzel und Status-Punkt.
+// Sub-Agents hängen eingerückt unter ihrem Parent. Kanten sind orthogonal:
+// Dispatch Orchestrator→Agent, Parent Agent→Sub-Agent, und Ticket→Blocker aus
+// `blocked_by` (gestrichelt nur, wenn der Blocker erledigt ist; liegt er
+// außerhalb des Scopes, sagt der Chip „wartet auf …“).
 //
 // Daten: `hub timeline --json --all` alle 15 s (Scope hier wie in den Panels:
 // ui.inScope für Tickets, Agent-Space→Workspace über ui.workspaceId) und
@@ -14,10 +15,10 @@
 // `mod.open:graph` (mod.json overlay).
 import { View, div, svg, image, PathBuilder } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { exec, appHome, shared, setShared, theme, settings, props, openOverlay, closeOverlay, run, nextCommand, layout, terminals } from "herdr";
+import { exec, appHome, shared, setShared, theme, settings, props, openOverlay, closeOverlay, run, nextCommand, layout, terminals, updates } from "herdr";
 import * as ui from "./ui.js";
 import { T_XS, T_S, GAP_XS, GAP_S, INSET_PANEL } from "./ui.js";
-import { layoutGraph, shortId, TICKET_H } from "./layout.js";
+import { layoutGraph } from "./layout.js";
 
 const HUB = () => `${appHome()}/mods/orchestra/bin/hub`;
 const REFRESH = 15000;
@@ -37,6 +38,19 @@ const FILTERS = [
 ];
 // Eine Farbe je Agent, stabil über den Lauf: der Avatar trägt sie am Rand.
 const COLORS = (t) => [t.accent, t.ansi2, t.ansi5, t.ansi3, t.ansi6, t.ansi4, t.ansi1, t.ansi12, t.ansi10, t.ansi13];
+
+// Herdr ab 0.1.12 zoomt `paint_path` selbst (wie `git-graph`: `pathScale()`
+// liefert dann 1); davor lagen die Linien in Layout-Einheiten und brauchten den
+// Zoom. Ohne diese Unterscheidung laufen Kanten 20 % neben den Karten.
+let listsZoom;
+const pathScale = () => listsZoom ??= (() => {
+  try {
+    const v = updates()?.app?.version;
+    if (!v) return Number(settings().zoom) > 0 ? Number(settings().zoom) : 1;
+    const [a, b, c] = String(v).split(".").map(Number);
+    return a > 0 || b > 1 || (b === 1 && c >= 12) ? 1 : (Number(settings().zoom) > 0 ? Number(settings().zoom) : 1);
+  } catch { return 1; }
+})();
 
 const errorText = (e) => String(e?.message ?? e ?? "fehlgeschlagen").replace(/^Error: /, "").replace(/^hub: /, "");
 const lastLine = (r) => (r.stderr || r.stdout || `Exit ${r.code}`).trim().split("\n").pop().slice(0, 240);
@@ -83,6 +97,7 @@ export default class FactoryGraph extends View {
     this.error = null;
     this.lastOk = null;
     this.reading = false;
+    this.width = 0;
     this.hover = null;
     this.space = ui.activeSpace()?.id ?? "";
     this.filter = FILTERS.some((f) => f.value === localStorage.getItem("graph.filter"))
@@ -210,89 +225,120 @@ export default class FactoryGraph extends View {
 
   // ---------- Zeichnen ----------
 
+  /** Orthogonaler Kantenzug mit gerundeten Ecken; Koordinaten wie in `git-graph`
+   *  mit dem Zoom multipliziert, weil `paint_path` nicht mitzoomt. */
+  polyline(p, points, z) {
+    const pts = points.map(([x, y]) => [x * z, y * z]);
+    if (!pts.length) return p;
+    p = p.move_to(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length - 1; i++) {
+      const [px, py] = pts[i - 1], [cx, cy] = pts[i], [nx, ny] = pts[i + 1];
+      const d1 = Math.hypot(cx - px, cy - py) || 1, d2 = Math.hypot(nx - cx, ny - cy) || 1;
+      const r = Math.min(6 * z, d1 / 2, d2 / 2);
+      const ax = cx + (px - cx) / d1 * r, ay = cy + (py - cy) / d1 * r;
+      const bx = cx + (nx - cx) / d2 * r, by = cy + (ny - cy) / d2 * r;
+      p = p.line_to(ax, ay)
+        .cubic_bezier_to(bx, by, ax + (cx - ax) * 0.55, ay + (cy - ay) * 0.55, bx + (cx - bx) * 0.55, by + (cy - by) * 0.55);
+    }
+    const last = pts[pts.length - 1];
+    return p.line_to(last[0], last[1]);
+  }
+
   path(t, edge, hot) {
-    const z = Number(settings().zoom) > 0 ? Number(settings().zoom) : 1;
-    const width = (edge.kind === "ticket" ? 1 : 1.5) * z;
+    const z = pathScale();
+    const width = (edge.kind === "ticket" || edge.faint ? 1 : 1.5) * z;
     let p = PathBuilder.stroke(width);
     if (edge.dashed) p = p.dash_array([3 * z, 3 * z]);
-    p = p.move_to(edge.x1 * z, edge.y1 * z)
-      .cubic_bezier_to(edge.x2 * z, edge.y2 * z, edge.c1x * z, edge.c1y * z, edge.c2x * z, edge.c2y * z);
-    // Pfeilspitze aus der Richtung des letzten Kontrollpunkts: sie zeigt auf das
-    // Kind bzw. den wartenden Chip, egal wie der Bogen läuft.
-    const dx = edge.x2 - edge.c2x, dy = edge.y2 - edge.c2y, len = Math.hypot(dx, dy) || 1;
+    p = this.polyline(p, edge.points, z);
+    // Pfeilspitze aus der Richtung des letzten Segments: sie zeigt beim Baum auf
+    // das Kind, beim Ticket-Pfeil auf den Blocker.
+    const [x2, y2] = edge.points[edge.points.length - 1];
+    const [x1, y1] = edge.points[edge.points.length - 2] ?? edge.points[0];
+    const dx = x2 - x1, dy = y2 - y1, len = Math.hypot(dx, dy) || 1;
     const ux = dx / len, uy = dy / len, nx = -uy, ny = ux, back = 6, wing = 3.2;
-    p = p.move_to((edge.x2 - ux * back + nx * wing) * z, (edge.y2 - uy * back + ny * wing) * z)
-      .line_to(edge.x2 * z, edge.y2 * z)
-      .line_to((edge.x2 - ux * back - nx * wing) * z, (edge.y2 - uy * back - ny * wing) * z);
-    const color = hot ? t.accent : edge.kind === "ticket" ? t.dim : t.muted;
+    p = p.move_to((x2 - ux * back + nx * wing) * z, (y2 - uy * back + ny * wing) * z)
+      .line_to(x2 * z, y2 * z)
+      .line_to((x2 - ux * back - nx * wing) * z, (y2 - uy * back - ny * wing) * z);
+    const color = hot ? t.accent : edge.faint ? t.border : edge.kind === "ticket" ? t.dim : t.muted;
     return { path: p.build(), color };
   }
 
   avatar(t, node, color) {
-    const who = ui.identity(node.terminal);
+    const who = ui.identity(node.terminal), size = node.narrow ? 16 : 18;
     if (who.named && who.avatar) {
-      return image(who.avatar).w(22).h(22).flex_none().rounded_full().border(2).border_color(color);
+      return image(who.avatar).w(size).h(size).flex_none().rounded_full().border(2).border_color(color);
     }
     const initial = (who.name || node.label || "?").trim().slice(0, 1).toUpperCase() || "?";
-    return div().size(22).flex_none().rounded_full().border(1).border_color(color).bg(color + "26")
+    return div().size(size).flex_none().rounded_full().border(1).border_color(color).bg(color + "26")
       .flex().items_center().justify_center().text_size(T_XS).font_semibold().text_color(color).child(initial);
   }
 
+  /** Kompakte Karte: Avatar, Name, Status-Chip. Der Orchestrator ist die Wurzel
+   *  mit Krone und „verteilt …“; schmale Panels stapeln Name und Status. */
   card(t, node, color) {
     const who = ui.identity(node.terminal);
     const hot = this.hover === node.id;
     const border = hot ? t.accent : node.kind === "orchestrator" ? t.accent + "66" : undefined;
     const name = who.named ? who.name : node.label;
-    const tip = [node.label, node.ticket, node.status].filter(Boolean).join(" · ");
-    return ui.card(t, node.id, { border }).relative().absolute().left(node.x).top(node.y).w(node.w).h(node.h)
-      .cursor_pointer().tooltip(tip)
+    const tip = [node.label, node.ticket, ui.STATUS_WORD[node.status]].filter(Boolean).join(" · ");
+    const el = div().id(node.id).relative().absolute().left(node.x).top(node.y).w(node.w).h(node.h)
+      .rounded(8).bg(t.surface).border_1().border_color(border ?? t.border).cursor_pointer().tooltip(tip)
       .on_hover((on, cx) => {
         const next = on ? node.id : this.hover === node.id ? null : this.hover;
         if (next !== this.hover) { this.hover = next; cx.notify(); }
       })
-      .on_click((_e, cx) => { cx.stop_propagation(); this.openLane(node); })
-      .child(h_flex().w_full().gap(GAP_S).items_center().min_w(0)
-        .when(node.kind === "orchestrator", (el) => el.child(div().flex_none().tooltip("Orchestrator dieses Workspace")
-          .child(svg("mods/orchestra/orchestrator.svg").size(12).flex_none().text_color(t.accent))))
-        .child(this.avatar(t, node, color))
-        .child(div().flex_1().min_w(0).truncate().text_size(T_S).font_semibold()
-          .text_color(node.kind === "subagent" ? t.muted : t.foreground).tooltip(tip).child(name))
-        .child(ui.statusChip(t, node.status)))
-      // Ein Sub-Agent hat keinen eigenen Ticket-Knoten (der Chip gehört dem Agenten),
-      // trägt aber dessen Ticket als gedämpften Text — „Ticket und Status“ je Karte.
-      .when(node.kind === "subagent" && Boolean(node.ticket), (el) => el.child(
-        div().absolute().left(10).bottom(8).text_size(T_XS).text_color(t.dim).child(shortId(node.ticket))));
+      .on_click((_e, cx) => { cx.stop_propagation(); this.openLane(node); });
+    const avatar = this.avatar(t, node, color);
+    const title = div().flex_1().min_w(0).truncate().text_size(node.narrow ? T_XS : T_S).font_semibold()
+      .text_color(node.kind === "subagent" ? t.muted : t.foreground).tooltip(tip).child(name);
+    const status = ui.statusChip(t, node.status);
+    if (node.kind === "orchestrator") {
+      return el.px(10).py(4).flex().flex_col().justify_center().gap(1)
+        .child(h_flex().w_full().gap(GAP_S).items_center().min_w(0)
+          .child(div().flex_none().tooltip("Orchestrator dieses Workspace")
+            .child(svg("mods/orchestra/orchestrator.svg").size(12).flex_none().text_color(t.accent)))
+          .child(avatar).child(title).child(status))
+        .child(div().w_full().min_w(0).truncate().text_size(T_XS).text_color(t.dim).child(node.subtitle ?? ""));
+    }
+    // Eine Zeile, auch im schmalen Panel: Avatar, Name (gekürzt), Status-Chip.
+    return el.px(node.narrow ? 6 : 7).flex().items_center().gap(node.narrow ? 3 : GAP_XS).min_w(0)
+      .child(avatar).child(title).child(status);
   }
 
-  /** Der Ticket-Chip sitzt in der Agent-Karte und ist der Knoten der blocked_by-Bögen. */
+  /** Der Ticket-Chip ist eine eigene Zeile direkt unter der Karte: Kürzel und
+   *  Status-Punkt. Er ist der Knoten der blocked_by-Pfeile. */
   chip(t, chip, tickets) {
     const tk = tickets.find((x) => x.id === chip.ticket);
-    const color = chip.waits.length ? t.blocked : t.muted;
-    const tip = [chip.ticket, tk?.title, chip.waits.length ? `wartet auf ${chip.waits.map((w) => w.short).join(", ")}` : null]
+    const stage = { todo: t.dim, doing: t.accent, review: t.ansi5, done: t.success };
+    const color = chip.waits.length ? t.blocked : stage[chip.status] ?? t.muted;
+    const tip = [chip.ticket, tk?.title, ui.STAGE_WORD[chip.status], chip.waits.length ? `wartet auf ${chip.waits.map((w) => w.short).join(", ")}` : null]
       .filter(Boolean).join(" · ");
-    return h_flex().id(chip.id).absolute().left(chip.x).top(chip.y).w(chip.w).h(TICKET_H).px(6).gap(GAP_XS).items_center()
-      .rounded(4).bg(color + "26").text_color(color).text_size(T_XS).font_medium().cursor_pointer().tooltip(tip)
+    return h_flex().id(chip.id).absolute().left(chip.x).top(chip.y).w(chip.w).h(chip.h).px(6).gap(GAP_XS).items_center()
+      .rounded(4).bg(color + "22").text_color(color).text_size(T_XS).font_medium().cursor_pointer().tooltip(tip)
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .on_hover((on, cx) => {
-        // Der Chip gehört zur Karte: beide heben dieselben eingehenden Pfeile hervor.
+        // Der Chip gehört zur Karte: beide heben dieselben Pfeile hervor.
         const next = on ? chip.node : this.hover === chip.node ? null : this.hover;
         if (next !== this.hover) { this.hover = next; cx.notify(); }
       })
       .on_click((_e, cx) => { cx.stopPropagation?.(); this.openTicket(chip.ticket); })
-      .when(chip.waits.length > 0, (el) => el.child(div().size(6).flex_none().rounded_full().bg(t.blocked)))
+      .child(div().size(5).flex_none().rounded_full().bg(color))
       .child(div().min_w(0).truncate().child(chip.label));
   }
 
   board(t, g, tickets) {
     const colors = COLORS(t);
-    const hoverChip = g.ticketNodes.find((c) => c.node === this.hover)?.id ?? null;
+    const colorOf = new Map();
+    for (const node of g.nodes) if (!colorOf.has(node.laneId)) colorOf.set(node.laneId, colors[colorOf.size % colors.length]);
+    const hoverChips = new Set(g.ticketNodes.filter((c) => c.node === this.hover).map((c) => c.id));
     const layers = g.edges.map((edge) => {
-      const hot = Boolean(this.hover) && (edge.to === this.hover || edge.to === hoverChip);
+      const hot = Boolean(this.hover) && (edge.to === this.hover || edge.from === this.hover
+        || hoverChips.has(edge.from) || hoverChips.has(edge.to));
       const { path, color } = this.path(t, edge, hot);
       return div().absolute().left(0).top(0).w(g.width).h(g.height).child(window.paint_path(path, color));
     });
     // Reihenfolge: Linien hinten, Karten, Ticket-Chips obenauf.
-    const cards = g.nodes.map((node, i) => this.card(t, node, colors[i % colors.length]));
+    const cards = g.nodes.map((node) => this.card(t, node, colorOf.get(node.laneId)));
     const chips = g.ticketNodes.map((c) => this.chip(t, c, tickets));
     return div().id("fg-scroll").flex_1().min_h(0).overflow_scrollbar()
       .child(div().id("fg-canvas").relative().w(g.width).h(g.height)
@@ -351,7 +397,8 @@ export default class FactoryGraph extends View {
     const span = SPANS[this.window] ?? null;
     const tickets = this.tickets();
     const lanes = (this.data?.lanes ?? []).map((l) => ({ ...l, status: this.laneStatus(l) }));
-    const g = layoutGraph({ lanes, tickets, now, windowStart: span ? now - span : null, filter: this.filter });
+    const g = layoutGraph({ lanes, tickets, now, windowStart: span ? now - span : null, filter: this.filter,
+      width: this.width || 400 });
     const agents = g.nodes.filter((n) => n.kind !== "orchestrator").length;
     const scope = ui.spaceChip(t);
     const meta = `${agents} Agent${agents === 1 ? "" : "en"} · ${g.ticketNodes.length} Tickets`;
@@ -367,6 +414,10 @@ export default class FactoryGraph extends View {
 
     return v_flex().id("factory-graph").track_focus(this.handle).size_full().min_h(0).rounded(10).overflow_hidden()
       .bg(t.background).border_1().border_color(t.border).text_color(t.foreground)
+      .on_size_change((size, cx) => {
+        const w = Math.round(size.width / (settings().zoom || 1));
+        if (Math.abs(w - this.width) > 2) { this.width = w; cx.notify(); }
+      })
       .child(header)
       .child(this.toolbar(t))
       .child(content);
