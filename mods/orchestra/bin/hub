@@ -39,13 +39,23 @@ reports into it) and show in the Team-Panel under it.
                                             Refuses a ticket without an acceptance criterion (see hub spec)
                                             and while the In-Arbeit stage holds its WIP limit (hub wip);
                                             --force needs --reason and writes it to the Verlauf
-  hub whoami                                this terminal's orchestrator id, its name, its open
+  hub whoami                                this terminal's orchestrator, its space, its open
                                             tickets and its WIP counts (JSON)
-  hub wip [--json] [--all] [--mine]         the WIP limits for In Arbeit and Prüfung (default 3/2,
+  hub spaces [--json] [--adopt [--yes]]     one factory per Herdr space: id, name, folder, machine,
+                                            its orchestrator and whether it lives, open tickets per
+                                            stage, cost. --adopt writes `space`/`space_name` on old
+                                            tickets by their repo's folder (dry run without --yes)
+  hub orchestrator start [--space ID|NAME] [--agent PROGRAMM] [--restart]
+                                            start an orchestrator terminal in that space (cwd
+                                            ~/.herdr/orchestrator, labels hub.role=orchestrator and
+                                            hub.space=<id>); refuses while one runs there, --restart
+                                            replaces it. hub orchestrator list [--json] shows all
+  hub wip [--json] [--all] [--space ID] [--mine]
+                                            the WIP limits for In Arbeit and Prüfung (default 3/2,
                                             data/orchestra/wip.json); `hub wip arbeit=4 pruefung=2` sets
-                                            the default for new orchestrators, `--mine` only this one
-                                            (mine: {<id>: {...}}); counted per orchestrator, --all is
-                                            the global sum
+                                            the default for new spaces, `--mine` only this one
+                                            (mine: {<space>: {...}}, old terminal keys still read);
+                                            counted per space, --all is the global sum
   hub spec ID                               complete the ticket's ## Ziel, ## Abnahmekriterien and
                                             ## Grenzen as a template (existing sections stay) and show them
   hub triage ID [--apply] [--json]          type (bug/feature/chore), size (S/M/L) and priority
@@ -132,25 +142,27 @@ reports into it) and show in the Team-Panel under it.
                                             --yes only a dry run. --root defaults to
                                             $HOME/.herdr/worktrees and is never searched beyond the
                                             tickets' own paths
-  hub status [--all] [--json]               tickets with their agents' live status, owner, CI, age
-                                            (since the last status change) and cost so far; standard
-                                            are this orchestrator's and ownerless tickets, --all shows
-                                            every orchestrator's; done tickets are listed only while
+  hub status [--all] [--space ID|NAME] [--json]
+                                            tickets with their spaces, agents' live status, owner, CI,
+                                            age (since the last status change) and cost so far;
+                                            standard are this factory's tickets (--space: that one,
+                                            --all: every space); done tickets are listed only while
                                             something is left. Files without frontmatter are skipped
                                             and named once on stderr; --json carries them as
                                             {"id": …, "invalid": true}
-  hub stats [--json] [--days 14] [--all]  throughput per ticket, station and repo: lead time (todo→done),
-                                            review rounds, rework (back to doing after review) and cost,
-                                            with today's numbers and the last 7 days for the UI
-  hub timeline [--json] [--since 1h|30m|7d|all] [--ticket ID] [--write]
+  hub stats [--json] [--days 14] [--all] [--space ID|NAME]
+                                            throughput per space, ticket, station and repo: lead time
+                                            (todo→done), review rounds, rework (back to doing after
+                                            review) and cost, with today's numbers and the last 7 days
+  hub timeline [--json] [--space ID|NAME] [--all] [--since 1h|30m|7d|all] [--ticket ID] [--write]
                                             the workflow as lanes: one per terminal (agent, reviewer)
-                                            plus the orchestrator, with start/end (live = now), parent,
-                                            ticket, status, cost, its events and subagents, built from
-                                            data/orchestra/events.jsonl, the tickets' status_log and
-                                            `hc get` (max. 100 lookups). --since takes a positive window
-                                            (1h, 30m, 7d) or all; 0h/0m is rejected;
-                                            --write also writes the self-contained data/orchestra/
-                                            timeline.html and prints its path
+                                            plus each space's orchestrator, with start/end (live = now),
+                                            parent, ticket, space, status, cost, its events and
+                                            subagents, built from data/orchestra/events.jsonl, the
+                                            tickets' status_log and `hc get` (max. 100 lookups). --since
+                                            takes a positive window (1h, 30m, 7d) or all; 0h/0m is
+                                            rejected; --write also writes the self-contained
+                                            data/orchestra/timeline.html and prints its path
 Python 3, standard library only.
 """
 import argparse, contextlib, datetime, fcntl, html, json, os, pwd, re, secrets, shlex, subprocess, sys, time, unicodedata
@@ -158,7 +170,7 @@ import argparse, contextlib, datetime, fcntl, html, json, os, pwd, re, secrets, 
 APP = os.environ.get("HERDR_APP_HOME") or os.path.expanduser("~/.config/herdr-app")
 TICKETS = os.path.join(APP, "data", "quests", "tickets")
 FIELDS = ["title", "status", "repo", "labels", "due", "machine", "owner", "agent", "agent_cmd", "harness", "branch", "base", "base_head", "worktree", "terminal",
-          "space", "tab", "source", "type", "size", "priority", "triaged",
+          "space", "space_name", "agent_space", "tab", "source", "type", "size", "priority", "triaged",
           "preflight", "preflight_at", "preflight_head", "preflight_duration",
           "checks", "checks_head", "checks_at", "checks_duration", "checks_exit", "checks_cmd", "verify",
           "evidence", "merged", "pr", "ci", "ci_head", "ci_at", "ci_url", "ci_details",
@@ -523,50 +535,227 @@ class hub_lock:
         return False
 
 
-def orchestrator_id():
-    """This orchestrator's terminal: HC_TERMINAL_ID first, then the first labelled one.
+# ---- Spaces: one factory per Herdr space. The space id is the key of every view;
+# `owner` (a terminal) only records who opened the ticket and survives no restart.
 
-    The environment wins so two orchestrators in one home keep their own identity — the
-    first labelled terminal is only the fallback for a shell that does not know its
-    address. `hc get` confirms the role before HC_TERMINAL_ID counts; `hc ls` may omit
-    labels, so an unconfirmed id is not trusted."""
+_spaces, _spaces_read = [], False
+_my_space, _orch_id = None, None
+NO_SPACE = {"id": "", "name": "", "folder": "", "machine": ""}
+
+
+def spaces_of_window():
+    """The window's spaces, read once per command; [] when herdr-app cannot answer."""
+    global _spaces, _spaces_read
+    if not _spaces_read:
+        _spaces, _spaces_read = app_spaces() or [], True
+    return _spaces
+
+
+def norm_space(s):
+    sid = (s or {}).get("id") or ""
+    return {"id": sid, "name": (s or {}).get("name") or sid,
+            "folder": (s or {}).get("folder") or "", "machine": (s or {}).get("machine") or ""}
+
+
+def space_ref(value, spaces=None):
+    """One space from its id or name. A typo dies instead of picking a wrong factory."""
+    value = (value or "").strip()
+    if not value:
+        return None
+    rows = [norm_space(s) for s in (spaces_of_window() if spaces is None else spaces)]
+    for s in rows:
+        if s["id"] == value:
+            return s
+    hits = [s for s in rows if s["name"].casefold() == value.casefold()]
+    if not hits:
+        hits = [s for s in rows if s["id"].rsplit("/", 1)[-1] == value]
+    if len(hits) == 1:
+        return hits[0]
+    if len(hits) > 1:
+        die(f"Space {value!r} ist nicht eindeutig: {', '.join(s['id'] for s in hits)}")
+    if re.fullmatch(r"(?:[a-z0-9._-]+/)?sp[0-9a-z]+", value):
+        # An id the window did not list (a remote space, a closed one): keep it as given.
+        return {"id": value, "name": value.rsplit("/", 1)[-1], "folder": "",
+                "machine": value.split("/", 1)[0] if "/" in value else ""}
+    die(f"kein Space {value!r} (bekannt: {', '.join(s['name'] for s in rows) or 'keiner'})")
+
+
+def space_id_of_terminal(addr, spaces=None):
+    """The space a terminal lives in: its labels first, else the window's space list."""
+    if not addr:
+        return ""
+    labels = hc_term(addr).get("labels") or {}
+    sid = labels.get("herdr.space") or labels.get("hub.space") or ""
+    if sid:
+        return sid
+    for s in (spaces_of_window() if spaces is None else spaces):
+        if addr in space_terminals(s):
+            return s.get("id") or ""
+    return ""
+
+
+def my_space():
+    """This command's space: HERDR_SPACE, its terminal's factory, then the cwd's folder.
+
+    An agent terminal inherits its ticket's space (its own herdr space is the throwaway
+    one its worktree lives in), so `hub status`/`wip`/`inbox` inside an agent see the
+    factory that dispatched it."""
+    global _my_space
+    if _my_space is not None:
+        return _my_space
+    spaces = spaces_of_window()
+    env = os.environ.get("HERDR_SPACE") or ""
+    ref = space_ref(env, spaces) if env else None
+    if not ref:
+        labels = hc_term(os.environ.get("HC_TERMINAL_ID") or "").get("labels") or {}
+        sid, sname = stored_space(labels.get("hub.ticket") or "")
+        ref = next((norm_space(s) for s in spaces if s.get("id") == sid), None)
+        if ref is None and sid:
+            ref = {"id": sid, "name": sname or sid.rsplit("/", 1)[-1], "folder": "", "machine": ""}
+    if not ref:
+        sid = space_id_of_terminal(os.environ.get("HC_TERMINAL_ID") or "", spaces)
+        ref = next((norm_space(s) for s in spaces if s.get("id") == sid), None)
+        if ref is None and sid:
+            ref = {"id": sid, "name": sid.rsplit("/", 1)[-1], "folder": "", "machine": ""}
+    if not ref:
+        cwd = os.path.realpath(os.getcwd())
+        hits = [norm_space(s) for s in spaces if s.get("folder") and inside(cwd, s["folder"])]
+        ref = max(hits, key=lambda s: len(s["folder"]), default=None)
+    _my_space = ref or dict(NO_SPACE)
+    return _my_space
+
+
+def orchestrator_of(space):
+    """(terminal, info) of the orchestrator running in one space; ("", {}) when none does."""
+    sid = (space or {}).get("id") or ""
+    if not sid:
+        return "", {}
+    for s in spaces_of_window():
+        if s.get("id") != sid:
+            continue
+        found = []
+        for addr in space_terminals(s):
+            info = hc_term(addr)
+            labels = info.get("labels") or {}
+            if (labels.get("hub.role") == "orchestrator" or labels.get("hub.space") == sid
+                    or info.get("name") == "orchestrator"):
+                found.append((addr, info))
+        live = [x for x in found if x[1].get("state") == "live"]
+        return (live or found or [("", {})])[0]
+    return "", {}
+
+
+def orchestrator_id():
+    """This terminal when it is an orchestrator, else the orchestrator of its own space.
+
+    Never a foreign space's orchestrator: a shell outside a factory has no orchestrator
+    (legacy homes without space labels keep the old single-orchestrator fallback)."""
+    global _orch_id
+    if _orch_id is not None:
+        return _orch_id
     me = os.environ.get("HC_TERMINAL_ID") or ""
     if me:
         info = hc_term(me)
         if (info.get("labels") or {}).get("hub.role") == "orchestrator" or info.get("name") == "orchestrator":
+            _orch_id = me
             return me
+    mine = my_space()
+    if mine["id"]:
+        _orch_id = orchestrator_of(mine)[0]
+        return _orch_id
     try:
         out = json.loads(subprocess.run(["hc", "ls", "--json"], capture_output=True, text=True).stdout)
     except (OSError, ValueError):
         out = {}
-    terminals = out.get("terminals") or []
-    if me:
-        for x in terminals:
-            if x.get("address") == me and ((x.get("labels") or {}).get("hub.role") == "orchestrator"
-                                           or x.get("name") == "orchestrator"):
-                return me
-    for x in terminals:
+    for x in out.get("terminals") or []:
         if (x.get("labels") or {}).get("hub.role") == "orchestrator":
-            return x.get("address") or ""
-    for x in terminals:
+            _orch_id = x.get("address") or ""
+            return _orch_id
+    for x in out.get("terminals") or []:
         if x.get("name") == "orchestrator":
-            return x.get("address") or ""
-    return ""
+            _orch_id = x.get("address") or ""
+            return _orch_id
+    _orch_id = ""
+    return _orch_id
 
 
-def owns(t, me):
-    """True when the ticket is this orchestrator's: its owner, or nobody's (old tickets)."""
+def ticket_space(t, spaces=None):
+    """The ticket's factory: its `space`, else the space whose folder holds its repo.
+
+    A ticket without either stays `""` and is visible in every space, like the old
+    ownerless ones. That is the only case a ticket crosses a factory boundary.
+
+    Tickets from before this model carry the *agent's* throwaway space in `space` and
+    no `space_name`; they are read as if they had no space at all and assigned by
+    their repo. Every write from now on sets both fields."""
+    sid = (t.get("space") or "").strip()
+    if sid and (t.get("space_name") or "").strip():
+        return sid
+    repo = (t.get("repo") or "").strip()
+    if not repo:
+        return ""
+    hits = []
+    for s in (spaces_of_window() if spaces is None else spaces):
+        folder = s.get("folder") or ""
+        if not folder:
+            continue
+        if t.get("machine"):
+            if not s.get("machine") or s.get("machine") != t["machine"]:
+                continue
+        if inside(repo, folder):
+            hits.append(s)
+    if not hits:
+        return ""
+    return max(hits, key=lambda s: len(s.get("folder") or "")).get("id") or ""
+
+
+def space_name_of(sid, spaces=None):
+    if not sid:
+        return ""
+    for s in (spaces_of_window() if spaces is None else spaces):
+        if s.get("id") == sid:
+            return s.get("name") or sid
+    return sid.rsplit("/", 1)[-1]
+
+
+def ticket_space_name(t, spaces=None):
+    sid = ticket_space(t, spaces)
+    if not sid:
+        return ""
+    if (t.get("space") or "") == sid and t.get("space_name"):
+        return t["space_name"]
+    return space_name_of(sid, spaces)
+
+
+def owns(t, me, space=None):
+    """True when the ticket belongs to this factory.
+
+    A ticket with a space belongs to that space alone (a restarted orchestrator with a
+    new terminal keeps its tickets). A ticket without one is an old ticket: it counts
+    to the space whose folder holds its repo, and without such a folder it stays
+    visible everywhere, like the ownerless tickets before."""
+    mine = my_space()["id"] if space is None else space
+    sid = ticket_space(t)
+    if mine:
+        return not sid or sid == mine
     owner = (t.get("owner") or "").strip()
     return not owner or not me or owner == me
 
 
-def my_tickets(rows=None, everyone=False, me=None):
-    """The tickets this orchestrator handles; unowned ones stay visible to everyone."""
+def my_tickets(rows=None, everyone=False, me=None, space=None):
+    """The tickets this factory handles; `space=""` keeps the old owner-only view."""
     rows = all_tickets() if rows is None else rows
     if everyone:
         return rows
     me = orchestrator_id() if me is None else me
-    return [t for t in rows if owns(t, me)]
+    mine = my_space()["id"] if space is None else space
+    return [t for t in rows if owns(t, me, mine)]
+
+
+def space_arg(a, name="space"):
+    """The space id a command's `--space` names, None for this command's own space."""
+    value = getattr(a, name, None)
+    return space_ref(value)["id"] if value else None
 
 
 def update_ticket(tid, fn):
@@ -661,23 +850,53 @@ def invalid_tickets():
 # ---- Chronik: one JSON line per action, so `hub timeline` knows what happened when
 EVENTS = os.path.join(APP, "data", "orchestra", "events.jsonl")
 EVENT_MAX, EVENT_KEEP = 5000, 2000
-EVENT_KINDS = ["dispatch", "nudge", "review", "verdict", "land", "done", "verify", "ci", "night", "comment"]
+EVENT_KINDS = ["dispatch", "nudge", "review", "verdict", "land", "done", "verify", "ci", "night",
+               "comment", "orchestrator"]
 
 
 def now_ms():
     return int(time.time() * 1000)
 
 
-def event(kind, ticket="", agent="", terminal="", text=""):
+def stored_space(tid):
+    """The `space` a ticket file carries, read without `read()`'s die-on-missing."""
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", tid or ""):
+        return "", ""
+    try:
+        with open(os.path.join(TICKETS, tid + ".md"), encoding="utf-8") as f:
+            text = f.read()
+    except OSError:
+        return "", ""
+    m = re.match(r"^---\r?\n(.*?)\r?\n---", text, re.S)
+    if not m:
+        return "", ""
+    sid = name = ""
+    for line in m.group(1).splitlines():
+        k, _sep, v = line.partition(":")
+        if k.strip() == "space":
+            sid = v.strip()
+        elif k.strip() == "space_name":
+            name = v.strip()
+    return (sid, name) if sid and name else ("", "")
+
+
+def event(kind, ticket="", agent="", terminal="", text="", space=""):
     """Append one log line; past EVENT_MAX lines the log keeps the last EVENT_KEEP.
 
     `at` is epoch milliseconds, so the timeline can sort and window entries without
     re-reading the tickets. Only EVENT_KINDS are written here; the timeline derives
-    `status` entries from a ticket's status_log on its own."""
+    `status` entries from a ticket's status_log on its own. `space` names the factory
+    the entry belongs to: the ticket's, else this command's own space."""
     if kind not in EVENT_KINDS:
         raise ValueError(f"unknown event kind {kind!r}")
+    sid, sname = stored_space(ticket)
+    if not space:
+        space = sid or my_space()["id"]
+    elif not sname or sid != space:
+        sname = ""
     row = {"at": now_ms(), "kind": kind, "ticket": ticket or "", "agent": agent or "",
-           "terminal": terminal or "", "text": one_line(text)[:500]}
+           "terminal": terminal or "", "text": one_line(text)[:500],
+           "space": space or "", "space_name": sname or (space_name_of(space) if space else "")}
     os.makedirs(os.path.dirname(EVENTS), exist_ok=True)
     with hub_lock():
         with open(EVENTS, "a", encoding="utf-8") as f:
@@ -728,7 +947,8 @@ def read_events():
             continue
         rows.append({"at": at, "kind": str(row.get("kind") or ""), "ticket": str(row.get("ticket") or ""),
                      "agent": str(row.get("agent") or ""), "terminal": str(row.get("terminal") or ""),
-                     "text": str(row.get("text") or "")})
+                     "text": str(row.get("text") or ""), "space": str(row.get("space") or ""),
+                     "space_name": str(row.get("space_name") or "")})
     rows.sort(key=lambda r: r["at"])
     return rows
 
@@ -1430,10 +1650,12 @@ def shell():
 
 # ---- WIP: how much work one stage may hold (data/orchestra/wip.json)
 
-def read_wip(me=None):
-    """The limits for one orchestrator: global defaults, plus its `mine` overrides.
+def read_wip(me=None, space=None):
+    """The limits for one factory: global defaults, plus its `mine` overrides.
 
-    `per_orchestrator` defaults to true and is only written once the file carries
+    `mine` is keyed by space id; entries from before the space model (keyed by the
+    orchestrator's terminal) are still read, so an upgrade keeps the limits a person
+    set. `per_orchestrator` defaults to true and is only written once the file carries
     `mine` entries, so a home with one orchestrator keeps the old two-key file."""
     w = dict(WIP_DEFAULTS)
     w["per_orchestrator"] = True
@@ -1453,12 +1675,14 @@ def read_wip(me=None):
         w["per_orchestrator"] = data["per_orchestrator"]
     if isinstance(data.get("mine"), dict):
         w["mine"] = {str(k): v for k, v in data["mine"].items() if isinstance(v, dict)}
-    own = w["mine"].get(me) if me else None
-    if isinstance(own, dict):
-        for k in WIP_STAGES:
-            v = own.get(k)
-            if isinstance(v, int) and not isinstance(v, bool) and v >= 0:
-                w[k] = v
+    # The space's entry wins over the old terminal entry.
+    for key in (me, space) if space else (me,):
+        own = w["mine"].get(key) if key else None
+        if isinstance(own, dict):
+            for k in WIP_STAGES:
+                v = own.get(k)
+                if isinstance(v, int) and not isinstance(v, bool) and v >= 0:
+                    w[k] = v
     return w
 
 
@@ -1479,12 +1703,13 @@ def write_wip(w):
     os.replace(tmp, WIP)
 
 
-def wip_usage(me=None, everyone=False):
-    """{arbeit: {'stage','ids','count'}, pruefung: ...} over this orchestrator's tickets.
+def wip_usage(me=None, everyone=False, space=None):
+    """{arbeit: {'stage','ids','count'}, pruefung: ...} over this factory's tickets.
 
-    Unowned tickets count for everyone, like everywhere else, so old work does not
-    silently drop out of the limits. `everyone=True` is the global sum (`hub wip --all`)."""
-    rows = my_tickets(everyone=everyone, me=me)
+    Tickets without a space (old ones without a folder match) count everywhere, like
+    ownerless ones did, so old work does not silently drop out of the limits.
+    `everyone=True` is the global sum (`hub wip --all`)."""
+    rows = my_tickets(everyone=everyone, me=me, space=space)
     out = {}
     for key, stage in WIP_STAGES.items():
         ids = [t["id"] for t in rows if t["status"] == stage]
@@ -1494,6 +1719,9 @@ def wip_usage(me=None, everyone=False):
 
 def cmd_wip(a):
     me = orchestrator_id()
+    mine = my_space()
+    selected = space_arg(a)
+    key = selected or mine["id"] or me
     if a.pairs:
         pairs = []
         for kv in a.pairs:
@@ -1506,44 +1734,275 @@ def cmd_wip(a):
             if not re.fullmatch(r"\d{1,2}", v):
                 die(f"ungültiges Limit {v!r} für {k}: eine ganze Zahl 0–99")
             pairs.append((k, int(v)))
-        if a.mine and not me:
-            die("hub wip --mine braucht einen Orchestrator: HC_TERMINAL_ID mit Label "
-                "hub.role=orchestrator oder Name orchestrator (hc get)")
+        if a.mine and not key:
+            die("hub wip --mine braucht einen Space oder Orchestrator: ein Terminal mit Label "
+                "hub.role=orchestrator, HERDR_SPACE oder ein Aufruf in einem Space-Ordner")
         with hub_lock():
-            w = read_wip()  # the file's defaults, not this terminal's overrides
+            w = read_wip()  # the file's defaults, not this space's overrides
             if a.mine:
-                own = dict(w["mine"].get(me) or {})
+                own = dict(w["mine"].get(key) or {})
                 own.update(dict(pairs))
-                w["mine"][me] = own
+                w["mine"][key] = own
                 w["per_orchestrator"] = True
             else:
                 for k, v in pairs:
                     w[k] = v
             write_wip(w)
-    w = read_wip(None if a.all else me)
-    use = wip_usage(me, everyone=a.all)
+    sid = selected or mine["id"]
+    w = read_wip(None if a.all else me, None if a.all else sid)
+    use = wip_usage(me, everyone=a.all, space=selected)
     if a.json:
-        print(json.dumps({k: w[k] for k in WIP_STAGES}, ensure_ascii=False))
+        out = {k: w[k] for k in WIP_STAGES}
+        if sid:
+            out.update(space=sid, space_name=space_name_of(sid))
+        print(json.dumps(out, ensure_ascii=False))
         return
-    scope = " (alle Orchestratoren)" if a.all else (f" (nur {me})" if me else "")
-    for key, stage in WIP_STAGES.items():
-        print(f"{key} {use[key]['count']}/{w[key]} ({len(use[key]['ids'])} in {stage}){scope}")
+    scope = " (alle Spaces)" if a.all else (f" ({space_name_of(sid) or me})" if (sid or me) else "")
+    for key_, stage in WIP_STAGES.items():
+        print(f"{key_} {use[key_]['count']}/{w[key_]} ({len(use[key_]['ids'])} in {stage}){scope}")
 
 
 def cmd_whoami(_a):
-    """Who am I here: this terminal's orchestrator id, its name, its open tickets, its WIP."""
+    """Who am I here: this terminal's orchestrator, its space, its open tickets, its WIP."""
     me = orchestrator_id()
     info = hc_term(me) if me else {}
-    mine = [t for t in my_tickets(me=me) if t["status"] != "done"]
-    w = read_wip(me)
-    use = wip_usage(me)
+    mine_space = my_space()
+    mine = [t for t in my_tickets(me=me, space=mine_space["id"]) if t["status"] != "done"]
+    w = read_wip(me, mine_space["id"])
+    use = wip_usage(me, space=mine_space["id"])
     print(json.dumps({"orchestrator": me, "name": info.get("name") or "",
+                      "space": mine_space["id"], "space_name": mine_space["name"],
+                      "space_folder": mine_space["folder"],
                       "tickets": len(mine),
                       "wip": {k: {"limit": w[k], "count": use[k]["count"]} for k in WIP_STAGES}},
                      ensure_ascii=False))
 
 
-# ---- Abnahmekriterien: what `hub spec` completes and `hub dispatch`/`hub review` require
+# ---- Spaces als Kommando: was liegt wo, und wer führt die Fabrik dort
+
+def space_rows():
+    """One row per factory: identity, its live orchestrator and the work it holds."""
+    empty = lambda: {"tickets": 0, "open": {s: 0 for s in ("todo", "doing", "review")}, "cost": 0.0}
+    per = costs().get("tickets") or {}
+    counts, names = {}, {}
+    for t in all_tickets():
+        sid = ticket_space(t)
+        row = counts.setdefault(sid, empty())
+        row["tickets"] += 1
+        if t.get("status") in row["open"]:
+            row["open"][t["status"]] += 1
+        row["cost"] += float(per.get(t["id"]) or 0)
+        if sid and not names.get(sid):
+            names[sid] = (t.get("space_name") or "") if (t.get("space") or "") == sid else ""
+    out = []
+    for s in (norm_space(x) for x in spaces_of_window()):
+        c = counts.pop(s["id"], None) or empty()
+        addr, info = orchestrator_of(s)
+        out.append({**s, "orchestrator": addr, "live": info.get("state") == "live",
+                    "tickets": c["tickets"], "open": c["open"], "cost": round(c["cost"], 2)})
+    # A space the window no longer lists (closed, another window) still has its work.
+    for sid, c in counts.items():
+        out.append({"id": sid, "name": names.get(sid) or (space_name_of(sid) if sid else "ohne Workspace"),
+                    "folder": "", "machine": sid.split("/", 1)[0] if "/" in sid else "",
+                    "orchestrator": "", "live": False, "tickets": c["tickets"],
+                    "open": c["open"], "cost": round(c["cost"], 2)})
+    return out
+
+
+def adopt_rows():
+    """Tickets without a workspace space, with the space their repo belongs to ("" = none).
+
+    An old ticket's `space` is the agent's throwaway space (no `space_name`); it does
+    not count as a workspace and is preserved as `agent_space` when the repo matches."""
+    out = []
+    for t in all_tickets():
+        if (t.get("space") or "").strip() and (t.get("space_name") or "").strip():
+            continue
+        sid = ticket_space(t)
+        out.append({"id": t["id"], "title": t.get("title") or "", "repo": t.get("repo") or "",
+                    "space": sid, "space_name": space_name_of(sid) if sid else "",
+                    "old_agent_space": "" if (t.get("agent_space") or "").strip() else (t.get("space") or "")})
+    return out
+
+
+def cmd_spaces(a):
+    mine = my_space()
+    if a.yes and not a.adopt:
+        die("--yes gehört zu --adopt: hub spaces --adopt --yes")
+    if a.adopt:
+        rows = adopt_rows()
+        if a.json:
+            print(json.dumps({"dry_run": not a.yes, "adopt": rows}, ensure_ascii=False))
+        else:
+            for r in rows:
+                target = f"{r['space_name'] or r['space']} ({r['space']})" if r["space"] else "ohne Workspace — bleibt"
+                print(f"{r['id']:<40} → {target}")
+            if not rows:
+                print("keine Alt-Tickets ohne space")
+        if a.yes:
+            written = 0
+            for r in rows:
+                if not r["space"]:
+                    continue  # no folder holds its repo: leave it visible everywhere
+                with hub_lock():
+                    update_ticket(r["id"], lambda fresh, r=r: fresh.update(
+                        space=r["space"], space_name=r["space_name"],
+                        **({"agent_space": r["old_agent_space"]} if r["old_agent_space"] else {})))
+                written += 1
+            if not a.json:
+                print(f"{written} Ticket(s) übernommen")
+        return
+    rows = space_rows()
+    if a.json:
+        print(json.dumps({"space": mine["id"], "space_name": mine["name"], "spaces": rows},
+                         ensure_ascii=False))
+        return
+    print(f"{'Space':<24} {'ID':<40} {'Ordner':<40} {'Orchestrator':<10} {'offen (todo/doing/review)':<24} {'Kosten':>7}")
+    for r in rows:
+        mine_mark = " *" if r["id"] == mine["id"] else ""
+        open_ = f"{r['open']['todo']}/{r['open']['doing']}/{r['open']['review']}"
+        print(f"{(r['name'] + mine_mark):<24} {r['id']:<40} {(r['folder'] or '—')[:40]:<40} "
+              f"{(r['orchestrator'] or '—'):<10} {open_:<24} {r['cost']:>7.2f}")
+
+
+# ---- Orchestrator je Space: starten, ersetzen, anzeigen
+
+ORCH_NAME = "orchestrator"
+
+
+def orchestrator_ws(on=None):
+    return os.path.join(home_of(on), ".herdr", "orchestrator")
+
+
+def write_orchestrator_rules(ws, on=None):
+    """AGENTS.md/CLAUDE.md from the mod, on the machine the space lives on."""
+    src = os.path.join(APP, "mods", "orchestra", "orchestrator.md")
+    if not os.path.exists(src):
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "orchestrator.md")
+    try:
+        with open(src, encoding="utf-8") as f:
+            text = f.read()
+    except OSError as e:
+        die(f"Orchestrator-Regeln nicht lesbar: {e}")
+    q = shlex.quote
+    if run(["sh", "-c", f"mkdir -p {q(ws)}"], on, check=False).returncode != 0:
+        die(f"Arbeitsordner {ws} nicht anlegbar" + (f" auf {on}" if on else ""))
+    for name in ("AGENTS.md", "CLAUDE.md"):
+        path = os.path.join(ws, name)
+        if not on:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text)
+            continue
+        r = subprocess.run(["hc", "file", "write", "--on", on, path], input=text,
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            die(f"{path}: {(r.stderr or r.stdout).strip()}")
+
+
+def end_orchestrator(addr):
+    subprocess.run(["hc", "kill", addr], capture_output=True, text=True)
+    subprocess.run(["hc", "wait", addr, "--timeout", "5"], capture_output=True, text=True)
+
+
+def orchestrator_names():
+    try:
+        rows = json.loads(subprocess.run(["hc", "ls", "--json"], capture_output=True, text=True).stdout)
+    except (OSError, ValueError):
+        rows = {}
+    return {x.get("name") or "" for x in rows.get("terminals") or [] if x.get("name")}
+
+
+def orchestrator_prompt(space, ws):
+    return (f"Du bist der Orchestrator für den Space {space['name']} "
+            f"(ID {space['id']}, Ordner {space['folder'] or '—'}). "
+            f"Dein Arbeitsordner ist {ws}, dessen AGENTS.md gilt. "
+            "Alle Tickets, WIP-Zahlen und die Timeline dieses Space gehören dir; hub ohne --space "
+            "filtert auf diesen Space. Warte auf Aufträge des Menschen.")
+
+
+def cmd_orchestrator_start(a):
+    sp = space_ref(a.space) if getattr(a, "space", None) else my_space()
+    if not sp or not sp["id"]:
+        die("kein Space: --space <id|name> angeben oder aus einem Space-Ordner starten "
+            "(HERDR_SPACE, Terminal-Label herdr.space)")
+    addr, info = orchestrator_of(sp)
+    if addr and info.get("state") != "finished":
+        if not a.restart:
+            die(f"Im Space {sp['name']} läuft schon ein Orchestrator: {addr} "
+                f"(hc send {addr} \"…\"); hub orchestrator start --space {sp['id']} --restart ersetzt ihn")
+        end_orchestrator(addr)
+    on = sp.get("machine") or None
+    ws = orchestrator_ws(on)
+    write_orchestrator_rules(ws, on)
+    key = (a.agent or "omp").strip() or "omp"
+    argv_prog = list(AGENTS[key]) if key in AGENTS else (shlex.split(key) or [key])
+    taken = orchestrator_names() | {x["orchestrator"] for x in space_rows() if x["orchestrator"]}
+    name = ORCH_NAME
+    if name in taken:
+        name = (f"{ORCH_NAME}-{slug(sp['name'] or sp['id'], 24) or 'space'}")[:32]
+    while name in taken:
+        name = f"{name[:26]}-{secrets.token_hex(2)}"
+    prompt = orchestrator_prompt(sp, ws)
+    if on:
+        launch = ["sh", "-lc", '"$@"; exec "${SHELL:-sh}" -l', "sh", *argv_prog, prompt]
+    else:
+        sh = shell()
+        launch = [sh, "-lic", '"$@"; exec "$0" -li', sh, *argv_prog, prompt]
+    labels = ["--label", "hub.role=orchestrator", "--label", f"hub.space={sp['id']}",
+              "--label", f"herdr.space={sp['id']}"]
+    cmd = ["hc", "run", "--bg", "--json", "--keep", "--no-parent", "--name", name,
+           "--cwd", ws, *labels]
+    if on:
+        cmd += ["--on", on]
+    r = subprocess.run(cmd + ["--", *launch], capture_output=True, text=True)
+    if r.returncode != 0:
+        die(f"hc run: {(r.stderr or r.stdout).strip()}")
+    out = json.loads(r.stdout)
+    event("orchestrator", "", key, out.get("address") or "",
+          f"Orchestrator für {sp['name']} gestartet", space=sp["id"])
+    print(json.dumps({"space": sp["id"], "space_name": sp["name"], "folder": sp["folder"],
+                      "terminal": out.get("address") or "", "name": name, "agent": key,
+                      "cwd": ws}, ensure_ascii=False))
+
+
+def cmd_orchestrator_list(a):
+    rows, seen = [], set()
+    for s in (norm_space(x) for x in spaces_of_window()):
+        addr, info = orchestrator_of(s)
+        if not addr:
+            continue
+        seen.add(addr)
+        rows.append({"space": s["id"], "space_name": s["name"], "folder": s["folder"],
+                     "terminal": addr, "name": info.get("name") or "",
+                     "agent": (info.get("foreground") or {}).get("name") or "",
+                     "live": info.get("state") == "live"})
+    try:
+        listed = json.loads(subprocess.run(["hc", "ls", "--json"], capture_output=True, text=True).stdout)
+    except (OSError, ValueError):
+        listed = {}
+    for x in listed.get("terminals") or []:
+        addr = x.get("address") or ""
+        if not addr or addr in seen or not (x.get("name") or "").startswith(ORCH_NAME):
+            continue
+        info = hc_term(addr)
+        labels = info.get("labels") or {}
+        if labels.get("hub.role") != "orchestrator" and info.get("name") != ORCH_NAME:
+            continue
+        sid = labels.get("hub.space") or labels.get("herdr.space") or ""
+        rows.append({"space": sid, "space_name": space_name_of(sid) if sid else "", "folder": "",
+                     "terminal": addr, "name": info.get("name") or "",
+                     "agent": (info.get("foreground") or {}).get("name") or "",
+                     "live": info.get("state") == "live"})
+    if a.json:
+        print(json.dumps({"orchestrators": rows}, ensure_ascii=False))
+        return
+    if not rows:
+        print("kein Orchestrator läuft")
+        return
+    for r in rows:
+        print(f"{r['space'] or '—':<40} {(r['space_name'] or '—'):<24} {r['terminal']:<12} "
+              f"{(r['name'] or '—'):<24} {'läuft' if r['live'] else 'beendet'}")
+
 
 ABNAHME = "## Abnahmekriterien"
 SPEC_SECTIONS = ["## Ziel", ABNAHME, "## Grenzen"]
@@ -1790,12 +2249,12 @@ def cmd_preflight(a):
 STALL_STAGES = [("doing", "In Arbeit", 45), ("review", "Prüfung", 120), ("todo", "Geplant", 1440)]
 
 
-def stall_rows(doing=45, review=120, todo=1440, everyone=False):
+def stall_rows(doing=45, review=120, todo=1440, everyone=False, space=None):
     limits = {"doing": doing, "review": review, "todo": todo}
     labels = {k: label for k, label, _ in STALL_STAGES}
     now = time.time()
     rows = []
-    for t in my_tickets(everyone=everyone):
+    for t in my_tickets(everyone=everyone, space=space):
         stage = t.get("status")
         at = epoch(t.get("status_at"))
         if stage not in limits or at is None:
@@ -1805,6 +2264,7 @@ def stall_rows(doing=45, review=120, todo=1440, everyone=False):
             continue
         rows.append({"stage": stage, "stage_label": labels[stage], "id": t["id"],
                      "title": t.get("title") or "",
+                     "space": ticket_space(t), "space_name": ticket_space_name(t),
                      "agent": t.get("agent") or t.get("assignee") or "",
                      "age_minutes": minutes, "age": age(t.get("status_at")),
                      "nudge": f"hub nudge {t['id']}", "threshold": limits[stage]})
@@ -1814,7 +2274,7 @@ def stall_rows(doing=45, review=120, todo=1440, everyone=False):
 
 
 def cmd_stalls(a):
-    rows = stall_rows(a.doing, a.review, a.todo, everyone=a.all)
+    rows = stall_rows(a.doing, a.review, a.todo, everyone=a.all, space=space_arg(a))
     if a.json:
         print(json.dumps(rows, ensure_ascii=False))
         return
@@ -1833,9 +2293,12 @@ def cmd_stalls(a):
 def cmd_nudge(a):
     t = load(a.id)
     me = orchestrator_id()
+    mine = my_space()
     owner = (t.get("owner") or "").strip()
-    if owner and owner not in ("mensch", me) and not a.force:
-        die(f"{a.id} gehört {owner}, nicht dir ({me or 'unbekannt'}); fremde Tickets nur mit --force")
+    if not owns(t, me, mine["id"]) and not a.force:
+        foreign = owner or ticket_space(t) or "ein anderer Space"
+        die(f"{a.id} gehört {foreign}, nicht dir ({me or mine['name'] or 'unbekannt'}); "
+            f"fremde Tickets nur mit --force")
     text = one_line(a.text) or "Bitte kurz den Stand nennen: was ist erledigt, was fehlt, was blockiert?"
     addr = t.get("terminal") or ""
     sent = bool(addr and is_live(addr) and send_agent(addr, f"Stand zu {a.id}: {text}"))
@@ -1859,8 +2322,9 @@ def night_rank(t):
     return (prio, t.get("created") or "", t["id"])
 
 
-def night_queue(everyone=False):
-    return sorted((t for t in my_tickets(everyone=everyone) if t.get("status") == "todo"), key=night_rank)
+def night_queue(everyone=False, space=None):
+    return sorted((t for t in my_tickets(everyone=everyone, space=space) if t.get("status") == "todo"),
+                  key=night_rank)
 
 
 def night_block(t):
@@ -1934,7 +2398,7 @@ def cmd_night(a):
     deadline = night_deadline(a)
     begin = now_stamp()
     if a.dry_run:
-        rows = [(t["id"], night_block(t)) for t in night_queue(everyone=a.all)]
+        rows = [(t["id"], night_block(t)) for t in night_queue(everyone=a.all, space=space_arg(a))]
         startable = [(tid, why) for tid, why in rows if not why]
         if not startable:
             print("nichts startbar")
@@ -1955,7 +2419,7 @@ def cmd_night(a):
         if deadline is not None and time.time() >= deadline:
             break
         candidate, order = None, []
-        for t in night_queue(everyone=a.all):
+        for t in night_queue(everyone=a.all, space=space_arg(a)):
             if t["id"] in started or t["id"] in attempted:
                 continue
             why = night_block(t)
@@ -2005,9 +2469,11 @@ def cmd_new(a):
     elif body == "-":
         body = sys.stdin.read()
     base = slug(a.title) or "ticket"
+    sp = space_ref(a.space) if getattr(a, "space", None) else my_space()
     t = {"title": a.title, "repo": a.repo or "", "labels": a.labels or "",
          "machine": a.on or "", "source": a.source or "", "by": "orchestrator",
-         "owner": orchestrator_id(), "body": (body or "").strip() + "\n"}
+         "owner": orchestrator_id(), "space": (sp or {}).get("id") or "",
+         "space_name": (sp or {}).get("name") or "", "body": (body or "").strip() + "\n"}
     t["created"] = now_stamp()
     set_status(t, "todo", t["created"])
     print(claim_ticket(t, base))
@@ -2039,13 +2505,16 @@ def claim_ticket(t, base):
 
 
 def cmd_list(a):
-    rows = [t for t in all_tickets() if a.all or t["status"] != "done"]
+    rows = my_tickets(everyone=getattr(a, "all", False), space=space_arg(a))
+    rows = [t for t in rows if a.all or t["status"] != "done"]
     if a.agent:
         rows = [t for t in rows if a.agent in (t.get("assignee"), *names(t.get("tags")), *names(t.get("waiting")))]
     if a.json:
         out = []
         for t in rows:
             row = {k: v for k, v in t.items() if k != "body"}
+            row["space"] = ticket_space(t)
+            row["space_name"] = ticket_space_name(t)
             row["comments"] = len(entries(t))
             out.append(row)
         print(json.dumps(out, ensure_ascii=False, indent=1))
@@ -2116,16 +2585,16 @@ def cmd_link(a):
 
 
 def cmd_next(a):
-    for t in all_tickets():
+    for t in my_tickets(space=space_arg(a)):
         if t["status"] == "todo" and t.get("assignee") == a.agent and not open_blockers(t):
             print(f"{t['id']}\t{t['title']}")
             return
     die(f"kein startbares Ticket für {a.agent} (todo, ihm zugewiesen, nicht blockiert)")
 
 
-def inbox_rows(agent):
+def inbox_rows(agent, space=None):
     rows = []
-    for t in all_tickets():
+    for t in my_tickets(space=space):
         if t["status"] == "done":
             continue
         reasons, question, stamp = [], "", t.get("updated") or ""
@@ -2145,7 +2614,7 @@ def inbox_rows(agent):
 
 
 def cmd_inbox(a):
-    rows = inbox_rows(a.agent)
+    rows = inbox_rows(a.agent, space_arg(a))
     if a.json:
         print(json.dumps(rows, ensure_ascii=False, indent=1))
         return
@@ -2363,6 +2832,12 @@ def cmd_set(a):
                 if k == "base":
                     unknown_base = v.strip()
                 t[k] = v
+                if k == "space":
+                    ref = space_ref(v) if v.strip() else None
+                    t["space"] = (ref or {}).get("id") or ""
+                    t["space_name"] = (ref or {}).get("name") or ""
+                elif k == "space_name" and v.strip() and not (t.get("space") or "").strip():
+                    die("space_name ohne space: erst space=<id|name> setzen")
         if moved is not None:
             set_status(t, moved)
         write(t)
@@ -2407,8 +2882,9 @@ def dispatch_gates(t):
     if not criteria(t):
         gaps.append(f"kein Abnahmekriterium unter {ABNAHME} (hub spec {t['id']} legt die Vorlage an)")
     me = orchestrator_id()
-    w = read_wip(me)
-    use = wip_usage(me)
+    sid = ticket_space(t)
+    w = read_wip(me, sid)
+    use = wip_usage(me, space=sid)
     ids = [x for x in use["arbeit"]["ids"] if x != t["id"]]
     limit = w["arbeit"]
     if len(ids) >= limit:
@@ -2546,8 +3022,8 @@ def cmd_dispatch(a):
         sh = shell()
         argv = [sh, "-lic", '"$@"; exec "$0" -li', sh, *agent_argv, task]
     name = slug(a.id, 32) or "agent"
-    space, tab = f"sp{secrets.token_hex(16)}", f"tb{secrets.token_hex(16)}"
-    labels = ["--label", f"herdr.space={space}", "--label", f"herdr.tab={tab}",
+    agent_space, tab = f"sp{secrets.token_hex(16)}", f"tb{secrets.token_hex(16)}"
+    labels = ["--label", f"herdr.space={agent_space}", "--label", f"herdr.tab={tab}",
               "--label", f"hub.ticket={a.id}"]
     cmd = ["hc", "run", "--bg", "--json", "--keep", "--outlive-parent", "--name", name, "--cwd", folder, *labels]
     if on:
@@ -2565,9 +3041,14 @@ def cmd_dispatch(a):
         fresh.update(agent=agent_key, agent_cmd=agent_cmd,
                      harness=short_harness(who) if who else program,
                      branch=branch or "", worktree=folder if branch else "",
-                     terminal=out["address"], space=space, tab=tab)
+                     terminal=out["address"], agent_space=agent_space, tab=tab)
         if not (fresh.get("owner") or "").strip():
             fresh["owner"] = me or orchestrator_id()
+        # The agent works in the ticket's factory; an old ticket joins it now.
+        if not (fresh.get("space") or "").strip() or not (fresh.get("space_name") or "").strip():
+            sid = ticket_space(fresh) or my_space()["id"]
+            fresh["space"] = sid
+            fresh["space_name"] = (space_name_of(sid) if sid else "") or my_space()["name"]
         set_status(fresh, "doing")
 
     with hub_lock():
@@ -2670,6 +3151,10 @@ def cmd_review_start(a):
 
     def saved(fresh):
         fresh.update(reviewer=key, reviewer_name=agent_name(key), review_terminal=out["address"])
+        if not (fresh.get("space") or "").strip() or not (fresh.get("space_name") or "").strip():
+            sid = ticket_space(fresh) or my_space()["id"]
+            fresh["space"] = sid
+            fresh["space_name"] = (space_name_of(sid) if sid else "") or my_space()["name"]
 
     t = update_ticket(a.id, saved)
     event("review", a.id, key, out["address"], "Prüfstation gestartet")
@@ -2834,10 +3319,10 @@ def cmd_gate(a):
         print(f"{a.id}: Basis {'aktuell' if b['ok'] else 'veraltet'} · {what}")
 
 
-def cmd_gates(_a):
+def cmd_gates(a):
     """Every open ticket's gate, for the Team panel (without the output tail)."""
     rows = []
-    for t in all_tickets():
+    for t in my_tickets(everyone=getattr(a, "all", False), space=space_arg(a)):
         if t["status"] == "done":
             continue
         g = gate(t)
@@ -2931,7 +3416,7 @@ def cmd_done(a):
 
     def saved(fresh):
         # cleanup_ticket cleared what it ended/closed in memory; carry only those changes.
-        for k in ("terminal", "space", "tab"):
+        for k in ("terminal", "agent_space", "tab"):
             if t.get(k) == "" and fresh.get(k):
                 fresh[k] = ""
         set_status(fresh, "done")
@@ -2994,8 +3479,8 @@ def same_path(a, b, on=None):
 
 
 def ui_ids(t):
-    """The space/tab the ticket was dispatched into (its fields, else the terminal's labels)."""
-    space, tab = t.get("space") or "", t.get("tab") or ""
+    """The space/tab the ticket's agent was dispatched into (fields, else terminal labels)."""
+    space, tab = t.get("agent_space") or "", t.get("tab") or ""
     if space and tab:
         return space, tab
     labels = terminal_labels(hc_term(t.get("terminal")))
@@ -3003,7 +3488,8 @@ def ui_ids(t):
 
 
 def space_of_ticket(t, spaces):
-    """The ticket's space: its id, or the one holding one of its `hub.ticket` labels."""
+    """The Herdr space the ticket's agent runs in: `agent_space`, or the one holding its
+    `hub.ticket` labels (never the ticket's workspace space)."""
     sid, _tab = ui_ids(t)
     found = next((s for s in spaces if s.get("id") == sid), None) if sid else None
     if found:
@@ -3104,7 +3590,7 @@ def close_space(t, space):
         err = app_do("space.close", id=sid, confirmed=True)
         if err:
             return False, f"Space {name} bleibt: {err}"
-        t["space"] = t["tab"] = ""
+        t["agent_space"] = t["tab"] = ""
         return True, f"Space {name} geschlossen"
     closable = [tab for tab in our_tabs if clean(tab)]
     if not closable:
@@ -3116,7 +3602,7 @@ def close_space(t, space):
             return False, f"Tab {tab.get('id')} bleibt: {err}"
     t["tab"] = ""
     if len(closable) == len(tabs):
-        t["space"] = ""
+        t["agent_space"] = ""
     return True, f"Tab {', '.join(tab.get('id') for tab in closable)} geschlossen; Space {name} bleibt"
 
 
@@ -3174,9 +3660,9 @@ def cleanup_ticket(t, tickets=None, keep_worktree=False, keep_space=False):
         else:
             space = space_of_ticket(t, spaces)
             if not space:
-                if t.get("space"):
-                    notes.append(f"Space {t['space']} ist schon weg")
-                t["space"] = t["tab"] = ""
+                if t.get("agent_space"):
+                    notes.append(f"Space {t['agent_space']} ist schon weg")
+                t["agent_space"] = t["tab"] = ""
             else:
                 ok, message = close_space(t, space)
                 (notes if ok else skipped).append(message)
@@ -3218,7 +3704,7 @@ def own_worktrees(tickets, root, on=None):
 
 
 def cmd_cleanup(a):
-    tickets = my_tickets(everyone=getattr(a, "all", False))
+    tickets = my_tickets(everyone=getattr(a, "all", False), space=space_arg(a))
     now = int(time.time() * 1000)
     root = worktrees_root(a.root)
     dry = not a.yes
@@ -3253,7 +3739,7 @@ def cmd_cleanup(a):
     if spaces is None:
         skipped.append("Spaces: herdr-app antwortet nicht")
     else:
-        ticket_spaces = {t.get("space") for t in tickets if t.get("space")}
+        ticket_spaces = {t.get("agent_space") for t in tickets if t.get("agent_space")}
         for sp in spaces:
             addrs = space_terminals(sp)
             terms = [info_of(addr) for addr in addrs]
@@ -3295,8 +3781,8 @@ def cmd_cleanup(a):
             continue
         done_actions.append(action)
         for t in tickets:
-            if t.get("space") == sp.get("id"):
-                t["space"] = t["tab"] = ""
+            if t.get("agent_space") == sp.get("id"):
+                t["agent_space"] = t["tab"] = ""
                 changed[t["id"]] = t
 
     live_cwds = [(x.get("address") or "?", x.get("cwd") or "") for x in term_rows
@@ -3733,7 +4219,7 @@ def cmd_land(a):
                      if k in t}
 
     def saved(fresh):
-        for k in ("terminal", "space", "tab"):
+        for k in ("terminal", "agent_space", "tab"):
             if t.get(k) == "" and fresh.get(k):
                 fresh[k] = ""
         fresh.update(landed_fields)
@@ -3776,16 +4262,20 @@ def cmd_status(a):
     except Exception:
         pass
     me = orchestrator_id()
+    mine = my_space()
+    selected = space_arg(a)
     c = costs()
     per = c.get("tickets", {})
-    tickets = my_tickets(everyone=getattr(a, "all", False), me=me)
+    tickets = my_tickets(everyone=getattr(a, "all", False), me=me, space=selected)
     bad = invalid_tickets()
     open = [t for t in tickets if t["status"] != "done"]
     if getattr(a, "json", False):
         rows = []
         for t in tickets:
             term = t.get("terminal", "")
+            sid = ticket_space(t)
             rows.append({"id": t["id"], "title": t["title"], "status": t["status"],
+                         "space": sid, "space_name": ticket_space_name(t),
                          "owner": t.get("owner") or "", "agent": t.get("agent") or t.get("assignee") or "",
                          "terminal": term, "live": live.get(term, "") if term else "",
                          "review": t.get("review") or "", "review_rounds": t.get("review_rounds") or "",
@@ -3794,7 +4284,8 @@ def cmd_status(a):
                          "age": age(t.get("status_at") or t.get("updated") or ""),
                          "comments": len(entries(t))})
         rows.extend({"id": tid, "invalid": True} for tid in bad)
-        print(json.dumps({"tickets": rows, "invalid": bad}, ensure_ascii=False))
+        print(json.dumps({"space": selected or mine["id"], "space_name": space_name_of(selected or mine["id"]),
+                          "tickets": rows, "invalid": bad}, ensure_ascii=False))
         report_invalid(bad)
         return
     if open:
@@ -3823,10 +4314,10 @@ def cmd_status(a):
         wt = t.get("worktree", "")
         if wt and not t.get("machine") and os.path.isdir(wt):
             left.append(f"Worktree {wt}")
-        if t.get("space"):
+        if t.get("agent_space"):
             if spaces is None:
                 spaces = app_spaces() or []
-            if any(s.get("id") == t["space"] for s in spaces):
+            if any(s.get("id") == t["agent_space"] for s in spaces):
                 left.append("Space")
         if left:
             rests.append((t, left))
@@ -3938,8 +4429,12 @@ def cmd_stats(a):
     days = max(1, a.days)
     now = time.time()
     per_ticket = costs().get("tickets", {})
-    tickets = my_tickets(everyone=getattr(a, "all", False))
+    mine = my_space()
+    selected = space_arg(a)
+    tickets = my_tickets(everyone=getattr(a, "all", False), space=selected)
     rows = [measure(t, now, per_ticket.get(t["id"])) for t in tickets]
+    for row, t in zip(rows, tickets):
+        row["space"], row["space_name"] = ticket_space(t), ticket_space_name(t)
     events = {t["id"]: timeline(t) for t in tickets}
     # The days a ticket moved: its transitions plus the day it was created or done.
     touched = {r["id"]: {day_of(ts) for ts, _state in events[r["id"]]}
@@ -3968,7 +4463,9 @@ def cmd_stats(a):
     repos = []
     for repo in sorted({r["repo"] or "ohne Repo" for r in active}):
         repos.append({"repo": repo, **aggregate([r for r in active if (r["repo"] or "ohne Repo") == repo])})
-    out = {"days": days, "at": int(now * 1000), "today": today_row, "history": history,
+    out = {"days": days, "at": int(now * 1000), "space": selected or mine["id"],
+           "space_name": space_name_of(selected or mine["id"]),
+           "today": today_row, "history": history,
            "summary": {k: agg[k] for k in ("tickets", "done", "median_min", "rounds", "rework", "cost")},
            "stations": agg["stations"], "repos": repos, "agents": agent_rows(tickets, per_ticket),
            "tickets": active}
@@ -4069,11 +4566,6 @@ def read_subagents():
     return rows
 
 
-def orch_address():
-    """The timeline's orchestrator lane: this terminal's orchestrator id, else the first."""
-    return orchestrator_id()
-
-
 def lane_status(info):
     """`working`, `waiting`, `done`, … from hc's status object, else its state."""
     st = (info or {}).get("status")
@@ -4089,22 +4581,49 @@ def ticket_marks(t):
     copying them would duplicate every move."""
     agent = t.get("agent") or t.get("assignee") or ""
     term = t.get("terminal") or ""
+    sid, sname = ticket_space(t), ticket_space_name(t)
     return [{"at": int(sec * 1000), "kind": "status", "ticket": t["id"], "agent": agent,
-             "terminal": term, "text": state} for sec, state in timeline(t)]
+             "terminal": term, "text": state, "space": sid, "space_name": sname}
+            for sec, state in timeline(t)]
 
 
-def lane(parent_of, ticket, terminal, kind, label, start, end, status, cost):
+def lane(parent_of, ticket, terminal, kind, label, start, end, status, cost, space="", space_name=""):
     return {"id": terminal or kind, "label": label or "—", "kind": kind, "parent": parent_of or "",
             "ticket": ticket or "", "terminal": terminal or "", "start": start, "end": end,
-            "status": status or "", "cost": round(float(cost or 0), 2), "events": [], "subagents": []}
+            "status": status or "", "cost": round(float(cost or 0), 2), "events": [], "subagents": [],
+            "space": space or "", "space_name": space_name or ""}
 
 
-def build_timeline(ticket="", since="all"):
-    """The lanes and events `hub timeline` prints: one lane per terminal plus the orchestrator."""
+def build_timeline(ticket="", since="all", space=None, everyone=False):
+    """The lanes and events `hub timeline` prints: one per terminal plus each orchestrator.
+
+    Filtered like every other view: this factory by default, one space with `--space`,
+    everything with `--all`. Every lane and event carries its `space`/`space_name`."""
     now, floor = now_ms(), since_ms(since)
-    tickets = [t for t in all_tickets() if not ticket or t["id"] == ticket]
+    mine = my_space() if space is None else (space_ref(space) or dict(NO_SPACE))
+    mine_id = mine["id"]
+    all_rows = all_tickets()
+    by_id = {t["id"]: t for t in all_rows}
+    if ticket:
+        tickets = [t for t in all_rows if t["id"] == ticket]
+    elif everyone:
+        tickets = all_rows
+    else:
+        tickets = [t for t in all_rows if owns(t, orchestrator_id(), mine_id)]
     events = read_events()
     derived = [m for t in tickets for m in ticket_marks(t)]
+
+    def esp(e):
+        """The factory of an event: its own field, else the space its ticket belongs to."""
+        sid = e.get("space") or ""
+        t = by_id.get(e.get("ticket") or "")
+        if not sid and t is not None:
+            sid = ticket_space(t)
+        sname = e.get("space_name") or (ticket_space_name(t) if t is not None else "") or ""
+        if sid and not sname:
+            sname = space_name_of(sid)
+        return sid, sname
+
     addresses = []
     for t in tickets:
         for addr in (t.get("terminal"), t.get("review_terminal")):
@@ -4115,26 +4634,43 @@ def build_timeline(ticket="", since="all"):
     per_ticket, per_terminal = cost_rows.get("tickets") or {}, cost_rows.get("perTerminal") or {}
     ident = identities()
     subagents = read_subagents()
-
-    # The orchestrator: its own terminal when known, otherwise the lane that carries
-    # every entry without a terminal (a night run's stop, a hub-wide comment).
-    orch_addr = orch_address()
-    orch_info = hc_term(orch_addr) if orch_addr else {}
     first = min((e["at"] for e in events + derived), default=now)
-    orch = lane("", "", orch_addr, "orchestrator",
-                ((ident.get(orch_addr) or {}).get("name") or orch_info.get("name") or "Orchestrator"),
-                num_ms(orch_info.get("created_ms")) or first,
-                now if (not orch_info or orch_info.get("state") == "live") else
-                (num_ms(orch_info.get("finished_ms")) or now),
-                lane_status(orch_info) or ("live" if orch_info else ""),
-                cost_rows.get("orchestrator"))
-    lanes, by_terminal = [orch], {}
-    if orch_addr:
-        by_terminal[orch_addr] = orch
+
+    # The orchestrators: one lane per factory that has one. A home without space labels
+    # keeps the single lane that carries every entry without a terminal.
+    wanted = []
+    if not ticket:
+        if everyone:
+            for s in spaces_of_window():
+                addr, info = orchestrator_of(norm_space(s))
+                if addr:
+                    wanted.append((addr, info, s.get("id") or "", space_name_of(s.get("id") or "")))
+        elif mine_id:
+            addr, info = orchestrator_of(mine)
+            if addr:
+                wanted.append((addr, info, mine_id, mine["name"]))
+        if not wanted and not any(s.get("id") for s in spaces_of_window()):
+            addr = orchestrator_id()
+            wanted.append((addr, hc_term(addr) if addr else {}, "", ""))
+    lanes, by_terminal, orch_lanes = [], {}, []
+    for addr, info, sid, sname in wanted:
+        l = lane("", "", addr, "orchestrator",
+                 ((ident.get(addr) or {}).get("name") or info.get("name") or
+                  ("Orchestrator" + (f" · {sname}" if sname else ""))),
+                 num_ms(info.get("created_ms")) or first,
+                 now if (not info or info.get("state") == "live") else
+                 (num_ms(info.get("finished_ms")) or now),
+                 lane_status(info) or ("live" if info else ""),
+                 cost_rows.get("orchestrator"), sid, sname)
+        lanes.append(l)
+        orch_lanes.append(l)
+        if addr:
+            by_terminal[addr] = l
 
     for t in tickets:
         marks = ticket_marks(t)
         first_mark = min((m["at"] for m in marks), default=None)
+        sid, sname = ticket_space(t), ticket_space_name(t)
         for addr, kind, agent_key in ((t.get("terminal") or "", "agent", t.get("agent") or t.get("assignee") or ""),
                                       (t.get("review_terminal") or "", "reviewer", t.get("reviewer") or "")):
             if not addr or addr in by_terminal:
@@ -4151,7 +4687,8 @@ def build_timeline(ticket="", since="all"):
             by_terminal[addr] = lane(info.get("parent"), t["id"], addr, kind,
                                      (ident.get(addr) or {}).get("name") or info.get("name") or
                                      agent_name(agent_key) or ("Prüfer" if kind == "reviewer" else "Agent"),
-                                     start, end, lane_status(info) or ("" if info else "beendet"), cost)
+                                     start, end, lane_status(info) or ("" if info else "beendet"), cost,
+                                     sid, sname)
             lanes.append(by_terminal[addr])
 
     # A terminal only the log knows (an agent whose ticket field was cleared) still shows.
@@ -4159,29 +4696,39 @@ def build_timeline(ticket="", since="all"):
         addr = e["terminal"]
         if not addr or addr in by_terminal or (ticket and e["ticket"] != ticket):
             continue
+        sid, sname = esp(e)
+        if not everyone and not ticket and mine_id and sid and sid != mine_id:
+            continue
         by_terminal[addr] = lane("", e["ticket"], addr, "reviewer" if e["kind"] == "verdict" else "agent",
                                  (ident.get(addr) or {}).get("name") or agent_name(e["agent"]) or addr,
-                                 e["at"], e["at"], "", per_ticket.get(e["ticket"]) if e["ticket"] else 0)
+                                 e["at"], e["at"], "", per_ticket.get(e["ticket"]) if e["ticket"] else 0,
+                                 sid, sname)
         lanes.append(by_terminal[addr])
 
     # Parents point at lane ids, not at raw terminal addresses.
     ids = {l["terminal"]: l["id"] for l in lanes if l["terminal"]}
     for l in lanes:
-        if orch_addr and l["parent"] == orch_addr:
-            l["parent"] = orch["id"]
+        if l["parent"] in by_terminal:
+            l["parent"] = by_terminal[l["parent"]]["id"]
         elif l["parent"] in ids:
             l["parent"] = ids[l["parent"]]
 
     everything = sorted(events + derived, key=lambda e: e["at"])
+    for e in everything:
+        e["space"], e["space_name"] = esp(e)
     if floor is not None:
         everything = [e for e in everything if e["at"] >= floor]
     if ticket:
         everything = [e for e in everything if e["ticket"] == ticket]
+    elif not everyone and mine_id:
+        everything = [e for e in everything if not e["space"] or e["space"] == mine_id]
     kept = []
     for l in lanes:
-        if ticket and l["ticket"] != ticket:
+        if ticket and l["ticket"] != ticket and l["kind"] != "orchestrator":
             continue
-        if floor is not None and l is not orch and (l["end"] or l["start"] or 0) < floor:
+        if ticket and l in orch_lanes:
+            continue
+        if floor is not None and l not in orch_lanes and (l["end"] or l["start"] or 0) < floor:
             continue
         # The window starts at `since`: a lane that began earlier is cut there, so no bar
         # reaches left of the window. Events and subagents outside it are dropped.
@@ -4189,8 +4736,12 @@ def build_timeline(ticket="", since="all"):
             l["start"] = max(l["start"] or floor, floor)
             if l["end"] is not None:
                 l["end"] = max(l["end"], floor)
-        l["events"] = [e for e in everything if (l is orch and not e["terminal"]) or
-                       (l["terminal"] and e["terminal"] == l["terminal"])]
+        if l["kind"] == "orchestrator":
+            l["events"] = [e for e in everything
+                           if (not e["terminal"] or e["terminal"] == l["terminal"])
+                           and (not l["space"] or not e["space"] or e["space"] == l["space"])]
+        else:
+            l["events"] = [e for e in everything if l["terminal"] and e["terminal"] == l["terminal"]]
         l["subagents"] = []
         for s in subagents:
             if not (l["terminal"] and s["terminal"] == l["terminal"]):
@@ -4203,9 +4754,10 @@ def build_timeline(ticket="", since="all"):
             l["subagents"].append({"id": s["id"], "title": s["title"], "started": started,
                                    "ended": s["ended"]})
         kept.append(l)
-    kept.sort(key=lambda l: (l["kind"] != "orchestrator", l["start"] is None, l["start"] or 0,
-                             l["label"].casefold()))
-    return {"now": now, "since": floor or 0, "lanes": kept, "events": everything}
+    kept.sort(key=lambda l: (l["kind"] != "orchestrator", l["space"].casefold(),
+                             l["start"] is None, l["start"] or 0, l["label"].casefold()))
+    return {"now": now, "since": floor or 0, "space": mine_id,
+            "space_name": space_name_of(mine_id), "lanes": kept, "events": everything}
 
 
 def stamp_ms(ms):
@@ -4261,7 +4813,8 @@ def timeline_html(report):
 def cmd_timeline(a):
     if a.ticket:
         load(a.ticket)  # an unknown or broken id dies here, with a readable message
-    report = build_timeline(a.ticket, a.since)
+    selected = space_arg(a)
+    report = build_timeline(a.ticket, a.since, space=selected, everyone=a.all)
     path = ""
     if a.write:
         os.makedirs(os.path.dirname(TIMELINE_HTML), exist_ok=True)
@@ -4291,6 +4844,7 @@ def main():
     n.add_argument("--title", required=True)
     n.add_argument("--repo")
     n.add_argument("--on")
+    n.add_argument("--space", metavar="ID|NAME", help="der Space dieses Tickets (Standard: der eigene)")
     n.add_argument("--labels")
     n.add_argument("--source")
     n.add_argument("--body")
@@ -4299,6 +4853,7 @@ def main():
     l = tk.add_parser("list")
     l.add_argument("--all", action="store_true")
     l.add_argument("--json", action="store_true")
+    l.add_argument("--space", metavar="ID|NAME")
     l.add_argument("--agent", metavar="NAME")
     l.set_defaults(fn=cmd_list)
     s = tk.add_parser("show")
@@ -4323,10 +4878,12 @@ def main():
     lk.set_defaults(fn=cmd_link)
     nx = tk.add_parser("next")
     nx.add_argument("agent")
+    nx.add_argument("--space", metavar="ID|NAME")
     nx.set_defaults(fn=cmd_next)
     ib = tk.add_parser("inbox")
     ib.add_argument("agent")
     ib.add_argument("--json", action="store_true")
+    ib.add_argument("--space", metavar="ID|NAME")
     ib.set_defaults(fn=cmd_inbox)
     wt = tk.add_parser("watch")
     wt.add_argument("id")
@@ -4401,10 +4958,26 @@ def main():
     wp.add_argument("pairs", nargs="*", metavar="arbeit=N|pruefung=M")
     wp.add_argument("--mine", action="store_true",
                     help="das Limit nur für diesen Orchestrator setzen (Abschnitt mine)")
-    wp.add_argument("--all", action="store_true", help="die globale Summe über alle Orchestratoren zeigen")
+    wp.add_argument("--all", action="store_true", help="die globale Summe über alle Spaces zeigen")
+    wp.add_argument("--space", metavar="ID|NAME")
     wp.add_argument("--json", action="store_true")
     wp.set_defaults(fn=cmd_wip)
     sub.add_parser("whoami").set_defaults(fn=cmd_whoami)
+    spac = sub.add_parser("spaces", help="je Space Identität, Orchestrator und offene Arbeit")
+    spac.add_argument("--json", action="store_true")
+    spac.add_argument("--adopt", action="store_true",
+                      help="Alt-Tickets ohne space nach ihrer Repo-Zuordnung schreiben (Dry-Run ohne --yes)")
+    spac.add_argument("--yes", action="store_true", help="die Übernahme wirklich schreiben")
+    spac.set_defaults(fn=cmd_spaces)
+    orc = sub.add_parser("orchestrator").add_subparsers(dest="ocmd", required=True)
+    os_ = orc.add_parser("start", help="einen Orchestrator im Space starten")
+    os_.add_argument("--space", metavar="ID|NAME")
+    os_.add_argument("--agent", default="omp", metavar="PROGRAMM")
+    os_.add_argument("--restart", action="store_true", help="den laufenden Orchestrator des Space ersetzen")
+    os_.set_defaults(fn=cmd_orchestrator_start)
+    ol = orc.add_parser("list", help="die Orchestratoren aller Spaces")
+    ol.add_argument("--json", action="store_true")
+    ol.set_defaults(fn=cmd_orchestrator_list)
     sp = sub.add_parser("spec")
     sp.add_argument("id")
     sp.add_argument("--force", action="store_true", help="Abschnitte auch in review/done ergänzen")
@@ -4420,7 +4993,8 @@ def main():
     pf.set_defaults(fn=cmd_preflight)
     sl = sub.add_parser("stalls")
     sl.add_argument("--json", action="store_true")
-    sl.add_argument("--all", action="store_true", help="auch fremde Orchestratoren")
+    sl.add_argument("--all", action="store_true", help="auch fremde Spaces")
+    sl.add_argument("--space", metavar="ID|NAME")
     sl.add_argument("--doing", type=int, default=45, metavar="MIN")
     sl.add_argument("--review", type=int, default=120, metavar="MIN")
     sl.add_argument("--todo", type=int, default=1440, metavar="MIN")
@@ -4435,7 +5009,8 @@ def main():
     ni.add_argument("--for", dest="for_min", type=int, metavar="MIN")
     ni.add_argument("--max", type=int, metavar="N")
     ni.add_argument("--dry-run", action="store_true")
-    ni.add_argument("--all", action="store_true", help="auch fremde Orchestratoren")
+    ni.add_argument("--all", action="store_true", help="auch fremde Spaces")
+    ni.add_argument("--space", metavar="ID|NAME")
     ni.set_defaults(fn=cmd_night)
     mem = sub.add_parser("memory").add_subparsers(dest="mcmd", required=True)
     ma = mem.add_parser("add")
@@ -4469,6 +5044,8 @@ def main():
     gt.set_defaults(fn=cmd_gate)
     gts = sub.add_parser("gates")
     gts.add_argument("--json", action="store_true", help="JSON (Standard)")
+    gts.add_argument("--all", action="store_true", help="auch fremde Spaces")
+    gts.add_argument("--space", metavar="ID|NAME")
     gts.set_defaults(fn=cmd_gates)
     ls = sub.add_parser("lesson").add_subparsers(dest="lcmd", required=True)
     la = ls.add_parser("add")
@@ -4536,21 +5113,26 @@ def main():
     cl = sub.add_parser("cleanup")
     cl.add_argument("--yes", action="store_true", help="wirklich löschen; ohne --yes nur Dry-Run")
     cl.add_argument("--root", metavar="PATH", help="Worktree-Wurzel (Standard $HOME/.herdr/worktrees)")
-    cl.add_argument("--all", action="store_true", help="auch fremde Orchestratoren")
+    cl.add_argument("--all", action="store_true", help="auch fremde Spaces")
+    cl.add_argument("--space", metavar="ID|NAME")
     cl.set_defaults(fn=cmd_cleanup)
     st = sub.add_parser("status", help="offene Tickets; Standard sind die eigenen")
-    st.add_argument("--all", action="store_true", help="auch fremde Orchestratoren")
+    st.add_argument("--all", action="store_true", help="auch fremde Spaces")
+    st.add_argument("--space", metavar="ID|NAME")
     st.add_argument("--json", action="store_true", help="alle Tickets als JSON (defekte Dateien als invalid)")
     st.set_defaults(fn=cmd_status)
     stt = sub.add_parser("stats")
     stt.add_argument("--json", action="store_true")
     stt.add_argument("--days", type=int, default=14, metavar="N")
-    stt.add_argument("--all", action="store_true", help="auch fremde Orchestratoren")
+    stt.add_argument("--all", action="store_true", help="auch fremde Spaces")
+    stt.add_argument("--space", metavar="ID|NAME")
     stt.set_defaults(fn=cmd_stats)
     tml = sub.add_parser("timeline")
     tml.add_argument("--json", action="store_true")
     tml.add_argument("--since", default="all", metavar="24h|7d|all")
     tml.add_argument("--ticket", default="", metavar="ID")
+    tml.add_argument("--all", action="store_true", help="auch fremde Spaces")
+    tml.add_argument("--space", metavar="ID|NAME")
     tml.add_argument("--write", action="store_true", help="auch data/orchestra/timeline.html schreiben")
     tml.set_defaults(fn=cmd_timeline)
     a = p.parse_args()
