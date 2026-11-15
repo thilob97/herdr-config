@@ -128,11 +128,13 @@ reports into it) and show in the Team-Panel under it.
                                             --yes only a dry run. --root defaults to
                                             $HOME/.herdr/worktrees and is never searched beyond the
                                             tickets' own paths
-  hub status [--all]                        tickets with their agents' live status, owner, CI, age
+  hub status [--all] [--json]               tickets with their agents' live status, owner, CI, age
                                             (since the last status change) and cost so far; standard
                                             are this orchestrator's and ownerless tickets, --all shows
                                             every orchestrator's; done tickets are listed only while
-                                            something is left
+                                            something is left. Files without frontmatter are skipped
+                                            and named once on stderr; --json carries them as
+                                            {"id": …, "invalid": true}
   hub stats [--json] [--days 14] [--all]  throughput per ticket, station and repo: lead time (todo→done),
                                             review rounds, rework (back to doing after review) and cost,
                                             with today's numbers and the last 7 days for the UI
@@ -157,6 +159,9 @@ FIELDS = ["title", "status", "repo", "labels", "due", "machine", "owner", "agent
           "evidence", "merged", "pr", "ci", "ci_head", "ci_at", "ci_url", "ci_details",
           "review", "review_head", "review_at", "review_summary", "review_rounds", "reviewer", "reviewer_name", "review_terminal",
           "assignee", "blocked_by", "tags", "waiting", "by", "updated", "created", "status_at", "status_log"]
+# The stages the rest of the app knows (board, team panel, inbox, tiers). A ticket in any
+# other state disappears from every view, so `hub ticket set` refuses it up front.
+STATUSES = ("todo", "doing", "review", "done", "blocked")
 COSTS = os.path.join(APP, "data", "orchestra", "costs.json")  # written by the Team panel's watcher
 # WIP limits: hub is the only writer, so they live in a file next to costs.json, not in
 # the UI's shared state. The Board reads them through `hub wip --json`.
@@ -565,7 +570,7 @@ def update_ticket(tid, fn):
     The fresh read inside the lock is what keeps a concurrent comment from being lost:
     the caller's changes are applied to the current file, not to a stale copy."""
     with hub_lock():
-        t = read(tid)
+        t = load(tid)
         fn(t)
         write(t)
         return t
@@ -585,21 +590,37 @@ def path_of(tid):
 
 
 def read(tid):
+    """One ticket, or None when the file carries no `---` frontmatter.
+
+    A broken file must not take a whole command down: `all_tickets` skips it and
+    `hub status` counts it, while single-ticket commands use `load`, which dies with
+    a readable message instead of a traceback."""
     p = path_of(tid)
     try:
         text = open(p, encoding="utf-8").read()
     except OSError:
         die(f"no ticket {tid} ({p})")
     m = re.match(r"^---\r?\n(.*?)\r?\n---\r?\n?", text, re.S)
+    if not m:
+        return None
     meta = {}
-    for line in (m.group(1) if m else "").splitlines():
+    for line in m.group(1).splitlines():
         if ":" in line:
             k, v = line.split(":", 1)
             meta[k.strip()] = v.strip()
     meta["id"] = tid
-    meta["body"] = text[m.end():] if m else text
+    meta["body"] = text[m.end():]
     meta.setdefault("status", "todo")
+    meta.setdefault("title", tid)
     return meta
+
+
+def load(tid):
+    """One ticket for a command that cannot continue without it."""
+    t = read(tid)
+    if t is None:
+        die(f"{tid}: kein Ticket-Frontmatter (der --- Block fehlt); Datei übersprungen")
+    return t
 
 
 def write(t):
@@ -618,7 +639,16 @@ def all_tickets():
         names = sorted(n for n in os.listdir(TICKETS) if n.endswith(".md"))
     except OSError:
         return []
-    return [read(n[:-3]) for n in names]
+    return [t for t in (read(n[:-3]) for n in names) if t is not None]
+
+
+def invalid_tickets():
+    """Ids whose file has no frontmatter; `hub status` reports them instead of dying."""
+    try:
+        names = sorted(n for n in os.listdir(TICKETS) if n.endswith(".md"))
+    except OSError:
+        return []
+    return [n[:-3] for n in names if read(n[:-3]) is None]
 
 
 # ---- Chronik: one JSON line per action, so `hub timeline` knows what happened when
@@ -659,6 +689,15 @@ def event(kind, ticket="", agent="", terminal="", text=""):
                 f.write("\n".join(lines[-EVENT_KEEP:]) + "\n")
             os.replace(tmp, EVENTS)
     return row
+
+
+def author_terminal(role):
+    """The lane a comment-like event belongs to.
+
+    `orchestrator` writes under this terminal's own id (HC_TERMINAL_ID); every other role
+    writes without one. The ticket's `terminal` names the agent, not the author, so using
+    it put orchestrator actions on the agent's lane."""
+    return (os.environ.get("HC_TERMINAL_ID") or "").strip() if (role or "").strip().casefold() == "orchestrator" else ""
 
 
 def read_events():
@@ -713,8 +752,18 @@ def log_status(t, status, ts):
     t["status_log"] = "|".join(parts)
 
 
+def check_status(value, tid=""):
+    """Only the five known stages; anything else makes the ticket vanish from every view."""
+    s = str(value or "").strip()
+    if s not in STATUSES:
+        where = f"{tid}: " if tid else ""
+        die(f"{where}unbekannter Status {value!r} (erlaubt: {', '.join(STATUSES)})")
+    return s
+
+
 def set_status(t, status, ts=None):
     """The one place a status changes: `status`, `status_at` and the append-only log stay in step."""
+    status = check_status(status, t.get("id") or "")
     ts = ts or now_stamp()
     if status == t.get("status") and t.get("status_log"):
         return
@@ -1064,7 +1113,7 @@ def open_blockers(t):
     out = []
     for b in names(t.get("blocked_by")):
         p = path_of(b)
-        out.append((b, read(b)["status"] if os.path.exists(p) else "fehlt"))
+        out.append((b, (read(b) or {}).get("status") or "fehlt" if os.path.exists(p) else "fehlt"))
     return [b for b in out if b[1] != "done"]
 
 
@@ -1153,7 +1202,7 @@ def repo_of(target, on=None):
     """(repo, ticket id, machine) for a ticket id or a repo path; dies on neither."""
     tid = target if re.fullmatch(r"[a-z0-9][a-z0-9-]*", target or "") and os.path.exists(path_of(target)) else ""
     if tid:
-        t = read(tid)
+        t = load(tid)
         repo = t.get("repo")
         if not repo:
             die(f"{tid} hat kein Repo; hub ticket set {tid} repo=/pfad")
@@ -1182,6 +1231,7 @@ def lesson_section(repo, on=None):
 MEMORY = os.path.join(APP, "agents", "memory")
 MEMORY_MAX = 60   # the file never grows past this; the oldest lines fall out
 MEMORY_TAIL = 5   # hub dispatch carries this many into the next order
+MEMORY_TEXT_MAX = 240  # one entry stays one readable line; longer text is cut with "…"
 MEMORY_FMT = re.compile(r"^- (\d{4}-\d{2}-\d{2}) · ([^·]+?) · (.*)$")
 
 
@@ -1223,15 +1273,23 @@ def write_memory(path, items):
     os.replace(tmp, path)
 
 
-def add_memory(path, ticket, text):
+def shorten_memory(text, limit=MEMORY_TEXT_MAX):
+    """One line, at most `limit` characters; the marker counts toward the limit."""
     text = one_line(text)
+    if len(text) <= limit:
+        return text, False
+    return text[:limit - 1].rstrip() + "…", True
+
+
+def add_memory(path, ticket, text):
+    text, cut = shorten_memory(text)
     if not text:
         die("leerer Gedächtniseintrag")
     items = read_memory(path)
     item = {"date": time.strftime("%Y-%m-%d"), "ticket": ticket or "-", "text": text}
     items.append(item)
     write_memory(path, items)
-    return item
+    return item, cut
 
 
 def memory_section(name):
@@ -1256,8 +1314,10 @@ def cmd_memory(a):
         if not path:
             die("hub memory add braucht --agent NAME oder --repo PFAD")
         with hub_lock():
-            add_memory(path, a.ticket or "", " ".join(a.text))
+            item, cut = add_memory(path, a.ticket or "", " ".join(a.text))
         print(f"{label}: {len(read_memory(path))}/{MEMORY_MAX} Einträge ({path})")
+        if cut:
+            print(f"Hinweis: Text auf {MEMORY_TEXT_MAX} Zeichen gekürzt (mit „…“).")
         return
     if a.mcmd == "clear":
         if path:
@@ -1491,7 +1551,7 @@ def add_spec_sections(t):
 
 
 def cmd_spec(a):
-    t = read(a.id)
+    t = load(a.id)
     if t["status"] in ("done", "review") and not getattr(a, "force", False):
         die(f"{a.id}: Ticket ist {t['status']} — Abschnitte nur mit --force ergänzen")
     added = add_spec_sections(t)
@@ -1536,7 +1596,7 @@ def set_triage(t, g):
 
 
 def cmd_triage(a):
-    t = read(a.id)
+    t = load(a.id)
     g = triage_guess(t)
     if a.apply:
         set_triage(t, g)
@@ -1663,7 +1723,7 @@ def preflight_gate(t):
 
 
 def cmd_preflight(a):
-    t = read(a.id)
+    t = load(a.id)
     state, tail, msg = run_preflight(t)
     out = {"id": a.id, "preflight": state, "at": t.get("preflight_at"),
            "head": t.get("preflight_head"), "duration": t.get("preflight_duration"), "tail": tail}
@@ -1719,7 +1779,7 @@ def cmd_stalls(a):
 
 
 def cmd_nudge(a):
-    t = read(a.id)
+    t = load(a.id)
     me = orchestrator_id()
     owner = (t.get("owner") or "").strip()
     if owner and owner not in ("mensch", me) and not a.force:
@@ -1728,10 +1788,10 @@ def cmd_nudge(a):
     addr = t.get("terminal") or ""
     sent = bool(addr and is_live(addr) and send_agent(addr, f"Stand zu {a.id}: {text}"))
     with hub_lock():
-        t = read(a.id)
+        t = load(a.id)
         add_comment(t, "orchestrator", f"Stand abgefragt: {text}")
         write(t)
-        event("nudge", a.id, t.get("agent") or t.get("assignee") or "", addr, text)
+        event("nudge", a.id, t.get("agent") or t.get("assignee") or "", author_terminal("orchestrator"), text)
     print(f"{a.id}: " + (f"Nachricht an {addr} gesendet; Kommentar geschrieben"
                          if sent else "Agent nicht lebend; nur Kommentar geschrieben"))
 
@@ -1877,7 +1937,7 @@ def cmd_night(a):
     end = now_stamp()
     record = night_record(started, skipped, begin, end)
     for tid in started:
-        t = read(tid)
+        t = load(tid)
         add_night_section(t, record)
         write(t)
         event("night", tid, t.get("agent") or "", t.get("terminal") or "", "Stopp")
@@ -1926,7 +1986,7 @@ def cmd_list(a):
 
 
 def cmd_show(a):
-    t = read(a.id)
+    t = load(a.id)
     for k in FIELDS:
         if t.get(k):
             print(f"{k}: {agent_display(t[k]) if k == 'agent' else t[k]}")
@@ -1938,16 +1998,16 @@ def cmd_comment(a):
     who = re.sub(r"[·\r\n]+", " ", a.role).strip() or "mensch"
     text = " ".join(a.text)
     with hub_lock():
-        t = read(a.id)
+        t = load(a.id)
         add_comment(t, who, text)
         write(t)
-        event("comment", a.id, who, t.get("terminal") or "", text)
+        event("comment", a.id, who, author_terminal(who), text)
         count = len(entries(t))
     print(f"{a.id}: Verlauf, {count} Einträge")
 
 
 def cmd_assign(a):
-    t = read(a.id)
+    t = load(a.id)
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", a.agent):
         die(f"bad agent name {a.agent!r}")
     t["assignee"] = a.agent
@@ -1956,7 +2016,7 @@ def cmd_assign(a):
 
 
 def cmd_link(a):
-    t = read(a.id)
+    t = load(a.id)
     cur = names(t.get("blocked_by"))
     for b in a.blocked_by:
         path_of(b)  # validates the id
@@ -1976,7 +2036,7 @@ def cmd_link(a):
             seen.add(x)
             p = path_of(x)
             if os.path.exists(p):
-                todo += names(read(x).get("blocked_by"))
+                todo += names((read(x) or {}).get("blocked_by"))
         cur.append(b)
     t["blocked_by"] = ", ".join(cur)
     write(t)
@@ -2027,7 +2087,7 @@ def cmd_inbox(a):
 
 
 def cmd_watch(a):
-    t = read(a.id)
+    t = load(a.id)
     waiting = names(t.get("waiting"))
     if a.agent in waiting:
         print(f"{a.id}: wartet bereits auf {a.agent}")
@@ -2206,7 +2266,7 @@ def cmd_agent_rm(a):
 
 def cmd_set(a):
     with hub_lock():
-        t = read(a.id)
+        t = load(a.id)
         moved = None
         for kv in a.pairs:
             if "=" not in kv:
@@ -2266,7 +2326,7 @@ def dispatch_gates(t):
 
 
 def cmd_dispatch(a):
-    t = read(a.id)
+    t = load(a.id)
     blockers = open_blockers(t)
     if blockers:
         die(f"{a.id} ist blockiert durch {', '.join(f'{b} ({st})' for b, st in blockers)}; "
@@ -2419,7 +2479,7 @@ def cmd_dispatch(a):
         set_status(fresh, "doing")
 
     with hub_lock():
-        t = read(a.id)
+        t = load(a.id)
         saved(t)
         write(t)
         event("dispatch", a.id, agent_key, out["address"], f"{agent_key} in {branch or folder}")
@@ -2442,7 +2502,7 @@ def review_agent(t, choice):
 
 
 def cmd_review_start(a):
-    t = read(a.id)
+    t = load(a.id)
     if t["status"] == "done":
         die(f"{a.id} ist bereits fertig")
     g = gate(t)
@@ -2520,7 +2580,7 @@ def cmd_review_start(a):
 
 
 def cmd_review_verdict(a):
-    t = read(a.id)
+    t = load(a.id)
     if t["status"] == "done":
         die(f"{a.id} ist bereits fertig")
     if not t.get("review_terminal"):
@@ -2563,7 +2623,7 @@ def cmd_review_verdict(a):
 def cmd_rebase(a):
     """Rebase the ticket's branch in its worktree onto its base. A conflict leaves the
     worktree mid-rebase (never aborted): the agent resolves it and continues."""
-    t = read(a.id)
+    t = load(a.id)
     on = t.get("machine") or None
     folder, branch = t.get("worktree"), t.get("branch")
     if not (folder and branch):
@@ -2596,7 +2656,7 @@ def cmd_rebase(a):
 
 
 def cmd_verify(a):
-    t = read(a.id)
+    t = load(a.id)
     on = t.get("machine") or None
     folder = target_of(t, on)
     if not folder:
@@ -2647,7 +2707,7 @@ def cmd_verify(a):
 
 
 def cmd_gate(a):
-    g = gate(read(a.id))
+    g = gate(load(a.id))
     if a.json:
         print(json.dumps(g, ensure_ascii=False))
         return
@@ -2711,7 +2771,7 @@ def refuse_review(t, points):
 
 
 def cmd_review(a):
-    t = read(a.id)
+    t = load(a.id)
     # --evidence replaces the list before the gate reads it: the files handed over here are
     # the ticket's proof, so the Definition of Done must judge them, not the old list.
     if a.evidence:
@@ -2756,7 +2816,7 @@ def cmd_review(a):
 
 
 def cmd_done(a):
-    t = read(a.id)
+    t = load(a.id)
     res = cleanup_ticket(t, keep_worktree=a.keep_worktree, keep_space=a.keep_space)
 
     def saved(fresh):
@@ -3343,7 +3403,7 @@ def wait_ci(t):
 
 
 def cmd_ci(a):
-    t = read(a.id)
+    t = load(a.id)
     res = ci_collect(t)
     state = apply_ci(t, res)
     write(t)
@@ -3371,7 +3431,7 @@ def cmd_lesson_add(a):
         tid = target
     on = a.on or None
     if tid:
-        t = read(tid)
+        t = load(tid)
         on = on or t.get("machine") or None
         if target == tid:
             target = t.get("repo") or ""
@@ -3401,7 +3461,7 @@ def cmd_lesson_list(a):
 
 
 def cmd_lesson_propose(a):
-    t = read(a.id)
+    t = load(a.id)
     repo = t.get("repo")
     if not repo:
         die(f"{a.id} hat kein Repo; hub ticket set {a.id} repo=/pfad")
@@ -3419,7 +3479,7 @@ def cmd_lesson_propose(a):
 
 
 def cmd_lesson_confirm(a):
-    t = read(a.id)
+    t = load(a.id)
     repo = t.get("repo")
     if not repo:
         die(f"{a.id} hat kein Repo; hub ticket set {a.id} repo=/pfad")
@@ -3441,7 +3501,7 @@ def main_checkout(t, on):
 
 
 def cmd_land(a):
-    t = read(a.id)
+    t = load(a.id)
     if a.wait_ci and not a.pr:
         die("--wait-ci gilt nur mit --pr")
     on, wt, branch = t.get("machine") or None, t.get("worktree"), t.get("branch")
@@ -3558,6 +3618,12 @@ def costs():
         return {}
 
 
+def report_invalid(ids):
+    """One stderr line for all files `hub status` had to skip; the rest still prints."""
+    if ids:
+        print(f"übersprungen: {len(ids)} ungültige Datei(en): {', '.join(ids)}", file=sys.stderr)
+
+
 def cmd_status(a):
     live = {}
     try:
@@ -3569,7 +3635,24 @@ def cmd_status(a):
     c = costs()
     per = c.get("tickets", {})
     tickets = my_tickets(everyone=getattr(a, "all", False), me=me)
+    bad = invalid_tickets()
     open = [t for t in tickets if t["status"] != "done"]
+    if getattr(a, "json", False):
+        rows = []
+        for t in tickets:
+            term = t.get("terminal", "")
+            rows.append({"id": t["id"], "title": t["title"], "status": t["status"],
+                         "owner": t.get("owner") or "", "agent": t.get("agent") or t.get("assignee") or "",
+                         "terminal": term, "live": live.get(term, "") if term else "",
+                         "review": t.get("review") or "", "review_rounds": t.get("review_rounds") or "",
+                         "ci": t.get("ci") or "", "done": t["status"] == "done",
+                         "cost": round(float(per.get(t["id"]) or 0), 2),
+                         "age": age(t.get("status_at") or t.get("updated") or ""),
+                         "comments": len(entries(t))})
+        rows.extend({"id": tid, "invalid": True} for tid in bad)
+        print(json.dumps({"tickets": rows, "invalid": bad}, ensure_ascii=False))
+        report_invalid(bad)
+        return
     if open:
         print(f"{'Ticket':<40} {'Status':<7} {'Besitzer':<12} {'Basis':<17} {'Urteil':<7} {'Runden':>6} {'CI':<5} {'Terminal':<16} {'Live':<9} {'Alter':>6} {'Kosten':>7} {'Verlauf':>7}  Titel")
     for t in open:
@@ -3608,6 +3691,7 @@ def cmd_status(a):
             print(f"  {t['id']}: {', '.join(left)}")
     if c:
         print(f"\nBudget pro Ticket ${c.get('ticketBudget', 0):.0f}, Team ${c.get('teamBudget', 0):.0f}; offen bisher ${c.get('teamCost', 0):.2f}")
+    report_invalid(bad)
 
 
 # ---- Messwerte: throughput, rework and cost, per ticket, station and repo
@@ -4031,7 +4115,7 @@ def timeline_html(report):
 
 def cmd_timeline(a):
     if a.ticket:
-        read(a.ticket)  # an unknown id dies here, with the same message as everywhere else
+        load(a.ticket)  # an unknown or broken id dies here, with a readable message
     report = build_timeline(a.ticket, a.since)
     path = ""
     if a.write:
@@ -4309,6 +4393,7 @@ def main():
     cl.set_defaults(fn=cmd_cleanup)
     st = sub.add_parser("status", help="offene Tickets; Standard sind die eigenen")
     st.add_argument("--all", action="store_true", help="auch fremde Orchestratoren")
+    st.add_argument("--json", action="store_true", help="alle Tickets als JSON (defekte Dateien als invalid)")
     st.set_defaults(fn=cmd_status)
     stt = sub.add_parser("stats")
     stt.add_argument("--json", action="store_true")

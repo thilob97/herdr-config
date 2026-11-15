@@ -135,6 +135,16 @@ class HubBugsTest(unittest.TestCase):
     def at(self, ms):
         return time.strftime("%Y-%m-%d %H:%M", time.localtime(ms / 1000))
 
+    def events(self):
+        path = os.path.join(self.app, "data", "orchestra", "events.jsonl")
+        if not os.path.exists(path):
+            return []
+        with open(path, encoding="utf-8") as f:
+            return [json.loads(line) for line in f if line.strip()]
+
+    def tickets_dir(self):
+        return os.path.join(self.app, "data", "quests", "tickets")
+
     def terminal(self, address, **info):
         try:
             with open(self.get_file, encoding="utf-8") as f:
@@ -273,6 +283,109 @@ class HubBugsTest(unittest.TestCase):
         self.assertIn("## Prüfung", text, "die Prüfung zeichnet den Fehlschlag auf")
         self.assertIn("fatal:", text, "die technische Zeile steht im Log, nicht in der Meldung")
         self.assertIn("checks: fail", text)
+
+
+    # ---- 7: `ticket set status` only accepts the five known stages
+
+    def test_unknown_status_is_refused_with_the_allowed_values(self):
+        repo = self.repo()
+        tid = self.ticket("Status", repo)
+        before = self.text_of(tid)
+        r = self.hub("ticket", "set", tid, "status=weird")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("weird", r.stderr)
+        for state in ("todo", "doing", "review", "done", "blocked"):
+            self.assertIn(state, r.stderr)
+        self.assertEqual(self.text_of(tid), before, "die Datei bleibt unverändert")
+        self.assertIn(tid, self.hub("status").stdout, "das Ticket bleibt sichtbar")
+
+    def test_every_allowed_status_is_written(self):
+        repo = self.repo()
+        tid = self.ticket("Alle", repo)
+        for state in ("doing", "review", "blocked", "done", "todo"):
+            r = self.hub("ticket", "set", tid, f"status={state}")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(self.meta_of(tid)["status"], state)
+
+    # ---- 8: memory entries stay one short line and the file stays capped
+
+    def test_memory_add_shortens_the_text_and_caps_the_file(self):
+        repo = self.repo()
+        tid = self.ticket("Gedächtnis", repo)
+        r = self.hub("memory", "add", "--agent", "Ada", "--ticket", tid, "x" * 5000)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("gekürzt", r.stdout)
+        path = os.path.join(self.app, "agents", "memory", "ada.md")
+        with open(path, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+        self.assertEqual(len(lines), 1)
+        entry = lines[0].rsplit(" · ", 1)[1]
+        self.assertEqual(len(entry), 240, "der Text endet nach 240 Zeichen")
+        self.assertTrue(entry.endswith("…"))
+        self.assertLessEqual(len(lines[0].encode("utf-8")), 60 + 240 + 10,
+                             "eine Zeile bleibt eine Zeile")
+
+        # 65 old entries fall back to the newest 60.
+        with open(path, "w", encoding="utf-8") as f:
+            for i in range(65):
+                f.write(f"- 2026-01-01 · - · alt {i}\n")
+        r = self.hub("memory", "add", "--agent", "Ada", "kurz")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(path, encoding="utf-8") as f:
+            self.assertEqual(len(f.read().splitlines()), 60)
+
+    # ---- 9: a comment event belongs to its author's lane, not the ticket's agent
+
+    def test_comment_event_uses_the_orchestrator_terminal_only_for_that_role(self):
+        repo = self.repo()
+        self.orchestrator("t-orch")
+        tid = self.criteria_ticket("Kommentar", repo, terminal="t-agent")
+        self.terminal("t-agent", name="Moxie", state="live", labels={"hub.role": "agent"})
+        r = self.hub("ticket", "comment", tid, "--from", "orchestrator", "Ich schaue nach.",
+                     env={"HC_TERMINAL_ID": "t-orch"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.events()[-1]["terminal"], "t-orch")
+
+        r = self.hub("ticket", "comment", tid, "--from", "Moxie", "Bin dran.")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.events()[-1]["terminal"], "", "der Agent hat kein Orchestrator-Terminal")
+
+        r = self.hub("nudge", tid, "--text", "Stand?", env={"HC_TERMINAL_ID": "t-orch"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        nudge = next(e for e in reversed(self.events()) if e["kind"] == "nudge")
+        self.assertEqual(nudge["terminal"], "t-orch", "auch die Nachfrage ist eine Orchestrator-Aktion")
+
+    # ---- 10: `hub status` skips a file without frontmatter instead of dying
+
+    def test_status_skips_a_broken_file_and_reports_it_once(self):
+        repo = self.repo()
+        tid = self.criteria_ticket("Gut", repo)
+        os.makedirs(self.tickets_dir(), exist_ok=True)
+        with open(os.path.join(self.tickets_dir(), "kaputt.md"), "w", encoding="utf-8") as f:
+            f.write("kein frontmatter…\n")
+        r = self.hub("status")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(tid, r.stdout, "das gesunde Ticket bleibt sichtbar")
+        notices = [line for line in r.stderr.splitlines() if "übersprungen" in line]
+        self.assertEqual(len(notices), 1, r.stderr)
+        self.assertIn("1 ungültige Datei(en): kaputt", notices[0])
+        self.assertNotIn("Traceback", r.stderr)
+
+        listed = self.hub("ticket", "list")
+        self.assertEqual(listed.returncode, 0, listed.stderr)
+        self.assertIn(tid, listed.stdout)
+
+        shown = self.hub("ticket", "show", "kaputt")
+        self.assertNotEqual(shown.returncode, 0)
+        self.assertIn("Frontmatter", shown.stderr)
+        self.assertNotIn("Traceback", shown.stderr)
+
+        j = self.hub("status", "--json")
+        self.assertEqual(j.returncode, 0, j.stderr)
+        data = json.loads(j.stdout)
+        bad = [row for row in data["tickets"] if row.get("invalid")]
+        self.assertEqual([row["id"] for row in bad], ["kaputt"])
+        self.assertIn(tid, [row["id"] for row in data["tickets"] if not row.get("invalid")])
 
 
 if __name__ == "__main__":
