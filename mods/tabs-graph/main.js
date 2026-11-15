@@ -15,7 +15,7 @@ const RESERVED = 26 + 40 + 2 * 4;
 const FABRIK = [
   { id: "quests", label: "Quests", icon: "mods/quests/icon.svg", key: 6, tip: "Quests: alle Signale und Tickets" },
   { id: "team", label: "Team", icon: "mods/orchestra/icon.svg", key: 7, tip: "Team: Pipeline der Tickets" },
-  { id: "board", label: "Board", icon: "mods/board/icon.svg", fallback: "mods/tabs-graph/board.svg", cmd: "board.panel", key: 8, tip: "Board: Tickets auf dem Brett" },
+  { id: "board", label: "Board", icon: "mods/board/icon.svg", fallback: "mods/tabs-graph/board.svg", cmd: "board.panel", panel: true, key: 8, tip: "Board: Tickets auf dem Brett" },
   { id: "teams", label: "Team-Hub", icon: "mods/teams/icon.svg", fallback: "mods/tabs-graph/teams.svg", cmd: "teams.panel", key: 9, tip: "Team-Hub: Teams, Rollen und Arbeit" },
 ];
 const WERKZEUGE = [
@@ -97,6 +97,25 @@ export default class Tabs extends View {
     if (id === null) run(open ? "layout.hide" : "layout.show", { id: "panel" });
     else if (open && body?.active === id) run("layout.hide", { id: "panel" });
     else { run("layout.select", { stack: "panel-body", child: id }); run("layout.show", { id: "panel" }); }
+  }
+
+  // Board cold-start: a `place: none` mod is not loaded until its block is shown, so its
+  // command (`board.panel`) is unknown before that. Select the stack child first (this
+  // loads the block), then show it; the mod command follows only when it is loaded (its
+  // panel command is idempotent). Open/close stays in the bar, so the button never toggles
+  // a panel it just opened.
+  openPanel(id) {
+    const root = layout(), panel = find(root, "panel"), body = find(root, "panel-body");
+    if (!panel || !body) return;
+    const active = body.active === id;
+    if (active && !panel.hidden) { run("layout.hide", { id: "panel" }); return; }
+    if (!active) {
+      run("layout.select", { stack: "panel-body", child: id });
+      run("layout.show", { id: "panel" });
+      return;                       // the block loads with the select; no command yet
+    }
+    run("layout.show", { id: "panel" });
+    run(`${id}.panel`);            // loaded and idempotent: ensure it stays shown
   }
 
   // The side panel is remembered per space: switching shows that space's choice
@@ -200,7 +219,7 @@ export default class Tabs extends View {
         .bg(on ? t.selected : t.background).text_color(on ? t.foreground : t.muted)
         .hover(s => s.bg(on ? t.selected : t.hover).text_color(t.foreground)).on_mouse_down("left", stop)
         .tooltip(`${p.tip} (⌘⌥${p.key})`)
-        .on_click(() => (p.cmd ? run(p.cmd) : this.togglePanel(p.id)))
+        .on_click(() => (p.panel ? this.openPanel(p.id) : p.cmd ? run(p.cmd) : this.togglePanel(p.id)))
         .child(svg(this.icons[p.id] ?? p.icon).size(14).flex_none()).when(on, el => el.child(p.label));
     };
     const segment = (id, list) => h_flex().id(id).h(H_BTN).p(2).gap(2).flex_none().items_center().rounded(8)
