@@ -137,20 +137,39 @@ export function orchestratorCost(spaceId, { orchestrators = {}, orchestrator = 0
 
 /** Kosten der gewählten Spaces: die offenen Ticket-Kosten je Space plus der
  *  Orchestrator jedes gewählten Space. `orchestrators` ist die Karte aus costs.json;
- *  ein altes File mit nur `orchestrator` zählt einmal, wie der Team-Panel-Kopf. */
+ *  ein altes File mit nur `orchestrator` zählt einmal, wie der Team-Panel-Kopf.
+ *  `orchParts` nennt je gewähltem Space mit Orchestrator-Kosten seinen Anteil; eine
+ *  Kostenzeile ohne Space-Label (`""`) gehört dem eigenen Workspace und zählt einmal. */
 export function costSplit(rows, { all = false, ids = new Set(), ownId = "",
   orchestrators = {}, orchestrator = 0 } = {}) {
   const picked = (rows ?? []).filter((r) => all || !ids.size || ids.has(r.id));
   const tickets = picked.reduce((n, r) => n + openCost(r), 0);
   const per = orchestrators ?? {};
   const split = Object.keys(per).length > 0;
-  const orch = split
-    ? [...new Set(picked.map((r) => r.id))].reduce((n, sid) => n + (sid ? Number(per[sid]) || 0 : 0), 0)
-    : (all || !ids.size || ids.has(ownId) ? Number(orchestrator) || 0 : 0);
+  const picks = all || !ids.size || ids.has(ownId);
+  const orchParts = [];
+  if (split) {
+    const seen = new Set();
+    for (const r of picked) {
+      const sid = r.id;
+      if (!sid || seen.has(sid) || !(Number(per[sid]) > 0)) continue;
+      seen.add(sid);
+      orchParts.push({ name: r.name || sid, cost: r2(Number(per[sid])) });
+    }
+    // Die Zeile ohne Label entstand vor den Space-Labels (oder an einem Home ohne
+    // Labels): wie der alte eine `orchestrator`-Wert gehört sie dem eigenen Workspace.
+    if (picks && Number(per[""]) > 0) {
+      orchParts.push({ name: picked.find((r) => r.id === ownId)?.name || ownId || "ohne Workspace",
+        cost: r2(Number(per[""])) });
+    }
+  }
+  const orch = split ? orchParts.reduce((n, p) => n + p.cost, 0)
+    : (picks ? Number(orchestrator) || 0 : 0);
   return {
     team: r2(tickets + orch),
     parts: picked.filter((r) => openCost(r) > 0).map((r) => ({ name: r.name || r.id, cost: openCost(r) })),
     orch,
+    orchParts,
   };
 }
 
