@@ -34,11 +34,6 @@ const FILL = 4000;
 const machineOf = (address) => (address.includes("/") ? address.slice(0, address.indexOf("/")) : null);
 const baseName = (p) => p.replace(/\/+$/, "").split("/").pop() || p;
 const errorLine = (r) => (r.stderr || r.stdout || `exit ${r.code}`).trim().split("\n").pop().slice(0, 160);
-function ago(ms) {
-  if (!ms) return "";
-  const s = Math.max(0, (Date.now() - ms) / 1000);
-  return s < 60 ? "gerade" : s < 3600 ? `${Math.floor(s / 60)}m` : s < 86400 ? `${Math.floor(s / 3600)}h` : `${Math.floor(s / 86400)}d`;
-}
 
 // The sidebar's state for a card: its own or the most urgent of its sub-agents (terminals
 // it started and omp's task sub-agents), so "Arbeitet" counts one number there and here (N8).
@@ -247,14 +242,17 @@ export default class Inbox extends View {
 
   // Two-line list row (h 44): who/what and its state; where, below.
   row(t, e, on, list, i) {
-    let status, name, title, meta, right;
+    let status, name, title, meta, right, named = true;
     if (e.kind === "agent") {
-      const a = e.a, m = machineOf(a.address);
+      const a = e.a, m = machineOf(a.address), who = ui.identity(a.address);
       status = e.st ?? a.status;
-      name = ui.identity(a.address).name;
-      title = ui.plain(a.title) || a.program?.name || "";
+      // Identität wie überall: veröffentlichter Name, sonst das Programm-Kürzel
+      // (`omp` klein und gedämpft). Der Programmname („Oh My Pi") ist keine Identität.
+      name = who.name;
+      named = who.named;
+      title = ui.plain(a.title);
       meta = `${m ? `${m} · ` : ""}${a.space_name} · Tab ${a.tab_name}`;
-      right = div().flex_none().text_size(T_S).text_color(ui.statusColor(t, status)).child(`${ui.STATUS_WORD[status]}${e.since ? ` · ${ago(e.since)}` : ""}`);
+      right = div().flex_none().text_size(T_S).text_color(ui.statusColor(t, status)).child(`${ui.STATUS_WORD[status]}${e.since ? ` · ${ui.ageMs(e.since)}` : ""}`);
     } else if (e.kind === "orch") {
       status = "blocked"; name = "Orchestrator"; title = "fragt dich"; meta = "Rückfrage des Orchestrators";
       right = div().flex_none().text_size(T_S).text_color(t.blocked).child("wartet");
@@ -264,7 +262,7 @@ export default class Inbox extends View {
     } else if (e.kind === "question") {
       status = "blocked"; name = null; title = e.tk.title;
       meta = `Ticket ${e.tk.id} · Frage von ${e.q.role}`;
-      right = div().flex_none().text_size(T_S).text_color(t.blocked).child(ago(tsMs(e.q.ts)) || "offen");
+      right = div().flex_none().text_size(T_S).text_color(t.blocked).child(ui.ageMs(tsMs(e.q.ts)) || "offen");
     } else {
       const tk = e.tk;
       status = "blocked"; name = null; title = tk.title;
@@ -279,7 +277,8 @@ export default class Inbox extends View {
       .child(h_flex().gap(ui.GAP_M).items_center()
         .child(ui.statusIcon(t, status))
         .child(this.avatar(t, e))
-        .when(Boolean(name), (el) => el.child(div().flex_none().max_w(110).truncate().text_size(T_M).text_color(t.foreground).when(on, (d) => d.font_semibold()).child(name)))
+        .when(Boolean(name), (el) => el.child(div().flex_none().max_w(110).truncate().text_size(named ? T_M : T_S)
+          .text_color(named ? t.foreground : t.dim).when(on && named, (d) => d.font_semibold()).child(name)))
         .child(div().flex_1().min_w(0).truncate().text_size(T_M).text_color(name ? t.muted : t.foreground).child(title))
         .when(Boolean(right), (el) => el.child(right)))
       .child(h_flex().pl(40).min_w(0).gap(ui.GAP_S).items_center()

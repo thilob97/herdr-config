@@ -151,20 +151,29 @@ function gateIcons(t, tk, gate) {
   }));
 }
 
-// Identität aus dem Agenten-Anzeigenamen (Hub), sonst aus dem laufenden Terminal.
-// Kein Avatar: die Zeile muss neben Gates und Kosten in eine schmale Karte passen.
+// Identität wie im Team-Panel und Dashboard: der veröffentlichte Name des Terminals
+// (`ui.identityChip`). Ohne Terminal zählt der Agentenname aus dem Ticket
+// (`agent_name`/`assignee`) bzw. ein Roster-Name in `agent`; ein Programm-Kürzel
+// (`omp`) steht klein und gedämpft wie im Team-Panel — nie der Programmname („Oh My Pi").
+const KNOWN_PROGRAM = /^(omp|claude|codex|pi|hermes|aider)$/i;
+const isProgramKey = (key) => {
+  const k = String(key ?? "").trim().toLowerCase();
+  if (!k) return false;
+  return KNOWN_PROGRAM.test(k)
+    || agents().some((a) => String(a.program?.key ?? a.app ?? "").toLowerCase() === k)
+    || terminals().some((x) => String(x.program?.key ?? x.app ?? "").toLowerCase() === k);
+};
 function whoChip(t, tk) {
-  const live = tk.terminal ? ui.identity(tk.terminal) : null;
-  const liveName = live?.live && live.name !== tk.terminal ? live.name : null;
-  const raw = String(tk.agent_name || tk.assignee || tk.agent || "").trim();
-  const key = raw.split(/\s+/)[0];
-  const program = key ? (agents().find((a) => (a.program?.key ?? a.app) === key)?.program?.name
-    ?? terminals().find((x) => (x.program?.key ?? x.app) === key)?.program?.name) : null;
-  const name = liveName || program || raw;
-  if (!name) return null;
+  if (tk.terminal) return div().flex_none().max_w(110).child(ui.identityChip(t, `tk-who-${tk.id}`, tk.terminal));
+  const named = String(tk.agent_name || tk.assignee || "").trim();
+  const agentToken = String(tk.agent ?? "").trim().split(/\s+/)[0];
+  const raw = named || agentToken;
+  if (!raw) return null;
+  const program = !named && isProgramKey(agentToken);
   return h_flex().flex_none().max_w(72).h(22).px(4).items_center().rounded(4).bg(t.raised)
-    .tooltip(liveName ? `${liveName}${program ? ` · ${program}` : ""}` : name)
-    .child(div().min_w(0).truncate().text_size(T_XS).text_color(t.muted).child(name));
+    .tooltip(program ? "Programm, kein laufender Agent" : raw)
+    .child(div().min_w(0).truncate().text_size(T_XS).text_color(program ? t.dim : t.muted)
+      .child(program ? agentToken.toLowerCase() : raw));
 }
 
 const countIcon = (t, icon, n, tip) => h_flex().flex_none().gap(1).items_center().tooltip(tip)
@@ -207,7 +216,7 @@ export function ticketCard(t, tk, o = {}) {
   const shownLabels = blocked.length ? labels.slice(0, 1) : labels;
 
   const ageLine = div().flex_none().text_size(T_XS).text_color(t.dim)
-    .tooltip(`${stageAge(tk)} · zuletzt bearbeitet ${updatedStamp(tk)}`).child(ageText(tk).replace(" ", ""));
+    .tooltip(`${stageAge(tk)} · zuletzt bearbeitet ${updatedStamp(tk)}`).child(ageText(tk));
 
   // Die Labels bekommen den freien Platz und schrumpfen; die Zahl der übrigen steht
   // als eigener Chip, nie als abgeschnittener Text.

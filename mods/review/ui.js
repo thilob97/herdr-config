@@ -44,15 +44,22 @@ export function minutesSince(ts) {
   return ms ? Math.max(0, Math.round((Date.now() - ms) / 60000)) : null;
 }
 
-/** Kurze Dauer: „jetzt", „42 min", „3 h", „2 d"; „—" ohne Zeitstempel. */
+/** Kurze Dauer in einer Sprache, überall gleich: „gerade", „42 min", „2 h",
+ *  „> 1 Tag", „3 T"; „—" ohne Zeitstempel. Alles über 24 h ist eine Untergrenze,
+ *  deshalb sagt der erste Tag „> 1 Tag"; danach zählt „n T" statt des winzigen „n d". */
 export const dur = (min) => (min == null ? "—"
-  : min < 1 ? "jetzt" : min < 60 ? `${min} min` : min < 1440 ? `${Math.floor(min / 60)} h` : `${Math.floor(min / 1440)} d`);
+  : min < 1 ? "gerade" : min < 60 ? `${min} min` : min < 1440 ? `${Math.floor(min / 60)} h`
+    : Math.floor(min / 1440) < 2 ? "> 1 Tag" : `${Math.floor(min / 1440)} T`);
 
-/** „vor 42 min" / „gerade eben"; leer ohne Zeitstempel. */
+/** Alter eines Zeitstempels („JJJJ-MM-TT HH:MM") in derselben Sprache wie `dur`;
+ *  leer ohne Zeitstempel. */
 export const age = (ts) => {
   const min = minutesSince(ts);
-  return min == null ? "" : min < 1 ? "gerade eben" : `vor ${dur(min)}`;
+  return min == null ? "" : dur(min);
 };
+
+/** Alter in Minuten seit einem ms-Zeitstempel (z. B. `attention.since`); leer ohne Wert. */
+export const ageMs = (ms) => (ms ? dur(Math.max(0, Math.round((Date.now() - ms) / 60000))) : "");
 
 export const STAGE_WORD = { todo: "geplant", doing: "in Arbeit", review: "in Prüfung", done: "fertig" };
 
@@ -63,7 +70,8 @@ export function staged(tk) {
   const key = ["todo", "review", "done"].includes(tk?.status) ? tk.status : "doing";
   const since = tk?.status_at || tk?.updated || tk?.created || null;
   const min = minutesSince(since);
-  return { key, since, min, text: min == null ? "Stufe unbekannt" : `${STAGE_WORD[key]} seit ${dur(min)}` };
+  return { key, since, min, text: min == null ? "Stufe unbekannt"
+    : min < 1 ? `${STAGE_WORD[key]} gerade eben` : `${STAGE_WORD[key]} seit ${dur(min)}` };
 }
 
 /** Fokus je Eingabe (5.6: mit Fokus `border(accent)`): in init `this.focus = ui.focusFields()`,
@@ -133,8 +141,6 @@ export function reviewChip(t, tk, gate) {
   const r = gate?.review ?? null;
   const verdict = r?.verdict ?? tk.review ?? null;
   const at = r?.at ?? tk.review_at, by = r?.reviewer_name || r?.reviewer || tk.reviewer_name || tk.reviewer;
-  // The verdict, like the checks, belongs to one HEAD: after another commit it only says
-  // what was true then, so it goes muted with the reason instead of staying red/green.
   if (r?.stale) return chip(t, `Prüfung ${verdict === "fail" ? "rot" : verdict === "pass" ? "grün" : "–"} (veraltet)`, t.muted,
     { tip: r.reason || "neuer Commit seit dem Lauf — neu prüfen" });
   if (r ? r.ok : verdict === "pass") return chip(t, "Prüfung grün", t.done,
@@ -318,17 +324,23 @@ export const loading = (t, text = "lädt …") => h_flex().gap(GAP_S).items_cent
 
 // ---------- Identität (7.1) und Identitäts-Chip (5.6) ----------
 
-/** Wer hinter einer Adresse steckt: Name/Avatar aus shared("agents.identity"), sonst Programm. */
+/** Wer hinter einer Adresse steckt: Name und Avatar ausschließlich aus
+ *  shared("agents.identity"). Fehlt der Name, steht `name` als Programm-Kürzel
+ *  (`omp` klein) bzw. als Adresse — nie der Programmname („Oh My Pi") — und
+ *  `named: false` sagt, dass es keine veröffentlichte Identität ist. */
 export function identity(address) {
   const a = agents().find((x) => x.address === address) ?? null;
   const x = a ? null : terminals().find((y) => y.address === address && y.state === "live") ?? null;
   const known = (shared("agents.identity") ?? {})[address];
   const program = a?.program ?? x?.program ?? null;
+  const programKey = program?.key ? String(program.key).toLowerCase() : null;
   return {
     address,
-    name: known?.name ?? program?.name ?? x?.name ?? address,
+    name: known?.name ?? programKey ?? address,
+    named: Boolean(known?.name),
     avatar: known?.avatar ?? null,
     program,
+    programKey,
     status: a?.status ?? x?.status ?? null,
     pane: a?.pane ?? null,
     space: a?.space_name ?? (x?.where ?? "").split(" / ")[0] ?? "",
@@ -343,19 +355,25 @@ export function focusAgent(address) {
   else run("terminal.peek", { terminal: address });
 }
 
-/** Identitäts-Chip: h 22, Avatar 16 (sonst Programm-Icon), Name T_S, Statusanzeige; Klick fokussiert. */
+/** Identitäts-Chip: h 22, Avatar 16 (sonst Programm-Icon), Name T_S, Statusanzeige; Klick fokussiert.
+ *  Nur ein Name aus shared("agents.identity") ist eine Identität; sonst steht das
+ *  Programm-Kürzel klein und gedämpft (`omp`, „Programm, kein laufender Agent"). */
 export function identityChip(t, id, address, { status } = {}) {
   const who = identity(address);
   const st = status !== undefined ? status : who.status;
   const p = who.program;
-  const pic = who.avatar ? image(who.avatar).w(16).h(16).flex_none()
+  const label = who.named ? who.name : who.programKey ?? address;
+  const pic = who.named && who.avatar ? image(who.avatar).w(16).h(16).flex_none()
     : p?.icon ? (p.tint ? svg(p.icon).size(16).flex_none().text_color(t.muted) : image(p.icon).w(16).h(16).flex_none())
       : null;
-  const tip = [p?.name, who.space, address].filter(Boolean).join(" · ");
+  const tip = who.named ? [p?.name, who.space, address].filter(Boolean).join(" · ")
+    : who.programKey ? `Programm${who.live ? " ohne veröffentlichte Identität" : ", kein laufender Agent"} · ${address}`
+      : address;
   return stop(h_flex().id(id).flex_none().min_w(0).h(H_BTN_S).px(6).gap(GAP_XS).items_center().rounded(6).bg(t.raised)
     .tooltip(tip).when(who.live, (el) => el.cursor_pointer().hover((s) => s.bg(t.hover))
-      .on_click((_e, cx) => { cx.stop_propagation(); focusAgent(address); }))
+      .on_click((_e, cx) => { cx.stopPropagation?.(); focusAgent(address); }))
     .when(Boolean(pic), (el) => el.child(pic))
-    .child(div().min_w(0).truncate().text_size(T_S).text_color(who.live ? t.foreground : t.dim).child(who.live ? who.name : `${who.name} (beendet)`))
+    .child(div().min_w(0).truncate().text_size(T_S).text_color(who.named && who.live ? t.foreground : t.dim)
+      .child(who.named && !who.live ? `${label} (beendet)` : label))
     .when(Boolean(st), (el) => el.child(statusIcon(t, st))));
 }
