@@ -65,6 +65,19 @@ function find(node, id) {
   return null;
 }
 
+// The workspace's orchestration mark (docs/ui/notes-ORCH-MARK.md): one live terminal
+// carries it, label hub.role=orchestrator else the name "orchestrator"; its tab and
+// space come from the panes. Identical in tabs-graph, space-folders, agent-cards.
+const ORCH_ICON = "mods/orchestra/orchestrator.svg";
+const ORCH_TIP = "Orchestrator dieses Workspace";
+function orchestration() {
+  const live = terminals().filter((x) => x.state === "live" && (x.labels?.["hub.role"] === "orchestrator" || x.name === "orchestrator"));
+  const tabOf = new Map(panes().filter((p) => p.terminal).map((p) => [p.terminal, p.tab]));
+  const tabs = new Set(live.map((x) => tabOf.get(x.address)).filter(Boolean));
+  const spaceIds = new Set(spaces().filter((s) => (s.tabs ?? []).some((tb) => tabs.has(tb.id))).map((s) => s.id));
+  return { addresses: new Set(live.map((x) => x.address)), tabs, spaces: spaceIds };
+}
+
 export default class Tabs extends View {
   init(_props, cx) {
     this.pressed = null;
@@ -188,7 +201,11 @@ export default class Tabs extends View {
   render() {
     const t = theme();
     const space = spaces().find(p => p.active);
-    const shown = space?.tabs ?? [];
+    const allTabs = space?.tabs ?? [];
+    const orch = orchestration();
+    // The orchestrator's tab is pinned left (notes-ORCH-MARK.md): display order only,
+    // the model keeps its positions.
+    const shown = [...allTabs.filter(c => orch.tabs.has(c.id)), ...allTabs.filter(c => !orch.tabs.has(c.id))];
     this.shownIds = shown.map(c => c.id);
     this.hidden = this.overflowCount();
     const stop = (_e, cx) => cx.stop_propagation();
@@ -199,25 +216,29 @@ export default class Tabs extends View {
     const item = (c, i) => {
       const program = panes().find(p => p.tab === c.id && p.program?.agent)?.program ?? panes().find(p => p.tab === c.id)?.program;
       const name = /^tb\d+$/.test(c.name) ? program?.name ?? "Terminal" : c.name;
+      const isOrch = orch.tabs.has(c.id);
       return h_flex().id(`tab-${c.id}`).h(H_ROW_TAB).px(10).gap(GAP_S).rounded(6).items_center().flex_none().text_size(T_M)
         .on_size_change((s, cx) => {
           if (this.tabW[c.id] === s.width) return;
           this.tabW[c.id] = s.width;
           this.recount(cx);
         })
-        .border_1().border_color(c.active ? t.border : t.chrome).bg(c.active ? t.raised : t.chrome).text_color(c.active ? t.foreground : t.muted)
+        .border_1().border_color(isOrch ? t.accent : c.active ? t.border : t.chrome).bg(c.active ? t.raised : t.chrome).text_color(c.active ? t.foreground : t.muted)
         .hover(s => s.bg(c.active ? t.raised : t.hover).text_color(t.foreground))
         .on_mouse_down("left", (e, cx) => { cx.stop_propagation(); this.pressed = i; if (e.click_count === 2) run("tab.rename", { id: c.id }); })
         .on_mouse_up("left", () => {
           const from = this.pressed; this.pressed = null;
-          if (from !== null && from !== i) run("tab.move", { id: shown[from].id, index: space.tabs.findIndex(x => x.id === c.id) + 1 });
+          // The orchestrator's tab stays left; dragging it selects only.
+          if (from !== null && from !== i && !isOrch && !orch.tabs.has(shown[from]?.id)) run("tab.move", { id: shown[from].id, index: allTabs.findIndex(x => x.id === c.id) + 1 });
           else run("tab.select", { id: c.id });
         })
         .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); openOverlay({ mod: "menu", kind: "popup", width: 200, props: { tab: "tab", target: { id: c.id, space: space.id } } }); })
-        .when(Boolean(program?.icon), el => el.child(program.tint ? svg(program.icon).size(14).flex_none().text_color(t.muted) : image(program.icon).size(14).flex_none()))
+        .when(isOrch, el => el.child(div().flex_none().tooltip(ORCH_TIP).child(svg(ORCH_ICON).size(14).flex_none().text_color(t.accent))))
+        .when(!isOrch && Boolean(program?.icon), el => el.child(program.tint ? svg(program.icon).size(14).flex_none().text_color(t.muted) : image(program.icon).size(14).flex_none()))
         .child(div().max_w(170).truncate().tooltip(c.zoomed ? `${name} (gezoomt)` : name).child(c.zoomed ? `${name} Z` : name))
         .when(c.status && c.status !== "idle", el => el.child(statusMark(t, c.status)))
-        .when(c.active, el => el.child(div().id(`close-${c.id}`).size(16).flex_none().flex().items_center().justify_center().rounded(4)
+        // No close on the orchestrator's tab: it is the workspace's mark, not a terminal to drop.
+        .when(c.active && !isOrch, el => el.child(div().id(`close-${c.id}`).size(16).flex_none().flex().items_center().justify_center().rounded(4)
           .text_color(t.dim).hover(s => s.bg(t.hover).text_color(t.foreground)).tooltip("Tab schließen (⌘W)")
           .on_mouse_down("left", stop).on_click((_e, cx) => { cx.stop_propagation(); run("tab.close", { id: c.id }); })
           .child(svg("mods/pane/close.svg").size(12))));

@@ -45,6 +45,19 @@ function find(node, id) {
   return null;
 }
 
+// The workspace's orchestration mark (docs/ui/notes-ORCH-MARK.md): one live terminal
+// carries it, label hub.role=orchestrator else the name "orchestrator"; its tab and
+// space come from the panes. Identical in tabs-graph, space-folders, agent-cards.
+const ORCH_ICON = "mods/orchestra/orchestrator.svg";
+const ORCH_TIP = "Orchestrator dieses Workspace";
+function orchestration() {
+  const live = terminals().filter((x) => x.state === "live" && (x.labels?.["hub.role"] === "orchestrator" || x.name === "orchestrator"));
+  const tabOf = new Map(panes().filter((p) => p.terminal).map((p) => [p.terminal, p.tab]));
+  const tabs = new Set(live.map((x) => tabOf.get(x.address)).filter(Boolean));
+  const spaceIds = new Set(spaces().filter((s) => (s.tabs ?? []).some((tb) => tabs.has(tb.id))).map((s) => s.id));
+  return { addresses: new Set(live.map((x) => x.address)), tabs, spaces: spaceIds };
+}
+
 // The sidebar's rail goes by its width, not a flag: dragging its edge narrows it too.
 const narrow = () => (find(layout(), "sidebar")?.size?.px ?? Infinity) < 160;
 
@@ -735,6 +748,7 @@ export default class Agents extends View {
     this.publishIdentity(list);
     for (const address of this.selected) if (!this.listed.has(address)) this.selected.delete(address);
     const all = terminals();
+    const orch = orchestration();
     this.migratePins(all);
     const shown = focused()?.agent;
     const now = Date.now();
@@ -817,6 +831,7 @@ export default class Agents extends View {
 
     const row = (a, i, subs = [], inner = []) => {
       const name = this.avatars[a.address]?.name ?? (a.program?.name || label(a));
+      const isOrch = orch.addresses.has(a.address);
       // On the rail an avatar carries the identity, the tooltip the words (docs/ui/review.md A4).
       if (collapsed) {
         const n = this.avatars[a.address]?.n ?? 0;
@@ -828,13 +843,15 @@ export default class Agents extends View {
           .items_center()
           .justify_center()
           .gap(GAP_XS)
-          .tooltip(`${name} · ${WORD[a.status] ?? a.status} · ${a.space_name}`)
+          .tooltip(isOrch ? `${name} · Orchestrator dieses Workspace · ${WORD[a.status] ?? a.status}` : `${name} · ${WORD[a.status] ?? a.status} · ${a.space_name}`)
           .hover((s) => s.bg(t.hover))
           .on_click(() => run("pane.focus", { pane: a.pane }))
           .child(image(AVATARS[n]).w(16).h(16).flex_none())
-          .child(h_flex().w(14).flex_none().items_center().justify_center().child(a.status === "blocked" ? this.bang(t) : statusMark(t, a.status)));
+          .child(isOrch
+            ? svg(ORCH_ICON).size(12).flex_none().text_color(t.accent)
+            : h_flex().w(14).flex_none().items_center().justify_center().child(a.status === "blocked" ? this.bang(t) : statusMark(t, a.status)));
       }
-      const pic = icon(a.program, 16, t.foreground);
+      const pic = isOrch ? div().flex_none().tooltip(ORCH_TIP).child(svg(ORCH_ICON).size(16).flex_none().text_color(t.accent)) : icon(a.program, 16, t.foreground);
       // An agent on another machine (`vps/t7`) says which.
       const machine = machineOf(a.address);
       const when = this.since(a);
@@ -907,6 +924,8 @@ export default class Agents extends View {
           .child(h_flex().h(16).gap(GAP_S).items_center()
             .when(Boolean(pic), (el) => el.child(pic))
             .child(div().flex_none().max_w(120).truncate().tooltip(name).text_size(T_L).font_semibold().text_color(idle ? t.muted : t.foreground).child(name))
+            .when(isOrch, (el) => el.child(div().h(14).px(4).flex_none().flex().items_center().rounded(4).bg(t.chrome)
+              .border_1().border_color(t.accent).text_size(T_XS).font_medium().text_color(t.accent).tooltip(ORCH_TIP).child("Orchestrator")))
             .child(div().flex_1().min_w(0).truncate().text_size(T_S).text_color(t.dim).child(where))
             // Hovered, the buttons take the place of the status (a spinning mark would paint over them).
             .when(sayWaiting && !hovered, (el) => el.child(statusChip(t, "blocked")))
@@ -932,6 +951,8 @@ export default class Agents extends View {
       if (groups.at(-1)?.id === id) groups.at(-1).members.push(a);
       else groups.push({ id, label: byPriority ? SECTION[r] : a.space_name || "", status: byPriority ? SECTION_STATUS[r] : null, members: [a] });
     }
+    // The orchestrator sits at the top of its group; its children stay indented under it.
+    for (const g of groups) g.members.sort((x, y) => (orch.addresses.has(y.address) ? 1 : 0) - (orch.addresses.has(x.address) ? 1 : 0));
 
     // A group's section head; it folds the group. Folded, it says how many and the most urgent state.
     const header = (g) => {

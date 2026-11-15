@@ -13,7 +13,7 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { spaces, machines, panes, run, openOverlay, closeOverlay, props, exec, hc, theme, shared, setShared, watchFolder, window, layout, pickFolder, home, nextCommand } from "herdr";
+import { spaces, terminals, machines, panes, run, openOverlay, closeOverlay, props, exec, hc, theme, shared, setShared, watchFolder, window, layout, pickFolder, home, nextCommand } from "herdr";
 
 // A machine's folders live in a file in its home, so every screen showing its
 // spaces shows the same folders: { list: [{ id, name, folded }], of: { spaceId:
@@ -117,6 +117,19 @@ function find(node, id) {
     if (found) return found;
   }
   return null;
+}
+
+// The workspace's orchestration mark (docs/ui/notes-ORCH-MARK.md): one live terminal
+// carries it, label hub.role=orchestrator else the name "orchestrator"; its tab and
+// space come from the panes. Identical in tabs-graph, space-folders, agent-cards.
+const ORCH_ICON = "mods/orchestra/orchestrator.svg";
+const ORCH_TIP = "Orchestrator dieses Workspace";
+function orchestration() {
+  const live = terminals().filter((x) => x.state === "live" && (x.labels?.["hub.role"] === "orchestrator" || x.name === "orchestrator"));
+  const tabOf = new Map(panes().filter((p) => p.terminal).map((p) => [p.terminal, p.tab]));
+  const tabs = new Set(live.map((x) => tabOf.get(x.address)).filter(Boolean));
+  const spaceIds = new Set(spaces().filter((s) => (s.tabs ?? []).some((tb) => tabs.has(tb.id))).map((s) => s.id));
+  return { addresses: new Set(live.map((x) => x.address)), tabs, spaces: spaceIds };
 }
 
 // The sidebar's rail goes by its width, not a flag: dragging its edge narrows it too.
@@ -761,6 +774,7 @@ export default class Spaces extends View {
 
   row({ w, i, g, tree, folder, nested }, t) {
     const on = w.active;
+    const isOrch = this.orch?.spaces.has(w.id);
     const colors = shared("space.colors") ?? {};
     const color = colors[w.id] ?? "ansi6";
     const fill = mark(t, color);
@@ -812,11 +826,13 @@ export default class Spaces extends View {
           .when(Boolean(tree), el => el.pl(22).child(svg("mods/workspace-chrome/branch.svg").size(12).text_color(t.dim)))
           .when(!tree, el => el.child(h_flex().size(18).flex_none().rounded(4).bg(fill).items_center().justify_center().text_size(T_XS).font_semibold().text_color(t.background).child([...w.name][0]?.toUpperCase() ?? "?")))
           .child(div().flex_shrink(0).max_w(150).truncate().text_color(t.foreground).tooltip(w.name).child(w.name))
+          .when(isOrch, el => el.child(div().flex_none().tooltip(ORCH_TIP).child(svg(ORCH_ICON).size(12).flex_none().text_color(t.accent))))
           .child(g ? this.gitTail(g, tree, w.name, t) : div().flex_1()),
       );
   }
 
   compact({ w, i }, t) {
+    const isOrch = this.orch?.spaces.has(w.id);
     return h_flex()
       .id(`space-${w.id}`)
       .h(H_ROW)
@@ -825,8 +841,9 @@ export default class Spaces extends View {
       .gap(4)
       .when(w.active, (el) => el.bg(t.raised))
       .hover((s) => s.bg(t.hover))
+      .when(isOrch, (el) => el.tooltip(ORCH_TIP))
       .on_click(() => run("space.select", { id: w.id }))
-      .child(div().text_color(w.active ? t.foreground : t.muted).child(String(i + 1)))
+      .child(div().text_color(isOrch ? t.accent : w.active ? t.foreground : t.muted).child(String(i + 1)))
       .child(div().text_color(tone(t, w.status)).child(glyph(w.status)));
   }
 
@@ -859,6 +876,7 @@ export default class Spaces extends View {
     if (this.folderMenu) return this.folderMenuView(t);
     if (this.editing) return this.editView(t);
     const collapsed = narrow();
+    this.orch = orchestration();
     const palette = MARKS;
     const sp = spaces();
     const ids = new Set(sp.map(p => p.id));

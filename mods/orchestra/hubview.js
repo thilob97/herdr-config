@@ -589,7 +589,7 @@ export class HubSection {
     // narrow to carry those in row 1 next to three icon buttons.
     return ui.card(t, "hub-card", { border: blocked ? t.blocked : undefined })
       .child(h_flex().h(ui.H_BTN_S).gap(ui.GAP_S).items_center()
-        .child(svg("mods/orchestra/icon.svg").size(14).flex_none().text_color(o ? t.foreground : t.dim))
+        .child(div().flex_none().tooltip("Orchestrator dieses Workspace").child(svg("mods/orchestra/orchestrator.svg").size(14).flex_none().text_color(o ? t.accent : t.dim)))
         .child(div().flex_none().text_size(T_L).font_semibold().text_color(t.foreground).child("Orchestrator"))
         .child(chip)
         .child(div().flex_1())
