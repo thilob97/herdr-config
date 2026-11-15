@@ -39,8 +39,13 @@ reports into it) and show in the Team-Panel under it.
                                             Refuses a ticket without an acceptance criterion (see hub spec)
                                             and while the In-Arbeit stage holds its WIP limit (hub wip);
                                             --force needs --reason and writes it to the Verlauf
-  hub wip [--json]                          the WIP limits for In Arbeit and Prüfung (default 3/2,
-                                            data/orchestra/wip.json); `hub wip arbeit=4 pruefung=2` sets them
+  hub whoami                                this terminal's orchestrator id, its name, its open
+                                            tickets and its WIP counts (JSON)
+  hub wip [--json] [--all] [--mine]         the WIP limits for In Arbeit and Prüfung (default 3/2,
+                                            data/orchestra/wip.json); `hub wip arbeit=4 pruefung=2` sets
+                                            the default for new orchestrators, `--mine` only this one
+                                            (mine: {<id>: {...}}); counted per orchestrator, --all is
+                                            the global sum
   hub spec ID                               complete the ticket's ## Ziel, ## Abnahmekriterien and
                                             ## Grenzen as a template (existing sections stay) and show them
   hub triage ID [--apply] [--json]          type (bug/feature/chore), size (S/M/L) and priority
@@ -52,12 +57,13 @@ reports into it) and show in the Team-Panel under it.
                                             worktree and record pass|fail, at, head, duration and the
                                             last 10 lines under ## Preflight. Dispatch refuses a red
                                             base and runs a missing preflight
-  hub stalls [--json] [--doing MIN] [--review MIN] [--todo MIN]
+  hub stalls [--json] [--all] [--doing MIN] [--review MIN] [--todo MIN]
                                             tickets older than the threshold (default 45/120/1440
                                             minutes) in In Arbeit, Prüfung and Geplant, grouped
-  hub nudge ID [--text TEXT]                ask the ticket's live agent for its state (hc send) and
-                                            write "Stand abgefragt" as an orchestrator comment
-  hub night [--until HH:MM] [--for MIN] [--max N] [--dry-run]
+  hub nudge ID [--text TEXT] [--force]      ask the ticket's live agent for its state (hc send) and
+                                            write "Stand abgefragt" as an orchestrator comment;
+                                            another orchestrator's ticket needs --force
+  hub night [--until HH:MM] [--for MIN] [--max N] [--dry-run] [--all]
                                             dispatch startable tickets one at a time (priority first),
                                             respecting blocked_by, spec, stage and agent WIP; stops at
                                             the deadline, --max or when nothing starts; writes
@@ -116,16 +122,18 @@ reports into it) and show in the Team-Panel under it.
                                             accepted without landing; ends the agent, removes the
                                             clean worktree and closes the ticket's space/tab (branch
                                             stays); the flags keep one of them
-  hub cleanup [--yes] [--root PATH]         remove this home's leftovers: worktrees it derived from
+  hub cleanup [--yes] [--root PATH] [--all] remove this home's leftovers: worktrees it derived from
                                             its tickets' repo+branch, review checkouts, spaces without
                                             live terminals, finished agents older than an hour; without
                                             --yes only a dry run. --root defaults to
                                             $HOME/.herdr/worktrees and is never searched beyond the
                                             tickets' own paths
-  hub status                                tickets with their agents' live status, CI, age (since the
-                                            last status change) and cost so far; done tickets are
-                                            listed only while something is left
-  hub stats [--json] [--days 14]      throughput per ticket, station and repo: lead time (todo→done),
+  hub status [--all]                        tickets with their agents' live status, owner, CI, age
+                                            (since the last status change) and cost so far; standard
+                                            are this orchestrator's and ownerless tickets, --all shows
+                                            every orchestrator's; done tickets are listed only while
+                                            something is left
+  hub stats [--json] [--days 14] [--all]  throughput per ticket, station and repo: lead time (todo→done),
                                             review rounds, rework (back to doing after review) and cost,
                                             with today's numbers and the last 7 days for the UI
   hub timeline [--json] [--since 24h|7d|all] [--ticket ID] [--write]
@@ -138,11 +146,11 @@ reports into it) and show in the Team-Panel under it.
                                             timeline.html and prints its path
 Python 3, standard library only.
 """
-import argparse, datetime, html, json, os, pwd, re, secrets, shlex, subprocess, sys, time, unicodedata
+import argparse, datetime, fcntl, html, json, os, pwd, re, secrets, shlex, subprocess, sys, time, unicodedata
 
 APP = os.environ.get("HERDR_APP_HOME") or os.path.expanduser("~/.config/herdr-app")
 TICKETS = os.path.join(APP, "data", "quests", "tickets")
-FIELDS = ["title", "status", "repo", "labels", "due", "machine", "agent", "harness", "branch", "base", "base_head", "worktree", "terminal",
+FIELDS = ["title", "status", "repo", "labels", "due", "machine", "owner", "agent", "harness", "branch", "base", "base_head", "worktree", "terminal",
           "space", "tab", "source", "type", "size", "priority", "triaged",
           "preflight", "preflight_at", "preflight_head", "preflight_duration",
           "checks", "checks_head", "checks_at", "checks_duration", "checks_exit", "checks_cmd", "verify",
@@ -443,6 +451,109 @@ def die(msg):
     sys.exit(1)
 
 
+# ---- Ein Home, mehrere Orchestratoren: eine Sperre, eine Identität, klare Besitzer
+
+LOCK = os.path.join(APP, "data", "orchestra", ".hub.lock")
+LOCK_TIMEOUT = max(1, env_int("HUB_LOCK_TIMEOUT", 10))
+_lock_depth = 0
+
+
+class hub_lock:
+    """One writer at a time for a read-modify-write on data/orchestra.
+
+    Reentrant in-process, so a command can wrap its file work once and still call
+    `event()` or `write()` inside. The lock never covers an agent start, a network call
+    or a long git command: a second hub command waits at most a moment by design."""
+
+    def __enter__(self):
+        global _lock_depth
+        if _lock_depth:
+            _lock_depth += 1
+            return self
+        os.makedirs(os.path.dirname(LOCK), exist_ok=True)
+        self.fd = os.open(LOCK, os.O_RDWR | os.O_CREAT, 0o644)
+        end = time.time() + LOCK_TIMEOUT
+        while True:
+            try:
+                fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.time() >= end:
+                    os.close(self.fd)
+                    die(f"Schreibsperre {LOCK} ist seit {LOCK_TIMEOUT} s belegt "
+                        f"(eine andere hub-Änderung läuft noch); bitte gleich erneut versuchen")
+                time.sleep(0.02)
+        _lock_depth = 1
+        return self
+
+    def __exit__(self, *exc):
+        global _lock_depth
+        _lock_depth -= 1
+        if _lock_depth:
+            return False
+        fcntl.flock(self.fd, fcntl.LOCK_UN)
+        os.close(self.fd)
+        return False
+
+
+def orchestrator_id():
+    """This orchestrator's terminal: HC_TERMINAL_ID first, then the first labelled one.
+
+    The environment wins so two orchestrators in one home keep their own identity — the
+    first labelled terminal is only the fallback for a shell that does not know its
+    address. `hc get` confirms the role before HC_TERMINAL_ID counts; `hc ls` may omit
+    labels, so an unconfirmed id is not trusted."""
+    me = os.environ.get("HC_TERMINAL_ID") or ""
+    if me:
+        info = hc_term(me)
+        if (info.get("labels") or {}).get("hub.role") == "orchestrator" or info.get("name") == "orchestrator":
+            return me
+    try:
+        out = json.loads(subprocess.run(["hc", "ls", "--json"], capture_output=True, text=True).stdout)
+    except (OSError, ValueError):
+        out = {}
+    terminals = out.get("terminals") or []
+    if me:
+        for x in terminals:
+            if x.get("address") == me and ((x.get("labels") or {}).get("hub.role") == "orchestrator"
+                                           or x.get("name") == "orchestrator"):
+                return me
+    for x in terminals:
+        if (x.get("labels") or {}).get("hub.role") == "orchestrator":
+            return x.get("address") or ""
+    for x in terminals:
+        if x.get("name") == "orchestrator":
+            return x.get("address") or ""
+    return ""
+
+
+def owns(t, me):
+    """True when the ticket is this orchestrator's: its owner, or nobody's (old tickets)."""
+    owner = (t.get("owner") or "").strip()
+    return not owner or not me or owner == me
+
+
+def my_tickets(rows=None, everyone=False, me=None):
+    """The tickets this orchestrator handles; unowned ones stay visible to everyone."""
+    rows = all_tickets() if rows is None else rows
+    if everyone:
+        return rows
+    me = orchestrator_id() if me is None else me
+    return [t for t in rows if owns(t, me)]
+
+
+def update_ticket(tid, fn):
+    """Locked read-modify-write of one ticket; returns what was saved.
+
+    The fresh read inside the lock is what keeps a concurrent comment from being lost:
+    the caller's changes are applied to the current file, not to a stale copy."""
+    with hub_lock():
+        t = read(tid)
+        fn(t)
+        write(t)
+        return t
+
+
 def slug(s, n=40):
     s = unicodedata.normalize("NFKD", str(s)).encode("ascii", "ignore").decode().lower().replace("ß", "ss")
     return re.sub(r"[^a-z0-9]+", "-", s).strip("-")[:n].rstrip("-")
@@ -514,20 +625,22 @@ def event(kind, ticket="", agent="", terminal="", text=""):
     row = {"at": now_ms(), "kind": kind, "ticket": ticket or "", "agent": agent or "",
            "terminal": terminal or "", "text": one_line(text)[:500]}
     os.makedirs(os.path.dirname(EVENTS), exist_ok=True)
-    with open(EVENTS, "a", encoding="utf-8") as f:
-        f.write(json.dumps(row, ensure_ascii=False) + "\n")
-    # Rotation is the only rewrite: the normal path is one append, so parallel hub
-    # commands do not lose each other's lines.
-    try:
-        with open(EVENTS, encoding="utf-8") as f:
-            lines = [line for line in f.read().splitlines() if line.strip()]
-    except OSError:
-        return row
-    if len(lines) > EVENT_MAX:
-        tmp = EVENTS + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines[-EVENT_KEEP:]) + "\n")
-        os.replace(tmp, EVENTS)
+    with hub_lock():
+        with open(EVENTS, "a", encoding="utf-8") as f:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        # Rotation is the only rewrite: the normal path is one append, so parallel hub
+        # commands do not lose each other's lines. It runs under the same lock as the
+        # append, so a rotation cannot eat a line another command just wrote.
+        try:
+            with open(EVENTS, encoding="utf-8") as f:
+                lines = [line for line in f.read().splitlines() if line.strip()]
+        except OSError:
+            return row
+        if len(lines) > EVENT_MAX:
+            tmp = EVENTS + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines[-EVENT_KEEP:]) + "\n")
+            os.replace(tmp, EVENTS)
     return row
 
 
@@ -1122,18 +1235,21 @@ def cmd_memory(a):
     if a.mcmd == "add":
         if not path:
             die("hub memory add braucht --agent NAME oder --repo PFAD")
-        add_memory(path, a.ticket or "", " ".join(a.text))
+        with hub_lock():
+            add_memory(path, a.ticket or "", " ".join(a.text))
         print(f"{label}: {len(read_memory(path))}/{MEMORY_MAX} Einträge ({path})")
         return
     if a.mcmd == "clear":
         if path:
-            write_memory(path, [])
+            with hub_lock():
+                write_memory(path, [])
             print(f"{label}: geleert")
             return
         if os.path.isdir(MEMORY):
-            for f in sorted(os.listdir(MEMORY)):
-                if f.endswith(".md"):
-                    write_memory(os.path.join(MEMORY, f), [])
+            with hub_lock():
+                for f in sorted(os.listdir(MEMORY)):
+                    if f.endswith(".md"):
+                        write_memory(os.path.join(MEMORY, f), [])
         print("Gedächtnis geleert (alle Agenten)")
         return
     if path:
@@ -1190,33 +1306,61 @@ def shell():
 
 # ---- WIP: how much work one stage may hold (data/orchestra/wip.json)
 
-def read_wip():
-    """The limits, defaults for a missing or broken file, always both keys as ints."""
+def read_wip(me=None):
+    """The limits for one orchestrator: global defaults, plus its `mine` overrides.
+
+    `per_orchestrator` defaults to true and is only written once the file carries
+    `mine` entries, so a home with one orchestrator keeps the old two-key file."""
     w = dict(WIP_DEFAULTS)
+    w["per_orchestrator"] = True
+    w["mine"] = {}
     try:
         with open(WIP, encoding="utf-8") as f:
             data = json.load(f)
+    except (OSError, ValueError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    for k in WIP_STAGES:
+        v = data.get(k)
+        if isinstance(v, int) and not isinstance(v, bool) and v >= 0:
+            w[k] = v
+    if isinstance(data.get("per_orchestrator"), bool):
+        w["per_orchestrator"] = data["per_orchestrator"]
+    if isinstance(data.get("mine"), dict):
+        w["mine"] = {str(k): v for k, v in data["mine"].items() if isinstance(v, dict)}
+    own = w["mine"].get(me) if me else None
+    if isinstance(own, dict):
         for k in WIP_STAGES:
-            v = data.get(k) if isinstance(data, dict) else None
+            v = own.get(k)
             if isinstance(v, int) and not isinstance(v, bool) and v >= 0:
                 w[k] = v
-    except (OSError, ValueError):
-        pass
     return w
 
 
 def write_wip(w):
     os.makedirs(os.path.dirname(WIP), exist_ok=True)
+    data = {k: w[k] for k in WIP_STAGES}
+    mine = {k: {s: int(v[s]) for s in WIP_STAGES if isinstance(v.get(s), int)}
+            for k, v in (w.get("mine") or {}).items() if isinstance(v, dict) and v}
+    if mine:
+        data["per_orchestrator"] = True
+        data["mine"] = mine
+    elif w.get("per_orchestrator") is False:
+        data["per_orchestrator"] = False
     tmp = WIP + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump({k: w[k] for k in WIP_STAGES}, f, ensure_ascii=False, indent=1)
+        json.dump(data, f, ensure_ascii=False, indent=1)
         f.write("\n")
     os.replace(tmp, WIP)
 
 
-def wip_usage():
-    """{arbeit: {'limit','count','tickets'}, pruefung: ...} over this home's tickets."""
-    rows = all_tickets()
+def wip_usage(me=None, everyone=False):
+    """{arbeit: {'stage','ids','count'}, pruefung: ...} over this orchestrator's tickets.
+
+    Unowned tickets count for everyone, like everywhere else, so old work does not
+    silently drop out of the limits. `everyone=True` is the global sum (`hub wip --all`)."""
+    rows = my_tickets(everyone=everyone, me=me)
     out = {}
     for key, stage in WIP_STAGES.items():
         ids = [t["id"] for t in rows if t["status"] == stage]
@@ -1225,8 +1369,9 @@ def wip_usage():
 
 
 def cmd_wip(a):
-    w = read_wip()
+    me = orchestrator_id()
     if a.pairs:
+        pairs = []
         for kv in a.pairs:
             if "=" not in kv:
                 die(f"erwartet arbeit=N oder pruefung=M, nicht {kv!r}")
@@ -1236,14 +1381,42 @@ def cmd_wip(a):
             v = v.strip()
             if not re.fullmatch(r"\d{1,2}", v):
                 die(f"ungültiges Limit {v!r} für {k}: eine ganze Zahl 0–99")
-            w[k] = int(v)
-        write_wip(w)
-    use = wip_usage()
+            pairs.append((k, int(v)))
+        if a.mine and not me:
+            die("hub wip --mine braucht einen Orchestrator: HC_TERMINAL_ID mit Label "
+                "hub.role=orchestrator oder Name orchestrator (hc get)")
+        with hub_lock():
+            w = read_wip()  # the file's defaults, not this terminal's overrides
+            if a.mine:
+                own = dict(w["mine"].get(me) or {})
+                own.update(dict(pairs))
+                w["mine"][me] = own
+                w["per_orchestrator"] = True
+            else:
+                for k, v in pairs:
+                    w[k] = v
+            write_wip(w)
+    w = read_wip(None if a.all else me)
+    use = wip_usage(me, everyone=a.all)
     if a.json:
-        print(json.dumps(w, ensure_ascii=False))
+        print(json.dumps({k: w[k] for k in WIP_STAGES}, ensure_ascii=False))
         return
+    scope = " (alle Orchestratoren)" if a.all else (f" (nur {me})" if me else "")
     for key, stage in WIP_STAGES.items():
-        print(f"{key} {use[key]['count']}/{w[key]} ({len(use[key]['ids'])} in {stage})")
+        print(f"{key} {use[key]['count']}/{w[key]} ({len(use[key]['ids'])} in {stage}){scope}")
+
+
+def cmd_whoami(_a):
+    """Who am I here: this terminal's orchestrator id, its name, its open tickets, its WIP."""
+    me = orchestrator_id()
+    info = hc_term(me) if me else {}
+    mine = [t for t in my_tickets(me=me) if t["status"] != "done"]
+    w = read_wip(me)
+    use = wip_usage(me)
+    print(json.dumps({"orchestrator": me, "name": info.get("name") or "",
+                      "tickets": len(mine),
+                      "wip": {k: {"limit": w[k], "count": use[k]["count"]} for k in WIP_STAGES}},
+                     ensure_ascii=False))
 
 
 # ---- Abnahmekriterien: what `hub spec` completes and `hub dispatch`/`hub review` require
@@ -1483,12 +1656,12 @@ def cmd_preflight(a):
 STALL_STAGES = [("doing", "In Arbeit", 45), ("review", "Prüfung", 120), ("todo", "Geplant", 1440)]
 
 
-def stall_rows(doing=45, review=120, todo=1440):
+def stall_rows(doing=45, review=120, todo=1440, everyone=False):
     limits = {"doing": doing, "review": review, "todo": todo}
     labels = {k: label for k, label, _ in STALL_STAGES}
     now = time.time()
     rows = []
-    for t in all_tickets():
+    for t in my_tickets(everyone=everyone):
         stage = t.get("status")
         at = epoch(t.get("status_at"))
         if stage not in limits or at is None:
@@ -1507,7 +1680,7 @@ def stall_rows(doing=45, review=120, todo=1440):
 
 
 def cmd_stalls(a):
-    rows = stall_rows(a.doing, a.review, a.todo)
+    rows = stall_rows(a.doing, a.review, a.todo, everyone=a.all)
     if a.json:
         print(json.dumps(rows, ensure_ascii=False))
         return
@@ -1525,12 +1698,18 @@ def cmd_stalls(a):
 
 def cmd_nudge(a):
     t = read(a.id)
+    me = orchestrator_id()
+    owner = (t.get("owner") or "").strip()
+    if owner and owner not in ("mensch", me) and not a.force:
+        die(f"{a.id} gehört {owner}, nicht dir ({me or 'unbekannt'}); fremde Tickets nur mit --force")
     text = one_line(a.text) or "Bitte kurz den Stand nennen: was ist erledigt, was fehlt, was blockiert?"
     addr = t.get("terminal") or ""
     sent = bool(addr and is_live(addr) and send_agent(addr, f"Stand zu {a.id}: {text}"))
-    add_comment(t, "orchestrator", f"Stand abgefragt: {text}")
-    write(t)
-    event("nudge", a.id, t.get("agent") or t.get("assignee") or "", addr, text)
+    with hub_lock():
+        t = read(a.id)
+        add_comment(t, "orchestrator", f"Stand abgefragt: {text}")
+        write(t)
+        event("nudge", a.id, t.get("agent") or t.get("assignee") or "", addr, text)
     print(f"{a.id}: " + (f"Nachricht an {addr} gesendet; Kommentar geschrieben"
                          if sent else "Agent nicht lebend; nur Kommentar geschrieben"))
 
@@ -1546,8 +1725,8 @@ def night_rank(t):
     return (prio, t.get("created") or "", t["id"])
 
 
-def night_queue():
-    return sorted((t for t in all_tickets() if t.get("status") == "todo"), key=night_rank)
+def night_queue(everyone=False):
+    return sorted((t for t in my_tickets(everyone=everyone) if t.get("status") == "todo"), key=night_rank)
 
 
 def night_block(t):
@@ -1621,7 +1800,7 @@ def cmd_night(a):
     deadline = night_deadline(a)
     begin = now_stamp()
     if a.dry_run:
-        rows = [(t["id"], night_block(t)) for t in night_queue()]
+        rows = [(t["id"], night_block(t)) for t in night_queue(everyone=a.all)]
         startable = [(tid, why) for tid, why in rows if not why]
         if not startable:
             print("nichts startbar")
@@ -1642,7 +1821,7 @@ def cmd_night(a):
         if deadline is not None and time.time() >= deadline:
             break
         candidate, order = None, []
-        for t in night_queue():
+        for t in night_queue(everyone=a.all):
             if t["id"] in started or t["id"] in attempted:
                 continue
             why = night_block(t)
@@ -1696,10 +1875,14 @@ def cmd_new(a):
     while os.path.exists(path_of(tid)):
         tid, n = f"{base}-{n}", n + 1
     t = {"id": tid, "title": a.title, "repo": a.repo or "", "labels": a.labels or "",
-         "machine": a.on or "", "source": a.source or "", "by": "orchestrator", "body": (body or "").strip() + "\n"}
+         "machine": a.on or "", "source": a.source or "", "by": "orchestrator",
+         "owner": orchestrator_id(), "body": (body or "").strip() + "\n"}
     t["created"] = now_stamp()
     set_status(t, "todo", t["created"])
-    write(t)
+    with hub_lock():
+        if os.path.exists(path_of(tid)):
+            die(f"{tid} wurde gerade angelegt; bitte erneut")
+        write(t)
     print(tid)
 
 
@@ -1729,12 +1912,15 @@ def cmd_show(a):
 
 
 def cmd_comment(a):
-    t = read(a.id)
     who = re.sub(r"[·\r\n]+", " ", a.role).strip() or "mensch"
-    add_comment(t, who, " ".join(a.text))
-    write(t)
-    event("comment", a.id, who, t.get("terminal") or "", " ".join(a.text))
-    print(f"{a.id}: Verlauf, {len(entries(t))} Einträge")
+    text = " ".join(a.text)
+    with hub_lock():
+        t = read(a.id)
+        add_comment(t, who, text)
+        write(t)
+        event("comment", a.id, who, t.get("terminal") or "", text)
+        count = len(entries(t))
+    print(f"{a.id}: Verlauf, {count} Einträge")
 
 
 def cmd_assign(a):
@@ -1996,21 +2182,22 @@ def cmd_agent_rm(a):
 
 
 def cmd_set(a):
-    t = read(a.id)
-    moved = None
-    for kv in a.pairs:
-        if "=" not in kv:
-            die(f"expected key=value, got {kv!r}")
-        k, v = kv.split("=", 1)
-        if k not in FIELDS:
-            die(f"unknown field {k} (known: {', '.join(FIELDS)})")
-        if k == "status":
-            moved = v
-        else:
-            t[k] = v
-    if moved is not None:
-        set_status(t, moved)
-    write(t)
+    with hub_lock():
+        t = read(a.id)
+        moved = None
+        for kv in a.pairs:
+            if "=" not in kv:
+                die(f"expected key=value, got {kv!r}")
+            k, v = kv.split("=", 1)
+            if k not in FIELDS:
+                die(f"unknown field {k} (known: {', '.join(FIELDS)})")
+            if k == "status":
+                moved = v
+            else:
+                t[k] = v
+        if moved is not None:
+            set_status(t, moved)
+        write(t)
 
 
 def is_live(address):
@@ -2044,8 +2231,9 @@ def dispatch_gates(t):
         gaps.append(f"Signal ohne Triage (source gesetzt): hub triage {t['id']} --apply")
     if not criteria(t):
         gaps.append(f"kein Abnahmekriterium unter {ABNAHME} (hub spec {t['id']} legt die Vorlage an)")
-    w = read_wip()
-    use = wip_usage()
+    me = orchestrator_id()
+    w = read_wip(me)
+    use = wip_usage(me)
     ids = [x for x in use["arbeit"]["ids"] if x != t["id"]]
     limit = w["arbeit"]
     if len(ids) >= limit:
@@ -2068,8 +2256,8 @@ def cmd_dispatch(a):
             die(f"{a.id}: {' · '.join(gaps)}. Start verweigert; nur mit --force --reason \"…\".")
         if not a.reason.strip():
             die("--force verlangt --reason \"…\": der Grund gehört in den Verlauf")
-        add_comment(t, "hub", f"Start-Gate überfahren ({' · '.join(gaps)}): {a.reason.strip()}")
-        write(t)
+        note = f"Start-Gate überfahren ({' · '.join(gaps)}): {a.reason.strip()}"
+        update_ticket(a.id, lambda fresh: add_comment(fresh, "hub", note))
     # A roster name selects a named agent: its program, model, repo and branch prefix.
     # Unknown names keep working as programs or commands, as before.
     who = roster_of(a.agent)
@@ -2189,12 +2377,20 @@ def cmd_dispatch(a):
     if r.returncode != 0:
         die(f"hc run: {(r.stderr or r.stdout).strip()}")
     out = json.loads(r.stdout)
-    t.update(agent=agent_key, harness=short_harness(who) if who else program,
-             branch=branch or "", worktree=folder if branch else "",
-             terminal=out["address"], space=space, tab=tab)
-    set_status(t, "doing")
-    write(t)
-    event("dispatch", a.id, agent_key, out["address"], f"{agent_key} in {branch or folder}")
+
+    def saved(fresh):
+        fresh.update(agent=agent_key, harness=short_harness(who) if who else program,
+                     branch=branch or "", worktree=folder if branch else "",
+                     terminal=out["address"], space=space, tab=tab)
+        if not (fresh.get("owner") or "").strip():
+            fresh["owner"] = me or orchestrator_id()
+        set_status(fresh, "doing")
+
+    with hub_lock():
+        t = read(a.id)
+        saved(t)
+        write(t)
+        event("dispatch", a.id, agent_key, out["address"], f"{agent_key} in {branch or folder}")
     print(json.dumps({"ticket": a.id, "terminal": out["address"], "name": name, "agent": agent_key,
                       "folder": folder, "branch": branch}, ensure_ascii=False))
 
@@ -2280,8 +2476,11 @@ def cmd_review_start(a):
     if r.returncode != 0:
         die(f"hc run: {(r.stderr or r.stdout).strip()}")
     out = json.loads(r.stdout)
-    t.update(reviewer=key, reviewer_name=agent_name(key), review_terminal=out["address"])
-    write(t)
+
+    def saved(fresh):
+        fresh.update(reviewer=key, reviewer_name=agent_name(key), review_terminal=out["address"])
+
+    t = update_ticket(a.id, saved)
     event("review", a.id, key, out["address"], "Prüfstation gestartet")
     print(json.dumps({"ticket": a.id, "terminal": out["address"], "name": name, "folder": folder,
                       "branch": branch, "base": base, "agent": key, "reviewer_name": t["reviewer_name"]},
@@ -2302,15 +2501,20 @@ def cmd_review_verdict(a):
         die("leere Zusammenfassung")
     # The reviewer often starts with "Urteil: pass"; the comment already names the verdict.
     summary = re.sub(r"(?i)^urteil:\s*", "", summary)
-    n = int(t.get("review_rounds") or 0) + 1
     at = time.strftime("%Y-%m-%d %H:%M")
-    t.update(review=a.verdict, review_head=head, review_at=at, review_summary=summary, review_rounds=str(n))
-    set_review(t, f"- {at} · {a.verdict} · Runde {n} · HEAD {head[:7]} · "
-                  f"{t.get('reviewer_name') or t.get('reviewer') or 'review'}\n\n{summary}")
-    add_comment(t, "review", f"Urteil: {a.verdict} (Runde {n}) · {summary}")
-    if a.verdict == "fail":
-        set_status(t, "doing")
-    write(t)
+
+    def saved(fresh):
+        n = int(fresh.get("review_rounds") or 0) + 1
+        fresh.update(review=a.verdict, review_head=head, review_at=at, review_summary=summary,
+                     review_rounds=str(n))
+        set_review(fresh, f"- {at} · {a.verdict} · Runde {n} · HEAD {head[:7]} · "
+                          f"{fresh.get('reviewer_name') or fresh.get('reviewer') or 'review'}\n\n{summary}")
+        add_comment(fresh, "review", f"Urteil: {a.verdict} (Runde {n}) · {summary}")
+        if a.verdict == "fail":
+            set_status(fresh, "doing")
+
+    t = update_ticket(a.id, saved)
+    n = int(t.get("review_rounds") or 0)
     event("verdict", a.id, t.get("reviewer") or "", t.get("review_terminal") or "",
           f"{a.verdict} · Runde {n}")
     notified = False
@@ -2466,8 +2670,14 @@ def cmd_review(a):
         t["body"] += f"\n{rev}\n"
     if verlauf:
         t["body"] += f"\n{verlauf}\n"
-    set_status(t, "review")
-    write(t)
+
+    def saved(fresh):
+        fresh["body"] = t["body"]
+        if a.evidence:
+            fresh["evidence"] = t["evidence"]
+        set_status(fresh, "review")
+
+    t = update_ticket(a.id, saved)
     event("review", a.id, t.get("agent") or "", t.get("terminal") or "", "Übergabe an den Menschen")
     print(f"{a.id}: review")
 
@@ -2475,8 +2685,15 @@ def cmd_review(a):
 def cmd_done(a):
     t = read(a.id)
     res = cleanup_ticket(t, keep_worktree=a.keep_worktree, keep_space=a.keep_space)
-    set_status(t, "done")
-    write(t)
+
+    def saved(fresh):
+        # cleanup_ticket cleared what it ended/closed in memory; carry only those changes.
+        for k in ("terminal", "space", "tab"):
+            if t.get(k) == "" and fresh.get(k):
+                fresh[k] = ""
+        set_status(fresh, "done")
+
+    update_ticket(a.id, saved)
     event("done", a.id, t.get("agent") or "", t.get("terminal") or "", "abgeschlossen")
     print(f"{a.id}: done")
     for n in res["notes"]:
@@ -2758,7 +2975,7 @@ def own_worktrees(tickets, root, on=None):
 
 
 def cmd_cleanup(a):
-    tickets = all_tickets()
+    tickets = my_tickets(everyone=getattr(a, "all", False))
     now = int(time.time() * 1000)
     root = worktrees_root(a.root)
     dry = not a.yes
@@ -2892,8 +3109,9 @@ def cmd_cleanup(a):
         done_actions.append(action)
 
     if not dry:
-        for t in changed.values():
-            write(t)
+        with hub_lock():
+            for t in changed.values():
+                write(t)
     print(f"Aufräumen{' (dry run)' if dry else ''} in {root} "
           f"(nur Tickets dieses Homes; ohne --yes ändert sich nichts):")
     if not done_actions and not skipped:
@@ -3175,7 +3393,8 @@ def cmd_land(a):
             if a.force:
                 if not a.reason.strip():
                     die("--force verlangt --reason \"…\": der Grund gehört in den Verlauf")
-                add_comment(t, "hub", f"CI-Gate überfahren ({why}): {a.reason.strip()}")
+                note = f"CI-Gate überfahren ({why}): {a.reason.strip()}"
+                update_ticket(a.id, lambda fresh: add_comment(fresh, "hub", note))
             else:
                 die(f"{a.id}: {why}. Landen verweigert: hub ci {a.id} erneut ausführen "
                     f"oder --force --reason \"…\".")
@@ -3210,9 +3429,18 @@ def cmd_land(a):
             result.update(ci=t["ci"], ci_at=t.get("ci_at"))
             if res["state"] != "pass":
                 # Not green: the agent and its checkout stay, so the failure can be fixed.
-                if not t.get("status"):
-                    set_status(t, "review")
-                write(t)
+                do_fields = {k: t[k] for k in ("ci", "ci_head", "ci_at", "ci_details", "ci_url", "pr", "merged")
+                             if k in t}
+                do_status = "review" if not t.get("status") else None
+
+                def saved(fresh):
+                    for k in ("ci", "ci_head", "ci_at", "ci_details", "ci_url"):
+                        fresh.pop(k, None)
+                    fresh.update(do_fields)
+                    if do_status:
+                        set_status(fresh, do_status)
+
+                update_ticket(a.id, saved)
                 why = {"fail": f"CI rot: {', '.join(c.get('name') or '?' for c in res['checks'])}",
                        "unknown": f"CI nicht prüfbar: {res.get('error') or 'keine Antwort'}",
                        "running": f"CI nach {CI_TIMEOUT // 60} Minuten noch nicht fertig"}.get(res["state"], res["state"])
@@ -3224,17 +3452,27 @@ def cmd_land(a):
     result["cleanup"] = res["notes"] + res["skipped"]
     if a.merge and not a.keep_worktree and not res.get("aborted"):
         run(["git", "branch", "-d", branch], on, main, check=False)
-    set_status(t, "done")
-    write(t)
+    landed_fields = {k: t[k] for k in ("merged", "pr", "ci", "ci_head", "ci_at", "ci_details", "ci_url")
+                     if k in t}
+
+    def saved(fresh):
+        for k in ("terminal", "space", "tab"):
+            if t.get(k) == "" and fresh.get(k):
+                fresh[k] = ""
+        fresh.update(landed_fields)
+        set_status(fresh, "done")
+
+    update_ticket(a.id, saved)
     event("land", a.id, t.get("agent") or "", t.get("terminal") or "",
           t.get("merged") or t.get("pr") or "gelandet")
     # The lesson comes last: the work is landed even when writing the file fails (it is
     # reported then, but the ticket stays accepted and its Verlauf is not half-written).
     learned = [add_lesson(t.get("repo") if on else os.path.abspath(t["repo"]), a.id, "human", text, on) for text in (a.lesson or [])]
-    for l in learned:
-        add_comment(t, "mensch", f"Lehre notiert: {l['text']}")
     if learned:
-        write(t)
+        def noted(fresh):
+            for l in learned:
+                add_comment(fresh, "mensch", f"Lehre notiert: {l['text']}")
+        update_ticket(a.id, noted)
     result.update(merged=t.get("merged"), pr=t.get("pr"), ci=t.get("ci"), ci_at=t.get("ci_at"),
                   lessons=[l["text"] for l in learned])
     print(json.dumps(result, ensure_ascii=False))
@@ -3247,28 +3485,32 @@ def costs():
         return {}
 
 
-def cmd_status(_a):
+def cmd_status(a):
     live = {}
     try:
         for x in json.loads(subprocess.run(["hc", "ls", "--json"], capture_output=True, text=True).stdout)["terminals"]:
             live[x["address"]] = x.get("status") or x.get("state")
     except Exception:
         pass
+    me = orchestrator_id()
     c = costs()
     per = c.get("tickets", {})
-    tickets = all_tickets()
+    tickets = my_tickets(everyone=getattr(a, "all", False), me=me)
     open = [t for t in tickets if t["status"] != "done"]
     if open:
-        print(f"{'Ticket':<40} {'Status':<7} {'Basis':<17} {'Urteil':<7} {'Runden':>6} {'CI':<5} {'Terminal':<16} {'Live':<9} {'Alter':>6} {'Kosten':>7} {'Verlauf':>7}  Titel")
+        print(f"{'Ticket':<40} {'Status':<7} {'Besitzer':<12} {'Basis':<17} {'Urteil':<7} {'Runden':>6} {'CI':<5} {'Terminal':<16} {'Live':<9} {'Alter':>6} {'Kosten':>7} {'Verlauf':>7}  Titel")
     for t in open:
         term = t.get("terminal", "")
+        owner = (t.get("owner") or "").strip()
+        # The owner is only worth printing when it is not this orchestrator's own work.
+        who = "–" if owner in ("", "mensch", me) else owner
         ci = f"CI {CI_MARK.get(t.get('ci'), '–')}"
         cost = f"${per[t['id']]:.2f}" if t["id"] in per else "-"
         # Age since the last status change (tickets from before the log fall back to `updated`).
         age_t = age(t.get("status_at") or t.get("updated") or "")
         bg = base_gate(t)
         basis = "⚠ Basis veraltet" if bg["ok"] is False else "ok" if bg["ok"] else "–"
-        print(f"{t['id']:<40} {t['status']:<7} {basis:<17} {(t.get('review') or '–'):<7} {(t.get('review_rounds') or '–'):>6} "
+        print(f"{t['id']:<40} {t['status']:<7} {who:<12} {basis:<17} {(t.get('review') or '–'):<7} {(t.get('review_rounds') or '–'):>6} "
               f"{ci:<5} {term:<16} {live.get(term, '-' if not term else 'beendet'):<9} {age_t:>6} {cost:>7} "
               f"{len(entries(t)):>7}  {t['title']}")
     rests, spaces = [], None
@@ -3394,7 +3636,7 @@ def cmd_stats(a):
     days = max(1, a.days)
     now = time.time()
     per_ticket = costs().get("tickets", {})
-    tickets = all_tickets()
+    tickets = my_tickets(everyone=getattr(a, "all", False))
     rows = [measure(t, now, per_ticket.get(t["id"])) for t in tickets]
     events = {t["id"]: timeline(t) for t in tickets}
     # The days a ticket moved: its transitions plus the day it was created or done.
@@ -3526,27 +3768,8 @@ def read_subagents():
 
 
 def orch_address():
-    """The orchestrator's terminal: the `hub.role=orchestrator` label, else its name.
-
-    `hc ls` may omit labels, so HC_TERMINAL_ID only counts when `hc get` confirms the
-    role or the name — never just because hub happens to run in that terminal."""
-    try:
-        out = json.loads(subprocess.run(["hc", "ls", "--json"], capture_output=True, text=True).stdout)
-    except (OSError, ValueError):
-        out = {}
-    terminals = out.get("terminals") or []
-    for x in terminals:
-        if (x.get("labels") or {}).get("hub.role") == "orchestrator":
-            return x.get("address") or ""
-    for x in terminals:
-        if x.get("name") == "orchestrator":
-            return x.get("address") or ""
-    me = os.environ.get("HC_TERMINAL_ID") or ""
-    if me:
-        info = hc_term(me)
-        if (info.get("labels") or {}).get("hub.role") == "orchestrator" or info.get("name") == "orchestrator":
-            return me
-    return ""
+    """The timeline's orchestrator lane: this terminal's orchestrator id, else the first."""
+    return orchestrator_id()
 
 
 def lane_status(info):
@@ -3860,8 +4083,12 @@ def main():
     d.set_defaults(fn=cmd_dispatch)
     wp = sub.add_parser("wip")
     wp.add_argument("pairs", nargs="*", metavar="arbeit=N|pruefung=M")
+    wp.add_argument("--mine", action="store_true",
+                    help="das Limit nur für diesen Orchestrator setzen (Abschnitt mine)")
+    wp.add_argument("--all", action="store_true", help="die globale Summe über alle Orchestratoren zeigen")
     wp.add_argument("--json", action="store_true")
     wp.set_defaults(fn=cmd_wip)
+    sub.add_parser("whoami").set_defaults(fn=cmd_whoami)
     sp = sub.add_parser("spec")
     sp.add_argument("id")
     sp.set_defaults(fn=cmd_spec)
@@ -3876,6 +4103,7 @@ def main():
     pf.set_defaults(fn=cmd_preflight)
     sl = sub.add_parser("stalls")
     sl.add_argument("--json", action="store_true")
+    sl.add_argument("--all", action="store_true", help="auch fremde Orchestratoren")
     sl.add_argument("--doing", type=int, default=45, metavar="MIN")
     sl.add_argument("--review", type=int, default=120, metavar="MIN")
     sl.add_argument("--todo", type=int, default=1440, metavar="MIN")
@@ -3883,12 +4111,14 @@ def main():
     nd = sub.add_parser("nudge")
     nd.add_argument("id")
     nd.add_argument("--text", default="")
+    nd.add_argument("--force", action="store_true", help="auch ein fremdes Ticket anfassen")
     nd.set_defaults(fn=cmd_nudge)
     ni = sub.add_parser("night")
     ni.add_argument("--until", metavar="HH:MM")
     ni.add_argument("--for", dest="for_min", type=int, metavar="MIN")
     ni.add_argument("--max", type=int, metavar="N")
     ni.add_argument("--dry-run", action="store_true")
+    ni.add_argument("--all", action="store_true", help="auch fremde Orchestratoren")
     ni.set_defaults(fn=cmd_night)
     mem = sub.add_parser("memory").add_subparsers(dest="mcmd", required=True)
     ma = mem.add_parser("add")
@@ -3987,11 +4217,15 @@ def main():
     cl = sub.add_parser("cleanup")
     cl.add_argument("--yes", action="store_true", help="wirklich löschen; ohne --yes nur Dry-Run")
     cl.add_argument("--root", metavar="PATH", help="Worktree-Wurzel (Standard $HOME/.herdr/worktrees)")
+    cl.add_argument("--all", action="store_true", help="auch fremde Orchestratoren")
     cl.set_defaults(fn=cmd_cleanup)
-    sub.add_parser("status").set_defaults(fn=cmd_status)
+    st = sub.add_parser("status", help="offene Tickets; Standard sind die eigenen")
+    st.add_argument("--all", action="store_true", help="auch fremde Orchestratoren")
+    st.set_defaults(fn=cmd_status)
     stt = sub.add_parser("stats")
     stt.add_argument("--json", action="store_true")
     stt.add_argument("--days", type=int, default=14, metavar="N")
+    stt.add_argument("--all", action="store_true", help="auch fremde Orchestratoren")
     stt.set_defaults(fn=cmd_stats)
     tml = sub.add_parser("timeline")
     tml.add_argument("--json", action="store_true")
