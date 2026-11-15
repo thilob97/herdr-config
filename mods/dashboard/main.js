@@ -226,15 +226,48 @@ export default class Dashboard extends View {
 
   // ---------- data ----------
 
-  orchestrator() { return terminals().find((x) => x.name === ORCH && x.state === "live") ?? null; }
+  /** Der Orchestrator dieses Workspace: `hub spaces` nennt seinen Terminal. Vor der
+   *  ersten Antwort zählt nur ein gleichnamiger Terminal im eigenen Space — nie der
+   *  eines fremden (der alte Namensfallback nahm den ersten besten). */
+  orchestrator() {
+    const row = this.spaceRow(this.ownSpaceId());
+    if (row) {
+      if (!row.live || !row.orchestrator) return null;
+      return terminals().find((x) => x.address === row.orchestrator)
+        ?? { address: row.orchestrator, name: ORCH, status: "" };
+    }
+    if (this.spaceRows) return null;
+    const own = this.ownSpaceId();
+    return terminals().find((x) => (x.name === ORCH || x.name?.startsWith(`${ORCH}-`))
+      && x.state === "live" && (!own || !x.space || x.space === own)) ?? null;
+  }
+
+  /** "Orchestrator starten" nur, wenn `hub spaces` für diesen Workspace wirklich keinen
+   *  lebenden meldet. Ohne Antwort von hub erscheint der Knopf nicht. */
+  canStart() {
+    const row = this.spaceRow(this.ownSpaceId());
+    return Boolean(row) && !row.live;
+  }
 
   // ---------- Spaces (Bereichswahl und Summen) ----------
 
-  /** Die Spaces des Fensters mit Orchestrator, offenen Stufen und Kosten (`hub spaces
-   *  --json`); null, solange hub nicht geantwortet hat. */
-  spaceList() { return this.spaceRows?.spaces ?? null; }
-  /** Der eigene Space: der gezeigte des Fensters, sonst der, den hub als seinen liest. */
-  ownSpaceId() { return spaces().find((s) => s.active)?.id || this.spaceRows?.space || ""; }
+  /** Alle Zeilen aus `hub spaces --json`, Agent-Spaces eingeschlossen; die Zuordnung
+   *  eines Agenten braucht sie, die Auswahl nicht. */
+  rawSpaceRows() { return this.spaceRows?.spaces ?? null; }
+  /** Die Workspaces des Fensters mit Orchestrator, offenen Stufen und Kosten (`hub
+   *  spaces --json`); Agent-Spaces sind ausgeblendet. null, solange hub schweigt. */
+  spaceList() {
+    const rows = this.rawSpaceRows();
+    return rows ? space.workspaceRows(rows) : null;
+  }
+  /** Der eigene Space: der gezeigte des Fensters (ein Agent-Space zählt als sein
+   *  Workspace), sonst der, den hub als seinen liest. */
+  ownSpaceId() {
+    const active = spaces().find((s) => s.active)?.id || "";
+    return space.workspaceOf(this.rawSpaceRows(), active)
+      || space.workspaceOf(this.rawSpaceRows(), this.spaceRows?.space || "")
+      || active || "";
+  }
   allSpaceIds() { return (this.spaceList() ?? []).map((r) => r.id).filter(Boolean); }
   pick() { return space.pickOf(shared("dashboard.spaces")); }
   /** Die gewählten Space-IDs. Eine leere Menge heißt „nicht filtern" (erste Sekunde,
@@ -264,9 +297,11 @@ export default class Dashboard extends View {
       ?? spaces().map((s) => ({ id: s.id, folder: s.folder, machine: s.machine })));
   }
   inSelTicket(tk) { return this.inSel(this.ticketSpace(tk)); }
-  /** Der Space einer Agent-Zeile: der seines offenen Tickets, sonst der eigene. */
+  /** Der Space einer Agent-Zeile: der Workspace seines Tickets (auch eines erledigten),
+   *  sonst der seines Herdr-Space — ein Agent-Space zählt als dessen Workspace. */
   agentSpace(address) {
-    return this.ticketSpace(this.openTicket(address)) || this.ownSpaceId();
+    const a = agents().find((x) => x.address === address) ?? { address };
+    return space.agentWorkspace(a, this.tickets(), this.rawSpaceRows(), this.ownSpaceId());
   }
   setPick(value, cx) {
     setShared("dashboard.spaces", value);
@@ -342,7 +377,7 @@ export default class Dashboard extends View {
     this.readingSpaces = true;
     cx.spawn(async (cx) => {
       try {
-        const r = await exec(HUB(), ["spaces", "--json"], { timeout: 20000 });
+        const r = await exec(HUB(), ["spaces", "--json", "--agents"], { timeout: 20000 });
         if (r.code !== 0) throw new Error(errorLine(r));
         const next = JSON.parse(r.stdout || "{}");
         if (this.markFresh("spaces")) cx.notify();
@@ -670,6 +705,7 @@ export default class Dashboard extends View {
     const out = [];
     const push = (time, text) => { if (time || text) out.push({ time, text }); };
     for (const tk of this.tickets()) {
+      if (!this.inSelTicket(tk)) continue;
       const last = (tk.verlauf ?? []).at(-1);
       if (last) push(at(last.ts), `Ticket ${tk.id} · ${last.role}: ${last.text}`);
       else {
@@ -684,11 +720,16 @@ export default class Dashboard extends View {
     }
     const seen = shared("attention.since") ?? {};
     for (const a of agents()) {
-      if (this.statusOf(a) === "blocked") push(seen[a.address]?.at, `${ui.identity(a.address).name} wartet auf dich`);
+      if (this.statusOf(a) === "blocked" && this.inSel(this.agentSpace(a.address)))
+        push(seen[a.address]?.at, `${ui.identity(a.address).name} wartet auf dich`);
     }
     const c = this.costs();
+    const allSpaces = this.pick().mode === space.ALL;
     for (const [id, on] of Object.entries(c.stopped ?? {})) {
-      if (on) push(c.at, id === "__team" ? "Team-Budget erreicht" : `Budget für Ticket ${id} erreicht`);
+      if (!on) continue;
+      if (id === "__team") { if (allSpaces) push(c.at, "Team-Budget erreicht"); continue; }
+      if (allSpaces || this.tickets().some((tk) => tk.id === id && this.inSelTicket(tk)))
+        push(c.at, `Budget für Ticket ${id} erreicht`);
     }
     return out.sort((x, y) => y.time - x.time).slice(0, 5);
   }
@@ -1166,7 +1207,7 @@ export default class Dashboard extends View {
   ended(a) { return this.statusOf(a) === "done"; }
 
   teamSection(t) {
-    const all = agents();
+    const all = agents().filter((a) => this.inSel(this.agentSpace(a.address)));
     const list = all.filter((a) => !this.ended(a));
     const done = all.filter((a) => this.ended(a));
     return v_flex().flex_1().min_w(0).gap(ui.GAP_XS)
@@ -1378,7 +1419,7 @@ export default class Dashboard extends View {
         .child(div().flex_1().min_w(0).truncate().text_size(T_S).text_color(note ? (note.ok === false ? t.blocked : note.ok ? t.done : t.muted) : t.muted)
           .tooltip(note?.text ?? "")
           .child(note?.text ?? (o ? "Der Orchestrator plant Tickets und verteilt sie ans Team." : "Kein Orchestrator läuft. Ohne ihn nimmt niemand Aufträge an.")))
-        .when(!o, (el) => el.child(ui.button(t, "dash-start", this.starting ? "Startet …" : "Orchestrator starten", (cx) => this.start(cx),
+        .when(this.canStart(), (el) => el.child(ui.button(t, "dash-start", this.starting ? "Startet …" : "Orchestrator starten", (cx) => this.start(cx),
           { kind: "primary", small: true, enabled: !this.starting, tip: "Startet den Orchestrator, nicht die Arbeit; die kommt über den Auftrag" })))
         .child(ui.button(t, "dash-send", "Senden", (cx) => this.send(cx),
           { kind: o ? "primary" : "secondary", icon: SEND_ICON, enabled: Boolean(o) && !this.sending, tip: "Auftrag an den Orchestrator senden (⌘↵)" })));

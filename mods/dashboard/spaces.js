@@ -72,6 +72,37 @@ export const isOn = (pick, id, ownId, allIds) => effective(pick, ownId, allIds).
 
 const inside = (path, dir) => path === dir || path.startsWith(dir.endsWith("/") ? dir : `${dir}/`);
 
+/** Ein Agent-Space ist der Wegwerf-Space eines Tickets, kein Workspace. Die Auswahl
+ *  im Kopf und die Workspaces-Karte zeigen nur `kind: workspace`. */
+export const isAgent = (r) => r?.kind === "agent";
+
+/** Nur die Workspaces einer `hub spaces --json`-Liste (die Gruppe "ohne Workspace"
+ *  trägt keine ID und bleibt darin). */
+export function workspaceRows(rows) {
+  return (rows ?? []).filter((r) => !isAgent(r));
+}
+
+/** Der Workspace hinter einer Space-ID: ein Agent-Space nennt ihn in `workspace`,
+ *  jeder andere Space ist sein eigener. */
+export function workspaceOf(rows, sid) {
+  const id = String(sid ?? "");
+  if (!id) return "";
+  const row = (rows ?? []).find((r) => r?.id === id && isAgent(r));
+  return row?.workspace || id;
+}
+
+/** Der Workspace einer Agent-Zeile: der seines Tickets (die Agent-Space-Kennung zählt
+ *  nicht), sonst der ihres Herdr-Space bzw. der eigene. Das Ticket ist die Wahrheit,
+ *  auch wenn sein Agent schon fertig ist. */
+export function agentWorkspace(a, tickets, rows, ownId) {
+  const tk = (tickets ?? []).find((x) => x?.terminal && x.terminal === a?.address);
+  if (tk) {
+    const sid = ticketSpace(tk, workspaceRows(rows));
+    if (sid) return sid;
+  }
+  return workspaceOf(rows, a?.space ?? a?.space_id) || ownId || "";
+}
+
 /** Der Space eines Tickets: sein `space`, wenn es einen Namen trägt. Ein Alt-Ticket
  *  (ohne `space_name`) gehört dem Space, dessen Ordner sein `repo` enthält — wie
  *  `hub` es rechnet; ohne Ordner bleibt es "" („ohne Workspace"). */

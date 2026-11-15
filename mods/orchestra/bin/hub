@@ -41,10 +41,12 @@ reports into it) and show in the Team-Panel under it.
                                             --force needs --reason and writes it to the Verlauf
   hub whoami                                this terminal's orchestrator, its space, its open
                                             tickets and its WIP counts (JSON)
-  hub spaces [--json] [--adopt [--to ID|NAME] [--yes]]
+  hub spaces [--json] [--agents] [--adopt [--to ID|NAME] [--yes]]
                                             one factory per Herdr space: id, name, folder, machine,
                                             its orchestrator and whether it lives, open tickets per
-                                            stage, cost. --adopt writes `space`/`space_name` on old
+                                            stage, cost. Agent-Spaces of tickets are hidden unless
+                                            --agents (then with the ticket's workspace). --adopt
+                                            writes `space`/`space_name` on old
                                             tickets by their repo's folder (dry run without --yes);
                                             --to also assigns what no folder explains
   hub orchestrator start [--space ID|NAME] [--agent PROGRAMM] [--restart]
@@ -632,14 +634,17 @@ def my_space():
     if _my_space is not None:
         return _my_space
     spaces = spaces_of_window()
-    env = os.environ.get("HERDR_SPACE") or ""
-    ref = space_ref(env, spaces) if env else None
+    # A team agent (a terminal carrying `hub.ticket`) belongs to its ticket's workspace;
+    # its own Herdr space is the throwaway one dispatch made for the worktree, and even
+    # an inherited HERDR_SPACE must not turn a ticket it creates into an agent space.
+    labels = hc_term(os.environ.get("HC_TERMINAL_ID") or "").get("labels") or {}
+    sid, sname = stored_space(labels.get("hub.ticket") or "")
+    ref = next((norm_space(s) for s in spaces if s.get("id") == sid), None)
+    if ref is None and sid:
+        ref = {"id": sid, "name": sname or sid.rsplit("/", 1)[-1], "folder": "", "machine": ""}
     if not ref:
-        labels = hc_term(os.environ.get("HC_TERMINAL_ID") or "").get("labels") or {}
-        sid, sname = stored_space(labels.get("hub.ticket") or "")
-        ref = next((norm_space(s) for s in spaces if s.get("id") == sid), None)
-        if ref is None and sid:
-            ref = {"id": sid, "name": sname or sid.rsplit("/", 1)[-1], "folder": "", "machine": ""}
+        env = os.environ.get("HERDR_SPACE") or ""
+        ref = space_ref(env, spaces) if env else None
     if not ref:
         sid = space_id_of_terminal(os.environ.get("HC_TERMINAL_ID") or "", spaces)
         ref = next((norm_space(s) for s in spaces if s.get("id") == sid), None)
@@ -653,34 +658,61 @@ def my_space():
     return _my_space
 
 
+ORCH_NAME = "orchestrator"
+_orch_terms, _orch_terms_read = None, False
+
+
+def is_orchestrator(info):
+    """Whether one terminal row is an orchestrator: its label or its name (`orchestrator`,
+    `orchestrator-<space>`). The name covers `hc ls`, whose rows carry no labels."""
+    labels = (info or {}).get("labels") or {}
+    if labels.get("hub.role") == "orchestrator":
+        return True
+    name = (info or {}).get("name") or ""
+    return name == ORCH_NAME or name.startswith(ORCH_NAME + "-")
+
+
+def orchestrator_terminals():
+    """Every orchestrator terminal (address → info), read once per command.
+
+    `hc ls` rows carry no labels, so the name is the cheap witness (`orchestrator`,
+    `orchestrator-<space>`); `hub spaces` and `hub orchestrator list` share this answer.
+    A legacy home whose snapshot is empty falls back to `hc get` per listed terminal."""
+    global _orch_terms, _orch_terms_read
+    if _orch_terms_read:
+        return _orch_terms
+    _orch_terms = {addr: info for addr, info in terminals_all().items() if is_orchestrator(info)}
+    _orch_terms_read = True
+    return _orch_terms
+
+
 def orchestrator_of(space):
     """(terminal, info) of the orchestrator running in one space; ("", {}) when none does.
 
-    Uses the one `hc ls --all` snapshot; `hc get` only when that snapshot is empty
-    (a stub without labels), never per agent or per ticket."""
+    Works from the one orchestrator snapshot (`orchestrator_terminals`); a terminal the
+    space lists is accepted by its name even when `hc get` answers {} (legacy stub)."""
     sid = (space or {}).get("id") or ""
     if not sid:
         return "", {}
     if sid in _orch_of:
         return _orch_of[sid]
-    snapshot = terminals_all()
+    found = []
+    for addr, info in orchestrator_terminals().items():
+        labels = info.get("labels") or {}
+        if labels.get("hub.space") == sid or labels.get("herdr.space") == sid:
+            found.append((addr, info))
+    listed = {addr for addr, _ in found}
     for s in spaces_of_window():
         if s.get("id") != sid:
             continue
-        found = []
         for addr in space_terminals(s):
-            info = snapshot.get(addr)
-            if info is None and not snapshot:
-                info = hc_term(addr)  # legacy: hc ls cannot answer here
-            info = info or {}
-            labels = info.get("labels") or {}
-            if (labels.get("hub.role") == "orchestrator" or labels.get("hub.space") == sid
-                    or info.get("name") == "orchestrator"):
+            if addr in listed:
+                continue
+            info = orchestrator_terminals().get(addr) or terminals_all().get(addr) or hc_term(addr)
+            if is_orchestrator(info):
                 found.append((addr, info))
-        live = [x for x in found if x[1].get("state") == "live"]
-        _orch_of[sid] = (live or found or [("", {})])[0]
-        return _orch_of[sid]
-    _orch_of[sid] = ("", {})
+    live = [x for x in found if x[1].get("state") == "live"]
+    _orch_of[sid] = (live or found or [("", {})])[0]
     return _orch_of[sid]
 
 
@@ -695,7 +727,7 @@ def orchestrator_id():
     me = os.environ.get("HC_TERMINAL_ID") or ""
     if me:
         info = hc_term(me)
-        if (info.get("labels") or {}).get("hub.role") == "orchestrator" or info.get("name") == "orchestrator":
+        if is_orchestrator(info):
             _orch_id = me
             return me
     mine = my_space()
@@ -1837,13 +1869,48 @@ def cmd_whoami(_a):
 
 # ---- Spaces als Kommando: was liegt wo, und wer führt die Fabrik dort
 
+def agent_space_owners(spaces=None):
+    """Agent space id → the workspace of the ticket it belongs to.
+
+    Two independent witnesses, as the ticket says: a ticket's `agent_space`, and a
+    terminal carrying `hub.ticket` inside that Herdr space (older dispatches). A space
+    that is also some ticket's workspace stays a workspace. Empty spaces need one
+    `hc get` each; `hc ls` rows carry no labels."""
+    tickets = all_tickets()
+    by_id = {t.get("id"): t for t in tickets}
+    out = {}
+    for t in tickets:
+        ag = (t.get("agent_space") or "").strip()
+        ws = ticket_space(t)
+        if ag and ws and ag != ws:
+            out.setdefault(ag, ws)
+    workspaces = {ticket_space(t) for t in tickets}
+    for s in (spaces_of_window() if spaces is None else spaces):
+        sid = s.get("id") or ""
+        if not sid or sid in out or sid in workspaces:
+            continue
+        for addr in space_terminals(s):
+            tid = terminal_labels(hc_term(addr)).get("hub.ticket") or ""
+            t = by_id.get(tid)
+            ws = ticket_space(t) if t else ""
+            if ws and ws != sid:
+                out[sid] = ws
+                break
+    return out
+
+
 def space_rows():
-    """One row per factory: identity, its live orchestrator and the work it holds."""
+    """One row per factory: identity, kind, its live orchestrator and the work it holds.
+
+    `kind` is "workspace" for a factory and "agent" for the throwaway Herdr space a
+    ticket's agent runs in (`workspace` then names the ticket's workspace). Spaces with
+    neither tickets nor an orchestrator stay workspaces."""
     empty = lambda: {"tickets": 0, "open": {s: 0 for s in ("todo", "doing", "review")}, "cost": 0.0}
     per = costs().get("tickets") or {}
-    counts, names = {}, {}
+    counts, names, workspaces = {}, {}, set()
     for t in all_tickets():
         sid = ticket_space(t)
+        workspaces.add(sid)
         row = counts.setdefault(sid, empty())
         row["tickets"] += 1
         if t.get("status") in row["open"]:
@@ -1851,16 +1918,25 @@ def space_rows():
         row["cost"] += float(per.get(t["id"]) or 0)
         if sid and not names.get(sid):
             names[sid] = (t.get("space_name") or "") if (t.get("space") or "") == sid else ""
+    owners = agent_space_owners()
+    def kind_of(sid):
+        if sid in owners and sid not in workspaces:
+            return "agent", owners[sid]
+        return "workspace", ""
     out = []
     for s in (norm_space(x) for x in spaces_of_window()):
         c = counts.pop(s["id"], None) or empty()
         addr, info = orchestrator_of(s)
-        out.append({**s, "orchestrator": addr, "live": info.get("state") == "live",
+        kind, workspace = kind_of(s["id"])
+        out.append({**s, "kind": kind, "workspace": workspace,
+                    "orchestrator": addr, "live": info.get("state") == "live",
                     "tickets": c["tickets"], "open": c["open"], "cost": round(c["cost"], 2)})
     # A space the window no longer lists (closed, another window) still has its work.
     for sid, c in counts.items():
+        kind, workspace = kind_of(sid)
         out.append({"id": sid, "name": names.get(sid) or (space_name_of(sid) if sid else "ohne Workspace"),
                     "folder": "", "machine": sid.split("/", 1)[0] if "/" in sid else "",
+                    "kind": kind, "workspace": workspace,
                     "orchestrator": "", "live": False, "tickets": c["tickets"],
                     "open": c["open"], "cost": round(c["cost"], 2)})
     return out
@@ -1917,6 +1993,8 @@ def cmd_spaces(a):
                 print(f"{written} Ticket(s) übernommen")
         return
     rows = space_rows()
+    if not getattr(a, "agents", False):
+        rows = [r for r in rows if r.get("kind") != "agent"]
     if a.json:
         print(json.dumps({"space": mine["id"], "space_name": mine["name"], "spaces": rows},
                          ensure_ascii=False))
@@ -1925,14 +2003,12 @@ def cmd_spaces(a):
     for r in rows:
         mine_mark = " *" if r["id"] == mine["id"] else ""
         open_ = f"{r['open']['todo']}/{r['open']['doing']}/{r['open']['review']}"
-        print(f"{(r['name'] + mine_mark):<24} {r['id']:<40} {(r['folder'] or '—')[:40]:<40} "
+        label = r["name"] + (f" (Agent von {space_name_of(r['workspace'])})" if r.get("kind") == "agent" else "")
+        print(f"{(label + mine_mark):<24} {r['id']:<40} {(r['folder'] or '—')[:40]:<40} "
               f"{(r['orchestrator'] or '—'):<10} {open_:<24} {r['cost']:>7.2f}")
 
 
 # ---- Orchestrator je Space: starten, ersetzen, anzeigen
-
-ORCH_NAME = "orchestrator"
-
 
 def orchestrator_ws(on=None):
     return os.path.join(home_of(on), ".herdr", "orchestrator")
@@ -2040,18 +2116,14 @@ def cmd_orchestrator_list(a):
                      "terminal": addr, "name": info.get("name") or "",
                      "agent": (info.get("foreground") or {}).get("name") or "",
                      "live": info.get("state") == "live"})
-    try:
-        listed = json.loads(subprocess.run(["hc", "ls", "--json"], capture_output=True, text=True).stdout)
-    except (OSError, ValueError):
-        listed = {}
-    for x in listed.get("terminals") or []:
-        addr = x.get("address") or ""
-        if not addr or addr in seen or not (x.get("name") or "").startswith(ORCH_NAME):
+    # Same snapshot as `hub spaces`: an orchestrator whose space the window no longer
+    # lists still shows up (closed space, another window, a remote machine).
+    for addr, info in orchestrator_terminals().items():
+        if addr in seen:
             continue
-        info = hc_term(addr)
+        info = {**info, **(hc_term(addr) or {})}
         labels = info.get("labels") or {}
-        if labels.get("hub.role") != "orchestrator" and info.get("name") != ORCH_NAME:
-            continue
+        seen.add(addr)
         sid = labels.get("hub.space") or labels.get("herdr.space") or ""
         rows.append({"space": sid, "space_name": space_name_of(sid) if sid else "", "folder": "",
                      "terminal": addr, "name": info.get("name") or "",
@@ -5042,6 +5114,8 @@ def main():
     sub.add_parser("whoami").set_defaults(fn=cmd_whoami)
     spac = sub.add_parser("spaces", help="je Space Identität, Orchestrator und offene Arbeit")
     spac.add_argument("--json", action="store_true")
+    spac.add_argument("--agents", action="store_true",
+                      help="auch die Agent-Spaces der Tickets zeigen (sonst ausgeblendet)")
     spac.add_argument("--adopt", action="store_true",
                       help="Alt-Tickets ohne space nach ihrer Repo-Zuordnung schreiben (Dry-Run ohne --yes)")
     spac.add_argument("--to", metavar="ID|NAME",
