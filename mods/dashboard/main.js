@@ -5,14 +5,16 @@
 // Aktivität" beside it, "Fabrik" (the pipeline, the oldest tickets in work and
 // the cost card) and "Auftrag" (send to the orchestrator). Rows open their place;
 // ↑↓ choose, ↵ opens, g w goes to the workspace, Esc clears the choice. Every
-// number comes from the same sources Team, Inbox and the status bar read:
-// shared("orchestra.tickets"), agents(), shared("orchestra.costs"),
-// shared("orchestra.budget"), shared("orchestra.groups") and attention.since.
+// number comes from the same sources Team, Inbox and the status bar read: the
+// ticket files (data/quests/tickets, re-read every 5 s), agents(),
+// shared("orchestra.costs"), shared("orchestra.budget"), shared("orchestra.groups"),
+// the status bar's omp helper for "Heute" and attention.since.
 
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea } from "gpui-base";
-import { agents, terminals, spaces, run, hc, exec, theme, shared, setShared, openOverlay, knownAgents, appHome, home } from "herdr";
+import { agents, terminals, spaces, run, hc, exec, theme, shared, setShared, openOverlay, knownAgents, appHome, home, machines, readTextFile } from "herdr";
 import * as ui from "./ui.js";
+import * as tickets from "./tickets.js";
 import { T_XS, T_S, T_M, T_L, T_XL, usd } from "./ui.js";
 
 const ORCH = "orchestrator";
@@ -21,6 +23,11 @@ const PAD = 16;
 // What waits changes with the agents, not with every frame: five seconds is enough
 // for the screen and keeps `hc read` off the terminals. Spec: no faster than 5 s.
 const REFRESH = 5000;
+// The status bar's omp usage helper is the one calculator for today's provider spend;
+// reading the same helper keeps "$x heute" identical on both surfaces. It syncs omp's
+// stats.db, so the dashboard asks no more often than the status bar (two minutes).
+const SPEND_REFRESH = 120000;
+const SPEND_HELPER = () => `${appHome()}/mods/status-bar/helpers/usage.py`;
 const DOING_MAX = 5;
 // Team rows keep these columns aligned; the two middle ones share what is left.
 const COL_WHO = 132, COL_STATUS = 68, COL_TIME = 40, COL_COST = 46;
@@ -30,6 +37,29 @@ const SEND_ICON = "mods/orchestra/icons/send.svg";
 const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 const errorLine = (r) => (r.stderr || r.stdout || `exit ${r.code}`).trim().split("\n").pop().slice(0, 160);
 const errorText = (e) => String(e?.message ?? e ?? "fehlgeschlagen").replace(/^Error: /, "");
+
+// Today (calendar day, local time) in dollars, summed over the machines the status bar
+// reads: the same helper, the same DB, so both screens carry one number. Null when no
+// machine answered — then the card says "—" instead of inventing a zero.
+async function todayCost() {
+  const path = SPEND_HELPER();
+  const list = [null, ...machines().filter((m) => m.name && m.layout !== "unavailable").map((m) => m.name)];
+  const got = await Promise.all(list.map(async (on) => {
+    try {
+      let argv = [path, "costs"];
+      if (on) {
+        const src = await readTextFile(path);
+        if (src == null) return null;
+        argv = ["-c", src, "costs"];
+      }
+      const r = await exec("python3", argv, { on, timeout: 150000 });
+      return r.code === 0 ? Number(JSON.parse(r.stdout || "{}").today) : null;
+    } catch { return null; }
+  }));
+  const values = got.filter((n) => Number.isFinite(n));
+  return values.length ? values.reduce((sum, n) => sum + n, 0) : null;
+}
+
 const rid = (s) => String(s).replace(/[^a-zA-Z0-9_.-]+/g, "-");
 const pad2 = (n) => String(n).padStart(2, "0");
 const WEEKDAY = ["So", "Mo", "Di", "Mi", "Do", "Fr", "Sa"];
@@ -99,6 +129,12 @@ export default class Dashboard extends View {
     this.answers = new Map();   // address → InputState (a blocked agent's answer)
     this.answerNote = {};       // address → { ok: true|false|null, text }
     this.seen = new Map();      // "address:status" → when this screen first saw it
+    this.tks = null;            // tickets read from disk; null until the first read
+    this.tksJson = null;        // the last read, to notify only on change
+    this.readingTks = false;
+    this.liveSig = null;        // agents/costs signature of the last 5-s pass
+    this.today = null;          // today's omp spend, as the status bar shows it
+    this.readingSpend = false;
     this.showDone = false;      // finished agents folded into one row at the team's end
     this.sending = false;
     this.starting = false;
@@ -111,9 +147,11 @@ export default class Dashboard extends View {
     this.focus = ui.focusFields();
     this.focus.track(this.order, "dash-order");
     cx.timer.after(50, () => this.handle.focus());
-    cx.timer.after(100, (cx) => { this.sync(cx); this.loadQuestions(cx); cx.notify(); });
+    cx.timer.after(100, (cx) => { this.refreshTickets(cx); this.sync(cx); this.loadQuestions(cx); });
     cx.timer.after(200, (cx) => this.fetchStats(cx));
-    cx.timer.every(REFRESH, (cx) => { this.sync(cx); this.loadQuestions(cx); cx.notify(); });
+    cx.timer.after(600, (cx) => this.fetchToday(cx));
+    cx.timer.every(REFRESH, (cx) => { this.refreshTickets(cx); this.sync(cx); this.loadQuestions(cx); this.watchLive(cx); });
+    cx.timer.every(SPEND_REFRESH, (cx) => this.fetchToday(cx));
     cx.timer.every(30000, (cx) => this.fetchStats(cx));
     cx.timer.every(20000, (cx) => cx.notify()); // the clock
   }
@@ -121,9 +159,54 @@ export default class Dashboard extends View {
   // ---------- data ----------
 
   orchestrator() { return terminals().find((x) => x.name === ORCH && x.state === "live") ?? null; }
-  tickets() { return shared("orchestra.tickets") ?? []; }
+  // Fresh from disk (the dashboard layout runs no orchestra daemon); shared is only the
+  // first paint before that read lands, so the screen is never empty for a moment.
+  tickets() { return this.tks ?? shared("orchestra.tickets") ?? []; }
   costs() { return shared("orchestra.costs") ?? {}; }
   stats() { return shared("orchestra.stats") ?? null; }
+
+  // Ticket files every five seconds; a changed snapshot is the only reason to redraw.
+  refreshTickets(cx) {
+    if (this.readingTks) return;
+    this.readingTks = true;
+    cx.spawn(async (cx) => {
+      try {
+        const list = await tickets.read();
+        if (!list) return;
+        const json = JSON.stringify(list);
+        if (json === this.tksJson) return;
+        this.tksJson = json;
+        this.tks = list;
+        cx.notify();
+      } catch {}
+      finally { this.readingTks = false; }
+    });
+  }
+
+  // Today's spend comes from omp's stats.db (the status bar's helper), not from the
+  // team budget: that is a different number with a different meaning.
+  fetchToday(cx) {
+    if (this.readingSpend) return;
+    this.readingSpend = true;
+    cx.spawn(async (cx) => {
+      const next = await todayCost().catch(() => null);
+      this.readingSpend = false;
+      if (next === this.today) return;
+      this.today = next;
+      cx.notify();
+    });
+  }
+
+  // Agents and costs change without a ticket file changing; redraw them at the same
+  // five-second pace, but only when their signature actually moved.
+  watchLive(cx) {
+    const o = this.orchestrator();
+    const sig = JSON.stringify([agents().map((a) => [a.address, this.statusOf(a), a.tab ?? "", a.pane ?? ""]),
+      o?.address ?? null, o?.status ?? null, this.costs().at ?? 0, this.waitsOnMe().length]);
+    if (sig === this.liveSig) return;
+    this.liveSig = sig;
+    cx.notify();
+  }
 
   // `hub stats` is the one calculator — the Team panel's head line runs the same command,
   // so both screens carry the same median, rework and cost.
@@ -278,16 +361,18 @@ export default class Dashboard extends View {
   // One field per blocked agent, created here (never in render: InputState needs
   // a live host call). The question is the agent's last line with a "?".
   sync(cx) {
+    let changed = false;
     const blocked = new Set(this.waitsOnMe().filter((e) => e.kind === "agent").map((e) => e.address));
-    for (const address of this.answers.keys()) if (!blocked.has(address)) this.answers.delete(address);
+    for (const address of this.answers.keys()) if (!blocked.has(address)) { this.answers.delete(address); changed = true; }
     for (const e of this.waitsOnMe()) {
       if (e.kind !== "agent" || this.answers.has(e.address)) continue;
       const input = InputState.new({ placeholder: `Antwort an ${ui.identity(e.address).name}…` });
       input.on("submit", (_ev, cx) => this.answer(e.address, cx));
       this.focus.track(input, `dash-answer-${rid(e.address)}`);
       this.answers.set(e.address, input);
+      changed = true;
     }
-    cx.notify();
+    if (changed) cx.notify();
   }
 
   loadQuestions(cx) {
@@ -741,7 +826,7 @@ export default class Dashboard extends View {
           .child(metric("Median", span(d.median_min))))
         .child(h_flex().gap(ui.GAP_M).items_end()
           .child(metric("Nacharbeit", String(d.rework), d.rework ? t.blocked : undefined))
-          .child(metric("Kosten", usd(d.cost))))
+          .child(metric("Ticket-Kosten", usd(d.cost))))
         .child(h_flex().h(18).gap(1).items_end()
           .children(hist.map((h, i) => div().w(12).flex_none().text_size(T_S).text_center()
             .text_color(i === hist.length - 1 ? t.foreground : t.muted)
@@ -750,15 +835,17 @@ export default class Dashboard extends View {
         .child(div().text_size(T_XS).text_color(t.dim).child("7 Tage · erledigt")));
   }
 
-  // The money as its own card right of the tickets in work: today, the team
-  // budget and per ticket, the same numbers as the status bar and Team panel.
-  // A click opens the Team panel in the Workspace.
+  // The money as its own card right of the tickets in work. Two named numbers, each
+  // from the surface that owns it: "Heute" is the calendar day from omp's stats.db
+  // (the status bar's "$x heute"), "Team gesamt" is the team budget's spend (the Team
+  // panel's head "Team $x / $y"). Per ticket below, as before. A click opens the Team
+  // panel in the Workspace.
   costsCard(t) {
     const c = this.costs();
-    const today = c.teamCost ?? 0;
+    const team = c.teamCost ?? 0;
     const budget = this.teamBudget();
-    const over = budget != null && today > budget;
-    const pct = budget > 0 ? Math.min(100, Math.max(0, (today / budget) * 100)) : 0;
+    const over = budget != null && team > budget;
+    const pct = budget > 0 ? Math.min(100, Math.max(0, (team / budget) * 100)) : 0;
     const open = this.tickets().filter((tk) => tk.status !== "done")
       .map((tk) => ({ tk, n: c.tickets?.[tk.id] }))
       .sort((x, y) => (y.n ?? -1) - (x.n ?? -1));
@@ -772,15 +859,14 @@ export default class Dashboard extends View {
         .child(div().text_size(T_S).font_medium().text_color(t.muted).child("Kosten"))
         .child(div().flex_1())
         .child(svg(CHEVRON).size(12).flex_none().text_color(t.dim)))
-      .child(h_flex().gap(ui.GAP_S).items_end()
-        .child(div().text_size(T_L).font_semibold().text_color(over ? t.blocked : t.foreground).child(usd(today)))
-        .child(div().text_size(T_XS).text_color(t.muted).child("heute")))
+      .child(h_flex().h(16).gap(ui.GAP_S).items_center()
+        .child(div().flex_1().text_size(T_XS).text_color(t.muted).tooltip("Kalendertag, wie die Statusleiste: alle omp-Sitzungen").child("Heute"))
+        .child(div().text_size(T_L).font_semibold().text_color(t.foreground).child(this.today == null ? "—" : usd(this.today))))
+      .child(h_flex().h(16).gap(ui.GAP_S).items_center()
+        .child(div().flex_1().text_size(T_XS).text_color(t.muted).tooltip("Kosten offener Tickets + Orchestrator / Team-Budget, wie der Team-Panel-Kopf").child("Team gesamt"))
+        .child(div().text_size(T_XS).text_color(over ? t.blocked : t.foreground).child(`${usd(team)} / ${usd(budget)}`)))
       .child(div().h(2).w_full().flex_none().rounded_full().bg(t.border)
         .child(div().h(2).rounded_full().w(`${pct}%`).bg(over ? t.blocked : t.done)))
-      .child(h_flex().gap(ui.GAP_S).items_center().text_size(T_XS).text_color(t.muted)
-        .child("Team-Budget")
-        .child(div().flex_1())
-        .child(div().text_color(over ? t.blocked : t.foreground).child(usd(budget))))
       .child(div().text_size(T_XS).text_color(t.dim).child("pro Ticket"))
       .when(!shown.length, (el) => el.child(div().text_size(T_XS).text_color(t.dim).child("Noch keine offenen Tickets.")))
       .children(shown.map(({ tk, n }) => h_flex().id(`dash-cost-${rid(tk.id)}`).h(15).flex_none().gap(ui.GAP_S).items_center()
