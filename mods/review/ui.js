@@ -51,6 +51,11 @@ export function statusIcon(t, st) {
   return box().child(div().size(7).rounded_full().border(1.5).border_color(t.idle ?? t.dim));
 }
 
+/** Whether a run's recorded HEAD belongs to another commit than the worktree's now.
+ *  Short SHAs match by prefix (`hub` records either form). No HEAD on either side: not stale. */
+export const headStale = (current, recorded) => Boolean(current && recorded)
+  && !(current === recorded || current.startsWith(recorded) || recorded.startsWith(current));
+
 /** Chip mit Statuswort (h 18, Tönung 26). `color` überschreibt die Statusfarbe (z. B. t.dim). */
 export function chip(t, text, color, { icon, tip, id } = {}) {
   const c = color ?? t.muted;
@@ -90,12 +95,18 @@ export function reviewChip(t, tk, gate) {
   const r = gate?.review ?? null;
   const verdict = r?.verdict ?? tk.review ?? null;
   const at = r?.at ?? tk.review_at, by = r?.reviewer || tk.reviewer;
+  // The verdict, like the checks, belongs to one HEAD: after another commit it only says
+  // what was true then, so it goes muted with the reason instead of staying red/green.
+  if (headStale(gate?.head, r?.review_head ?? tk.review_head)) {
+    const word = verdict === "fail" ? "Review rot" : verdict === "pass" ? "Review grün" : "Review –";
+    return chip(t, `${word} (veraltet)`, t.muted, { tip: "neuer Commit seit dem Lauf — neu prüfen" });
+  }
   if (r ? r.ok : verdict === "pass") return chip(t, "Review grün", t.done,
     { tip: [r?.summary || tk.review_summary, at, by].filter(Boolean).join(" · ") || "Urteil pass auf dem HEAD" });
   if (verdict === "fail") return chip(t, "Review rot", t.blocked,
     { tip: r?.reason ?? (tk.review_summary ? `Review rot: ${tk.review_summary}` : "Review rot; Befunde im Verlauf") });
-  if (verdict === "pass") return chip(t, "Review rot · neuer Commit", t.blocked,
-    { tip: r?.reason ?? "Urteil älter als der letzte Commit: hub review-start" });
+  if (verdict === "pass") return chip(t, "Review grün", t.done,
+    { tip: r?.reason ?? "Urteil pass (aufgezeichnet)" });
   return chip(t, "Review –", t.muted, { tip: "Noch kein Reviewer-Urteil: hub review-start" });
 }
 
@@ -109,12 +120,15 @@ export function gateChips(t, tk, gate) {
   return out;
 }
 
-/** CI-Chip (5.6): pass/fail/running/unknown aus `hub ci`; `pr`/`ci_at` erklärt er im Tooltip. */
-export function ciChip(t, tk) {
+/** CI-Chip (5.6): pass/fail/running/unknown aus `hub ci`; `pr`/`ci_at` erklärt er im Tooltip.
+ *  `stale`: the run belongs to an older HEAD than the worktree's, so it proves nothing now. */
+export function ciChip(t, tk, { stale = false } = {}) {
   const [text, color] = {
     pass: ["CI ✓", t.done], fail: ["CI ✗", t.blocked],
     running: ["CI …", t.working], unknown: ["CI ?", t.muted],
   }[tk.ci] ?? ["CI –", t.muted];
+  if (stale) return chip(t, `${tk.ci === "fail" ? "CI rot" : text} (veraltet)`, t.muted,
+    { tip: "neuer Commit seit dem Lauf — neu prüfen" });
   return chip(t, text, color, { tip: tk.ci_at ? `PR-Checks: zuletzt geprüft ${tk.ci_at}` : "PR-Checks: noch nicht geprüft" });
 }
 

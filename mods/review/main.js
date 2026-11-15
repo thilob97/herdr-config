@@ -92,6 +92,8 @@ export default class Review extends View {
     this.findingsOpen = false; // the reviewer's findings under the ticket head are expanded
     this.ciPatch = null;    // fresh CI fields from `hub ci`, until shared catches up
     this.lessonsOpen = false; // the repo's lessons, unfolded
+    this.verlaufOpen = false; // the ticket's Verlauf, unfolded
+    this.evidenceOpen = false; // the evidence files, unfolded
     this.confirmedLesson = null; // proposal text just confirmed here (hide it until the next publish)
     this.commitInput = InputState.new({ placeholder: "Commit-Nachricht" });
     this.commitInput.on("submit", (_e, cx) => this.commit(cx));
@@ -226,7 +228,7 @@ export default class Review extends View {
         const files = [...seen.values()].sort((a, b) => a.path.localeCompare(b.path));
         const [behind, ahead] = track.code === 0 ? track.stdout.trim().split(/\s+/).map(Number) : [null, null];
         const dirty = status.stdout.split("\0").filter(Boolean).length;
-        this.repo = { root, on, hasHead, branch: branchName, ahead, behind, base, diffRef, dirty,
+        this.repo = { root, on, hasHead, head: hasHead ? head.stdout.trim() : null, branch: branchName, ahead, behind, base, diffRef, dirty,
           worktree: /\/\.herdr\/worktrees\//.test(root) }; // where the worktree mod puts checkouts
         this.files = files; this.error = null;
         if (this.open && !files.some((f) => f.path === this.open)) this.open = null;
@@ -314,6 +316,10 @@ export default class Review extends View {
 
   // ---------- ticket mode ----------
 
+  // The commit every recorded gate (checks, review, CI) has to match: the worktree's HEAD
+  // now, else the one `hub gate` read (a ticket without a local checkout).
+  headNow() { return this.repo?.head ?? this.gate?.head ?? null; }
+
   // `hub ci` writes the ticket file; shared("orchestra.tickets") catches up only every 5 s,
   // so the CI row takes the fresh fields straight from `hub ticket list --json`.
   async ciSnapshot() {
@@ -344,30 +350,32 @@ export default class Review extends View {
     try { d = JSON.parse(tk.ci_details || "null"); } catch {}
     const failed = d?.checks ?? [];
     const st = tk.ci, url = tk.ci_url || tk.pr;
+    const stale = ui.headStale(this.headNow(), tk.ci_head);
     const word = { pass: "grün", fail: "rot", running: "läuft", unknown: "nicht prüfbar" }[st] ?? "noch nicht geprüft";
     return v_flex().id("rv-ci").flex_none().gap(ui.GAP_XS)
       .child(h_flex().gap(ui.GAP_S).items_center().h(ui.H_BTN_S)
-        .when(Boolean(st), (el) => el.child(ui.ciChip(t, tk)))
+        .when(Boolean(st), (el) => el.child(ui.ciChip(t, tk, { stale })))
         .when(!st, (el) => el.child(div().flex_none().text_size(T_S).font_medium().text_color(t.muted).child(`CI ${word}`)))
-        .when(Boolean(tk.ci_at), (el) => el.child(div().text_size(T_XS).text_color(t.dim).child(tk.ci_at)))
+        .when(st === "fail", (el) => el.child(ui.link(t, "rv-ci-toggle", `${this.ciOpen ? "▾" : "▸"} ${failed.length ? `Fehlschläge (${failed.length})` : "Fehlschlag"}`,
+          (c) => { this.ciOpen = !this.ciOpen; c.notify(); },
+          { tip: this.ciOpen ? "Fehlschläge ausblenden" : "Fehlschläge und Log-Auszug einblenden" })))
+        .when(Boolean(tk.ci_at), (el) => el.child(div().text_size(T_XS).text_color(t.dim)
+          .when(stale, (x) => x.tooltip("neuer Commit seit dem Lauf — neu prüfen")).child(tk.ci_at)))
         .when(Boolean(url), (el) => el.child(ui.link(t, "rv-ci-url", "PR öffnen", (c) => c.open_url(url), { tip: url })))
         .child(div().flex_1())
         .when(Boolean(tk.pr), (el) => el.child(ui.button(t, "rv-ci-check", this.busy === "ci" ? "Prüft …" : "Erneut prüfen",
-          (c) => this.checkCi(c), { small: true, enabled: !this.busy,
-            tip: "gh pr checks: Ergebnis ins Ticket; Fehlschläge mit Log in den Verlauf" }))))
-      .when(st === "fail", (el) => el.child(v_flex().flex_none().gap(2).min_w(0)
-        .child(ui.sectionHeader(t, failed.length ? `Fehlschläge (${failed.length})` : "Fehlschlag", {
-          id: "rv-ci-toggle", open: this.ciOpen, onClick: (c) => { this.ciOpen = !this.ciOpen; c.notify(); },
-        }))
-        .when(this.ciOpen, (e) => e.child(v_flex().id("rv-ci-detail").flex_none().gap(2).p(6).rounded(6)
-          .bg(t.background).border_1().border_color(t.border)
-          .children(failed.map((c, i) => h_flex().gap(ui.GAP_S).items_center().min_w(0)
-            .child(div().flex_none().text_size(T_XS).font_medium().text_color(t.blocked).child(c.name || "Check"))
-            .when(Boolean(c.state), (x) => x.child(div().text_size(T_XS).text_color(t.muted).child(String(c.state).toLowerCase())))
-            .when(Boolean(c.link), (x) => x.child(ui.link(t, `rv-ci-log-${i}`, "Log", (c2) => c2.open_url(c.link), { tip: c.link })))))
-          .when(Boolean(d.log), (x) => x.child(div().max_h(110).overflow_y_scroll().text_size(T_XS).text_color(t.dim)
-            .children(String(d.log).split("\n").map((line) => div().child(line || " ")))))
-          .when(!failed.length && !d?.log, (x) => x.child(div().text_size(T_XS).text_color(t.muted).child(tk.ci_comment || "Details im Verlauf.")))))));
+          (c) => this.checkCi(c), { small: true, enabled: !this.busy && tk.status !== "done",
+            tip: stale ? `Der Lauf ist älter als der Worktree-HEAD: hub ci ${tk.id} prüft den PR neu`
+              : "gh pr checks: Ergebnis ins Ticket; Fehlschläge mit Log in den Verlauf" }))))
+      .when(st === "fail" && this.ciOpen, (el) => el.child(v_flex().id("rv-ci-detail").flex_none().gap(2).p(6).rounded(6)
+        .bg(t.background).border_1().border_color(t.border)
+        .children(failed.map((c, i) => h_flex().gap(ui.GAP_S).items_center().min_w(0)
+          .child(div().flex_none().text_size(T_XS).font_medium().text_color(t.blocked).child(c.name || "Check"))
+          .when(Boolean(c.state), (x) => x.child(div().text_size(T_XS).text_color(t.muted).child(String(c.state).toLowerCase())))
+          .when(Boolean(c.link), (x) => x.child(ui.link(t, `rv-ci-log-${i}`, "Log", (c2) => c2.open_url(c.link), { tip: c.link })))))
+        .when(Boolean(d.log), (x) => x.child(div().max_h(110).overflow_y_scroll().text_size(T_XS).text_color(t.dim)
+          .children(String(d.log).split("\n").map((line) => div().child(line || " ")))))
+        .when(!failed.length && !d?.log, (x) => x.child(div().text_size(T_XS).text_color(t.muted).child(tk.ci_comment || "Details im Verlauf.")))));
   }
 
   // `hub land` merges (or opens a PR), then ends the agent and removes the worktree.
@@ -610,11 +618,13 @@ export default class Review extends View {
     const r = this.gate?.review ?? null;
     const verdict = r?.verdict ?? tk.review ?? null;
     const at = r?.at ?? tk.review_at, by = r?.reviewer || tk.reviewer;
+    const stale = ui.headStale(this.headNow(), r?.review_head ?? tk.review_head);
     const [word, color] = live ? ["läuft", t.working]
-      : (r ? r.ok : verdict === "pass") ? ["grün", t.done]
-        : verdict === "fail" ? ["rot", t.blocked]
-          : verdict === "pass" ? ["rot · neuer Commit", t.blocked] : ["noch nicht gestartet", t.muted];
-    const why = r?.reason || tk.review_summary || "";
+      : stale ? ["veraltet (neuer Commit)", t.muted]
+        : (r ? r.ok : verdict === "pass") ? ["grün", t.done]
+          : verdict === "fail" ? ["rot", t.blocked]
+            : verdict === "pass" ? ["grün (aufgezeichnet)", t.muted] : ["noch nicht gestartet", t.muted];
+    const why = stale ? "neuer Commit seit dem Lauf — neu prüfen" : r?.reason || tk.review_summary || "";
     const findings = (this.verlauf ?? tk.verlauf ?? [])
       .filter((v) => v.role === "review" && !v.text.startsWith("Urteil:"));
     return v_flex().id("rv-review").flex_none().gap(ui.GAP_XS)
@@ -625,28 +635,23 @@ export default class Review extends View {
         .when(!tk.review_terminal && Boolean(by), (el) => el.child(div().flex_none().text_size(T_S).text_color(t.muted).child(by)))
         .when(Boolean(at) && !live, (el) => el.child(div().text_size(T_XS).text_color(t.dim).child(at)))
         .when(Boolean(tk.review_rounds), (el) => el.child(div().flex_none().text_size(T_XS).text_color(t.muted).child(`Runde ${tk.review_rounds}`)))
+        .when(findings.length > 0, (el) => el.child(ui.link(t, "rv-findings-toggle", `${this.findingsOpen ? "▾" : "▸"} Befunde (${findings.length})`,
+          (c2) => { this.findingsOpen = !this.findingsOpen; c2.notify(); },
+          { tip: this.findingsOpen ? "Befunde ausblenden" : "Befunde des Reviewers einblenden" })))
         .child(div().flex_1())
         .child(ui.button(t, "rv-review-start", this.busy === "review-start" ? "Startet …" : "Erneut prüfen",
           (c2) => this.startReview(c2), { small: true, enabled: !this.busy && tk.status !== "done",
-            tip: `hub review-start ${tk.id}: ein zweiter Agent prüft Diff und Abnahmekriterien` })))
-      .when(Boolean(tk.review_summary), (el) => el.child(div().max_h(36).overflow_hidden().text_size(T_S)
-        .text_color(t.muted).tooltip(tk.review_summary).child(tk.review_summary)))
-      .when(findings.length > 0, (el) => el.child(v_flex().gap(2).min_w(0)
-        .child(ui.sectionHeader(t, `Befunde (${findings.length})`, { id: "rv-findings-toggle", open: this.findingsOpen,
-          onClick: (c2) => { this.findingsOpen = !this.findingsOpen; c2.notify(); } }))
-        .when(this.findingsOpen, (x) => x.child(div().id("rv-findings").max_h(140).overflow_y_scroll().gap(2)
-          .children(findings.map((v) => this.verlaufLine(t, v)))))));
+            tip: stale ? `Das Urteil ist älter als der Worktree-HEAD: hub review-start ${tk.id} prüft neu`
+              : `hub review-start ${tk.id}: ein zweiter Agent prüft Diff und Abnahmekriterien` })))
+      .when(this.findingsOpen && findings.length > 0, (el) => el.child(div().id("rv-findings").flex_none().gap(2).p(6).rounded(6)
+        .bg(t.background).border_1().border_color(t.border)
+        .children(findings.map((v) => this.verlaufLine(t, v)))));
   }
 
-  // Ticket mode: what was ordered, the gates and the orchestrator's evidence.
-  ticketHead(t, tk, cx) {
-    this.previewEvidence(tk, cx);
-    const evidence = tk.evidence ?? [];
-    const verlauf = this.verlauf ?? tk.verlauf ?? [];
-    const lessons = tk.lessons ?? [];
-    const proposal = tk.lessonProposal && tk.lessonProposal.text !== this.confirmedLesson ? tk.lessonProposal : null;
-    const local = !tk.machine;
-    return v_flex().flex_none().px(ui.INSET_PANEL).py(ui.GAP_L).gap(ui.GAP_M).border_b(1).border_color(t.border)
+  // Fixed top: title, gate chips and the orchestrator's summary. It never grows with the
+  // accordions below, so the diff and the footer keep their room at every window height.
+  ticketHead(t, tk) {
+    return v_flex().id("rv-head").flex_none().px(ui.INSET_PANEL).py(ui.GAP_M).gap(ui.GAP_S).border_b(1).border_color(t.border)
       .child(h_flex().gap(ui.GAP_M).items_center()
         .child(ui.statusIcon(t, tk.status === "review" ? "blocked" : tk.status === "done" ? "done" : tk.status === "doing" ? "working" : "idle"))
         .child(div().flex_1().min_w(0).truncate().text_size(T_L).font_semibold().text_color(t.foreground).child(tk.title))
@@ -654,48 +659,66 @@ export default class Review extends View {
         .children(ui.gateChips(t, tk, tk.status === "done" ? null : this.gate)))
       .when(this.gate?.base?.ok === false, (el) => el.child(div().id("rv-base-drift").text_size(T_S).text_color(t.blocked)
         .child(`Basis veraltet: im Worktree \`git rebase ${this.gate.base.base || tk.base}\` ausführen, dann erneut prüfen (oder hub rebase ${tk.id}).`)))
+      .child(div().id("rv-summary").max_h(36).overflow_hidden().text_size(T_S).text_color(tk.summary ? t.muted : t.dim)
+        .when(Boolean(tk.summary), (el) => el.tooltip(tk.summary))
+        .child(tk.summary || "Keine Zusammenfassung des Orchestrators."));
+  }
+
+  // The scrollable middle above the diff: gates and actions, then the folded detail
+  // sections (Nachweise, Verlauf, Lehren) and the comment field. Its cap keeps at least
+  // 60 % of the middle for the diff; expanded sections scroll here instead of pushing the
+  // footer out of the window.
+  ticketMeta(t, tk, cx) {
+    this.previewEvidence(tk, cx);
+    const evidence = tk.evidence ?? [];
+    const verlauf = this.verlauf ?? tk.verlauf ?? [];
+    const lessons = tk.lessons ?? [];
+    const proposal = tk.lessonProposal && tk.lessonProposal.text !== this.confirmedLesson ? tk.lessonProposal : null;
+    const local = !tk.machine;
+    const toggle = (id, label, open, onClick) => ui.link(t, id, `${open ? "▾" : "▸"} ${label}`, onClick,
+      { tip: open ? `${label.replace(/ \d+$/, "")} ausblenden` : `${label.replace(/ \d+$/, "")} einblenden` });
+    return v_flex().id("rv-meta").flex_none().min_h(0).max_h("40%").overflow_y_scroll()
+      .px(ui.INSET_PANEL).py(ui.GAP_M).gap(ui.GAP_M).border_b(1).border_color(t.border)
       .when(Boolean(tk.pr) || Boolean(tk.ci), (el) => el.child(this.ciRow(t, tk, cx)))
       .child(this.reviewRow(t, tk, cx))
-      .child(div().id("rv-summary").max_h(90).overflow_y_scroll().text_size(T_S).text_color(tk.summary ? t.muted : t.dim)
-        .child(tk.summary || "Keine Zusammenfassung des Orchestrators."))
-      .child(h_flex().flex_wrap().gap(ui.GAP_S).items_start()
-        .child(div().flex_none().pt(2).text_size(T_S).font_medium().text_color(t.muted).child("Nachweise"))
-        .when(!evidence.length, (el) => el.child(div().text_size(T_S).text_color(t.muted).child("keine angegeben")))
+      .child(this.verifyRow(t, tk, cx))
+      .child(h_flex().gap(ui.GAP_L).items_center()
+        .child(toggle("rv-evidence-toggle", `Nachweise ${evidence.length}`, this.evidenceOpen,
+          (cx2) => { this.evidenceOpen = !this.evidenceOpen; cx2.notify(); }))
+        .when(verlauf.length > 0, (el) => el.child(toggle("rv-verlauf-toggle", `Verlauf ${verlauf.length}`, this.verlaufOpen,
+          (cx2) => { this.verlaufOpen = !this.verlaufOpen; cx2.notify(); })))
+        .when(lessons.length > 0, (el) => el.child(toggle("rv-lessons-toggle", `Lehren ${lessons.length}`, this.lessonsOpen,
+          (cx2) => { this.lessonsOpen = !this.lessonsOpen; cx2.notify(); })))
+        .child(div().flex_1()))
+      .when(this.evidenceOpen, (el) => el.child(h_flex().flex_wrap().gap(ui.GAP_M).items_start()
+        .when(!evidence.length, (x) => x.child(div().text_size(T_S).text_color(t.muted).child("keine angegeben")))
         .children(evidence.map((p, i) => {
           const pic = /\.(png|jpe?g|gif|webp|svg)$/i.test(p);
           if (!local) return div().flex_none().text_size(T_S).text_color(t.muted).tooltip(`${p} (auf ${tk.machine}; hier nicht zu öffnen)`).child(baseName(p));
           return div().id(`rv-ev-${i}`).flex_none().cursor_pointer().tooltip(`Öffnen: ${p}`)
-            .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+            .on_mouse_down("left", (_e, cx2) => cx2.stop_propagation())
             .on_click(() => exec("open", [p]).catch(() => null))
-            .when(pic && Boolean(this.previews[p]), (el) => el.child(v_flex().flex_none().w(64).gap(2)
+            .when(pic && Boolean(this.previews[p]), (x) => x.child(v_flex().flex_none().w(64).gap(2)
               .child(image(this.previews[p]).w(48).h(48).flex_none().rounded(4).border_1().border_color(t.border))
               .child(div().w(64).truncate().text_size(T_XS).text_color(t.muted).child(baseName(p)))))
-            .when(pic && !this.previews[p], (el) => el.child(svg("mods/review/icon.svg").size(16).text_color(t.muted)))
-            .when(!pic, (el) => el.child(div().text_size(T_S).text_color(t.muted).hover((x) => x.text_color(t.foreground)).child(baseName(p))));
+            .when(pic && !this.previews[p], (x) => x.child(svg("mods/review/icon.svg").size(16).text_color(t.muted)))
+            .when(!pic, (x) => x.child(div().text_size(T_S).text_color(t.muted).hover((s) => s.text_color(t.foreground)).child(baseName(p))));
         }))
-        .when(!local && evidence.length > 0, (el) => el.child(div().text_size(T_XS).text_color(t.muted).child(`auf ${tk.machine}`))))
-      .child(this.verifyRow(t, tk, cx))
-      .when(verlauf.length > 0, (el) => el.child(v_flex().id("rv-verlauf").gap(2)
-        .child(h_flex().items_center().gap(ui.GAP_S)
-          .child(div().text_size(T_S).font_medium().text_color(t.muted).child("Verlauf"))
-          .child(div().text_size(T_XS).text_color(t.dim).child(String(verlauf.length))))
-        .child(div().max_h(110).overflow_y_scroll().gap(2).children(verlauf.map((v) => this.verlaufLine(t, v))))))
-      .when(lessons.length > 0 || Boolean(proposal), (el) => el.child(v_flex().id("rv-lessons").gap(2)
-        .child(ui.sectionHeader(t, "Lehren", { count: lessons.length, open: this.lessonsOpen,
-          onClick: (cx) => { this.lessonsOpen = !this.lessonsOpen; cx.notify(); } }))
-        .when(this.lessonsOpen, (x) => x.child(div().max_h(140).overflow_y_scroll().gap(2)
-          .children(lessons.map((l) => this.lessonLine(t, l)))))
-        .when(!this.lessonsOpen && lessons.length > 0, (x) => x.child(div().gap(2)
-          .children(lessons.slice(-2).map((l) => this.lessonLine(t, l)))))
-        .when(!lessons.length, (x) => x.child(div().text_size(T_S).text_color(t.dim).child("Noch keine Lehre für dieses Repo.")))
+        .when(!local && evidence.length > 0, (x) => x.child(div().text_size(T_XS).text_color(t.muted).child(`auf ${tk.machine}`)))))
+      .when(this.verlaufOpen && verlauf.length > 0, (el) => el.child(v_flex().id("rv-verlauf").gap(2).min_w(0)
+        .child(div().max_h(160).overflow_y_scroll().gap(2).children(verlauf.map((v) => this.verlaufLine(t, v))))))
+      .when((this.lessonsOpen && (lessons.length > 0 || !proposal)) || Boolean(proposal), (el) => el.child(v_flex().id("rv-lessons").gap(2).min_w(0)
+        .when(this.lessonsOpen, (x) => x.child(div().max_h(160).overflow_y_scroll().gap(2)
+          .children(lessons.length ? lessons.map((l) => this.lessonLine(t, l))
+            : [div().text_size(T_S).text_color(t.dim).child("Noch keine Lehre für dieses Repo.")])))
         .when(Boolean(proposal), (x) => x.child(h_flex().gap(ui.GAP_S).items_center()
           .child(div().flex_1().min_w(0).text_size(T_S).text_color(t.foreground).child(`Vorschlag: ${proposal.text}`))
-          .child(ui.button(t, "rv-lesson", "Lehre übernehmen", (cx) => this.confirmLesson(cx),
+          .child(ui.button(t, "rv-lesson", "Lehre übernehmen", (cx2) => this.confirmLesson(cx2),
             { kind: "primary", small: true, enabled: !this.busy, tip: "Schreibt die Lehre ins Repo; jeder nächste Auftrag enthält sie" }))))))
       .child(h_flex().gap(ui.GAP_M).items_center()
         .child(this.field(t, "rv-comment", this.commentInput, { focused: this.focus.has("rv-comment"),
           send: ui.sendButton(t, "rv-comment-send", "mods/orchestra/icons/send.svg",
-            "Kommentar ins Ticket (↵); @agent taggen, dort liest er ihn", (cx) => this.comment(cx), { enabled: !this.busy }) })));
+            "Kommentar ins Ticket (↵); @agent taggen, dort liest er ihn", (cx2) => this.comment(cx2), { enabled: !this.busy }) })));
   }
 
   ticketFooter(t, tk) {
@@ -794,10 +817,14 @@ export default class Review extends View {
                   (range) => this.rows.slice(range.start, range.end).map((row) => this.diffRow(row, t))).size_full())))
               .child(Scrollbar.vertical("rv-diff").viewport_from_layout().absolute().inset_0()));
 
+    const middle = v_flex().id("rv-middle").flex_1().min_h(0)
+      .when(Boolean(tk), (el) => el.child(this.ticketMeta(t, tk, cx)))
+      .child(body);
+
     return v_flex().id("review").size_full().min_h(0).overflow_hidden().bg(t.popover).text_size(T_M).text_color(t.foreground)
       .child(header)
-      .when(Boolean(tk), (el) => el.child(this.ticketHead(t, tk, cx)))
-      .child(body)
+      .when(Boolean(tk), (el) => el.child(this.ticketHead(t, tk)))
+      .child(middle)
       .child(tk ? this.ticketFooter(t, tk) : this.terminalFooter(t, tg));
   }
 }
