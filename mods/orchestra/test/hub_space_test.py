@@ -509,6 +509,117 @@ class HubSpaceTest(unittest.TestCase):
         self.assertEqual(meta["space"], SP_A,
                          "der Agent-Space des Terminals erbt nicht in das neue Ticket")
 
+    def test_a_team_agent_on_an_old_ticket_takes_its_repo_space(self):
+        # An old ticket stores only the agent's throwaway space (no `space_name`).
+        # `hub ticket new` from its agent terminal must follow the repo folder rule,
+        # not HERDR_SPACE: that space is the worktree's, not the factory's.
+        parent = self.ticket("Alt-Eltern", self.beta, who=ORCH_B)
+        old = "sp" + "e" * 32
+        self.strip_space(parent, old)
+        self.terminal("t-old-team", name="team", state="live",
+                      labels={"herdr.space": old, "hub.ticket": parent})
+        r = self.hub("ticket", "new", "--title", "Kind", "--repo", self.beta,
+                     who="t-old-team", env={"HERDR_SPACE": old})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        meta, _ = self.fields(r.stdout.strip())
+        self.assertEqual((meta["space"], meta["space_name"]), (SP_B, "Beta"),
+                         "der alte Agent-Space erbt nicht; das Repo des Tickets entscheidet")
+
+    # ---- the "ohne Workspace" group (`--space ""`)
+
+    def test_timeline_none_shows_only_the_group_without_a_workspace(self):
+        a = self.ticket("Alpha", self.alpha, status="doing")
+        self.hub("ticket", "set", a, "terminal=t-agent-a", who=ORCH_A)
+        self.terminal("t-agent-a", name="Alpha-Agent", state="live",
+                      labels={"herdr.space": "sp" + "1" * 32, "hub.ticket": a})
+        outside = os.path.join(self.repos, "nirgends")
+        os.makedirs(outside)
+        loose = self.ticket("Ohne Ordner", outside, who=ORCH_A, status="doing")
+        self.strip_space(loose)  # an old ticket: no workspace, its repo is in no folder
+        self.hub("ticket", "set", loose, "terminal=t-loose", who=ORCH_A)
+
+        group = self.json_cmd("timeline", "--space", "")
+        self.assertEqual(group["space"], "")
+        self.assertEqual({l["ticket"] for l in group["lanes"]}, {loose},
+                         "die Lanes fremder Spaces gehören nicht in die Gruppe")
+        self.assertEqual({e["ticket"] for e in group["events"]}, {loose})
+        self.assertTrue(all(e["space"] == "" for e in group["events"]),
+                        "nur Events ohne Workspace")
+
+        alpha = self.json_cmd("timeline", "--space", "Alpha")
+        self.assertEqual({l["terminal"] for l in alpha["lanes"]}, {ORCH_A, "t-agent-a"})
+        self.assertEqual({e["ticket"] for e in alpha["events"]}, {a},
+                         "die Gruppe erscheint nicht in der Projekt-Fabrik")
+        self.assertTrue(all(l["space"] == SP_A for l in alpha["lanes"]))
+
+        own = self.json_cmd("timeline")
+        self.assertEqual({e["ticket"] for e in own["events"]}, {a},
+                         "ohne --space bleibt die eigene Fabrik der Standard")
+
+    def test_none_is_the_group_without_a_workspace_in_wip_status_stats(self):
+        self.ticket("Alpha läuft", self.alpha, status="doing")
+        outside = os.path.join(self.repos, "nirgends")
+        os.makedirs(outside)
+        loose = self.ticket("Ohne Ordner", outside, who=ORCH_A, status="doing")
+        self.strip_space(loose)
+        self.hub("wip", "--mine", "arbeit=1", who=ORCH_A)  # an override for Alpha only
+
+        wip = self.json_cmd("wip", "--space", "")
+        self.assertEqual((wip["space"], wip["space_name"]), ("", ""))
+        self.assertEqual(wip["arbeit"], 3, "die Limits der Gruppe sind die Datei-Standards")
+        text = self.hub("wip", "--space", "", who=ORCH_A).stdout
+        self.assertIn("ohne Workspace", text)
+        self.assertNotIn("Alpha", text)
+        self.assertIn("arbeit 1/3", text, "nur das Ticket ohne Workspace zählt")
+
+        status = self.json_cmd("status", "--space", "")
+        self.assertEqual((status["space"], status["space_name"]), ("", ""))
+        self.assertEqual({r["id"] for r in status["tickets"]}, {loose})
+
+        stats = self.json_cmd("stats", "--space", "")
+        self.assertEqual((stats["space"], stats["space_name"]), ("", ""))
+        self.assertEqual({r["id"] for r in stats["tickets"]}, {loose})
+
+        own = self.json_cmd("wip")
+        self.assertEqual((own["space"], own["space_name"]), (SP_A, "Alpha"),
+                         "ohne --space bleibt die eigene Fabrik der Standard")
+        self.assertEqual(own["arbeit"], 1, "der Override des eigenen Space gilt hier")
+
+    def test_old_agent_space_events_land_in_the_tickets_workspace(self):
+        # events.jsonl: an old dispatch logged the throwaway agent space; the ticket
+        # has long been assigned to its repo's factory. The entry must follow the
+        # ticket, or it appears in no lane and no space view.
+        a = self.ticket("Alt", self.alpha, status="doing")
+        old = "sp" + "9" * 32
+        self.strip_space(a, old)
+        self.hub("ticket", "set", a, f"agent_space={old}", who=ORCH_A)
+        path = os.path.join(self.app, "data", "orchestra", "events.jsonl")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"at": int(time.time() * 1000), "kind": "comment", "ticket": a,
+                                "agent": "agent", "terminal": "t-old", "text": "alt",
+                                "space": old, "space_name": ""}) + "\n")
+
+        report = self.json_cmd("timeline")
+        self.assertIn(a, {e["ticket"] for e in report["events"]},
+                      "der Kommentar liegt in der Sicht des Workspace")
+        self.assertTrue(all(e["space"] == SP_A for e in report["events"] if e["ticket"] == a),
+                        "der alte Agent-Space wird auf den Ticket-Space zurückgeführt")
+        lane = next((l for l in report["lanes"] if l["terminal"] == "t-old"), None)
+        self.assertIsNotNone(lane, "die Lane der Alt-Agent-Space erscheint")
+        self.assertEqual((lane["space"], lane["space_name"]), (SP_A, "Alpha"))
+        self.assertEqual({l["space"] for l in report["lanes"]}, {SP_A})
+
+        group = self.json_cmd("timeline", "--space", "")
+        self.assertNotIn("t-old", {l["terminal"] for l in group["lanes"]})
+        self.assertNotIn(a, {e["ticket"] for e in group["events"]})
+
+    def test_wip_all_json_carries_no_space_fields(self):
+        payload = self.json_cmd("wip", "--all")
+        self.assertTrue(payload["all"])
+        self.assertNotIn("space", payload, "globale Zahlen tragen keinen Space")
+        self.assertNotIn("space_name", payload)
+
     # ---- orchestrator per space
 
     def test_orchestrator_start_refuses_a_second_and_restart_replaces_it(self):
