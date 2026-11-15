@@ -31,15 +31,17 @@ export const plain = (s) => (s ?? "").replace(TITLE_PREFIX, "").replace(/[\uE000
 // fragen sie aber mehrfach je Rendern — deshalb ein kurzer Tick-Cache: derselbe Pass
 // sieht einen Satz Kopien, der nächste (ein Wechsel zeichnet neu) liest frisch.
 const HOST_TICK = 25;
-const host = { at: 0, spaces: null, terminals: null, panes: null, paneSpace: null };
+const host = { at: 0, spaces: null, terminals: null, panes: null, paneSpace: null, agents: null, identities: null };
 function hostTick() {
   if (Date.now() - host.at < HOST_TICK && host.spaces) return;
   host.at = Date.now();
-  host.spaces = host.terminals = host.panes = host.paneSpace = null;
+  host.spaces = host.terminals = host.panes = host.paneSpace = host.agents = host.identities = null;
 }
 const hostSpaces = () => (hostTick(), (host.spaces ??= spaces()));
 const hostTerminals = () => (hostTick(), (host.terminals ??= terminals()));
 const hostPanes = () => (hostTick(), (host.panes ??= panes()));
+const hostAgents = () => (hostTick(), (host.agents ??= agents()));
+const hostIdentities = () => (hostTick(), (host.identities ??= (shared("agents.identity") ?? {})));
 
 /** Der Space einer Terminal-Adresse: über den Tab in `panes()`, sonst null (der
  *  Aufrufer fällt dann auf `terminal.space` bzw. das Label `herdr.space` zurück). */
@@ -490,9 +492,9 @@ export const loading = (t, text = "lädt …") => h_flex().gap(GAP_S).items_cent
  *  (`omp` klein) bzw. als Adresse — nie der Programmname („Oh My Pi") — und
  *  `named: false` sagt, dass es keine veröffentlichte Identität ist. */
 export function identity(address) {
-  const a = agents().find((x) => x.address === address) ?? null;
+  const a = hostAgents().find((x) => x.address === address) ?? null;
   const x = a ? null : hostTerminals().find((y) => y.address === address && y.state === "live") ?? null;
-  const known = (shared("agents.identity") ?? {})[address];
+  const known = hostIdentities()[address];
   const program = a?.program ?? x?.program ?? null;
   const programKey = program?.key ? String(program.key).toLowerCase() : null;
   return {

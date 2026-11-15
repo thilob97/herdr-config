@@ -103,7 +103,7 @@ export default class FactoryGraph extends View {
     this.filter = FILTERS.some((f) => f.value === localStorage.getItem("graph.filter"))
       ? localStorage.getItem("graph.filter") : "all";
     this.window = WINDOWS.some((w) => w.value === localStorage.getItem("graph.window"))
-      ? localStorage.getItem("graph.window") : "all";
+      ? localStorage.getItem("graph.window") : "24h";
     this.read(cx);
     // Dieselbe Kadenz wie die Timeline: kein zusätzliches Pollen unter 5 s.
     cx.timer.every(REFRESH, (cx) => this.read(cx));
@@ -135,7 +135,8 @@ export default class FactoryGraph extends View {
   }
 
   tickets() {
-    return (shared("orchestra.tickets") ?? []).filter((tk) => tk?.id && ui.inScope(tk));
+    const tks = ui.teamTickets();
+    return tks.filter((tk) => tk?.id && ui.inScope(tk, tks));
   }
 
   read(cx) {
@@ -180,10 +181,10 @@ export default class FactoryGraph extends View {
   /** `hub timeline` meldet für ein laufendes Terminal den Zustand „live“, nicht den
    *  Status seines Agents (die Timeline fällt dann auf arbeitet/fertig zurück).
    *  Hier zählt der echte Status aus terminals(): arbeitet/wartet/fertig/ruhig. */
-  laneStatus(lane) {
+  laneStatus(lane, termStatus) {
     if (["working", "blocked", "done", "idle"].includes(lane.status)) return lane.status;
-    const t = terminals().find((x) => x.address === lane.terminal);
-    return ["working", "blocked", "done", "idle"].includes(t?.status) ? t.status : lane.status;
+    const st = termStatus.get(lane.terminal);
+    return ["working", "blocked", "done", "idle"].includes(st) ? st : lane.status;
   }
 
   openLane(node) {
@@ -244,11 +245,7 @@ export default class FactoryGraph extends View {
     return p.line_to(last[0], last[1]);
   }
 
-  path(t, edge, hot) {
-    const z = pathScale();
-    const width = (edge.kind === "ticket" || edge.faint ? 1 : 1.5) * z;
-    let p = PathBuilder.stroke(width);
-    if (edge.dashed) p = p.dash_array([3 * z, 3 * z]);
+  appendEdge(p, edge, z) {
     p = this.polyline(p, edge.points, z);
     // Pfeilspitze aus der Richtung des letzten Segments: sie zeigt beim Baum auf
     // das Kind, beim Ticket-Pfeil auf den Blocker.
@@ -256,15 +253,13 @@ export default class FactoryGraph extends View {
     const [x1, y1] = edge.points[edge.points.length - 2] ?? edge.points[0];
     const dx = x2 - x1, dy = y2 - y1, len = Math.hypot(dx, dy) || 1;
     const ux = dx / len, uy = dy / len, nx = -uy, ny = ux, back = 6, wing = 3.2;
-    p = p.move_to((x2 - ux * back + nx * wing) * z, (y2 - uy * back + ny * wing) * z)
+    return p.move_to((x2 - ux * back + nx * wing) * z, (y2 - uy * back + ny * wing) * z)
       .line_to(x2 * z, y2 * z)
       .line_to((x2 - ux * back - nx * wing) * z, (y2 - uy * back - ny * wing) * z);
-    const color = hot ? t.accent : edge.faint ? t.border : edge.kind === "ticket" ? t.dim : t.muted;
-    return { path: p.build(), color };
   }
 
-  avatar(t, node, color) {
-    const who = ui.identity(node.terminal), size = node.narrow ? 16 : 18;
+  avatar(t, node, color, who) {
+    const size = node.narrow ? 16 : 18;
     if (who.named && who.avatar) {
       return image(who.avatar).w(size).h(size).flex_none().rounded_full().border(2).border_color(color);
     }
@@ -288,7 +283,7 @@ export default class FactoryGraph extends View {
         if (next !== this.hover) { this.hover = next; cx.notify(); }
       })
       .on_click((_e, cx) => { cx.stop_propagation(); this.openLane(node); });
-    const avatar = this.avatar(t, node, color);
+    const avatar = this.avatar(t, node, color, who);
     const title = div().flex_1().min_w(0).truncate().text_size(node.narrow ? T_XS : T_S).font_semibold()
       .text_color(node.kind === "subagent" ? t.muted : t.foreground).tooltip(tip).child(name);
     const status = ui.statusChip(t, node.status);
@@ -331,12 +326,24 @@ export default class FactoryGraph extends View {
     const colorOf = new Map();
     for (const node of g.nodes) if (!colorOf.has(node.laneId)) colorOf.set(node.laneId, colors[colorOf.size % colors.length]);
     const hoverChips = new Set(g.ticketNodes.filter((c) => c.node === this.hover).map((c) => c.id));
-    const layers = g.edges.map((edge) => {
+    const z = pathScale(), buckets = new Map();
+    for (const edge of g.edges) {
       const hot = Boolean(this.hover) && (edge.to === this.hover || edge.from === this.hover
         || hoverChips.has(edge.from) || hoverChips.has(edge.to));
-      const { path, color } = this.path(t, edge, hot);
-      return div().absolute().left(0).top(0).w(g.width).h(g.height).child(window.paint_path(path, color));
-    });
+      const color = hot ? t.accent : edge.faint ? t.border : edge.kind === "ticket" ? t.dim : t.muted;
+      const width = (edge.kind === "ticket" || edge.faint ? 1 : 1.5) * z;
+      const key = `${color}|${width}|${edge.dashed ? 1 : 0}`;
+      let b = buckets.get(key);
+      if (!b) {
+        let p = PathBuilder.stroke(width);
+        if (edge.dashed) p = p.dash_array([3 * z, 3 * z]);
+        b = { p, color };
+        buckets.set(key, b);
+      }
+      b.p = this.appendEdge(b.p, edge, z);
+    }
+    const layers = [...buckets.values()].map(({ p, color }) =>
+      div().absolute().left(0).top(0).w(g.width).h(g.height).child(window.paint_path(p.build(), color)));
     // Reihenfolge: Linien hinten, Karten, Ticket-Chips obenauf.
     const cards = g.nodes.map((node) => this.card(t, node, colorOf.get(node.laneId)));
     const chips = g.ticketNodes.map((c) => this.chip(t, c, tickets));
@@ -396,7 +403,8 @@ export default class FactoryGraph extends View {
     const now = this.now();
     const span = SPANS[this.window] ?? null;
     const tickets = this.tickets();
-    const lanes = (this.data?.lanes ?? []).map((l) => ({ ...l, status: this.laneStatus(l) }));
+    const termStatus = new Map(terminals().map((x) => [x.address, x.status]));
+    const lanes = (this.data?.lanes ?? []).map((l) => ({ ...l, status: this.laneStatus(l, termStatus) }));
     const g = layoutGraph({ lanes, tickets, now, windowStart: span ? now - span : null, filter: this.filter,
       width: this.width || 400 });
     const agents = g.nodes.filter((n) => n.kind !== "orchestrator").length;
