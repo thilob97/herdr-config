@@ -19,7 +19,7 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea } from "gpui-base";
-import { spaces, focused, exec, hc, knownAgents, notify, props, closeOverlay, theme, shared, setShared, home, appHome, readTextFile, terminals, run } from "herdr";
+import { spaces, focused, exec, hc, knownAgents, notify, props, closeOverlay, theme, shared, setShared, home, appHome, readTextFile, terminals } from "herdr";
 import * as fs from "fs/promises";
 import { place, git, repoOf, homeOn, slug } from "./git.js";
 import * as ui from "./ui.js";
