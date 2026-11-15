@@ -4,7 +4,7 @@ import * as fs from "fs/promises";
 import { appHome, shared, setShared } from "herdr";
 
 export const ticketsDir = () => `${appHome()}/data/quests/tickets`;
-const FIELDS = ["title", "status", "repo", "labels", "due", "machine", "owner", "agent", "harness", "branch", "base", "base_head", "worktree", "terminal",
+const FIELDS = ["title", "status", "repo", "labels", "due", "machine", "owner", "agent", "agent_cmd", "harness", "branch", "base", "base_head", "worktree", "terminal",
   "space", "tab", "source", "type", "size", "priority", "triaged",
   "preflight", "preflight_at", "preflight_head", "preflight_duration",
   "checks", "checks_head", "checks_at", "checks_duration", "checks_exit", "checks_cmd", "verify", "evidence",

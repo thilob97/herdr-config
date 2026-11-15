@@ -232,7 +232,7 @@ class HubWipTest(unittest.TestCase):
 
         r = self.hub("review", tid, "--summary", "Fertig.")
         self.assertNotEqual(r.returncode, 0, "ohne Nachweise kein review")
-        self.assertIn("Definition of Done", r.stderr)
+        self.assertIn("Verweigert:", r.stderr)
         self.assertIn("Nachweise", r.stderr)
         self.assertNotIn("status: review", self.text_of(tid), "das Ticket bleibt in Arbeit")
 
@@ -254,7 +254,7 @@ class HubWipTest(unittest.TestCase):
         r = self.hub("review", tid, "--summary", "Fertig.")
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("Abnahmekriterien", r.stderr)
-        self.assertIn("Abschluss", r.stderr)
+        self.assertIn("Abnahme im Verlauf", r.stderr)
 
 
 if __name__ == "__main__":

@@ -150,7 +150,7 @@ import argparse, datetime, fcntl, html, json, os, pwd, re, secrets, shlex, subpr
 
 APP = os.environ.get("HERDR_APP_HOME") or os.path.expanduser("~/.config/herdr-app")
 TICKETS = os.path.join(APP, "data", "quests", "tickets")
-FIELDS = ["title", "status", "repo", "labels", "due", "machine", "owner", "agent", "harness", "branch", "base", "base_head", "worktree", "terminal",
+FIELDS = ["title", "status", "repo", "labels", "due", "machine", "owner", "agent", "agent_cmd", "harness", "branch", "base", "base_head", "worktree", "terminal",
           "space", "tab", "source", "type", "size", "priority", "triaged",
           "preflight", "preflight_at", "preflight_head", "preflight_duration",
           "checks", "checks_head", "checks_at", "checks_duration", "checks_exit", "checks_cmd", "verify",
@@ -294,10 +294,27 @@ def roster_of(name):
     return found
 
 
+def agent_display(value):
+    """An agent field as a person reads it: a roster name, else the command's first word.
+
+    Tickets written before `agent` and `agent_cmd` were split kept the whole start
+    command (`omp --model=…`) in `agent`; reading them shows the program, never the
+    command line."""
+    key = (value or "").strip()
+    if not key:
+        return ""
+    if " " in key and "--" in key:
+        try:
+            key = shlex.split(key)[0]
+        except ValueError:
+            key = key.split()[0]
+    return os.path.basename(key) or key
+
+
 def program_of(name):
     """The program behind a ticket's agent: a roster entry's program, else the key itself."""
     found = roster_of(name)
-    return found["program"] if found else (name or "").strip()
+    return found["program"] if found else agent_display(name)
 
 
 def roster_program(value):
@@ -880,7 +897,10 @@ def head_of(t, on=None):
         return None, "Worktree und Repo fehlen"
     r = run(["git", "rev-parse", "HEAD"], on, folder, check=False)
     if r.returncode != 0:
-        return None, f"HEAD nicht lesbar in {folder}: {(r.stderr or r.stdout).strip()}"
+        detail = (r.stderr or r.stdout).strip()
+        if "not a git repository" in detail.lower():
+            return None, f"kein Git-Repository in {folder}"
+        return None, f"HEAD nicht lesbar in {folder}: {detail}"
     return r.stdout.strip(), None
 
 
@@ -1472,6 +1492,8 @@ def add_spec_sections(t):
 
 def cmd_spec(a):
     t = read(a.id)
+    if t["status"] in ("done", "review") and not getattr(a, "force", False):
+        die(f"{a.id}: Ticket ist {t['status']} — Abschnitte nur mit --force ergänzen")
     added = add_spec_sections(t)
     if added:
         write(t)
@@ -1899,14 +1921,15 @@ def cmd_list(a):
         print(json.dumps(out, ensure_ascii=False, indent=1))
         return
     for t in rows:
-        print(f"{t['id']:<40} {t['status']:<7} {t.get('assignee', ''):<10} {t.get('terminal', ''):<14} {t['title']}")
+        who = agent_display(t.get("assignee")) or agent_display(t.get("agent"))
+        print(f"{t['id']:<40} {t['status']:<7} {who:<10} {t.get('terminal', ''):<14} {t['title']}")
 
 
 def cmd_show(a):
     t = read(a.id)
     for k in FIELDS:
         if t.get(k):
-            print(f"{k}: {t[k]}")
+            print(f"{k}: {agent_display(t[k]) if k == 'agent' else t[k]}")
     print()
     print(t["body"].rstrip())
 
@@ -2215,7 +2238,7 @@ def doing_of(agent_key, skip=""):
     for t in all_tickets():
         if t.get("status") != "doing" or t.get("id") == skip:
             continue
-        if (t.get("agent") or t.get("assignee") or "").strip().casefold() == key:
+        if agent_display(t.get("agent") or t.get("assignee")).casefold() == key:
             out.append(t)
     return out
 
@@ -2259,9 +2282,17 @@ def cmd_dispatch(a):
         note = f"Start-Gate überfahren ({' · '.join(gaps)}): {a.reason.strip()}"
         update_ticket(a.id, lambda fresh: add_comment(fresh, "hub", note))
     # A roster name selects a named agent: its program, model, repo and branch prefix.
-    # Unknown names keep working as programs or commands, as before.
+    # Anything else is a program (`omp`, `claude`, …) or a full command line. The ticket
+    # keeps the display name in `agent` and the exact start command in `agent_cmd`, so
+    # Quests, Board and Team say "omp" instead of printing the command.
     who = roster_of(a.agent)
-    agent_key, program = (who["name"], who["program"]) if who else (a.agent, a.agent)
+    if who:
+        agent_key, program, agent_argv = who["name"], who["program"], command_argv(who)
+    else:
+        raw = (a.agent or "").strip() or "omp"
+        program = agent_display(raw) or "Agent"
+        agent_key = program
+        agent_argv = list(AGENTS[raw]) if raw in AGENTS else (shlex.split(raw) or [raw])
     repo, on = t.get("repo"), t.get("machine") or None
     if not repo and who:
         repo = os.path.expanduser(who.get("repo") or "")
@@ -2356,12 +2387,12 @@ def cmd_dispatch(a):
         f"hc send nur für \"fertig\" oder \"blockiert, Ticket {a.id}\": {report}. "
         "Wenn du fertig oder blockiert bist, melde dich genauso mit: was geändert, Testergebnis, was offen ist."
     )
-    agent = command_argv(who) if who else list(AGENTS.get(program) or shlex.split(program))
+    agent_cmd = shlex.join(agent_argv)
     if on:
-        argv = ["sh", "-lc", '"$@"; exec "${SHELL:-sh}" -l', "sh", *agent, task]
+        argv = ["sh", "-lc", '"$@"; exec "${SHELL:-sh}" -l', "sh", *agent_argv, task]
     else:
         sh = shell()
-        argv = [sh, "-lic", '"$@"; exec "$0" -li', sh, *agent, task]
+        argv = [sh, "-lic", '"$@"; exec "$0" -li', sh, *agent_argv, task]
     name = slug(a.id, 32) or "agent"
     space, tab = f"sp{secrets.token_hex(16)}", f"tb{secrets.token_hex(16)}"
     labels = ["--label", f"herdr.space={space}", "--label", f"herdr.tab={tab}",
@@ -2379,7 +2410,8 @@ def cmd_dispatch(a):
     out = json.loads(r.stdout)
 
     def saved(fresh):
-        fresh.update(agent=agent_key, harness=short_harness(who) if who else program,
+        fresh.update(agent=agent_key, agent_cmd=agent_cmd,
+                     harness=short_harness(who) if who else program,
                      branch=branch or "", worktree=folder if branch else "",
                      terminal=out["address"], space=space, tab=tab)
         if not (fresh.get("owner") or "").strip():
@@ -2392,7 +2424,7 @@ def cmd_dispatch(a):
         write(t)
         event("dispatch", a.id, agent_key, out["address"], f"{agent_key} in {branch or folder}")
     print(json.dumps({"ticket": a.id, "terminal": out["address"], "name": name, "agent": agent_key,
-                      "folder": folder, "branch": branch}, ensure_ascii=False))
+                      "agent_cmd": agent_cmd, "folder": folder, "branch": branch}, ensure_ascii=False))
 
 
 REVIEW_AGENTS = ["claude", "codex", "pi", "omp"]
@@ -2571,7 +2603,19 @@ def cmd_verify(a):
         die(f"{a.id}: weder Worktree noch Repo vorhanden; hub ticket set {a.id} repo=/pfad")
     top = run(["git", "rev-parse", "--show-toplevel"], on, folder, check=False)
     if top.returncode != 0:
-        die(f"{a.id}: kein Git-Repository in {folder}: {(top.stderr or top.stdout).strip()}")
+        # The person reads one German line; the raw git text belongs in the check log.
+        detail = (top.stderr or top.stdout).strip()
+        at = time.strftime("%Y-%m-%d %H:%M")
+        t.update(checks="fail", checks_head="", checks_at=at, checks_duration="0.0",
+                 checks_exit=str(top.returncode), checks_cmd="git rev-parse --show-toplevel")
+        fence = "`" * (max([len(m) for m in re.findall(r"`+", detail)] + [2]) + 1)
+        set_prufung(t, f"- {at} · fail · 0.0 s · exit {top.returncode} · HEAD ? · "
+                       f"git rev-parse --show-toplevel\n\n{fence}text\n{detail}\n{fence}")
+        write(t)
+        event("verify", a.id, t.get("agent") or "", t.get("terminal") or "",
+              f"fail · kein Git-Repository in {folder}")
+        die(f"{a.id}: kein Git-Repository in {folder}; hub verify braucht ein Repo "
+            f"(hub ticket set {a.id} repo=/pfad)")
     root = top.stdout.strip()
     script = f"{root}/.herdr/verify.sh"
     fallback = (a.or_command or t.get("verify") or "").strip()
@@ -2632,6 +2676,40 @@ def cmd_gates(_a):
     print(json.dumps(rows, ensure_ascii=False))
 
 
+def review_points(t, g):
+    """[(label, command)] for the one thing each missing point needs, in DoD order.
+
+    The gate's own reasons repeat what the DoD already says; this list is the single
+    source for the compact refusal and for the --force note."""
+    tid = t["id"]
+    commands = {
+        "kriterien": f"hub spec {tid}",
+        "verify": f"hub verify {tid}",
+        "pruefung": f"hub review-start {tid}",
+        "ci": f"hub ci {tid}",
+        "nachweise": f"hub review {tid} --evidence PATH",
+        "abschluss": f"hub ticket comment {tid} --from <Agent> \"fertig\"",
+    }
+    labels = {"kriterien": "Abnahmekriterien", "verify": "Checks", "pruefung": "Prüfstation",
+              "ci": "CI", "nachweise": "Nachweise", "abschluss": "Abnahme im Verlauf"}
+    points = []
+    if (g.get("base") or {}).get("ok") is False:
+        points.append(("Basis", f"hub rebase {tid}"))
+    for x in g.get("dod") or []:
+        if x["ok"]:
+            continue
+        points.append((labels.get(x["key"], x["label"]), commands.get(x["key"], x["why"])))
+    return points
+
+
+def refuse_review(t, points):
+    """The short refusal: one summary line, then exactly one command line per gap."""
+    sys.stderr.write(f"hub: {t['id']}: Verweigert: {', '.join(label for label, _cmd in points)}\n")
+    for label, cmd in points:
+        sys.stderr.write(f"  {label}: {cmd}\n")
+    sys.exit(1)
+
+
 def cmd_review(a):
     t = read(a.id)
     # --evidence replaces the list before the gate reads it: the files handed over here are
@@ -2639,19 +2717,14 @@ def cmd_review(a):
     if a.evidence:
         t["evidence"] = ", ".join(e.strip() for e in a.evidence if e.strip())
     g = gate(t)
-    rv = g["review"]
-    b = g["base"]
-    missing = ([b["reason"]] if b.get("ok") is False else []) + [r for r in (g["reason"], rv["reason"]) if r]
-    dod_missing = [x for x in g["dod"] if not x["ok"]]
+    points = review_points(t, g)
     if a.force:
         if not a.reason.strip():
             die("--force verlangt --reason \"…\": der Grund gehört in den Verlauf")
-        gaps = missing + [f"DoD verfehlt: {x['label']} ({x['why']})" for x in dod_missing]
+        gaps = [f"{label}: {cmd}" for label, cmd in points]
         add_comment(t, "hub", f"Gate überfahren ({' · '.join(gaps) or 'frei'}): {a.reason.strip()}")
-    elif missing or dod_missing:
-        why = missing + [f"Definition of Done: {x['label']} — {x['why']}" for x in dod_missing]
-        die(f"{a.id}: {' · '.join(why)}. Übergang nach review verweigert; "
-            f"nur mit --force --reason \"…\".")
+    elif points:
+        refuse_review(t, points)
     body, verlauf = split_verlauf(t["body"])
     # Only the old summary goes; the check and review records keep their place right after it.
     m = re.search(r"(?ms)^## Prüfung[ \t]*\n.*?(?=\n## |\Z)", body)
@@ -3609,7 +3682,7 @@ def agent_rows(tickets, per_ticket):
         seen[r["name"].casefold()] = row
         rows.append(row)
     for tk in tickets:
-        key = (tk.get("agent") or "").strip()
+        key = agent_display(tk.get("agent"))
         if not key:
             continue
         row = seen.get(key.casefold())
@@ -3881,11 +3954,25 @@ def build_timeline(ticket="", since="all"):
             continue
         if floor is not None and l is not orch and (l["end"] or l["start"] or 0) < floor:
             continue
+        # The window starts at `since`: a lane that began earlier is cut there, so no bar
+        # reaches left of the window. Events and subagents outside it are dropped.
+        if floor is not None:
+            l["start"] = max(l["start"] or floor, floor)
+            if l["end"] is not None:
+                l["end"] = max(l["end"], floor)
         l["events"] = [e for e in everything if (l is orch and not e["terminal"]) or
                        (l["terminal"] and e["terminal"] == l["terminal"])]
-        l["subagents"] = [{"id": s["id"], "title": s["title"], "started": s["started"],
-                           "ended": s["ended"]} for s in subagents
-                          if l["terminal"] and s["terminal"] == l["terminal"]]
+        l["subagents"] = []
+        for s in subagents:
+            if not (l["terminal"] and s["terminal"] == l["terminal"]):
+                continue
+            if floor is not None and (s["ended"] or s["started"] or 0) < floor:
+                continue
+            started = s["started"]
+            if floor is not None and started is not None:
+                started = max(started, floor)
+            l["subagents"].append({"id": s["id"], "title": s["title"], "started": started,
+                                   "ended": s["ended"]})
         kept.append(l)
     kept.sort(key=lambda l: (l["kind"] != "orchestrator", l["start"] is None, l["start"] or 0,
                              l["label"].casefold()))
@@ -4091,6 +4178,7 @@ def main():
     sub.add_parser("whoami").set_defaults(fn=cmd_whoami)
     sp = sub.add_parser("spec")
     sp.add_argument("id")
+    sp.add_argument("--force", action="store_true", help="Abschnitte auch in review/done ergänzen")
     sp.set_defaults(fn=cmd_spec)
     tr = sub.add_parser("triage")
     tr.add_argument("id")
