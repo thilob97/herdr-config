@@ -10,7 +10,7 @@
 // zeigt Zeile 1 statt der nackten Dauer „in <Stufe> seit …" (Team-Panel).
 import { div, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { settings, terminals } from "herdr";
+import { settings, agents, terminals } from "herdr";
 import * as ui from "./ui.js";
 import { T_XS, T_M, GAP_XS, usd } from "./ui.js";
 
@@ -87,12 +87,15 @@ function priorityOf(tk) {
 }
 const priorityColor = (t, p) => (p === "p1" ? t.blocked : p === "p2" ? t.working : t.muted);
 const sizeOf = (tk) => (/^[SML]$/i.test(String(tk.size ?? "").trim()) ? String(tk.size).trim().toUpperCase() : null);
-// Höchstens zwei Labels in einer Zeile; Priorität steht als eigener Chip davor.
+// Höchstens zwei Chips: bei mehr Labels bleibt eines plus `+n`; Priorität steht als eigener
+// Chip davor. Die Chips schrumpfen (min_w 0, truncate); alle Labels stehen im Tooltip.
 function labelChips(t, tk) {
   const ordered = [...new Set([...splitList(tk.labels), ...splitList(tk.tags)])].filter((l) => !PRIO.test(l));
+  if (!ordered.length) return [];
+  const all = ordered.join(", ");
   const shown = ordered.slice(0, ordered.length > 2 ? 1 : 2);
-  const out = shown.map((l) => ({ text: l.length > 8 ? `${l.slice(0, 7)}…` : l, color: t.muted }));
-  if (ordered.length > shown.length) out.push({ text: `+${ordered.length - shown.length} mehr`, color: t.dim });
+  const out = shown.map((l) => ({ text: l.length > 10 ? `${l.slice(0, 9)}…` : l, color: t.muted, tip: all }));
+  if (ordered.length > shown.length) out.push({ text: `+${ordered.length - shown.length}`, color: t.dim, tip: all, fixed: true });
   return out;
 }
 
@@ -135,7 +138,10 @@ function gateState(tk, gate) {
 }
 
 function gateIcons(t, tk, gate) {
-  return h_flex().flex_none().gap(2).items_center().children(gateState(tk, gate).map((g) => {
+  // Drei leere Gates wären nur „– – –": die Reihe erscheint, sobald ein Gate etwas sagt.
+  const shown = gateState(tk, gate).filter((g) => g.state !== "none");
+  if (!shown.length) return null;
+  return h_flex().flex_none().gap(2).items_center().children(shown.map((g) => {
     const color = g.state === "pass" ? t.done : g.state === "fail" ? t.blocked : g.state === "run" ? t.working : t.dim;
     const icon = g.state === "run" ? ICON_SPIN : g.state === "pass" ? ICON_CHECK : g.state === "fail" ? ICON_X : ICON_MINUS;
     return div().id(`tk-gate-${g.key}-${tk.id}`).size(11).flex_none().flex().items_center().justify_center()
@@ -143,23 +149,30 @@ function gateIcons(t, tk, gate) {
   }));
 }
 
-// Vorname; der volle Name steht im Tooltip. Ohne Zuweisung kein Chip (das Alter
-// bleibt rechts in der Kopfzeile). Kein Avatar: die Zeile muss neben Gates und
-// Kosten in eine 150-px-Karte passen.
+// Identität aus dem Agenten-Anzeigenamen (Hub), sonst aus dem laufenden Terminal.
+// Kein Avatar: die Zeile muss neben Gates und Kosten in eine schmale Karte passen.
 function whoChip(t, tk) {
   const live = tk.terminal ? ui.identity(tk.terminal) : null;
-  const name = live?.name || String(tk.assignee || tk.agent || "").trim();
+  const liveName = live?.live && live.name !== tk.terminal ? live.name : null;
+  const raw = String(tk.agent_name || tk.assignee || tk.agent || "").trim();
+  const key = raw.split(/\s+/)[0];
+  const program = key ? (agents().find((a) => (a.program?.key ?? a.app) === key)?.program?.name
+    ?? terminals().find((x) => (x.program?.key ?? x.app) === key)?.program?.name) : null;
+  const name = liveName || program || raw;
   if (!name) return null;
-  return h_flex().flex_none().max_w(52).h(22).px(4).items_center().rounded(4).bg(t.raised).tooltip(name)
-    .child(div().min_w(0).truncate().text_size(T_XS).text_color(t.muted).child(name.split(" ")[0]));
+  return h_flex().flex_none().max_w(72).h(22).px(4).items_center().rounded(4).bg(t.raised)
+    .tooltip(liveName ? `${liveName}${program ? ` · ${program}` : ""}` : name)
+    .child(div().min_w(0).truncate().text_size(T_XS).text_color(t.muted).child(name));
 }
 
 const countIcon = (t, icon, n, tip) => h_flex().flex_none().gap(1).items_center().tooltip(tip)
   .child(svg(icon).size(9).text_color(t.dim))
   .child(div().text_size(T_XS).text_color(t.muted).child(String(n)));
 
-const labelPill = (t, text, color) => h_flex().flex_none().h(16).px(2).items_center().rounded(4)
-  .bg(color + "26").text_size(T_XS).font_medium().text_color(color).child(text);
+const labelPill = (t, text, color, { tip, shrink = false } = {}) => h_flex().flex_none().h(16).px(2).items_center().rounded(4)
+  .when(shrink, (el) => el.flex_shrink_1().min_w(0)).when(Boolean(tip), (el) => el.tooltip(tip))
+  .bg(color + "26").text_size(T_XS).font_medium().text_color(color)
+  .child(shrink ? div().min_w(0).truncate().child(text) : text);
 const priorityPill = (t, p) => labelPill(t, p.toUpperCase(), priorityColor(t, p));
 const sizeText = (t, size) => div().flex_none().text_size(T_XS).font_medium().text_color(t.muted)
   .tooltip(`Größe ${size} (hub triage)`).child(size);
@@ -194,18 +207,21 @@ export function ticketCard(t, tk, o = {}) {
   const ageLine = div().flex_none().text_size(T_XS).text_color(t.dim)
     .tooltip(`${stageAge(tk)} · zuletzt bearbeitet ${updatedStamp(tk)}`).child(ageText(tk).replace(" ", ""));
 
+  // Die Labels bekommen den freien Platz und schrumpfen; die Zahl der übrigen steht
+  // als eigener Chip, nie als abgeschnittener Text.
+  const labelRow = h_flex().flex_1().min_w(0).gap(2).items_center().overflow_hidden()
+    .children(shownLabels.map((l) => labelPill(t, l.text, l.color, { tip: l.tip, shrink: !l.fixed })));
   const row1 = h_flex().gap(2).items_center().min_w(0)
     .child(h_flex().flex_none().h(18).px(3).items_center().rounded(4).bg(t.raised)
       .text_size(T_XS).font_medium().font_family(settings().font_family).text_color(t.muted)
       .tooltip(`Ticket ${tk.id}`).child(shortId(tk.id)))
     .when(Boolean(prio), (el) => el.child(priorityPill(t, prio)))
     .when(Boolean(size), (el) => el.child(sizeText(t, size)))
-    .children(shownLabels.map((l) => labelPill(t, l.text, l.color)))
+    .child(labelRow)
     .when(blocked.length > 0, (el) => el.child(ui.chip(t, `gesperrt: ${blocked.map((b) => shortId(b.id)).join(", ")}`, t.blocked,
       { tip: `Sperre: ${blocked.map((b) => `${b.id} (${b.status ?? "unbekannt"})`).join(", ")}` })))
     .when(comments > 0, (el) => el.child(countIcon(t, ICON_COMMENT, comments, `${comments} Kommentare im ## Verlauf`)))
     .when(evidence > 0, (el) => el.child(countIcon(t, ICON_EVIDENCE, evidence, `${evidence} Nachweise (evidence)`)))
-    .child(div().flex_1())
     .child(ageLine);
 
   // Zwei Zeilen mit „…"; die Zeichenzahl kommt aus der Kartenbreite (board) oder
@@ -214,11 +230,12 @@ export function ticketCard(t, tk, o = {}) {
     .line_height(1.2).text_color(stage === "done" ? t.muted : t.foreground).child(clampTitle(tk.title || tk.id, o.titleChars));
 
   const who = whoChip(t, tk);
+  const gates = gateIcons(t, tk, o.gate);
   // Eine Zeile: Identität (nur wenn zugewiesen), Gates, Kosten. Kein Umbruch, damit
-  // die Kosten nicht in eine zweite Zeile rutschen.
+  // die Kosten nicht in eine zweite Zeile rutschen; leere Gates fallen weg.
   const row3 = h_flex().gap(GAP_XS).items_center().min_w(0).flex_none()
     .when(Boolean(who), (el) => el.child(who))
-    .child(gateIcons(t, tk, o.gate))
+    .when(Boolean(gates), (el) => el.child(gates))
     .child(div().flex_1())
     .child(div().flex_none().text_size(T_XS).text_color(over ? t.blocked : t.muted)
       .tooltip(`Kosten / Budget (${tk.agent || "Agent"}; nur omp meldet Kosten)`).child(`${usd(spent)}/${usd(limit)}`));

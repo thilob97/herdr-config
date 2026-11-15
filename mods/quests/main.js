@@ -8,7 +8,7 @@
 // props.view picks the face: "panel" (elric's side panel), "page" (the quests layout's three
 // columns), "bar" (that layout's title bar), and the dialogs "settings" and "edit" {id?}.
 
-import { View, div, svg } from "gpui-kit";
+import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, TextView } from "gpui-base";
 import { props, theme, run, spaces, agents, terminals, notify, openOverlay, closeOverlay, shared, setShared, window as host } from "herdr";
 import * as store from "./store.js";
@@ -58,6 +58,29 @@ const field = (t, text, el) => v_flex().gap(ui.GAP_XS).child(div().text_size(T_S
 const styled = (t, el, focused = false) => el.h(ui.H_INPUT).px(10).rounded(6).border_1().border_color(focused ? t.accent : t.input).bg(t.background).text_size(T_M).text_color(t.foreground);
 
 const spinner = (t, color) => svg(SPINNER).size(12).flex_none().text_color(color ?? t.working).spin(900);
+
+// Ein Start als Identität: Avatar und Name aus agent-cards, sonst der Programmname.
+// Das Modell steht nur im Tooltip; eine Kommandozeile wird nie angezeigt.
+const KNOWN_PROGRAM = /^(omp|claude|codex|pi|hermes|aider)$/i;
+function recordIdentity(t, rec, id) {
+  const who = ui.identity(rec.terminal);
+  const named = who.name && who.name !== rec.terminal ? who.name : null;
+  const raw = String(rec.agent ?? "").trim();
+  const key = raw.split(/\s+/)[0];
+  const program = who.program?.name ?? (KNOWN_PROGRAM.test(key) ? key : null);
+  const name = named || program || (raw && !/\s/.test(raw) ? raw : null);
+  if (!name) return null;
+  const model = rec.model ?? /--model[=\s]+([^\s]+)/.exec(raw)?.[1] ?? null;
+  const p = who.program;
+  const pic = who.avatar ? image(who.avatar).w(16).h(16).flex_none()
+    : p?.icon ? (p.tint ? svg(p.icon).size(16).flex_none().text_color(t.muted) : image(p.icon).w(16).h(16).flex_none())
+      : null;
+  const tip = [name, program && program !== name ? program : null, model && `Modell ${model}`, rec.terminal].filter(Boolean).join(" · ");
+  return h_flex().id(id).flex_none().max_w(190).h(16).gap(ui.GAP_XS).items_center().tooltip(tip)
+    .when(Boolean(pic), (el) => el.child(pic))
+    .child(div().min_w(0).truncate().text_size(T_S).text_color(t.foreground).child(name))
+    .when(Boolean(program) && Boolean(named) && program !== name, (el) => el.child(div().flex_none().truncate().text_size(T_XS).text_color(t.dim).child(program)));
+}
 
 const area = (t, state, h, focused = false) => Textarea.new(state).h(h).px(10).py(6).rounded(6).border_1().border_color(focused ? t.accent : t.input).bg(t.background).text_size(T_M).text_color(t.foreground);
 
@@ -304,8 +327,10 @@ class Board {
     const sel = this.view === "page" && this.selected === k;
     const hov = this.hovered === k;
     // A local ticket's project is its repo path: its last folder says enough here.
+    // Ein Start zeigt seine Identität (Avatar, Name, Programm), nicht die Kommandozeile.
+    const who = rec ? recordIdentity(t, rec, `q-who-${k}`) : null;
     const meta = [tk.source === "github" ? `#${tk.number}` : null, String(tk.project ?? "").replace(/\/+$/, "").split("/").pop(), tk.due && `bis ${tk.due}`, tk.assignee,
-      rec && `${rec.branch} · ${rec.agent}`].filter(Boolean).join(" · ") || label(tk.source);
+      rec?.branch].filter(Boolean).join(" · ") || label(tk.source);
     const alive = Boolean(l.live?.alive);
     const right = hov
       ? h_flex().flex_none().gap(ui.GAP_XS).items_center()
@@ -326,6 +351,7 @@ class Board {
         .child(div().flex_1().min_w(0).truncate().text_size(T_M).text_color(this.stageOf(tk) === "done" ? t.muted : t.foreground).child(tk.title))
         .child(right))
       .child(h_flex().pl(20).gap(ui.GAP_XS).items_center().min_w(0)
+        .when(Boolean(who), (el) => el.child(who))
         .child(div().flex_shrink(1).min_w(0).truncate().text_size(T_S).text_color(t.muted).child(meta))
         .children(tk.labels.slice(0, 3).map((x, i) => chip(t, `${k}-l${i}`, x))));
   }
@@ -460,9 +486,11 @@ class Board {
             .child(btn(t, "d-start", "Start", () => this.auftrag(tk, "self"), { tip: "Selbst Agents starten: Branch, Worktree, Agent" }))))
         .children(recs.map((rec) => {
           const l = this.look(t, tk, rec);
+          const who = recordIdentity(t, rec, `dr-who-${rec.at}`);
           return h_flex().id(`dr-${rec.at}`).h(ui.H_ROW).flex_none().px(8).gap(ui.GAP_M).items_center().rounded(6).bg(t.surface)
             .child(l.live?.alive ? ui.statusIcon(t, l.status ?? "idle") : div().size(12).flex_none())
-            .child(div().flex_1().min_w(0).truncate().text_size(T_S).text_color(t.muted).child(`${rec.branch} · ${rec.machine ?? "dieser Rechner"} · ${rec.agent} · ${l.text}`))
+            .when(Boolean(who), (el) => el.child(who))
+            .child(div().flex_1().min_w(0).truncate().text_size(T_S).text_color(t.muted).child(`${rec.branch} · ${rec.machine ?? "dieser Rechner"} · ${l.text}`))
             .when(Boolean(l.live?.alive), (el) => el.child(iconBtn(t, `dr-open-${rec.at}`, "mods/orchestra/icons/open.svg", "Öffnen", () => openRecord(rec, true), true)))
             .child(iconBtn(t, `dr-x-${rec.at}`, `${WC}/x.svg`, "Diesen Start vergessen (Worktree und Tab bleiben)", (cx) => cx.spawn(async () => { await store.forgetStarted(rec.at); bump("local"); }), true));
         }))

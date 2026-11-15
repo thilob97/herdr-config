@@ -30,7 +30,9 @@ const SPEND_REFRESH = 120000;
 const SPEND_HELPER = () => `${appHome()}/mods/status-bar/helpers/usage.py`;
 const DOING_MAX = 5;
 // Team rows keep these columns aligned; the two middle ones share what is left.
-const COL_WHO = 132, COL_STATUS = 68, COL_TIME = 80, COL_COST = 46;
+// Status is the state dot only (its word lives in the tooltip), so every value starts
+// under the same head as its column.
+const COL_WHO = 132, COL_STATUS = 16, COL_TIME = 64, COL_COST = 72;
 const SEND_ICON = "mods/orchestra/icons/send.svg";
 const HUB = () => `${appHome()}/mods/orchestra/bin/hub`;
 // A stall is a ticket that sits too long in one station; `hub stalls` owns the
@@ -763,8 +765,11 @@ export default class Dashboard extends View {
   // Tickets that sit too long in one station: ticket · stage · age · agent, with
   // "Nachfragen" (`hub nudge`) and the way to the full Team panel. One quiet line when
   // nothing is stuck; no primary button here (the screen's primary is "Senden").
-  stallsSection(t) {
-    const rows = this.stalls ?? [];
+  stallsSection(t, waits = []) {
+    const all = this.stalls ?? [];
+    // Ein Ticket, das oben unter „Wartet auf dich" steht, erscheint hier nicht noch einmal.
+    const waiting = new Set(waits.map((e) => e.tk?.id).filter(Boolean));
+    const rows = all.filter((r) => !waiting.has(r.id));
     const stageColor = (key) => (key === "review" ? t.blocked : key === "doing" ? t.working : t.muted);
     const note = this.stallNote;
     return ui.card(t, "dash-stalls").gap(ui.GAP_XS)
@@ -774,7 +779,8 @@ export default class Dashboard extends View {
         .child(div().flex_1())
         .child(ui.link(t, "dash-stalls-all", "Alle anzeigen", () => this.workspace(true),
           { tip: "Team-Panel im Workspace: alle hängenden Tickets" })))
-      .when(!rows.length, (el) => el.child(ui.empty(t, "Nichts hängt. Alle Stationen bewegen sich.", { row: true })))
+      .when(!rows.length, (el) => el.child(ui.empty(t,
+        all.length ? "Alles, was hängt, steht schon oben." : "Nichts hängt. Alle Stationen bewegen sich.", { row: true })))
       .children(rows.slice(0, 6).map((r) => h_flex().id(`dash-stall-${rid(r.id)}`).h(ui.H_ROW).flex_none().gap(ui.GAP_S).items_center()
         .child(div().w(170).flex_none().truncate().text_size(T_XS).text_color(t.muted).tooltip(r.title).child(r.id))
         .child(ui.chip(t, r.stage_label, stageColor(r.stage)))
@@ -830,10 +836,10 @@ export default class Dashboard extends View {
   teamColumns(t) {
     return h_flex().h(ui.H_CHIP).flex_none().px(ui.GAP_S).gap(ui.GAP_S).items_center().text_size(T_XS).text_color(t.dim)
       .child(div().w(COL_WHO).flex_none().child("Agent"))
-      .child(div().w(COL_STATUS).flex_none().child("Status"))
+      .child(h_flex().w(COL_STATUS).flex_none().items_center().tooltip("Status").child(div().size(6).flex_none().rounded_full().bg(t.dim)))
       .child(div().flex_1().min_w(0).child("Space / Tab"))
       .child(div().flex_1().min_w(0).child("Ticket"))
-      .child(div().w(COL_TIME).flex_none().pr(ui.GAP_S).justify_end().tooltip("Seit wann der Agent in diesem Zustand ist: Wechsel aus der Statusleiste, sonst erste Sicht des Dashboards").child("Status seit"))
+      .child(div().w(COL_TIME).flex_none().pr(ui.GAP_S).justify_end().tooltip("Seit wann der Agent in diesem Zustand ist: Wechsel aus der Statusleiste, sonst erste Sicht des Dashboards").child("Seit"))
       .child(div().w(COL_COST).flex_none().justify_end().child("Kosten"));
   }
 
@@ -872,9 +878,9 @@ export default class Dashboard extends View {
         .child(h_flex().h(22).max_w(COL_WHO).px(6).gap(ui.GAP_XS).items_center().rounded(6).bg(t.raised)
           .when(Boolean(pic), (el) => el.child(pic))
           .child(div().min_w(0).truncate().text_size(T_S).text_color(t.foreground).child(who.name))))
-      .child(h_flex().w(COL_STATUS).flex_none().gap(ui.GAP_XS).items_center()
-        .child(ui.statusIcon(t, st))
-        .child(div().min_w(0).truncate().text_size(T_XS).text_color(t.muted).child(word)))
+      .child(h_flex().w(COL_STATUS).flex_none().items_center()
+        .tooltip(`${word} · ${since ? ago(since) : "noch nicht beobachtet"}`)
+        .child(div().size(7).flex_none().rounded_full().bg(ui.statusColor(t, st))))
       .child(div().flex_1().min_w(0).truncate().text_size(T_XS).text_color(t.muted).child(where || "—"))
       .child(div().flex_1().min_w(0).truncate().text_size(T_XS).text_color(tk ? t.muted : t.dim)
         .when(Boolean(tk), (el) => el.tooltip(tk.title)).child(tk ? `${tk.id} · ${tk.title}` : "—"))
@@ -925,10 +931,17 @@ export default class Dashboard extends View {
   fabrikCard(t) {
     const s = this.stats(), d = s?.today;
     const night = this.nightText();
-    const hist = s?.history ?? [];
-    const peak = Math.max(1, ...hist.map((h) => h.done));
-    const blocks = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
-    const bar = (h) => blocks[h.done ? Math.max(0, Math.min(7, Math.round((h.done / peak) * 7))) : 0];
+    const hist = (s?.history ?? []).slice(-7);
+    const peak = Math.max(0, ...hist.map((h) => Number(h.done) || 0));
+    // Echte Balken mit Höhe statt einer Zeile aus Schriftzeichen (die UI-Schrift kennt
+    // die Block-Glyphen nicht und zeichnete nur Striche).
+    const week = peak > 0
+      ? h_flex().id("dash-week").h(28).flex_none().gap(2).items_end()
+        .children(hist.map((h, i) => div().id(`dash-day-${i}`).w(14).flex_none()
+          .h(Math.max(2, Math.round(((Number(h.done) || 0) / peak) * 26))).rounded(4)
+          .bg(i === hist.length - 1 ? t.done : t.muted + "88")
+          .tooltip(`${h.date}: ${h.done} erledigt · ${h.rework} Nacharbeit · Median ${span(h.median_min)}`)))
+      : div().id("dash-week-empty").text_size(T_XS).text_color(t.dim).child("7 Tage · keine Daten");
     const metric = (label, value, color) => h_flex().flex_none().gap(3).items_end()
       .child(div().text_size(T_L).font_semibold().text_color(color ?? t.foreground).child(value))
       .child(div().text_size(T_XS).text_color(t.muted).child(label));
@@ -947,12 +960,8 @@ export default class Dashboard extends View {
         .child(h_flex().gap(ui.GAP_M).items_end()
           .child(metric("Nacharbeit", String(d.rework), d.rework ? t.blocked : undefined))
           .child(metric("Ticket-Kosten", usd(d.cost))))
-        .child(h_flex().h(ui.H_CHIP).gap(1).items_end()
-          .children(hist.map((h, i) => div().w(12).flex_none().text_size(T_S).text_center()
-            .text_color(i === hist.length - 1 ? t.foreground : t.muted)
-            .tooltip(`${h.date}: ${h.done} erledigt · ${h.rework} Nacharbeit · Median ${span(h.median_min)}`)
-            .child(bar(h)))))
-        .child(div().text_size(T_XS).text_color(t.dim).child("7 Tage · erledigt"))
+        .child(week)
+        .when(peak > 0, (el) => el.child(div().text_size(T_XS).text_color(t.dim).child("7 Tage · erledigt")))
         .child(div().id("dash-night").w_full().truncate().text_size(T_XS).text_color(t.dim).tooltip(night.tip).child(night.text)));
   }
 
@@ -969,9 +978,10 @@ export default class Dashboard extends View {
     const pct = budget > 0 ? Math.min(100, Math.max(0, (team / budget) * 100)) : 0;
     const open = this.tickets().filter((tk) => tk.status !== "done")
       .map((tk) => ({ tk, n: c.tickets?.[tk.id] }))
-      .sort((x, y) => (y.n ?? -1) - (x.n ?? -1));
-    const booked = open.filter((r) => r.n != null).slice(0, 3);
-    const shown = booked.length ? booked : open.slice(0, 3);
+      .filter((r) => r.n != null)
+      .sort((x, y) => y.n - x.n);
+    // Nur Tickets mit gebuchten Kosten: keine Zeile „pro Ticket … —".
+    const shown = open.slice(0, 3);
     const more = open.length - shown.length;
     return ui.card(t, "dash-costs").w(210).p(8).gap(3).cursor_pointer().hover((s) => s.bg(t.hover))
       .tooltip("Team-Panel im Workspace öffnen")
@@ -988,11 +998,11 @@ export default class Dashboard extends View {
         .child(div().text_size(T_XS).text_color(over ? t.blocked : t.foreground).child(`${usd(team)} / ${usd(budget)}`)))
       .child(div().h(2).w_full().flex_none().rounded_full().bg(t.border)
         .child(div().h(2).rounded_full().w(`${pct}%`).bg(over ? t.blocked : t.done)))
-      .child(div().text_size(T_XS).text_color(t.dim).child("pro Ticket"))
-      .when(!shown.length, (el) => el.child(div().text_size(T_XS).text_color(t.dim).child("Noch keine offenen Tickets.")))
-      .children(shown.map(({ tk, n }) => h_flex().id(`dash-cost-${rid(tk.id)}`).h(ui.H_CHIP).flex_none().gap(ui.GAP_S).items_center()
-        .child(div().flex_1().min_w(0).truncate().text_size(T_XS).text_color(t.muted).tooltip(tk.title).child(tk.id))
-        .child(div().flex_none().text_size(T_XS).text_color(n != null ? t.foreground : t.dim).child(n != null ? usd(n) : "—"))))
+      .when(shown.length > 0, (el) => el
+        .child(div().text_size(T_XS).text_color(t.dim).child("pro Ticket"))
+        .children(shown.map(({ tk, n }) => h_flex().id(`dash-cost-${rid(tk.id)}`).h(ui.H_CHIP).flex_none().gap(ui.GAP_S).items_center()
+          .child(div().flex_1().min_w(0).truncate().text_size(T_XS).text_color(t.muted).tooltip(tk.title).child(tk.id))
+          .child(div().flex_none().text_size(T_XS).text_color(t.foreground).child(usd(n))))))
       .when(more > 0, (el) => el.child(div().text_size(T_XS).text_color(t.dim).child(`+${more} weitere`)));
   }
 
@@ -1045,7 +1055,7 @@ export default class Dashboard extends View {
             .px(16).pt(16).pb(80).gap(ui.GAP_L)
             .child(this.header(t))
             .child(this.waitingSection(t, waits))
-            .child(this.stallsSection(t))
+            .child(this.stallsSection(t, waits))
             .child(h_flex().gap(ui.GAP_L).items_start()
               .child(this.teamSection(t))
               .child(this.activitySection(t)))
