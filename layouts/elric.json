@@ -256,6 +256,19 @@
             12,
             16
           ]
+        },
+        {
+          "id": "hermes-host",
+          "type": "block",
+          "content": {
+            "mod": "hermes",
+            "props": {
+              "role": "host"
+            }
+          },
+          "size": {
+            "px": 0
+          }
         }
       ],
       "divider": {

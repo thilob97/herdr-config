@@ -21,6 +21,7 @@ const DESC = {
   "status-bar.attention-next": "Zum nächsten wartenden Agent (wartet, dann fertig)",
   "mod.open:review": "Review des fokussierten Terminals",
   "mod.open:cheatsheet": "Diese Übersicht",
+  "hermes.toggle": "Hermes-Chat (oben rechts) auf/zu",
   "agent.next": "Nächster Agent", "agent.prev": "Vorheriger Agent",
   "tab.new": "Neuer Tab (Shell)", "tab.close": "Tab schließen", "tab.next": "Nächster Tab", "tab.prev": "Vorheriger Tab", "tab.rename": "Tab umbenennen",
   "space.new": "Neuer Space", "space.next": "Nächster Space", "space.prev": "Vorheriger Space", "space.rename": "Space umbenennen",
@@ -36,7 +37,7 @@ const DESC = {
   "terminal.search": "Suchen", "terminal.copy": "Kopieren", "terminal.paste": "Einfügen", "terminal.paste_image": "Bild einfügen",
 };
 const GROUPS = [
-  ["Auftrag und Agents", (a) => /^agent\.|^status-bar\.|^mod\.open:(inbox|review|launcher)$/.test(a)],
+  ["Auftrag und Agents", (a) => /^agent\.|^status-bar\.|^hermes\.|^mod\.open:(inbox|review|launcher)$/.test(a)],
   ["Panels und Seitenleiste", (a) => /^tabs-graph\.|^layout\.toggle:sidebar$/.test(a)],
   ["Tabs", (a) => /^tab\./.test(a)],
   ["Spaces", (a) => /^space\.|^space-folders\./.test(a)],
