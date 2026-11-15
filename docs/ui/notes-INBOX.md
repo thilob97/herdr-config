@@ -31,8 +31,8 @@ Programm-Glyph des Terminal-Titels („π HERDR: …“).
   Verzeichnis (`herdr-app`); der Tooltip trägt den vollen Repo-Pfad. Mit Branch bleibt
   der Branch stehen.
 - **Höhe.** Drei Zeilen: Zustand/Name/Labels, Titel (max. zwei Zeilen), Metazeile/Gates.
-  Gemessen im Testfenster: 50–70 px je Zeile (Grenze 72), kein Umbruch bei 320-px-Liste
-  (≈ 340 px Panelbreite inklusive Polster).
+  Gemessen im Testfenster (Layout-px, Zoom 1,2): 51–69 px je Zeile (Grenze 72), kein
+  Umbruch bei 320-px-Liste (≈ 340 px Panelbreite inklusive Polster).
 
 ## Prüfung
 
