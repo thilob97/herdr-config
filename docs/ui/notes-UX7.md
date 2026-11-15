@@ -1,6 +1,6 @@
 # UX 7: Sends per Adresse, Inbox-Zuordnung, Kosten, Scope-Normalisierung
 
-Branch `feat/ux7-scope` (Basis `main`, d839495). Acht Befunde aus dem Gesamt-Review.
+Branch `feat/ux7-scope` (Basis `main`, 14d4807; davor d839495, auf den aktuellen `main` rebased). Acht Befunde aus dem Gesamt-Review.
 
 ## Was geändert ist
 
