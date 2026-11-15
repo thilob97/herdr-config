@@ -118,6 +118,42 @@ export function ticketSpace(tk, rows) {
 
 // ---------- Summe mehrerer Spaces ----------
 
+/** Offene Kosten eines Space: `cost_open` aus `hub spaces` zählt nur Tickets, die
+ *  nicht done sind — dieselbe Regel wie „offen bisher" in `hub status`. Ein älteres
+ *  hub kennt nur `cost` (alles); dann bleibt das die beste Antwort. */
+export const openCost = (r) => Number(r?.cost_open ?? r?.cost ?? 0) || 0;
+
+/** Alle Ticket-Kosten eines Space, auch erledigte (`cost` aus `hub spaces`). */
+export const totalCost = (r) => Number(r?.cost ?? 0) || 0;
+
+/** Die Orchestrator-Kosten eines Space (costs.json `orchestrators`, wie
+ *  mods/orchestra/costs.js sie führt). Ein älteres Home hat nur eine Zahl: sie gehört
+ *  dem eigenen Space und „Alle"; "" ist dort die Summe. */
+export function orchestratorCost(spaceId, { orchestrators = {}, orchestrator = 0 } = {}) {
+  const per = orchestrators ?? {};
+  if (!Object.keys(per).length) return Number(orchestrator) || 0;
+  return spaceId ? Number(per[spaceId]) || 0 : Number(orchestrator) || 0;
+}
+
+/** Kosten der gewählten Spaces: die offenen Ticket-Kosten je Space plus der
+ *  Orchestrator jedes gewählten Space. `orchestrators` ist die Karte aus costs.json;
+ *  ein altes File mit nur `orchestrator` zählt einmal, wie der Team-Panel-Kopf. */
+export function costSplit(rows, { all = false, ids = new Set(), ownId = "",
+  orchestrators = {}, orchestrator = 0 } = {}) {
+  const picked = (rows ?? []).filter((r) => all || !ids.size || ids.has(r.id));
+  const tickets = picked.reduce((n, r) => n + openCost(r), 0);
+  const per = orchestrators ?? {};
+  const split = Object.keys(per).length > 0;
+  const orch = split
+    ? [...new Set(picked.map((r) => r.id))].reduce((n, sid) => n + (sid ? Number(per[sid]) || 0 : 0), 0)
+    : (all || !ids.size || ids.has(ownId) ? Number(orchestrator) || 0 : 0);
+  return {
+    team: r2(tickets + orch),
+    parts: picked.filter((r) => openCost(r) > 0).map((r) => ({ name: r.name || r.id, cost: openCost(r) })),
+    orch,
+  };
+}
+
 /** Median wie `hub stats` (eine Nachkommastelle); null ohne Wert. */
 export function median(xs) {
   const a = xs.filter((x) => Number.isFinite(x)).sort((x, y) => x - y);

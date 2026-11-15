@@ -1904,8 +1904,12 @@ def space_rows():
 
     `kind` is "workspace" for a factory and "agent" for the throwaway Herdr space a
     ticket's agent runs in (`workspace` then names the ticket's workspace). Spaces with
-    neither tickets nor an orchestrator stay workspaces."""
-    empty = lambda: {"tickets": 0, "open": {s: 0 for s in ("todo", "doing", "review")}, "cost": 0.0}
+    neither tickets nor an orchestrator stay workspaces.
+
+    `cost` is every ticket of the space; `cost_open` only those not done — the rule of
+    the budget line in `hub status` (`teamCost`), so the two surfaces can agree."""
+    empty = lambda: {"tickets": 0, "open": {s: 0 for s in ("todo", "doing", "review")},
+                     "cost": 0.0, "cost_open": 0.0}
     per = costs().get("tickets") or {}
     counts, names, workspaces = {}, {}, set()
     for t in all_tickets():
@@ -1916,6 +1920,8 @@ def space_rows():
         if t.get("status") in row["open"]:
             row["open"][t["status"]] += 1
         row["cost"] += float(per.get(t["id"]) or 0)
+        if t.get("status") != "done":
+            row["cost_open"] += float(per.get(t["id"]) or 0)
         if sid and not names.get(sid):
             names[sid] = (t.get("space_name") or "") if (t.get("space") or "") == sid else ""
     owners = agent_space_owners()
@@ -1930,7 +1936,8 @@ def space_rows():
         kind, workspace = kind_of(s["id"])
         out.append({**s, "kind": kind, "workspace": workspace,
                     "orchestrator": addr, "live": info.get("state") == "live",
-                    "tickets": c["tickets"], "open": c["open"], "cost": round(c["cost"], 2)})
+                    "tickets": c["tickets"], "open": c["open"],
+                    "cost": round(c["cost"], 2), "cost_open": round(c["cost_open"], 2)})
     # A space the window no longer lists (closed, another window) still has its work.
     for sid, c in counts.items():
         kind, workspace = kind_of(sid)
@@ -1938,7 +1945,8 @@ def space_rows():
                     "folder": "", "machine": sid.split("/", 1)[0] if "/" in sid else "",
                     "kind": kind, "workspace": workspace,
                     "orchestrator": "", "live": False, "tickets": c["tickets"],
-                    "open": c["open"], "cost": round(c["cost"], 2)})
+                    "open": c["open"], "cost": round(c["cost"], 2),
+                    "cost_open": round(c["cost_open"], 2)})
     return out
 
 
@@ -1999,13 +2007,13 @@ def cmd_spaces(a):
         print(json.dumps({"space": mine["id"], "space_name": mine["name"], "spaces": rows},
                          ensure_ascii=False))
         return
-    print(f"{'Space':<24} {'ID':<40} {'Ordner':<40} {'Orchestrator':<10} {'offen (todo/doing/review)':<24} {'Kosten':>7}")
+    print(f"{'Space':<24} {'ID':<40} {'Ordner':<40} {'Orchestrator':<10} {'offen (todo/doing/review)':<24} {'offen':>7} {'gesamt':>7}")
     for r in rows:
         mine_mark = " *" if r["id"] == mine["id"] else ""
         open_ = f"{r['open']['todo']}/{r['open']['doing']}/{r['open']['review']}"
         label = r["name"] + (f" (Agent von {space_name_of(r['workspace'])})" if r.get("kind") == "agent" else "")
         print(f"{(label + mine_mark):<24} {r['id']:<40} {(r['folder'] or '—')[:40]:<40} "
-              f"{(r['orchestrator'] or '—'):<10} {open_:<24} {r['cost']:>7.2f}")
+              f"{(r['orchestrator'] or '—'):<10} {open_:<24} {r['cost_open']:>7.2f} {r['cost']:>7.2f}")
 
 
 # ---- Orchestrator je Space: starten, ersetzen, anzeigen

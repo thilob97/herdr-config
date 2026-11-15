@@ -5,7 +5,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { pickOf, effective, toggle, seriesOf, ticketSpace, mergeStats, median, OWN, SOME, ALL,
-  workspaceRows, workspaceOf, agentWorkspace } from "../spaces.js";
+  workspaceRows, workspaceOf, agentWorkspace, costSplit, orchestratorCost, openCost, totalCost } from "../spaces.js";
 
 const SPACES = [
   { id: "spa", name: "Alpha", folder: "/repos/alpha" },
@@ -162,4 +162,53 @@ test("Agents zählen zum Workspace ihres Tickets, nicht zum Agent-Space", () => 
   assert.equal(agentWorkspace({ address: "t-y", space: "spb" }, tickets, ROWS, "spa"), "spb");
   // Ohne Space und ohne Ticket bleibt der eigene Workspace.
   assert.equal(agentWorkspace({ address: "t-z" }, tickets, ROWS, "spb"), "spb");
+});
+
+// ---------- Kosten: offen vs. gesamt (Dashboard-Karte und Workspaces-Zeile) ----------
+
+test("Team offen zählt cost_open, nicht die Gesamtkosten eines Space", () => {
+  const rows = [
+    { id: "spa", name: "Alpha", kind: "workspace", cost: 7, cost_open: 2 },
+    { id: "spb", name: "Beta", kind: "workspace", cost: 5, cost_open: 5 },
+  ];
+  const orch = { orchestrators: { spa: 1.25, spb: 4 } };
+  const own = costSplit(rows, { ids: new Set(["spa"]), ownId: "spa", ...orch });
+  assert.equal(own.team, 3.25, "offene Tickets des eigenen Space plus sein Orchestrator");
+  assert.deepEqual(own.parts, [{ name: "Alpha", cost: 2 }], "der Tooltip nennt offene Kosten");
+  assert.equal(own.orch, 1.25, "der Orchestrator eines anderen Space zählt nicht mit");
+
+  const all = costSplit(rows, { all: true, ids: new Set(), ownId: "spa", ...orch });
+  assert.equal(all.team, 12.25, "Alle summiert offene Kosten und Orchestratoren aller Spaces");
+  assert.deepEqual(all.parts.map((p) => p.cost), [2, 5]);
+  assert.equal(all.orch, 5.25);
+
+  // Ein fremder Space in der Auswahl trägt seinen eigenen Orchestrator.
+  const beta = costSplit(rows, { ids: new Set(["spb"]), ownId: "spa", ...orch });
+  assert.equal(beta.team, 9);
+  assert.equal(beta.orch, 4);
+
+  // Ein älteres costs.json mit einer Zahl: sie gilt für den eigenen Space und "Alle".
+  const legacy = costSplit(rows, { ids: new Set(["spa"]), ownId: "spa", orchestrator: 1.25 });
+  assert.equal(legacy.team, 3.25);
+  assert.equal(costSplit(rows, { ids: new Set(["spb"]), ownId: "spa", orchestrator: 1.25 }).orch, 0);
+});
+
+test("Orchestrator-Kosten je Space, mit einer Zahl als Rückfall", () => {
+  assert.equal(orchestratorCost("spa", { orchestrators: { spa: 1.25, spb: 4 } }), 1.25);
+  assert.equal(orchestratorCost("spb", { orchestrators: { spa: 1.25, spb: 4 } }), 4);
+  // Ein Space ohne eigenen Eintrag erbt keine fremden Kosten.
+  assert.equal(orchestratorCost("spc", { orchestrators: { spa: 1.25 }, orchestrator: 1.25 }), 0);
+  // Alt-File: eine Zahl fürs ganze Home.
+  assert.equal(orchestratorCost("spc", { orchestrator: 1.25 }), 1.25);
+  assert.equal(orchestratorCost("", { orchestrators: { spa: 1.25, spb: 4 }, orchestrator: 5.25 }), 5.25);
+  assert.equal(orchestratorCost(null), 0);
+});
+
+test("Workspaces-Zeile zeigt offen, der Tooltip die Gesamtkosten", () => {
+  const row = { id: "spa", cost: 7, cost_open: 2 };
+  assert.equal(openCost(row), 2);
+  assert.equal(totalCost(row), 7);
+  // Ein älteres hub ohne cost_open fällt auf die Gesamtkosten zurück.
+  assert.equal(openCost({ id: "spx", cost: 4 }), 4);
+  assert.equal(openCost(null), 0);
 });

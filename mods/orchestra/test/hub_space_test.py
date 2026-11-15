@@ -426,9 +426,31 @@ class HubSpaceTest(unittest.TestCase):
         self.assertTrue(rows[SP_A]["live"])
         self.assertEqual(rows[SP_A]["open"], {"todo": 1, "doing": 1, "review": 0})
         self.assertEqual(rows[SP_A]["cost"], 2.0)
+        self.assertEqual(rows[SP_A]["cost_open"], 2.0)
         self.assertEqual(rows[SP_B]["open"], {"todo": 0, "doing": 0, "review": 1})
         self.assertEqual(rows[SP_B]["cost"], 2.0)
+        # review is not done: it counts as open, like the budget line of `hub status`.
+        self.assertEqual(rows[SP_B]["cost_open"], 2.0)
         self.assertEqual(report["space"], SP_A)
+
+    def test_spaces_cost_open_leaves_done_tickets_out(self):
+        done = self.ticket("A erledigt", self.alpha, status="done")
+        doing = self.ticket("A läuft", self.alpha, status="doing")
+        path = os.path.join(self.app, "data", "orchestra", "costs.json")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        self.write_json(path, {"tickets": {done: 5.0, doing: 2.0}})
+
+        rows = {r["id"]: r for r in self.json_cmd("spaces")["spaces"]}
+        self.assertEqual(rows[SP_A]["cost_open"], 2.0,
+                         "cost_open zählt nur Tickets, die nicht done sind")
+        self.assertEqual(rows[SP_A]["cost"], 7.0, "cost bleibt die Summe aller Tickets")
+
+        table = self.hub("spaces", who=ORCH_A).stdout.splitlines()
+        self.assertIn("offen", table[0])
+        self.assertIn("gesamt", table[0])
+        alpha = next(l for l in table if SP_A in l)
+        self.assertTrue(alpha.rstrip().endswith(f"{2.0:>7.2f} {7.0:>7.2f}"),
+                        "die Tabelle zeigt offen und gesamt: " + alpha)
 
     def test_spaces_and_orchestrator_list_share_one_detection(self):
         # `hc ls` carries no labels and a second orchestrator may carry a space suffix;
