@@ -4399,6 +4399,18 @@ def costs():
         return {}
 
 
+def orchestrator_cost(cost_rows, sid):
+    """One orchestrator's own share, never the home's total (cf. costs.js orchestratorCost).
+
+    `orchestrators[space]` when the watcher split the rows; a home without a split keeps
+    the legacy single `orchestrator` number. A space the split does not name costs 0."""
+    cost_rows = cost_rows or {}
+    per = cost_rows.get("orchestrators") or {}
+    if not per or not sid:
+        return cost_rows.get("orchestrator")
+    return per.get(sid) or 0
+
+
 def report_invalid(ids):
     """One stderr line for all files `hub status` had to skip; the rest still prints."""
     if ids:
@@ -4811,14 +4823,18 @@ def build_timeline(ticket="", since="all", space=None, everyone=False):
             wanted.append((addr, hc_term(addr) if addr else {}, "", ""))
     lanes, by_terminal, orch_lanes = [], {}, []
     for addr, info, sid, sname in wanted:
+        # `hc ls` rows carry no created_ms/finished_ms; one cached `hc get` per
+        # orchestrator (at most two lanes) dates the lane instead of the first event.
+        got = hc_term(addr) if addr else {}
+        state = info.get("state") or got.get("state") or ""
         l = lane("", "", addr, "orchestrator",
                  ((ident.get(addr) or {}).get("name") or info.get("name") or
                   ("Orchestrator" + (f" · {sname}" if sname else ""))),
-                 num_ms(info.get("created_ms")) or first,
-                 now if (not info or info.get("state") == "live") else
-                 (num_ms(info.get("finished_ms")) or now),
-                 lane_status(info) or ("live" if info else ""),
-                 cost_rows.get("orchestrator"), sid, sname)
+                 num_ms(info.get("created_ms")) or num_ms(got.get("created_ms")) or first,
+                 now if (not info and not got) or state == "live" else
+                 (num_ms(info.get("finished_ms")) or num_ms(got.get("finished_ms")) or now),
+                 lane_status(got) or lane_status(info) or ("live" if (info or got) else ""),
+                 orchestrator_cost(cost_rows, sid), sid, sname)
         lanes.append(l)
         orch_lanes.append(l)
         if addr:
