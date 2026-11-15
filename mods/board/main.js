@@ -7,6 +7,11 @@
 // Alter in der Stufe, Gates, Kosten, Kommentare, Nachweise, Sperre; Hover mit Öffnen /
 // Agent / Prüfen.
 //
+// Der Kopf trägt Suchfeld und Trefferzahl („12 von 49"): der Filter durchsucht Titel,
+// Labels, Branch und Ticket-ID, ⌘F springt hinein, Esc leert ihn; Treffer bleiben in
+// ihren Spalten, leere Spalten bleiben sichtbar. Der Filter gilt für die Sitzung
+// (localStorage).
+//
 // Daten: `hub ticket list --all --json` (Ticket-Dateien, alle fünf Sekunden) für die
 // Karten, `hub wip --json` (data/orchestra/wip.json, alle 30 s) für die Limits,
 // shared "orchestra.gates" bzw. `hub gates --json` für die Gates, shared
@@ -14,10 +19,10 @@
 // shared "agents.identity" für Avatare (über ui.identityChip). "board.panel" schaltet
 // das Panel um; die Tab-Leiste trägt der Orchestrator ein (nicht dieser Mod).
 import { View, div } from "gpui-kit";
-import { v_flex, h_flex, ScrollHandle } from "gpui-base";
+import { v_flex, h_flex, InputState, Input, ScrollHandle } from "gpui-base";
 import { exec, appHome, readTextFile, shared, theme, layout, run, notify, nextCommand, openOverlay, settings } from "herdr";
 import * as ui from "./ui.js";
-import { T_XS, T_S, GAP_S, GAP_M, INSET_PANEL, H_SECTION, H_ROW, usd, at } from "./ui.js";
+import { T_XS, T_S, T_L, GAP_S, GAP_M, INSET_PANEL, H_HEADER, H_SECTION, H_ROW, usd, at } from "./ui.js";
 import { STAGES, stageOf, stageColor, ticketCard, blockersOf } from "./card.js";
 
 const HUB = () => `${appHome()}/mods/orchestra/bin/hub`;
@@ -54,6 +59,21 @@ export default class Board extends View {
     this.width = 0;
     // Auf-/Zuklappen gilt für die Sitzung (localStorage), nicht für ein Ticket.
     try { this.doneAll = localStorage.getItem("doneAll") === "1"; } catch { this.doneAll = false; }
+    // Der Filter gilt für die Sitzung (localStorage, wie Zeitraum und Aufklappen); ⌘F
+    // setzt den Fokus hinein, Esc leert ihn. Treffer bleiben in ihren Spalten, leere
+    // Spalten bleiben stehen.
+    try { this.filter = String(localStorage.getItem("filter") ?? "").trim().toLowerCase(); } catch { this.filter = ""; }
+    this.search = InputState.new({ placeholder: "Tickets filtern …", value: this.filter });
+    this.search.on("change", (_e, cx) => {
+      this.filter = this.search.value().trim().toLowerCase();
+      try {
+        if (this.filter) localStorage.setItem("filter", this.filter);
+        else localStorage.removeItem("filter");
+      } catch {}
+      cx.notify();
+    });
+    this.focus = ui.focusFields();
+    this.focus.track(this.search, "board-filter");
     this.loaded = false;
     this.note = null;
     this.readingT = false;
@@ -226,9 +246,25 @@ export default class Board extends View {
 
   // ---------- Auswahl ----------
 
+  /** Passt ein Ticket zum Filter? Durchsucht Titel, Labels, Branch und Ticket-ID;
+   *  mehrere Wörter müssen alle irgendwo vorkommen (UND), Groß/Klein egal. */
+  matches(tk) {
+    if (!this.filter) return true;
+    const hay = [tk.id, tk.title, tk.labels, tk.branch].map((v) => String(v ?? "").toLowerCase());
+    return this.filter.split(/\s+/).every((q) => hay.some((h) => h.includes(q)));
+  }
+
+  clearFilter(cx) {
+    this.search.set_value("");
+    this.filter = "";
+    try { localStorage.removeItem("filter"); } catch {}
+    this.handle.focus();
+    cx.notify();
+  }
+
   columns() {
     const by = { todo: [], doing: [], review: [], done: [] };
-    for (const tk of this.tickets) by[stageOf(tk)].push(tk);
+    for (const tk of this.tickets) if (this.matches(tk)) by[stageOf(tk)].push(tk);
     for (const k of Object.keys(by)) by[k].sort(sortCards);
     return by;
   }
@@ -259,9 +295,18 @@ export default class Board extends View {
   }
 
   onKey(ev, cx) {
+    const k = ev.key;
+    // ⌘F springt ins Suchfeld; Esc leert erst den Filter, dann die Auswahl.
+    if (ev.keystroke === "cmd-f" || ev.keystroke === "ctrl-f") {
+      this.search.focus();
+      cx.stop_propagation();
+      return;
+    }
+    if (k === "escape" && this.filter) { this.clearFilter(cx); cx.stop_propagation(); return; }
+    // Tippen im Suchfeld gehört dem Feld, nicht der Kartenauswahl.
+    if (this.focus.has("board-filter")) return;
     const by = this.columns(), list = this.flat(by);
     const i = list.findIndex((t) => t.id === this.selected);
-    const k = ev.key;
     if (k === "down" || k === "j") this.pick(list, i + 1, cx);
     else if (k === "up" || k === "k") this.pick(list, i - 1, cx);
     else if (k === "home") this.pick(list, 0, cx);
@@ -364,11 +409,27 @@ export default class Board extends View {
     const total = flat.reduce((n, tk) => n + this.spentOf(tk), 0);
 
     const right = [];
-    if (this.note) right.push(div().id("board-note").max_w(230).truncate().text_size(T_XS)
+    if (this.note) right.push(div().id("board-note").max_w(230).min_w(0).flex_shrink_1().truncate().text_size(T_XS)
       .text_color(this.note.ok === false ? t.blocked : this.note.ok ? t.muted : t.dim)
       .tooltip(this.note.text).child(this.note.text));
     right.push(div().id("board-total").flex_none().text_size(T_XS).text_color(t.muted)
-      .tooltip("Offene Tickets · Kostensumme aller Karten im Board").child(`${open} offen · Σ ${usd(total)} gesamt`));
+      .tooltip(this.filter ? "Offene Treffer · Kostensumme der Treffer" : "Offene Tickets · Kostensumme aller Karten im Board")
+      .child(`${open} offen · Σ ${usd(total)} gesamt`));
+
+    // Kopfzeile: Titel, Trefferzahl („12 von 49" im Filter), Suchfeld (⌘F), Notiz, Summe.
+    // Esc im Feld leert den Filter, ohne die Kartenauswahl zu verlieren.
+    const search = div().id("board-search").flex_1().min_w(80).max_w(280)
+      .on_key_down((ev, cx) => { if (ev.key === "escape" && this.filter) { this.clearFilter(cx); cx.stop_propagation(); } })
+      .child(ui.inputBox(t, "board-filter", Input.new(this.search), { focused: this.focus.has("board-filter") }));
+    const count = this.filter ? `${flat.length} von ${this.tickets.length}` : String(flat.length);
+    const header = h_flex().id("board-header").h(H_HEADER).flex_none().px(INSET_PANEL).gap(GAP_M).items_center()
+      .border_b(1).border_color(t.border)
+      .child(div().flex_none().text_size(T_L).font_semibold().text_color(t.foreground).child("Board"))
+      .child(div().id("board-count").flex_none().text_size(T_XS).text_color(t.dim)
+        .when(Boolean(this.filter), (el) => el.tooltip(`${flat.length} von ${this.tickets.length} Tickets passen zum Filter`))
+        .child(count))
+      .child(search)
+      .children(right);
 
     let body;
     if (mode === "4") {
@@ -396,7 +457,7 @@ export default class Board extends View {
         const w = Math.round(size.width / (settings().zoom || 1));
         if (w !== this.width) { this.width = w; cx.notify(); }
       })
-      .child(ui.panelHeader(t, "Board", right, { count: flat.length }))
+      .child(header)
       .child(body);
   }
 }
