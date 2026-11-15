@@ -1,7 +1,7 @@
 {
   "id": "root",
   "type": "column",
-  "background": "surface",
+  "background": "canvas",
   "theme": { "light": "paper", "dark": "elric" },
   "children": [
     {

@@ -610,7 +610,7 @@ export default class Dashboard extends View {
 
   // A ticket ready to check: the author's identity, the title (two lines at most),
   // its gates, the age and "Prüfen".
-  reviewRow(t, tk, primary, on) {
+  reviewRow(t, tk, on) {
     const who = tk.terminal ?? null;
     const age = ago(at(tk.updated));
     return h_flex().id(`dash-review-${rid(tk.id)}`).min_h(ui.H_ROW2).flex_none().py(4).px(ui.INSET_CARD).gap(ui.GAP_M).items_center().rounded(6)
@@ -622,7 +622,7 @@ export default class Dashboard extends View {
       .children(ui.gateChips(t, tk))
       .when(Boolean(age), (el) => el.child(div().flex_none().text_size(T_XS).text_color(t.muted).child(age)))
       .child(ui.button(t, `dash-check-${rid(tk.id)}`, "Prüfen", () => this.openReview(tk),
-        { kind: primary ? "primary" : "secondary", small: true, tip: "Review-Fenster: Zusammenfassung, Nachweise, Diff; dort Mergen, PR oder Abnehmen" }));
+        { kind: "secondary", small: true, tip: "Review-Fenster: Zusammenfassung, Nachweise, Diff; dort Mergen, PR oder Abnehmen" }));
   }
 
   // A blocked agent (or the orchestrator): who, the question (two lines at most), the
@@ -684,7 +684,7 @@ export default class Dashboard extends View {
     return v_flex().flex_none().gap(ui.GAP_S)
       .child(ui.sectionHeader(t, "Wartet auf dich", { count, color: count ? t.blocked : t.muted, right: note }))
       .when(!count, (el) => el.child(ui.empty(t, "Nichts wartet auf dich, keine offenen Fragen.", { row: true })))
-      .children(reviews.map((e, i) => this.reviewRow(t, e.tk, i === 0, this.key === e.key)))
+      .children(reviews.map((e) => this.reviewRow(t, e.tk, this.key === e.key)))
       .children(asks.map((e) => this.questionCard(t, e)))
       .children(questions.map((e) => this.questionRow(t, e, this.key === e.key)));
   }
