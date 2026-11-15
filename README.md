@@ -289,6 +289,24 @@ git remote add origin https://github.com/thilob97/herdr-config.git
 git pull origin main
 ```
 
+## Team-Hub und Roster
+
+Feste Agents liegen versioniert in `agents/roster.json`: Name, Rolle, Programm, Modell, Standard-Repo, Branch-Präfix, Labels, Notizen. Drei Beispiele sind angelegt (Zap/Umsetzer/omp, Ada/Prüfer/claude, Mira/Recherche/pi).
+
+`hub agent list|show <name>|add …|edit …|rm <name>` verwaltet den Roster. `hub dispatch <ticket> --agent Zap` baut das Startkommando aus Programm und Modell, setzt `agent: Zap` ins Ticket, übernimmt `repo` und `branch_prefix`, wenn das Ticket sie nicht hat, und schreibt Rolle und Notizen in die Aufgabe. Ohne Roster-Eintrag gelten weiter die Programmnamen (`omp`, `claude`, `codex`, `pi`) oder ein freies Kommando.
+
+Das Fenster **Team-Hub** (`teams.panel`, `⌘⌥9`) zeigt die Agents als Karten mit Avatar in Agent-Farbe, Rolle, Programm/Modell, Repo sowie Einsätzen und Kosten; ein Klick zeigt die laufenden Tickets und startet auf Wunsch einen vorbelegten Auftrag. Anlegen, Bearbeiten und Löschen passieren im selben Fenster. `hub stats agents` zeigt Einsätze und Kosten je Roster-Agent.
+
+## Farben und Ebenen
+
+Theme `themes/elric.json`: neutrale Dunkelpalette (Fenster `canvas #0b0c0e`, Arbeitsfläche `background #0e0f11`, Leisten `chrome #121418`, Karten `surface #16181b`, Hover `raised #22262b`, Popover `#1d2126`, Auswahl `#263149`), Text `foreground #e7e9ec` / `muted #aeb4bc` / `dim #949ba5`, ein Akzent `#4c8dff`, Status getrennt (`blocked #ef6d6d`, `success #5cb87a`, `warning #d9a441`). Jede Fläche liest nur Theme-Namen, keine Hex-Werte in Mods. Kontraste aller Textfarben ≥ 4,5:1 (dim auf Auswahl 4,6); Tabelle und Vorher/Nachher-Screenshots in `docs/ui/notes-Q.md`.
+
+Ebenen-Regel: Fläche < Karte < Popover < Auswahl; Karten mit 1-px-Rand statt Farbfläche; Primärfarbe nur für die eine Hauptaktion je Fläche.
+
+## Wechsel zwischen Workspace und Dashboard
+
+`⌘⇧0` schaltet in beide Richtungen (global `layout.switch:dashboard`, im Dashboard `layout.switch:elric`). Zusätzlich: der Knopf **Dashboard** in der Tab-Leiste (links vor „Auftrag“), der Link **Dashboard** links in der Statusleiste und der Knopf **Workspace** im Dashboard. Herdr merkt sich das zuletzt gezeigte Layout und startet beim nächsten Mal dort.
+
 ## Start-Dashboard
 
 `layouts/dashboard.json` ist eine ruhige Fabrik-Übersicht ohne Seitenleiste, Tab-Leiste und Statusleiste: eine Karte mit „Wartet auf dich“ (Tickets in Prüfung mit „Prüfen“, Rückfragen blockierter Agents mit Antwortfeld, offene Fragen aus dem Ticket-Verlauf als Link; Abschlussmeldungen fertiger Agents nicht), dem **Team** (je aktivem Agent Identitäts-Chip, Status, Space/Tab, Ticket, Dauer und Kosten; beendete Agents in einer eingeklappten Zeile „n beendet“, Gruppen nur für Spaces mit lebenden Agents; Teams als Gruppenzeile wie im Team-Panel) mit **Letzte Aktivität** (bis fünf Ereignisse aus den Ticket-Verläufen, Agents und Budgets) daneben, der Fabrik-Stufenleiste mit den wichtigsten Tickets in Arbeit und der **Kosten-Karte** rechts (heute, Team-Budget, pro Ticket; Klick öffnet das Team-Panel), dazu das Auftragsfeld an den Orchestrator (⌘↵ sendet; ohne laufenden Orchestrator steht dort „Orchestrator starten“). Leere Bereiche sind eine Zeile, kein leerer Kasten.
