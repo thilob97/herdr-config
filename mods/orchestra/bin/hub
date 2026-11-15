@@ -16,7 +16,15 @@ reports into it) and show in the Team-Panel under it.
   hub ticket next AGENT                     the next startable ticket (todo, assigned, unblocked)
   hub ticket inbox AGENT [--json]           tickets naming (@), assigning or waiting on AGENT
   hub ticket watch ID --on AGENT            "waiting for an answer from @AGENT"
-  hub dispatch ID [--agent omp|claude|codex|"cmd args"] [--no-worktree] [--branch B] [--no-lessons]
+  hub agent list [--json]                   the roster: named agents with role, program, model, repo
+  hub agent show NAME [--json]
+  hub agent add --name N [--role R] [--program omp|claude|codex|pi] [--model M] [--repo PATH]
+                [--branch-prefix P] [--labels a,b] [--notes T] [--color c1..c6]
+  hub agent edit NAME [--name NEW] [same options]     unset fields stay as they are
+  hub agent rm NAME
+  hub dispatch ID [--agent omp|claude|codex|<roster name>|"cmd args"] [--no-worktree] [--branch B] [--no-lessons]
+                                            with a roster name: program + model, its repo and branch
+                                            prefix as defaults, role and notes in the order
                                             start the ticket's agent; writes base and base_head (the base's
                                             commit at the start); appends the repo's last 8 lessons
                                             (## Was hier schon schiefging) unless --no-lessons
@@ -91,6 +99,91 @@ FIELDS = ["title", "status", "repo", "labels", "due", "machine", "agent", "branc
 COSTS = os.path.join(APP, "data", "orchestra", "costs.json")  # written by the Team panel's watcher
 AGENTS = {"omp": ["omp"], "claude": ["claude"], "codex": ["codex", "--no-daemon"], "pi": ["pi"]}
 AGENT_NAMES = {"omp": "Oh My Pi", "claude": "Claude", "codex": "Codex", "pi": "Pi"}
+# The roster: agents the person named once (role, program, model, repo, branch prefix,
+# labels, notes, colour) and dispatches again and again by name. Versioned with the
+# config, so it lives in agents/roster.json under APP, not in data/.
+ROSTER = os.path.join(APP, "agents", "roster.json")
+ROSTER_FIELDS = ["name", "role", "program", "model", "repo", "branch_prefix", "labels", "notes", "color"]
+ROSTER_DEFAULTS = {"name": "", "role": "", "program": "omp", "model": "", "repo": "",
+                   "branch_prefix": "feat/", "labels": [], "notes": "", "color": "c1"}
+ROSTER_COLORS = ["c1", "c2", "c3", "c4", "c5", "c6"]
+
+
+def norm_agent(entry):
+    """One roster entry with every field present; labels are always a list."""
+    a = dict(ROSTER_DEFAULTS)
+    for k in ROSTER_FIELDS:
+        if entry.get(k) is not None:
+            a[k] = entry[k]
+    labels = a.get("labels")
+    if isinstance(labels, str):
+        a["labels"] = [x.strip() for x in labels.split(",") if x.strip()]
+    else:
+        a["labels"] = [str(x).strip() for x in (labels or []) if str(x).strip()]
+    for k in ("name", "role", "program", "model", "repo", "branch_prefix", "notes", "color"):
+        a[k] = str(a.get(k) or "").strip()
+    a["program"] = a["program"] or "omp"
+    a["branch_prefix"] = a["branch_prefix"] or ""
+    a["color"] = a["color"] or "c1"
+    return a
+
+
+def read_roster(required=False):
+    try:
+        with open(ROSTER, encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        if required:
+            die(f"keine Roster-Datei ({ROSTER}); hub agent add legt sie an")
+        return []
+    except (OSError, ValueError) as e:
+        die(f"Roster-Datei {ROSTER} nicht lesbar: {e}")
+    if not isinstance(data, list):
+        die(f"Roster-Datei {ROSTER}: eine Liste von Agents erwartet")
+    return [norm_agent(x) for x in data if isinstance(x, dict) and str(x.get("name") or "").strip()]
+
+
+def write_roster(rows):
+    os.makedirs(os.path.dirname(ROSTER), exist_ok=True)
+    tmp = ROSTER + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump([norm_agent(r) for r in rows], f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    os.replace(tmp, ROSTER)
+
+
+def find_agent(rows, name):
+    """(index, entry) for a name, case-insensitively; (None, None) when unknown."""
+    key = (name or "").strip().casefold()
+    for i, r in enumerate(rows):
+        if r["name"].casefold() == key:
+            return i, r
+    return None, None
+
+
+def roster_of(name):
+    _, found = find_agent(read_roster(), name)
+    return found
+
+
+def program_of(name):
+    """The program behind a ticket's agent: a roster entry's program, else the key itself."""
+    found = roster_of(name)
+    return found["program"] if found else (name or "").strip()
+
+
+def roster_program(value):
+    p = (value or "").strip() or "omp"
+    if p not in AGENTS:
+        die(f"unbekanntes Programm {p!r} (bekannt: {', '.join(AGENTS)})")
+    return p
+
+
+def roster_color(value):
+    c = (value or "").strip() or "c1"
+    if c not in ROSTER_COLORS:
+        die(f"unbekannte Farbe {c!r} (bekannt: {', '.join(ROSTER_COLORS)})")
+    return c
 
 
 def agent_name(key):
@@ -793,6 +886,91 @@ def cmd_watch(a):
     print(f"{a.id}: wartet auf eine Antwort von {a.agent}")
 
 
+def agent_changes(a):
+    """The fields the command line overrides; None keeps the current value."""
+    out = {}
+    for field in ("name", "role", "program", "model", "repo", "branch_prefix", "notes", "color"):
+        value = getattr(a, field, None)
+        if value is not None:
+            out[field] = str(value).strip()
+    if a.labels is not None:
+        out["labels"] = [x.strip() for x in a.labels.split(",") if x.strip()]
+    return out
+
+
+def cmd_agent_list(a):
+    rows = read_roster()
+    if a.json:
+        print(json.dumps(rows, ensure_ascii=False, indent=1))
+        return
+    if not rows:
+        print("keine Agents")
+        return
+    print(f"{'Name':<16} {'Rolle':<14} {'Programm':<9} {'Modell':<34} Repo")
+    for r in rows:
+        print(f"{r['name']:<16} {r['role'] or '-':<14} {r['program']:<9} {r['model'] or '-':<34} {r['repo'] or '-'}")
+
+
+def cmd_agent_show(a):
+    rows = read_roster(required=True)
+    _, found = find_agent(rows, a.name)
+    if not found:
+        die(f"kein Agent {a.name!r} im Roster")
+    if a.json:
+        print(json.dumps(found, ensure_ascii=False, indent=1))
+        return
+    for k in ROSTER_FIELDS:
+        v = found[k]
+        if k == "labels":
+            v = ", ".join(v)
+        print(f"{k}: {v or '-'}")
+
+
+def cmd_agent_add(a):
+    name = (a.name or "").strip()
+    if not name:
+        die("--name fehlt")
+    rows = read_roster()
+    if find_agent(rows, name)[1]:
+        die(f"Agent {name!r} gibt es schon")
+    entry = dict(ROSTER_DEFAULTS, name=name)
+    entry.update(agent_changes(a))
+    entry["program"] = roster_program(entry["program"])
+    entry["color"] = roster_color(entry["color"])
+    rows.append(norm_agent(entry))
+    write_roster(rows)
+    print(f"Agent {name} angelegt")
+
+
+def cmd_agent_edit(a):
+    rows = read_roster(required=True)
+    idx, cur = find_agent(rows, a.current)
+    if not cur:
+        die(f"kein Agent {a.current!r} im Roster")
+    entry = norm_agent({**cur, **agent_changes(a)})
+    if not entry["name"]:
+        die("Name darf nicht leer sein")
+    other, _ = find_agent(rows, entry["name"])
+    if other is not None and other != idx:
+        die(f"Agent {entry['name']!r} gibt es schon")
+    entry["program"] = roster_program(entry["program"])
+    entry["color"] = roster_color(entry["color"])
+    rows[idx] = entry
+    write_roster(rows)
+    name = entry["name"]
+    print(f"Agent {name} geändert" if name == a.current else f"Agent {a.current} in {name} umbenannt")
+
+
+def cmd_agent_rm(a):
+    rows = read_roster(required=True)
+    idx, cur = find_agent(rows, a.name)
+    if not cur:
+        die(f"kein Agent {a.name!r} im Roster")
+    rows.pop(idx)
+    write_roster(rows)
+    print(f"Agent {cur['name']} gelöscht")
+
+
 def cmd_set(a):
     t = read(a.id)
     moved = None
@@ -827,7 +1005,15 @@ def cmd_dispatch(a):
             f"erst abschließen (hub done <id>)")
     if t["status"] in ("doing", "review") and t.get("terminal") and is_live(t["terminal"]):
         die(f"{a.id} already runs in {t['terminal']} (status {t['status']}); talk to it with hc send")
+    # A roster name selects a named agent: its program, model, repo and branch prefix.
+    # Unknown names keep working as programs or commands, as before.
+    who = roster_of(a.agent)
+    agent_key, program = (who["name"], who["program"]) if who else (a.agent, a.agent)
     repo, on = t.get("repo"), t.get("machine") or None
+    if not repo and who:
+        repo = os.path.expanduser(who.get("repo") or "")
+        if repo:
+            t["repo"] = repo
     if not repo:
         die(f"{a.id} has no repo; hub ticket set {a.id} repo=/path/to/checkout")
     me = os.environ.get("HC_TERMINAL_ID")
@@ -848,7 +1034,11 @@ def cmd_dispatch(a):
         common = run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], on, repo).stdout.strip()
         main = common[:-5] if common.endswith("/.git") else common
         labels = t.get("labels", "").lower()
-        branch = a.branch or t.get("branch") or f"{'fix' if 'bug' in labels or 'fix' in labels else 'feat'}/{a.id}"[:60]
+        prefix = (who.get("branch_prefix") or "") if who else ""
+        if prefix and not prefix.endswith("/"):
+            prefix += "/"
+        branch = a.branch or t.get("branch") or (
+            f"{prefix}{a.id}"[:60] if prefix else f"{'fix' if 'bug' in labels or 'fix' in labels else 'feat'}/{a.id}"[:60])
         if run(["git", "check-ref-format", "--branch", branch], on, top, check=False).returncode:
             die(f"bad branch name {branch!r}")
         folder = f"{home_of(on)}/.herdr/worktrees/{os.path.basename(main)}/{slug(branch.replace('/', '-'), 60)}"
@@ -866,7 +1056,15 @@ def cmd_dispatch(a):
     lessons = "" if a.no_lessons else lesson_section(repo, on)
     if lessons:
         order += f"\n\n{lessons}"
+    intro = []
+    if who:
+        intro.append(f"Du bist {who['name']}" + (f" ({who['role']})" if who.get("role") else "") + ".")
+        if who.get("notes"):
+            intro.append(f"Notizen: {who['notes']}")
+        if who.get("model"):
+            intro.append(f"Modell: {who['model']}")
     task = (
+        ("\n".join(intro) + "\n\n" if intro else "") +
         f"Ticket {a.id}: {t['title']}\n\n{order}\n\n---\n"
         f"Du arbeitest in {folder}" + (f" auf Branch {branch}" if branch else "") + ". "
         "Lies zuerst den relevanten Code, ändere fokussiert, führe die Checks/Tests des Projekts aus, committe in kleinen Schritten, kein Push. "
@@ -877,7 +1075,9 @@ def cmd_dispatch(a):
         f"hc send nur für \"fertig\" oder \"blockiert, Ticket {a.id}\": {report}. "
         "Wenn du fertig oder blockiert bist, melde dich genauso mit: was geändert, Testergebnis, was offen ist."
     )
-    agent = AGENTS.get(a.agent) or shlex.split(a.agent)
+    agent = list(AGENTS.get(program) or shlex.split(program))
+    if who and who.get("model"):
+        agent += ["--model", who["model"]]
     if on:
         argv = ["sh", "-lc", '"$@"; exec "${SHELL:-sh}" -l', "sh", *agent, task]
     else:
@@ -898,11 +1098,12 @@ def cmd_dispatch(a):
     if r.returncode != 0:
         die(f"hc run: {(r.stderr or r.stdout).strip()}")
     out = json.loads(r.stdout)
-    t.update(agent=a.agent, branch=branch or "", worktree=folder if branch else "",
+    t.update(agent=agent_key, branch=branch or "", worktree=folder if branch else "",
              terminal=out["address"], space=space, tab=tab)
     set_status(t, "doing")
     write(t)
-    print(json.dumps({"ticket": a.id, "terminal": out["address"], "name": name, "folder": folder, "branch": branch}, ensure_ascii=False))
+    print(json.dumps({"ticket": a.id, "terminal": out["address"], "name": name, "agent": agent_key,
+                      "folder": folder, "branch": branch}, ensure_ascii=False))
 
 
 REVIEW_AGENTS = ["claude", "codex", "pi", "omp"]
@@ -912,7 +1113,7 @@ def review_agent(t, choice):
     """(key, argv) of the reviewer: --agent wins, else a different program than the implementer."""
     if choice:
         return choice, (AGENTS.get(choice) or shlex.split(choice))
-    impl = (t.get("agent") or "").lower()
+    impl = program_of(t.get("agent")).lower()
     for k in REVIEW_AGENTS:
         if k != impl:
             return k, AGENTS[k]
@@ -2049,6 +2250,35 @@ def aggregate(rows):
             "cost": round(sum(r["cost"] for r in rows), 2), "stations": stations}
 
 
+def agent_rows(tickets, per_ticket):
+    """Einsätze and cost per named agent, roster entries first, then every other agent key."""
+    roster = read_roster()
+    seen, rows = {}, []
+    for r in roster:
+        row = {"name": r["name"], "role": r["role"], "program": r["program"], "model": r["model"],
+               "tickets": 0, "open": 0, "cost": 0.0}
+        seen[r["name"].casefold()] = row
+        rows.append(row)
+    for tk in tickets:
+        key = (tk.get("agent") or "").strip()
+        if not key:
+            continue
+        row = seen.get(key.casefold())
+        if not row:
+            row = {"name": AGENT_NAMES.get(key, key), "role": "", "program": key if key in AGENTS else "",
+                   "model": "", "tickets": 0, "open": 0, "cost": 0.0}
+            seen[key.casefold()] = row
+            rows.append(row)
+        row["tickets"] += 1
+        if tk.get("status") != "done":
+            row["open"] += 1
+        row["cost"] += float(per_ticket.get(tk["id"]) or 0)
+    for row in rows:
+        row["cost"] = round(row["cost"], 2)
+    extra = sorted(rows[len(roster):], key=lambda r: (-r["cost"], -r["tickets"], r["name"].casefold()))
+    return rows[:len(roster)] + extra
+
+
 def day_of(ts):
     return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
 
@@ -2089,7 +2319,8 @@ def cmd_stats(a):
         repos.append({"repo": repo, **aggregate([r for r in active if (r["repo"] or "ohne Repo") == repo])})
     out = {"days": days, "at": int(now * 1000), "today": today_row, "history": history,
            "summary": {k: agg[k] for k in ("tickets", "done", "median_min", "rounds", "rework", "cost")},
-           "stations": agg["stations"], "repos": repos, "tickets": active}
+           "stations": agg["stations"], "repos": repos, "agents": agent_rows(tickets, per_ticket),
+           "tickets": active}
     if a.json:
         print(json.dumps(out, ensure_ascii=False))
         return
@@ -2110,6 +2341,13 @@ def cmd_stats(a):
                               for s in r["stations"] if s["count"])
         print(f"    {stations or 'keine Station belegt'}")
     if not repos:
+        print("  keine")
+    print("\nAgents")
+    for r in out["agents"]:
+        role = f" ({r['role']})" if r["role"] else ""
+        uses = f"{r['tickets']} Einsatz" if r["tickets"] == 1 else f"{r['tickets']} Einsätze"
+        print(f"  {r['name']}{role} · {uses} ({r['open']} offen) · ${r['cost']:.2f}")
+    if not out["agents"]:
         print("  keine")
     print(f"\nHeute: {today_row['done']} erledigt · Median {dur(today_row['median_min'])} · "
           f"{today_row['rework']} Nacharbeit · ${today_row['cost']:.2f}")
@@ -2166,6 +2404,37 @@ def main():
     wt.add_argument("id")
     wt.add_argument("--on", dest="agent", required=True, metavar="AGENT")
     wt.set_defaults(fn=cmd_watch)
+    ag = sub.add_parser("agent").add_subparsers(dest="acmd", required=True)
+    def agent_opts(p, name):
+        if name == "add":
+            p.add_argument("--name", required=True)
+        elif name == "edit":
+            p.add_argument("--name", metavar="NEW", help="neuer Name (Umbenennen)")
+        p.add_argument("--role")
+        p.add_argument("--program")
+        p.add_argument("--model")
+        p.add_argument("--repo")
+        p.add_argument("--branch-prefix", dest="branch_prefix", metavar="PREFIX")
+        p.add_argument("--labels", help="kommagetrennt")
+        p.add_argument("--notes")
+        p.add_argument("--color", help="c1..c6")
+    al = ag.add_parser("list")
+    al.add_argument("--json", action="store_true")
+    al.set_defaults(fn=cmd_agent_list)
+    ash = ag.add_parser("show")
+    ash.add_argument("name")
+    ash.add_argument("--json", action="store_true")
+    ash.set_defaults(fn=cmd_agent_show)
+    aa = ag.add_parser("add")
+    agent_opts(aa, "add")
+    aa.set_defaults(fn=cmd_agent_add)
+    ae = ag.add_parser("edit")
+    ae.add_argument("current", metavar="NAME")
+    agent_opts(ae, "edit")
+    ae.set_defaults(fn=cmd_agent_edit)
+    ar = ag.add_parser("rm")
+    ar.add_argument("name")
+    ar.set_defaults(fn=cmd_agent_rm)
     d = sub.add_parser("dispatch")
     d.add_argument("id")
     d.add_argument("--agent", default="omp")
