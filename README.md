@@ -297,6 +297,19 @@ Feste Agents liegen versioniert in `agents/roster.json`: Name, Rolle, Programm, 
 
 Das Fenster **Team-Hub** (Knopf „Team-Hub“ in der Tab-Leiste, `⌘⌥9`, sonst `mod.open:teams`) zeigt die Agents als Karten mit Avatar in Agent-Farbe, Rolle, Programm/Modell, Repo sowie Einsätzen und Kosten; ein Klick zeigt die laufenden Tickets und startet auf Wunsch einen vorbelegten Auftrag. Anlegen, Bearbeiten und Löschen passieren im selben Fenster. `hub stats agents` zeigt Einsätze und Kosten je Roster-Agent.
 
+## Mehrere Orchestratoren gleichzeitig
+
+Ein App-Home kann mehrere Orchestratoren tragen — je einer pro Projekt, etwa ein eigener Herdr-Space mit einem `omp`, dem man sagt „Du bist der Orchestrator dieses Projekts". Was dabei gilt:
+
+- **Identität**: `hub` nimmt zuerst das eigene Terminal (`HC_TERMINAL_ID`, geprüft über `hc get` und das Label `hub.role=orchestrator`) und erst danach ein beliebiges Orchestrator-Terminal. `hub whoami` zeigt Orchestrator, Name, eigene Tickets und WIP.
+- **Besitz**: Jedes neue Ticket bekommt `owner` (Terminal-ID des Orchestrators). `hub status`, `stalls`, `night`, `stats` und `cleanup` sehen standardmäßig nur eigene und besitzerlose Tickets; `--all` zeigt alles. `hub nudge` auf fremde Tickets nur mit `--force`.
+- **WIP je Orchestrator**: Die Limits zählen nur die eigenen Tickets (`hub wip --all` zeigt die globale Summe, `hub wip --mine arbeit=2` nur die eigenen).
+- **Schreibsperre**: Ticket- und Ereignis-Schreibvorgänge laufen unter `data/orchestra/.hub.lock` (`flock`, 10 s Timeout) — parallele Kommentare gehen nicht mehr verloren (Test: 20 gleichzeitige Kommentare, 20 im Verlauf).
+- **Geteilt bleibt**: Roster (`agents/roster.json`), Lehren, Agent-Gedächtnis, Kosten, Timeline und das Ticket-Verzeichnis. Das ist gewollt: dieselben Agenten, dieselben Lehren, eine Sicht.
+- **Getrennt bleiben**: Worktrees (`~/.herdr/worktrees/<repo>/<branch>`), Branches, Agenten-Terminals (Kinder des jeweiligen Orchestrators) und die Panel-Sicht (`shared("layout")` pro Fenster).
+
+Grenzen: Das Landen in **dasselbe** Repo aus zwei Orchestratoren ist nicht serialisiert (beide brauchen den Haupt-Checkout auf dem Basis-Branch); für getrennte Projekte ist das irrelevant. Board und Dashboard zeigen den Besitzer noch nicht.
+
 ## Timeline: wer wann woran gearbeitet hat
 
 Panel **Timeline** (`⌘⌥0`, Gruppe *Fabrik*, Block `timeline` in `elric`): eine Gantt-Achse über die Arbeit der Fabrik. Zeilen sind Lanes — oben der Orchestrator, darunter je Agent ein Balken von Start bis Ende (live: bis jetzt, mit pulsierendem Rand), Sub-Agents eingerückt unter ihrem Eltern-Agenten. Rechts an jedem Balken die Dauer, links Identität, Ticket-Kürzel und Status; Farben: arbeitet / wartet / fertig. Der Kopf schaltet **1 h · 24 h · 7 Tage · Alles** und filtert auf **Alle · Ticket**; Ereignisse (Dispatch, Prüfung, Urteil, CI, Landen) sitzen als Marker auf der Zeile und nennen im Tooltip Zeit und Text. Klick auf einen Agentenbalken öffnet dessen Terminal.
