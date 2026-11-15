@@ -121,14 +121,15 @@ function nested(all, address) {
 export function inboxCount() {
   const sp = ui.activeSpace();
   const counts = (space) => {
-    const own = space ? ui.workspaceId(space.id) : "";
+    const tks = ui.teamTickets();
+    const own = space ? ui.workspaceId(space.id, tks) : "";
     const all = agents();
-    const scoped = (a) => { const ws = ui.agentWorkspace(a); return !own || !ws || ws === own; };
+    const scoped = (a) => { const ws = ui.agentWorkspace(a, tks); return !own || !ws || ws === own; };
     const orchestratorBlocked = terminals().some((x) => x.name === ORCH && x.state === "live" && x.status === "blocked"
-      && (!own || ui.workspaceId(x.labels?.["hub.space"] || x.labels?.["herdr.space"] || "") === own));
+      && (!own || ui.workspaceId(x.labels?.["hub.space"] || x.labels?.["herdr.space"] || "", tks) === own));
     return {
       blocked: all.filter((a) => a.status === "blocked" && scoped(a)).length + (orchestratorBlocked ? 1 : 0),
-      review: (shared("orchestra.tickets") ?? []).filter((t) => t.status === "review" && (!space || ui.inScope(t))).length,
+      review: tks.filter((t) => t.status === "review" && (!space || ui.inScope(t, tks))).length,
       done: all.filter((a) => a.status === "done" && scoped(a)).length,
     };
   };
@@ -180,26 +181,27 @@ export default class Inbox extends View {
   // lives in a throwaway space; `ui.agentWorkspace` maps it to its ticket's workspace.
   entries() {
     const sp = ui.activeSpace();
-    const own = sp ? ui.workspaceId(sp.id) : "";
+    const tks = ui.teamTickets();
+    const own = sp ? ui.workspaceId(sp.id, tks) : "";
     const since = shared("attention.since") ?? {};
     const at = (a) => (since[a.address]?.status === a.status ? since[a.address].at : null);
     const group = { blocked: "ask", done: "done", working: "work" };
     const all = agents(), terms = terminals(), subs = shared("omp.subagents") ?? {};
-    const mine = (a) => { const ws = ui.agentWorkspace(a); return !own || !ws || ws === own; };
+    const mine = (a) => { const ws = ui.agentWorkspace(a, tks); return !own || !ws || ws === own; };
     const list = all.filter((a) => !nested(terms, a.address) && mine(a))
       .map((a) => ({ a, st: effectiveStatus(a, terms, subs) }))
       .filter(({ st }) => st in group)
       .map(({ a, st }) => ({ kind: "agent", key: a.address, address: a.address, group: group[st], a, st, since: at({ ...a, status: st }), order: at(a) ?? a.seq }));
     const o = terminals().find((x) => x.name === ORCH && x.state === "live"
-      && (!own || ui.workspaceId(x.labels?.["hub.space"] || x.labels?.["herdr.space"] || "") === own));
+      && (!own || ui.workspaceId(x.labels?.["hub.space"] || x.labels?.["herdr.space"] || "", tks) === own));
     if (o?.status === "blocked" && !list.some((e) => e.address === o.address)) {
       list.push({ kind: "orch", key: "orch", address: o.address, group: "ask", o, since: null, order: -1 });
     }
-    for (const tk of (shared("orchestra.tickets") ?? []).filter((x) => x.status === "review" && ui.inScope(x))) {
+    for (const tk of tks.filter((x) => x.status === "review" && ui.inScope(x, tks))) {
       list.push({ kind: "ticket", key: `ticket:${tk.id}`, group: "review", tk, order: tk.updated ?? "" });
     }
     // Open questions to the human live in the ticket: one row per ticket, answered there.
-    for (const tk of (shared("orchestra.tickets") ?? []).filter((x) => x.question && x.status !== "done" && !this.answered.has(x.id) && ui.inScope(x))) {
+    for (const tk of tks.filter((x) => x.question && x.status !== "done" && !this.answered.has(x.id) && ui.inScope(x, tks))) {
       list.push({ kind: "question", key: `q:${tk.id}`, group: "ask", tk, q: tk.question, order: tk.updated ?? "" });
     }
     for (const p of (shared(PENDING) ?? [])) {

@@ -238,32 +238,39 @@ export function ticketWorkspace(tk) {
   return hits.sort((x, y) => pathKey(y.folder).length - pathKey(x.folder).length)[0]?.id ?? "";
 }
 
+/** Die Ticket-Liste aus shared("orchestra.tickets"). Jeder `shared()`-Aufruf gibt eine
+ *  frische Kopie: bei 70 Tickets kostet er rund 1 ms. Eine Liste, die eine Ansicht
+ *  ohnehin schon gelesen hat, wird deshalb weitergegeben (zweites Argument von
+ *  workspaceId/agentWorkspace/inScope), statt sie je Ticket neu zu lesen — sonst
+ *  braucht ein Rendern über 70 Tickets mehr als das Budget und wird unterbrochen. */
+export const teamTickets = (tks) => tks ?? shared("orchestra.tickets") ?? [];
+
 /** Die Space-ID, zu der ein Space gehört. Ein Agent-Space ist der Wegwerf-Space eines
  *  Tickets: sein `agent_space` (ältere Auslieferungen: ein Terminal mit `hub.ticket`)
  *  nennt das Ticket, dessen Workspace gilt. Jeder andere Space ist sein eigener. Ein
  *  Space, den ein Ticket als Workspace nennt, bleibt Workspace — wie `hub spaces`. */
 const WS_CACHE = { tks: null, map: new Map() };
-export function workspaceId(sid) {
+export function workspaceId(sid, tks) {
   const id = String(sid ?? "").trim();
   if (!id) return "";
-  const tks = shared("orchestra.tickets") ?? [];
-  // Der Cache hängt an der Ticket-Liste (ein neues Array ungültigt); Kopfzeilen
-  // (Budget, Messwerte) scannen so nicht jedes Mal 70 Tickets × alle Spaces
-  // erneut — das Rendern kommt schneller zurück und wird seltener unterbrochen.
-  if (WS_CACHE.tks !== tks) { WS_CACHE.tks = tks; WS_CACHE.map = new Map(); }
+  const list = teamTickets(tks);
+  // Der Cache hängt an der Liste, die der Aufrufer einmal je Rendern liest: innerhalb
+  // eines Renderns bleibt sie dasselbe Array, und Kopfzeilen (Budget, Messwerte)
+  // scannen nicht jedes Mal 70 Tickets × alle Spaces erneut.
+  if (WS_CACHE.tks !== list) { WS_CACHE.tks = list; WS_CACHE.map = new Map(); }
   const hit = WS_CACHE.map.get(id);
   if (hit !== undefined) return hit;
   let ws = id;
-  if (tks.some((t) => String(t?.space ?? "").trim() === id && String(t?.space_name ?? "").trim())) ws = id;
+  if (list.some((t) => String(t?.space ?? "").trim() === id && String(t?.space_name ?? "").trim())) ws = id;
   else {
-    const mine = tks.find((t) => String(t?.agent_space ?? "").trim() === id);
+    const mine = list.find((t) => String(t?.agent_space ?? "").trim() === id);
     if (mine) {
       const tk_ws = ticketWorkspace(mine);
       if (tk_ws && tk_ws !== id) ws = tk_ws;
     } else {
       for (const x of terminals()) {
         if ((x.space ?? x.labels?.["herdr.space"]) !== id) continue;
-        const tk = tks.find((t) => t?.id === x.labels?.["hub.ticket"]);
+        const tk = list.find((t) => t?.id === x.labels?.["hub.ticket"]);
         const tk_ws = tk ? ticketWorkspace(tk) : "";
         if (tk_ws && tk_ws !== id) { ws = tk_ws; break; }
       }
@@ -275,10 +282,10 @@ export function workspaceId(sid) {
 
 /** Der Workspace eines Agenten: der seines Tickets — auch eines erledigten —, sonst
  *  der seines Herdr-Space; "" ohne beides. */
-export function agentWorkspace(a) {
-  const tks = shared("orchestra.tickets") ?? [];
-  const tk = tks.find((t) => t?.terminal && t.terminal === a?.address);
-  return (tk ? ticketWorkspace(tk) : "") || workspaceId(a?.space ?? a?.space_id ?? "");
+export function agentWorkspace(a, tks) {
+  const list = teamTickets(tks);
+  const tk = list.find((t) => t?.terminal && t.terminal === a?.address);
+  return (tk ? ticketWorkspace(tk) : "") || workspaceId(a?.space ?? a?.space_id ?? "", list);
 }
 
 /** Gehört das Ticket zur Fabrik des aktiven Workspace?
@@ -288,12 +295,13 @@ export function agentWorkspace(a) {
  *  - mit `space_name`: eine andere Fabrik,
  *  - altes `space` ohne `space_name` (damals der Agent-Space): über `repo` im Space-Ordner.
  *  So zeigt keine Liste fremde Fabriken, und nichts Altes fällt still heraus. */
-export function inScope(tk) {
+export function inScope(tk, tks) {
   const sp = activeSpace();
   if (!sp || !tk) return true;
   const sid = String(tk.space ?? "").trim();
   if (!sid) return true;
-  if (workspaceId(sid) === workspaceId(sp.id)) return true;
+  const list = teamTickets(tks);
+  if (workspaceId(sid, list) === workspaceId(sp.id, list)) return true;
   if (String(tk.space_name ?? "").trim()) return false;
   const repo = pathKey(tk.repo), folder = pathKey(sp.folder);
   return !repo || !folder ? true : inside(repo, folder);

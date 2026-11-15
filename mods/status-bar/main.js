@@ -8,7 +8,7 @@ import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, HoverCard } from "gpui-base";
 import { spaces, agents, terminals, theme, run, window, keys, exec, machines, appHome, readTextFile, shared, setShared, nextCommand, notify, focused, playSound } from "herdr";
 // Costs in one format everywhere (B9, same copy as in mods/orchestra/ui.js).
-import { usd, calm, activeSpace, inScope, isOrchestrator } from "./ui.js";
+import { usd, calm, activeSpace, inScope, isOrchestrator, teamTickets } from "./ui.js";
 
 // Tokens (docs/ui-spec.md, 5).
 const GAP_XS = 4, GAP_S = 6, GAP_M = 8, GAP_L = 12, GAP_XL = 16;
@@ -53,8 +53,9 @@ function teamBudget() {
   const sp = activeSpace();
   const per = c.orchestrators ?? {};
   const own = Object.keys(per).length ? per[sp?.id] ?? 0 : c.orchestrator ?? 0;
+  const tks = teamTickets();
   const cost = !sp ? c.teamCost ?? 0
-    : (shared("orchestra.tickets") ?? []).filter((t) => t.status !== "done" && inScope(t))
+    : tks.filter((t) => t.status !== "done" && inScope(t, tks))
       .reduce((n, t) => n + (c.tickets?.[t.id] ?? 0), 0) + (orchestratorHere(sp.id) ? own : 0);
   return { cost, total: c.teamCost ?? 0, budget, over: budget != null && cost > budget };
 }
