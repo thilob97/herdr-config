@@ -7,10 +7,13 @@
 // Cmd-click selects cards; the selection bar under the list messages, interrupts
 // or watches them as a team (shared "orchestra.groups"). Every agent's name and
 // avatar go to shared "agents.identity" for the other mods' identity chips.
+// Sub-agent births and ends also go to data/agent-cards/subagents.jsonl, so a
+// timeline still knows them after the terminal is gone.
 
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { agents, terminals, panes, focused, spaces, run, hc, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout, exec, readTextFile, appHome } from "herdr";
+import { agents, terminals, panes, focused, spaces, run, hc, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout, exec, readTextFile, writeTextFile, appHome } from "herdr";
+import { appendHistory, unseen, subagentEvents } from "./history.js";
 
 // Tokens (docs/ui-spec.md, 5).
 const GAP_XS = 4;
@@ -162,6 +165,8 @@ function python(on) {
 const SUB_STATUS = { running: "working", pending: "idle", completed: "done", failed: "blocked", cancelled: "blocked", aborted: "blocked" };
 const SUBS_SHOWN = 6;
 const unfinished = (s) => s.status === "running" || s.status === "pending";
+// The run's sub-agent history, for a timeline that outlives the terminal.
+const HISTORY = () => `${appHome().replace(/\\/g, "/")}/data/agent-cards/subagents.jsonl`;
 // At most SUBS_SHOWN, in the order omp started them: unfinished ones first to stay, then the newest.
 function shownSubs(list) {
   if (list.length <= SUBS_SHOWN) return list;
@@ -202,6 +207,10 @@ export default class Agents extends View {
     this.omp = new Map();
     this.ompText = new Map();
     this.ompBusy = new Set();
+    // Sub-agent ids already known (id -> parent terminal), and the writes' queue.
+    this.subsSeen = new Map();
+    this.subsIds = null;
+    this.subsQueue = Promise.resolve();
     this.pollOmp(cx);
     cx.timer.every(5000, (cx) => this.pollOmp(cx));
   }
@@ -224,7 +233,7 @@ export default class Agents extends View {
       if (!live.has(address)) { this.omp.delete(address); gone = true; }
     }
     for (const key of [...this.ompText.keys()]) if (!byMachine.has(key)) this.ompText.delete(key);
-    if (gone) { this.publishOmp(); cx.notify(); }
+    if (gone) { this.logSubagents(); this.publishOmp(); cx.notify(); }
     for (const [key, { on, wanted }] of byMachine) {
       if (this.ompBusy.has(key)) continue;
       this.ompBusy.add(key);
@@ -245,6 +254,7 @@ export default class Agents extends View {
             if (info && typeof info === "object") this.omp.set(address, info);
             else this.omp.delete(address);
           }
+          this.logSubagents();
           this.publishOmp();
           cx.notify();
         } finally {
@@ -252,6 +262,30 @@ export default class Agents extends View {
         }
       });
     }
+  }
+
+  // omp's sub-agents as history: a birth line for each id first seen under a terminal,
+  // an end line once it is gone. Off the render path; a failed write is not retried.
+  logSubagents() {
+    const { seen, lines } = subagentEvents(this.subsSeen, this.omp, new Date().toISOString());
+    this.subsSeen = seen;
+    if (lines.length) this.writeSubs(lines);
+  }
+
+  // Appends what the file doesn't have yet, one write after the other; over 3000 lines
+  // only the newest 1500 stay. The directory is made on the first write.
+  writeSubs(lines) {
+    this.subsQueue = this.subsQueue.then(async () => {
+      const path = HISTORY();
+      const text = await readTextFile(path).catch(() => null);
+      const fresh = unseen(text, lines);
+      if (!fresh.length) return;
+      const write = () => writeTextFile(path, appendHistory(text, fresh), text);
+      await write().catch(async () => {
+        await exec("mkdir", ["-p", path.slice(0, path.lastIndexOf("/"))]).catch(() => {});
+        await write().catch(() => {});
+      });
+    }).catch(() => {});
   }
 
   // The subagents omp's task tool started, by agent address, for other mods (the
