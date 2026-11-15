@@ -118,6 +118,27 @@ export function ticketSpace(tk, rows) {
 
 // ---------- Summe mehrerer Spaces ----------
 
+/** Offene Kosten eines Space: `cost_open` aus `hub spaces` zählt nur Tickets, die
+ *  nicht done sind — dieselbe Regel wie „offen bisher" in `hub status`. Ein älteres
+ *  hub kennt nur `cost` (alles); dann bleibt das die beste Antwort. */
+export const openCost = (r) => Number(r?.cost_open ?? r?.cost ?? 0) || 0;
+
+/** Alle Ticket-Kosten eines Space, auch erledigte (`cost` aus `hub spaces`). */
+export const totalCost = (r) => Number(r?.cost ?? 0) || 0;
+
+/** Kosten der gewählten Spaces: die offenen Ticket-Kosten je Space plus der
+ *  Orchestrator, der einmal in costs.json steht und zu seinem Space gehört. */
+export function costSplit(rows, { all = false, ids = new Set(), ownId = "", orchestrator = 0 } = {}) {
+  const picked = (rows ?? []).filter((r) => all || !ids.size || ids.has(r.id));
+  const tickets = picked.reduce((n, r) => n + openCost(r), 0);
+  const orch = all || !ids.size || ids.has(ownId) ? Number(orchestrator) || 0 : 0;
+  return {
+    team: r2(tickets + orch),
+    parts: picked.filter((r) => openCost(r) > 0).map((r) => ({ name: r.name || r.id, cost: openCost(r) })),
+    orch,
+  };
+}
+
 /** Median wie `hub stats` (eine Nachkommastelle); null ohne Wert. */
 export function median(xs) {
   const a = xs.filter((x) => Number.isFinite(x)).sort((x, y) => x - y);

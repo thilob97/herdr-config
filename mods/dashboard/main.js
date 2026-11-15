@@ -1280,22 +1280,18 @@ export default class Dashboard extends View {
         .child(div().id("dash-night").w_full().truncate().text_size(T_XS).text_color(t.dim).tooltip(night.tip).child(night.text)));
   }
 
-  /** Kosten der gewählten Spaces: die Ticket-Kosten summiert `hub spaces` je Space,
-   *  der Orchestrator steht einmal in costs.json und gehört zu seinem Space. "Heute"
-   *  ist der Kalendertag aus omp und kennt keinen Space — er bleibt eine Zahl. */
+  /** Kosten der gewählten Spaces: die offenen Ticket-Kosten summiert `hub spaces` je
+   *  Space, der Orchestrator steht einmal in costs.json und gehört zu seinem Space.
+   *  "Heute" ist der Kalendertag aus omp und kennt keinen Space — er bleibt eine Zahl. */
   costSplit() {
     const rows = this.spaceList();
     if (!rows) return { team: Number(this.costs().teamCost ?? 0), parts: [], orch: 0 };
-    const all = this.pick().mode === space.ALL;
-    const ids = this.selIds();
-    const picked = rows.filter((r) => all || !ids.size || ids.has(r.id));
-    const tickets = picked.reduce((n, r) => n + (Number(r.cost) || 0), 0);
-    const orch = all || !ids.size || ids.has(this.ownSpaceId()) ? Number(this.costs().orchestrator ?? 0) : 0;
-    return {
-      team: Math.round((tickets + orch) * 100) / 100,
-      parts: picked.filter((r) => Number(r.cost) > 0).map((r) => ({ name: r.name || r.id, cost: Number(r.cost) })),
-      orch,
-    };
+    return space.costSplit(rows, {
+      all: this.pick().mode === space.ALL,
+      ids: this.selIds(),
+      ownId: this.ownSpaceId(),
+      orchestrator: this.costs().orchestrator ?? 0,
+    });
   }
 
   // The money as its own card right of the tickets in work. Two named numbers, each
@@ -1376,8 +1372,8 @@ export default class Dashboard extends View {
         .child(div().flex_1().min_w(0).truncate().text_size(T_XS).text_color(t.muted)
           .tooltip(`offene Tickets: ${open}`).child(r.tickets ? open : "keine Tickets"))
         .child(div().w(56).flex_none().justify_end().text_size(T_XS).text_color(t.muted)
-          .tooltip("Ticket-Kosten dieses Space (data/orchestra/costs.json, je Space summiert)")
-          .child(usd(Number(r.cost) || 0)))
+          .tooltip(`offene Ticket-Kosten dieses Space (data/orchestra/costs.json, nur Tickets ≠ done); gesamt ${usd(space.totalCost(r))}`)
+          .child(usd(space.openCost(r))))
         .when(!r.live, (el) => el.child(ui.button(t, `dash-ws-start-${rid(r.id)}`,
           starting ? "Startet …" : "Orchestrator starten", (cx) => this.startSpace(r.id, cx),
           { small: true, enabled: !this.starting,

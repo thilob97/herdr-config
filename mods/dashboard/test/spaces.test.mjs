@@ -5,7 +5,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { pickOf, effective, toggle, seriesOf, ticketSpace, mergeStats, median, OWN, SOME, ALL,
-  workspaceRows, workspaceOf, agentWorkspace } from "../spaces.js";
+  workspaceRows, workspaceOf, agentWorkspace, costSplit, openCost, totalCost } from "../spaces.js";
 
 const SPACES = [
   { id: "spa", name: "Alpha", folder: "/repos/alpha" },
@@ -162,4 +162,35 @@ test("Agents zählen zum Workspace ihres Tickets, nicht zum Agent-Space", () => 
   assert.equal(agentWorkspace({ address: "t-y", space: "spb" }, tickets, ROWS, "spa"), "spb");
   // Ohne Space und ohne Ticket bleibt der eigene Workspace.
   assert.equal(agentWorkspace({ address: "t-z" }, tickets, ROWS, "spb"), "spb");
+});
+
+// ---------- Kosten: offen vs. gesamt (Dashboard-Karte und Workspaces-Zeile) ----------
+
+test("Team offen zählt cost_open, nicht die Gesamtkosten eines Space", () => {
+  const rows = [
+    { id: "spa", name: "Alpha", kind: "workspace", cost: 7, cost_open: 2 },
+    { id: "spb", name: "Beta", kind: "workspace", cost: 5, cost_open: 5 },
+  ];
+  const own = costSplit(rows, { ids: new Set(["spa"]), ownId: "spa", orchestrator: 1.25 });
+  assert.equal(own.team, 3.25, "offene Tickets des eigenen Space plus Orchestrator");
+  assert.deepEqual(own.parts, [{ name: "Alpha", cost: 2 }], "der Tooltip nennt offene Kosten");
+  assert.equal(own.orch, 1.25);
+
+  const all = costSplit(rows, { all: true, ids: new Set(), ownId: "spa", orchestrator: 1.25 });
+  assert.equal(all.team, 8.25, "Alle summiert die offenen Kosten aller Spaces");
+  assert.deepEqual(all.parts.map((p) => p.cost), [2, 5]);
+
+  // Ein fremder Space in der Auswahl trägt den Orchestrator nicht.
+  const beta = costSplit(rows, { ids: new Set(["spb"]), ownId: "spa", orchestrator: 1.25 });
+  assert.equal(beta.team, 5);
+  assert.equal(beta.orch, 0);
+});
+
+test("Workspaces-Zeile zeigt offen, der Tooltip die Gesamtkosten", () => {
+  const row = { id: "spa", cost: 7, cost_open: 2 };
+  assert.equal(openCost(row), 2);
+  assert.equal(totalCost(row), 7);
+  // Ein älteres hub ohne cost_open fällt auf die Gesamtkosten zurück.
+  assert.equal(openCost({ id: "spx", cost: 4 }), 4);
+  assert.equal(openCost(null), 0);
 });
