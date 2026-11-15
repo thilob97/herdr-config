@@ -43,6 +43,32 @@ reports into it) and show in the Team-Panel under it.
                                             data/orchestra/wip.json); `hub wip arbeit=4 pruefung=2` sets them
   hub spec ID                               complete the ticket's ## Ziel, ## Abnahmekriterien and
                                             ## Grenzen as a template (existing sections stay) and show them
+  hub triage ID [--apply] [--json]          type (bug/feature/chore), size (S/M/L) and priority
+                                            (p1/p2/p3) from title and text; --apply writes the fields
+                                            and labels, completes missing spec sections and stamps
+                                            `triaged`. Dispatch requires it for tickets with `source`.
+  hub preflight ID [--json]                 checkout base/base_head in a throwaway worktree, run
+                                            .herdr/verify.sh (or the ticket's verify) there, drop the
+                                            worktree and record pass|fail, at, head, duration and the
+                                            last 10 lines under ## Preflight. Dispatch refuses a red
+                                            base and runs a missing preflight
+  hub stalls [--json] [--doing MIN] [--review MIN] [--todo MIN]
+                                            tickets older than the threshold (default 45/120/1440
+                                            minutes) in In Arbeit, Prüfung and Geplant, grouped
+  hub nudge ID [--text TEXT]                ask the ticket's live agent for its state (hc send) and
+                                            write "Stand abgefragt" as an orchestrator comment
+  hub night [--until HH:MM] [--for MIN] [--max N] [--dry-run]
+                                            dispatch startable tickets one at a time (priority first),
+                                            respecting blocked_by, spec, stage and agent WIP; stops at
+                                            the deadline, --max or when nothing starts; writes
+                                            ## Nachtschicht into the started tickets
+  hub memory add --agent NAME|--repo PATH [--ticket ID] "text"
+                                            append "- date · ticket · text" to agents/memory/<name>.md
+                                            or <repo>/.herdr/memory.md (at most 60 lines, oldest drop)
+  hub memory list [--agent NAME|--repo PATH] [--json]
+  hub memory clear [--agent NAME|--repo PATH]
+                                            dispatch appends the agent's last 5 entries as
+                                            "## Was du hier gelernt hast"
   hub rebase ID                             rebase the ticket's branch in its worktree onto its base;
                                             a conflict stops with exit 1, names the files and leaves
                                             the worktree in the rebase for the agent to resolve
@@ -109,7 +135,9 @@ import argparse, datetime, json, os, pwd, re, secrets, shlex, subprocess, sys, t
 APP = os.environ.get("HERDR_APP_HOME") or os.path.expanduser("~/.config/herdr-app")
 TICKETS = os.path.join(APP, "data", "quests", "tickets")
 FIELDS = ["title", "status", "repo", "labels", "due", "machine", "agent", "harness", "branch", "base", "base_head", "worktree", "terminal",
-          "space", "tab", "source", "checks", "checks_head", "checks_at", "checks_duration", "checks_exit", "checks_cmd", "verify",
+          "space", "tab", "source", "type", "size", "priority", "triaged",
+          "preflight", "preflight_at", "preflight_head", "preflight_duration",
+          "checks", "checks_head", "checks_at", "checks_duration", "checks_exit", "checks_cmd", "verify",
           "evidence", "merged", "pr", "ci", "ci_head", "ci_at", "ci_url", "ci_details",
           "review", "review_head", "review_at", "review_summary", "review_rounds", "reviewer", "reviewer_name", "review_terminal",
           "assignee", "blocked_by", "tags", "waiting", "by", "updated", "created", "status_at", "status_log"]
@@ -939,6 +967,131 @@ def lesson_section(repo, on=None):
     return "## Was hier schon schiefging\n\n" + "\n".join(lesson_line(l) for l in items)
 
 
+# ---- memory: what an agent learned for itself, carried into its next order
+#
+# agents/memory/<agent-slug>.md (versioned with APP, like the roster) or, for a repo,
+# <repo>/.herdr/memory.md. One line per entry, oldest first, never more than MEMORY_MAX:
+#   - 2026-11-15 · <ticket|-> · short text
+# Unlike lessons (what went wrong here, from review), this is the agent's own knowledge.
+
+MEMORY = os.path.join(APP, "agents", "memory")
+MEMORY_MAX = 60   # the file never grows past this; the oldest lines fall out
+MEMORY_TAIL = 5   # hub dispatch carries this many into the next order
+MEMORY_FMT = re.compile(r"^- (\d{4}-\d{2}-\d{2}) · ([^·]+?) · (.*)$")
+
+
+def memory_path_agent(name):
+    return os.path.join(MEMORY, (slug(name) or "agent") + ".md")
+
+
+def memory_path_repo(repo):
+    return os.path.join(os.path.abspath(os.path.expanduser(repo)), ".herdr", "memory.md")
+
+
+def memory_line(x):
+    return f"- {x['date']} · {x['ticket'] or '-'} · {x['text']}"
+
+
+def parse_memory(text):
+    out = []
+    for line in (text or "").splitlines():
+        m = MEMORY_FMT.match(line.strip())
+        if m:
+            out.append({"date": m.group(1), "ticket": m.group(2).strip(),
+                        "text": m.group(3).strip()})
+    return [x for x in out if x["text"]]
+
+
+def read_memory(path):
+    try:
+        return parse_memory(open(path, encoding="utf-8").read())
+    except OSError:
+        return []
+
+
+def write_memory(path, items):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    body = "".join(memory_line(x) + "\n" for x in items[-MEMORY_MAX:])
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(body)
+    os.replace(tmp, path)
+
+
+def add_memory(path, ticket, text):
+    text = one_line(text)
+    if not text:
+        die("leerer Gedächtniseintrag")
+    items = read_memory(path)
+    item = {"date": time.strftime("%Y-%m-%d"), "ticket": ticket or "-", "text": text}
+    items.append(item)
+    write_memory(path, items)
+    return item
+
+
+def memory_section(name):
+    """The dispatch section with the agent's last MEMORY_TAIL entries, or ""."""
+    items = read_memory(memory_path_agent(name))[-MEMORY_TAIL:]
+    if not items:
+        return ""
+    return "## Was du hier gelernt hast\n\n" + "\n".join(memory_line(x) for x in items)
+
+
+def memory_selector(a):
+    if a.agent:
+        return memory_path_agent(a.agent), f"Agent {a.agent}"
+    if a.repo:
+        return memory_path_repo(a.repo), f"Repo {a.repo}"
+    return None, ""
+
+
+def cmd_memory(a):
+    path, label = memory_selector(a)
+    if a.mcmd == "add":
+        if not path:
+            die("hub memory add braucht --agent NAME oder --repo PFAD")
+        add_memory(path, a.ticket or "", " ".join(a.text))
+        print(f"{label}: {len(read_memory(path))}/{MEMORY_MAX} Einträge ({path})")
+        return
+    if a.mcmd == "clear":
+        if path:
+            write_memory(path, [])
+            print(f"{label}: geleert")
+            return
+        if os.path.isdir(MEMORY):
+            for f in sorted(os.listdir(MEMORY)):
+                if f.endswith(".md"):
+                    write_memory(os.path.join(MEMORY, f), [])
+        print("Gedächtnis geleert (alle Agenten)")
+        return
+    if path:
+        items = read_memory(path)
+        if a.json:
+            print(json.dumps(items, ensure_ascii=False))
+            return
+        print(f"{label} ({path})")
+        for x in items:
+            print(memory_line(x))
+        return
+    everything = {}
+    try:
+        files = sorted(f for f in os.listdir(MEMORY) if f.endswith(".md"))
+    except OSError:
+        files = []
+    for f in files:
+        everything[f[:-3]] = read_memory(os.path.join(MEMORY, f))
+    if a.json:
+        print(json.dumps(everything, ensure_ascii=False))
+        return
+    if not everything:
+        print("kein Gedächtnis")
+        return
+    for name, items in everything.items():
+        print(f"{name}:")
+        for x in items:
+            print(memory_line(x))
+
+
 # ---- machines: local commands, or through `hc exec --on`
 
 def run(argv, on=None, cwd=None, check=True):
@@ -1080,6 +1233,379 @@ def cmd_spec(a):
     print(f"{a.id}: " + (f"ergänzt {', '.join(added)}" if added else "alle Abschnitte vorhanden"))
     for heading in SPEC_SECTIONS:
         print(f"\n{heading}\n\n{section_of(t, heading) or ''}".rstrip())
+
+
+# ---- Triage: turn a raw signal (title/body) into a startable ticket
+
+TRIAGE_BUG = re.compile(r"(?i)\b(fehler\w*|falsch\w*|absturz\w*|abstürz\w*|regression\w*)\b")
+TRIAGE_CHORE = re.compile(r"(?i)\b(aufräum\w*|aufraeum\w*|docs?|doku\w*|ci|chore|refactor\w*)\b")
+TRIAGE_P1 = re.compile(r"(?i)\b(absturz\w*|abstürz\w*|datenverlust\w*|sicherheit\w*)\b")
+TRIAGE_P3 = re.compile(r"(?i)\b(nice|optional|irgendwann|später)\b")
+TRIAGE_BIG = re.compile(r"(?i)\b(umbau\w*|migrier\w*|migration\w*|refactor\w*|integrier\w*|neubau\w*|redesign\w*|überarbeit\w*|komplett\w*|architektur\w*)\b")
+
+
+def triage_guess(t):
+    """type, size and priority from the title/body text plus the labels to set."""
+    text = f"{t.get('title') or ''}\n{t.get('body') or ''}"
+    what = "bug" if TRIAGE_BUG.search(text) else ("chore" if TRIAGE_CHORE.search(text) else "feature")
+    prio = "p1" if TRIAGE_P1.search(text) else ("p3" if TRIAGE_P3.search(text) else "p2")
+    # Size: text length in words plus the verbs that mean a broad change. Every such
+    # verb pads the score as much as 120 words of prose, so "migration" is not size S
+    # just because the ticket is short.
+    words = len(re.findall(r"\w+", text))
+    score = words + 120 * len(TRIAGE_BIG.findall(text))
+    size = "S" if score < 200 else ("M" if score < 1000 else "L")
+    labels = names(t.get("labels"))
+    for want in (what, f"size-{size.lower()}", prio):
+        if want not in labels:
+            labels.append(want)
+    missing = [h[3:] for h in SPEC_SECTIONS if section_of(t, h) is None]
+    return {"type": what, "size": size, "priority": prio, "labels": labels, "missing": missing}
+
+
+def set_triage(t, g):
+    t.update(type=g["type"], size=g["size"], priority=g["priority"],
+             labels=", ".join(g["labels"]), triaged=now_stamp())
+
+
+def cmd_triage(a):
+    t = read(a.id)
+    g = triage_guess(t)
+    if a.apply:
+        set_triage(t, g)
+        add_spec_sections(t)
+        write(t)
+    out = {k: g[k] for k in ("type", "size", "priority", "labels", "missing")}
+    out.update(id=a.id, applied=bool(a.apply))
+    if a.json:
+        print(json.dumps(out, ensure_ascii=False))
+        return
+    print(f"{a.id}: Typ {g['type']} · Größe {g['size']} · Priorität {g['priority']}")
+    print(f"Labels: {', '.join(g['labels'])}")
+    print("Fehlende Abschnitte: " + (", ".join(g["missing"]) or "keine"))
+    print("Übernommen mit --apply." if a.apply else "Nur Vorschlag; schreiben mit --apply.")
+
+
+# ---- Preflight: the base must pass the repo's check before an agent starts on it
+
+PREFLIGHT = "## Preflight"
+PREFLIGHT_TAIL = 10   # lines of output kept in the ticket
+
+
+def preflight_section(t):
+    """The ## Preflight section: its meta line and the captured output lines."""
+    m = re.search(r"(?ms)^## Preflight[ \t]*\n(.*?)(?=\n## |\Z)", t.get("body") or "")
+    if not m:
+        return {"meta": "", "tail": []}
+    lines = m.group(1).strip("\n").splitlines()
+    meta = lines[0][2:].strip() if lines and lines[0].startswith("- ") else ""
+    tail, fenced = [], False
+    for line in lines:
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            continue
+        if fenced:
+            tail.append(line)
+    return {"meta": meta, "tail": tail}
+
+
+def set_preflight(t, text):
+    """Replace ## Preflight in the body, keeping it just before ## Verlauf."""
+    body = re.sub(r"(?ms)^## Preflight[ \t]*\n.*?(?=\n## |\Z)", "", t.get("body") or "").strip("\n")
+    block = f"{PREFLIGHT}\n{text}".rstrip("\n")
+    m = re.search(r"(?m)^## Verlauf[ \t]*$", body)
+    body = (body[:m.start()].rstrip("\n") + "\n\n" + block + "\n\n" + body[m.start():]) if m else \
+        (body + "\n\n" + block if body else block)
+    t["body"] = body.strip("\n") + "\n"
+
+
+def run_preflight(t):
+    """Check the base out in a throwaway worktree, run the check there, drop the worktree.
+
+    Returns (state, tail, message) with state pass|fail|skip. `skip` means the repo has
+    no check at all, so there is nothing a red base could fail: dispatch goes on and
+    says so. The record is written for pass and fail only."""
+    on = t.get("machine") or None
+    repo = t.get("repo") or ""
+    if not repo or run(["test", "-d", repo], on, check=False).returncode != 0:
+        die(f"{t['id']}: kein Repo: hub ticket set {t['id']} repo=/pfad")
+    rev = (t.get("base_head") or t.get("base") or "").strip()
+    if not rev:
+        die(f"{t['id']}: keine Basis im Ticket (base/base_head); hub dispatch schreibt sie")
+    top = run(["git", "rev-parse", "--show-toplevel"], on, repo, check=False)
+    if top.returncode != 0:
+        die(f"{t['id']}: kein Git-Repository in {repo}: {(top.stderr or top.stdout).strip()}")
+    root = top.stdout.strip()
+    tmp = run(["mktemp", "-d"], on).stdout.strip()
+    if not tmp:
+        die(f"{t['id']}: mktemp -d lieferte kein Verzeichnis")
+    started = time.monotonic()
+    head, label, code, output = "", "", 0, ""
+    try:
+        add = run(["git", "worktree", "add", "--detach", tmp, rev], on, root, check=False)
+        if add.returncode != 0:
+            output = f"Basis {rev} nicht auscheckbar: {(add.stderr or add.stdout).strip()}"
+            code = add.returncode
+        else:
+            head = run(["git", "rev-parse", "HEAD"], on, tmp, check=False).stdout.strip()
+            script = os.path.join(tmp, ".herdr", "verify.sh")
+            fallback = (t.get("verify") or "").strip()
+            if run(["test", "-f", script], on, check=False).returncode == 0:
+                argv, label = ["sh", script], ".herdr/verify.sh"
+            elif fallback:
+                argv, label = ["sh", "-c", fallback], " ".join(fallback.split())
+            else:
+                return "skip", [], "kein Prüfbefehl (.herdr/verify.sh und verify fehlen)"
+            r = run(argv, on, tmp, check=False)
+            code = r.returncode
+            output = "\n".join(p.rstrip("\n") for p in (r.stdout or "", r.stderr or "") if p)
+    finally:
+        run(["git", "worktree", "remove", "--force", tmp], on, root, check=False)
+        run(["rm", "-rf", tmp], on, check=False)
+    duration = time.monotonic() - started
+    tail = output.splitlines()[-PREFLIGHT_TAIL:]
+    ok = code == 0
+    at = time.strftime("%Y-%m-%d %H:%M")
+    t.update(preflight="pass" if ok else "fail", preflight_at=at,
+             preflight_head=head or rev, preflight_duration=f"{duration:.1f}")
+    fence = "`" * (max([len(m) for line in tail for m in re.findall(r"`+", line)] + [2]) + 1)
+    set_preflight(t, f"- {at} · {'pass' if ok else 'fail'} · {duration:.1f} s · exit {code} · "
+                     f"HEAD {(head or rev)[:7]} · {label or '-'}\n\n"
+                     f"{fence}text\n{chr(10).join(tail)}\n{fence}")
+    write(t)
+    return ("pass" if ok else "fail"), tail, f"Preflight {'pass' if ok else 'fail'} · {duration:.1f} s · exit {code}"
+
+
+def preflight_gate(t):
+    """Refuse a red recorded preflight; run a missing one. Writes the ticket itself."""
+    state = (t.get("preflight") or "").strip()
+    tail = preflight_section(t)["tail"]
+    if state == "fail":
+        die(f"{t['id']}: Preflight rot auf {(t.get('preflight_head') or '?')[:7]}: "
+            + (" / ".join(tail) or "keine Ausgabe aufgezeichnet")
+            + f"; erneut mit hub preflight {t['id']}")
+    if state == "pass":
+        return
+    state, tail, msg = run_preflight(t)
+    if state == "skip":
+        print("Preflight übersprungen — kein Prüfbefehl")
+        return
+    print(f"Preflight {state} — gestartet")
+    if state != "pass":
+        die(f"{t['id']}: Preflight rot: " + (" / ".join(tail) or "keine Ausgabe"))
+
+
+def cmd_preflight(a):
+    t = read(a.id)
+    state, tail, msg = run_preflight(t)
+    out = {"id": a.id, "preflight": state, "at": t.get("preflight_at"),
+           "head": t.get("preflight_head"), "duration": t.get("preflight_duration"), "tail": tail}
+    if a.json:
+        print(json.dumps(out, ensure_ascii=False))
+        return
+    print(f"{a.id}: {msg}" + ("" if state == "skip" else f" ({len(tail)} Zeilen Ausgabe unter {PREFLIGHT})"))
+
+
+# ---- Stalls: tickets that sit in one station too long, and the nudge into the ticket
+
+STALL_STAGES = [("doing", "In Arbeit", 45), ("review", "Prüfung", 120), ("todo", "Geplant", 1440)]
+
+
+def stall_rows(doing=45, review=120, todo=1440):
+    limits = {"doing": doing, "review": review, "todo": todo}
+    labels = {k: label for k, label, _ in STALL_STAGES}
+    now = time.time()
+    rows = []
+    for t in all_tickets():
+        stage = t.get("status")
+        at = epoch(t.get("status_at"))
+        if stage not in limits or at is None:
+            continue
+        minutes = int((now - at) // 60)
+        if minutes < limits[stage]:
+            continue
+        rows.append({"stage": stage, "stage_label": labels[stage], "id": t["id"],
+                     "title": t.get("title") or "",
+                     "agent": t.get("agent") or t.get("assignee") or "",
+                     "age_minutes": minutes, "age": age(t.get("status_at")),
+                     "nudge": f"hub nudge {t['id']}", "threshold": limits[stage]})
+    order = {k: i for i, (k, _, _) in enumerate(STALL_STAGES)}
+    rows.sort(key=lambda r: (order[r["stage"]], -r["age_minutes"], r["id"]))
+    return rows
+
+
+def cmd_stalls(a):
+    rows = stall_rows(a.doing, a.review, a.todo)
+    if a.json:
+        print(json.dumps(rows, ensure_ascii=False))
+        return
+    if not rows:
+        print("keine hängenden Tickets")
+        return
+    for stage, label, default in STALL_STAGES:
+        group = [r for r in rows if r["stage"] == stage]
+        if not group:
+            continue
+        print(f"{label} (>{group[0]['threshold']} min)")
+        for r in group:
+            print(f"  {r['id']:<40} {r['agent'] or '-':<10} seit {r['age']:<8} → {r['nudge']}")
+
+
+def cmd_nudge(a):
+    t = read(a.id)
+    text = one_line(a.text) or "Bitte kurz den Stand nennen: was ist erledigt, was fehlt, was blockiert?"
+    addr = t.get("terminal") or ""
+    sent = bool(addr and is_live(addr) and send_agent(addr, f"Stand zu {a.id}: {text}"))
+    add_comment(t, "orchestrator", f"Stand abgefragt: {text}")
+    write(t)
+    print(f"{a.id}: " + (f"Nachricht an {addr} gesendet; Kommentar geschrieben"
+                         if sent else "Agent nicht lebend; nur Kommentar geschrieben"))
+
+
+# ---- Night: work the queue while nobody is there, one ticket at a time
+
+NIGHT = "## Nachtschicht"
+NIGHT_STEP = max(0, env_int("HUB_NIGHT_STEP", 60))   # seconds between dispatches
+
+
+def night_rank(t):
+    prio = {"p1": 0, "p2": 1, "p3": 2}.get((t.get("priority") or "p2").lower(), 1)
+    return (prio, t.get("created") or "", t["id"])
+
+
+def night_queue():
+    return sorted((t for t in all_tickets() if t.get("status") == "todo"), key=night_rank)
+
+
+def night_block(t):
+    """Why this todo ticket cannot start right now, or "" when it can."""
+    blockers = open_blockers(t)
+    if blockers:
+        return "blockiert durch " + ", ".join(f"{b} ({st})" for b, st in blockers)
+    if not criteria(t):
+        return f"kein Abnahmekriterium (hub spec {t['id']})"
+    gaps = dispatch_gates(t)
+    if gaps:
+        return " · ".join(gaps)
+    who = roster_of(t.get("assignee") or "omp")
+    if who:
+        limit = int(who.get("wip") or 0)
+        running = doing_of(who["name"], skip=t["id"])
+        if limit > 0 and len(running) >= limit:
+            return f"Agent-WIP {who['name']} {len(running)}/{limit}: " + ", ".join(x["id"] for x in running)
+    return ""
+
+
+def night_deadline(a):
+    now = time.time()
+    deadline = None
+    if a.for_min is not None:
+        if a.for_min < 0:
+            die("--for erwartet Minuten >= 0")
+        deadline = now + a.for_min * 60
+    if a.until:
+        m = re.fullmatch(r"(\d{1,2}):(\d{2})", a.until.strip())
+        if not m or int(m.group(1)) > 23 or int(m.group(2)) > 59:
+            die("--until erwartet HH:MM")
+        lt = time.localtime(now)
+        when = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday,
+                            int(m.group(1)), int(m.group(2)), 0, 0, 0, -1))
+        if when <= now:  # the next time that clock shows; tonight or tomorrow
+            when += 86400
+        deadline = when if deadline is None else min(deadline, when)
+    return deadline
+
+
+def night_dispatch(tid, agent):
+    """One dispatch in a child hub: its refusal must not end the whole night."""
+    return subprocess.run([sys.executable, os.path.abspath(__file__), "dispatch", tid, "--agent", agent],
+                          capture_output=True, text=True)
+
+
+def add_night_section(t, text):
+    """Append one run block to ## Nachtschicht, keeping the section before ## Verlauf."""
+    body = t.get("body") or ""
+    block = text.rstrip("\n")
+    m = re.search(r"(?ms)^## Nachtschicht[ \t]*\n(.*?)(?=\n## |\Z)", body)
+    if m:
+        body = body[:m.start()] + m.group(0).rstrip("\n") + "\n\n" + block + body[m.end():]
+    else:
+        v = re.search(r"(?m)^## Verlauf[ \t]*$", body)
+        body = (body[:v.start()].rstrip("\n") + "\n\n" + NIGHT + "\n\n" + block + "\n\n" + body[v.start():]) \
+            if v else (body.rstrip("\n") + "\n\n" + NIGHT + "\n\n" + block if body.strip() else NIGHT + "\n\n" + block)
+    t["body"] = body.strip("\n") + "\n"
+
+
+def night_record(started, skipped, begin, end):
+    lines = [f"- {begin} → {end} · {len(started)} gestartet, {len(skipped)} übersprungen",
+             "  - gestartet: " + (", ".join(started) or "—")]
+    for tid, why in skipped.items():
+        lines.append(f"  - übersprungen {tid}: {why}")
+    return "\n".join(lines)
+
+
+def cmd_night(a):
+    deadline = night_deadline(a)
+    begin = now_stamp()
+    if a.dry_run:
+        rows = [(t["id"], night_block(t)) for t in night_queue()]
+        startable = [(tid, why) for tid, why in rows if not why]
+        if not startable:
+            print("nichts startbar")
+            return
+        print("Reihenfolge:")
+        for i, (tid, _) in enumerate(startable, 1):
+            print(f"  {i}. {tid}")
+        skipped = [(tid, why) for tid, why in rows if why]
+        if skipped:
+            print("übersprungen:")
+            for tid, why in skipped:
+                print(f"  - {tid}: {why}")
+        return
+    started, skipped, attempted = [], {}, set()
+    while True:
+        if a.max is not None and a.max >= 0 and len(started) >= a.max:
+            break
+        if deadline is not None and time.time() >= deadline:
+            break
+        candidate, order = None, []
+        for t in night_queue():
+            if t["id"] in started or t["id"] in attempted:
+                continue
+            why = night_block(t)
+            if why:
+                skipped.setdefault(t["id"], why)
+                continue
+            order.append(t)
+            if candidate is None:
+                candidate = t
+        if candidate is None:
+            break
+        r = night_dispatch(candidate["id"], candidate.get("assignee") or "omp")
+        if r.returncode == 0:
+            started.append(candidate["id"])
+            print(f"gestartet: {candidate['id']}")
+        else:
+            attempted.add(candidate["id"])
+            text = (r.stderr or r.stdout).strip()
+            why = one_line(text.splitlines()[-1]) if text else "unbekannt"
+            skipped[candidate["id"]] = why
+            print(f"übersprungen: {candidate['id']} — {why}")
+        if a.max is not None and a.max >= 0 and len(started) >= a.max:
+            break
+        more = [t for t in order if t["id"] not in started and t["id"] not in attempted]
+        if not more:
+            break
+        if deadline is not None and time.time() + NIGHT_STEP > deadline:
+            break
+        time.sleep(NIGHT_STEP)
+    end = now_stamp()
+    record = night_record(started, skipped, begin, end)
+    for tid in started:
+        t = read(tid)
+        add_night_section(t, record)
+        write(t)
+    print(f"Nachtschicht: {len(started)} gestartet, {len(skipped)} übersprungen ({begin} → {end})")
 
 
 # ---- commands
@@ -1438,6 +1964,8 @@ def dispatch_gates(t):
     blocked by its own place in the stage. The roster's per-agent WIP gate (`who.wip`) is a
     second, hard limit in cmd_dispatch; this one is the home-wide stage limit."""
     gaps = []
+    if (t.get("source") or "").strip() and not (t.get("triaged") or "").strip():
+        gaps.append(f"Signal ohne Triage (source gesetzt): hub triage {t['id']} --apply")
     if not criteria(t):
         gaps.append(f"kein Abnahmekriterium unter {ABNAHME} (hub spec {t['id']} legt die Vorlage an)")
     w = read_wip()
@@ -1501,6 +2029,12 @@ def cmd_dispatch(a):
         r = run(["git", "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}"], on, top, check=False)
         base_head = r.stdout.strip() if r.returncode == 0 else \
             run(["git", "rev-parse", "HEAD"], on, top).stdout.strip()
+    if base:
+        t["base"] = base
+    if base_head:
+        t["base_head"] = base_head
+    # Preflight: a red base refuses the start; a missing preflight is run now.
+    preflight_gate(t)
     if not a.no_worktree:
         common = run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], on, repo).stdout.strip()
         main = common[:-5] if common.endswith("/.git") else common
@@ -1518,15 +2052,14 @@ def cmd_dispatch(a):
             # New branches start on the recorded base commit, not on whatever HEAD is now.
             start = base_head or "HEAD"
             run(["git", "worktree", "add", folder, branch] if exists else ["git", "worktree", "add", "-b", branch, folder, start], on, top)
-    if base:
-        t["base"] = base
-    if base_head:
-        t["base_head"] = base_head
     report = f"hc send {me} \"…\"" if me else "deine Abschlussnachricht"
     order = t["body"].strip()
     lessons = "" if a.no_lessons else lesson_section(repo, on)
     if lessons:
         order += f"\n\n{lessons}"
+    learned = memory_section(agent_key)
+    if learned:
+        order += f"\n\n{learned}"
     intro = []
     parts = []
     if who:
@@ -2963,6 +3496,50 @@ def main():
     sp = sub.add_parser("spec")
     sp.add_argument("id")
     sp.set_defaults(fn=cmd_spec)
+    tr = sub.add_parser("triage")
+    tr.add_argument("id")
+    tr.add_argument("--apply", action="store_true", help="Typ, Größe, Priorität, Labels und Spec-Vorlage schreiben")
+    tr.add_argument("--json", action="store_true")
+    tr.set_defaults(fn=cmd_triage)
+    pf = sub.add_parser("preflight")
+    pf.add_argument("id")
+    pf.add_argument("--json", action="store_true")
+    pf.set_defaults(fn=cmd_preflight)
+    sl = sub.add_parser("stalls")
+    sl.add_argument("--json", action="store_true")
+    sl.add_argument("--doing", type=int, default=45, metavar="MIN")
+    sl.add_argument("--review", type=int, default=120, metavar="MIN")
+    sl.add_argument("--todo", type=int, default=1440, metavar="MIN")
+    sl.set_defaults(fn=cmd_stalls)
+    nd = sub.add_parser("nudge")
+    nd.add_argument("id")
+    nd.add_argument("--text", default="")
+    nd.set_defaults(fn=cmd_nudge)
+    ni = sub.add_parser("night")
+    ni.add_argument("--until", metavar="HH:MM")
+    ni.add_argument("--for", dest="for_min", type=int, metavar="MIN")
+    ni.add_argument("--max", type=int, metavar="N")
+    ni.add_argument("--dry-run", action="store_true")
+    ni.set_defaults(fn=cmd_night)
+    mem = sub.add_parser("memory").add_subparsers(dest="mcmd", required=True)
+    ma = mem.add_parser("add")
+    src = ma.add_mutually_exclusive_group(required=True)
+    src.add_argument("--agent")
+    src.add_argument("--repo")
+    ma.add_argument("--ticket")
+    ma.add_argument("text", nargs="+", metavar="TEXT")
+    ma.set_defaults(fn=cmd_memory)
+    ml = mem.add_parser("list")
+    src = ml.add_mutually_exclusive_group()
+    src.add_argument("--agent")
+    src.add_argument("--repo")
+    ml.add_argument("--json", action="store_true")
+    ml.set_defaults(fn=cmd_memory)
+    mc = mem.add_parser("clear")
+    src = mc.add_mutually_exclusive_group()
+    src.add_argument("--agent")
+    src.add_argument("--repo")
+    mc.set_defaults(fn=cmd_memory)
     rb = sub.add_parser("rebase")
     rb.add_argument("id")
     rb.set_defaults(fn=cmd_rebase)
