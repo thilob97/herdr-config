@@ -29,12 +29,20 @@ reports into it) and show in the Team-Panel under it.
   hub agent command NAME                    the exact start command: program + harness flags
   hub agent prompt NAME                     the agent's prompt text (agents/prompts/<slug>.md)
   hub dispatch ID [--agent omp|claude|codex|<roster name>|"cmd args"] [--no-worktree] [--branch B] [--no-lessons]
+                                            [--force --reason TEXT]
                                             with a roster name: its programmed command (harness flags
                                             the program knows), its repo and branch prefix, the prompt
                                             as "## Deine Rolle", skills/MCP/permissions as "## Umgebung",
                                             and the agent's WIP gate (tickets in doing). Writes base and
                                             base_head (the base's commit at the start); appends the repo's
-                                            last 8 lessons (## Was hier schon schiefging) unless --no-lessons
+                                            last 8 lessons (## Was hier schon schiefging) unless --no-lessons.
+                                            Refuses a ticket without an acceptance criterion (see hub spec)
+                                            and while the In-Arbeit stage holds its WIP limit (hub wip);
+                                            --force needs --reason and writes it to the Verlauf
+  hub wip [--json]                          the WIP limits for In Arbeit and Prüfung (default 3/2,
+                                            data/orchestra/wip.json); `hub wip arbeit=4 pruefung=2` sets them
+  hub spec ID                               complete the ticket's ## Ziel, ## Abnahmekriterien and
+                                            ## Grenzen as a template (existing sections stay) and show them
   hub rebase ID                             rebase the ticket's branch in its worktree onto its base;
                                             a conflict stops with exit 1, names the files and leaves
                                             the worktree in the rebase for the agent to resolve
@@ -63,7 +71,9 @@ reports into it) and show in the Team-Panel under it.
   hub review ID --summary TEXT [--evidence PATH]... [--force --reason TEXT]
                                             ready for the human: status review + summary; refuses unless
                                             `hub verify` passed and the reviewer's verdict is pass on the
-                                            worktree's HEAD; --force needs --reason and writes it to the
+                                            worktree's HEAD and the Definition of Done holds (criteria,
+                                            checks, station, CI, evidence, a closing Verlauf report);
+                                            --force needs --reason and writes it to the
                                             Verlauf; --evidence replaces the files
   hub land ID --merge | --pr [--wait-ci] [--lesson "text"]... [--force --reason TEXT]
                                             after acceptance: merge into its base branch, or push and open a
@@ -104,6 +114,11 @@ FIELDS = ["title", "status", "repo", "labels", "due", "machine", "agent", "harne
           "review", "review_head", "review_at", "review_summary", "review_rounds", "reviewer", "reviewer_name", "review_terminal",
           "assignee", "blocked_by", "tags", "waiting", "by", "updated", "created", "status_at", "status_log"]
 COSTS = os.path.join(APP, "data", "orchestra", "costs.json")  # written by the Team panel's watcher
+# WIP limits: hub is the only writer, so they live in a file next to costs.json, not in
+# the UI's shared state. The Board reads them through `hub wip --json`.
+WIP = os.path.join(APP, "data", "orchestra", "wip.json")
+WIP_STAGES = {"arbeit": "doing", "pruefung": "review"}
+WIP_DEFAULTS = {"arbeit": 3, "pruefung": 2}
 AGENTS = {"omp": ["omp"], "claude": ["claude"], "codex": ["codex", "--no-daemon"], "pi": ["pi"]}
 AGENT_NAMES = {"omp": "Oh My Pi", "claude": "Claude", "codex": "Codex", "pi": "Pi"}
 # The roster: agents the person named once (role, program, model, repo, branch prefix,
@@ -702,7 +717,40 @@ def gate(t):
     g["base"] = ({"base": t.get("base") or None, "base_head": t.get("base_head") or None, "ok": None,
                   "reason": "Ticket ist gelandet", "tip": None, "behind": None}
                  if landed else base_gate(t, head, err))
+    g["dod"] = dod(t, g)
+    g["dod_ok"] = all(x["ok"] for x in g["dod"])
     return g
+
+
+# ---- Definition of Done: the six things a ticket must show before `hub review` accepts it
+
+SYSTEM_ROLES = {"hub", "orchestrator", "review", "ci", "mensch"}
+END_REPORT = re.compile(r"(?i)\b(fertig|blockiert|abgeschlossen|erledigt|done|blocked)\b")
+
+
+def dod(t, g):
+    """[{key,label,ok,why}]: the fixed list, each with the reason it is missing.
+
+    The last point reads the ## Verlauf: the implementing agent (any role that is not
+    hub, the orchestrator, the station, CI or the human) reported an end state there.
+    """
+    crit = criteria(t)
+    items = [
+        ("kriterien", "Abnahmekriterien vorhanden", bool(crit),
+         f"kein Abnahmekriterium unter {ABNAHME}: hub spec {t['id']}"),
+        ("verify", "hub verify grün auf dem HEAD", bool(g.get("ok")),
+         g.get("reason") or f"hub verify {t['id']} im Worktree ausführen"),
+        ("pruefung", "Prüfstation pass", bool((g.get("review") or {}).get("ok")),
+         (g.get("review") or {}).get("reason") or f"hub review-start {t['id']}"),
+        ("ci", "CI grün oder nicht nötig", (t.get("ci") or "") in ("", "pass"),
+         f"CI {t.get('ci') or 'unbekannt'}: hub ci {t['id']}" + (f" · {t['ci_url']}" if t.get("ci_url") else "")),
+        ("nachweise", "Nachweise (evidence) vorhanden", bool(names(t.get("evidence"))),
+         f"keine Nachweise: hub review {t['id']} --evidence PATH"),
+        ("abschluss", "Verlauf enthält einen Abschluss", bool(
+            [e for e in entries(t) if e[1] not in SYSTEM_ROLES and END_REPORT.search(e[2])]),
+         "der Agent hat im Verlauf noch keinen Abschluss gemeldet (fertig/blockiert)"),
+    ]
+    return [{"key": k, "label": label, "ok": ok, "why": "" if ok else why} for k, label, ok, why in items]
 
 
 def review_gate(t, head=None, err=None, landed=False):
@@ -913,6 +961,125 @@ def home_of(on):
 
 def shell():
     return os.environ.get("SHELL") or pwd.getpwuid(os.getuid()).pw_shell or "/bin/sh"
+
+
+# ---- WIP: how much work one stage may hold (data/orchestra/wip.json)
+
+def read_wip():
+    """The limits, defaults for a missing or broken file, always both keys as ints."""
+    w = dict(WIP_DEFAULTS)
+    try:
+        with open(WIP, encoding="utf-8") as f:
+            data = json.load(f)
+        for k in WIP_STAGES:
+            v = data.get(k) if isinstance(data, dict) else None
+            if isinstance(v, int) and not isinstance(v, bool) and v >= 0:
+                w[k] = v
+    except (OSError, ValueError):
+        pass
+    return w
+
+
+def write_wip(w):
+    os.makedirs(os.path.dirname(WIP), exist_ok=True)
+    tmp = WIP + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({k: w[k] for k in WIP_STAGES}, f, ensure_ascii=False, indent=1)
+        f.write("\n")
+    os.replace(tmp, WIP)
+
+
+def wip_usage():
+    """{arbeit: {'limit','count','tickets'}, pruefung: ...} over this home's tickets."""
+    rows = all_tickets()
+    out = {}
+    for key, stage in WIP_STAGES.items():
+        ids = [t["id"] for t in rows if t["status"] == stage]
+        out[key] = {"stage": stage, "ids": ids, "count": len(ids)}
+    return out
+
+
+def cmd_wip(a):
+    w = read_wip()
+    if a.pairs:
+        for kv in a.pairs:
+            if "=" not in kv:
+                die(f"erwartet arbeit=N oder pruefung=M, nicht {kv!r}")
+            k, v = kv.split("=", 1)
+            if k not in WIP_STAGES:
+                die(f"unbekannte Stufe {k!r} (bekannt: {', '.join(WIP_STAGES)})")
+            v = v.strip()
+            if not re.fullmatch(r"\d{1,2}", v):
+                die(f"ungültiges Limit {v!r} für {k}: eine ganze Zahl 0–99")
+            w[k] = int(v)
+        write_wip(w)
+    use = wip_usage()
+    if a.json:
+        print(json.dumps(w, ensure_ascii=False))
+        return
+    for key, stage in WIP_STAGES.items():
+        print(f"{key} {use[key]['count']}/{w[key]} ({len(use[key]['ids'])} in {stage})")
+
+
+# ---- Abnahmekriterien: what `hub spec` completes and `hub dispatch`/`hub review` require
+
+ABNAHME = "## Abnahmekriterien"
+SPEC_SECTIONS = ["## Ziel", ABNAHME, "## Grenzen"]
+SPEC_TEMPLATE = {
+    "## Ziel": "Was danach anders ist, in einem Satz.\n",
+    ABNAHME: "- [ ] <was von außen prüfbar ist>\n",
+    "## Grenzen": "- <was dieses Ticket nicht anfasst>\n",
+}
+CRITERION = re.compile(r"^\s*[-*]\s*\[([ xX])\]\s*(.*\S)\s*$")
+
+
+def section_of(t, heading):
+    """The body of one `##` section, or None when the heading is absent."""
+    m = re.search(rf"(?ms)^{re.escape(heading)}[ \t]*\n(.*?)(?=^## |\Z)", t.get("body") or "")
+    return m.group(1).strip("\n") if m else None
+
+
+def criteria(t):
+    """(text, checked) of the acceptance criteria; a `<…>` template line does not count."""
+    text = section_of(t, ABNAHME)
+    if text is None:
+        return []
+    out = []
+    for line in text.splitlines():
+        m = CRITERION.match(line)
+        if not m:
+            continue
+        what = m.group(2).strip()
+        if re.fullmatch(r"<.*>", what):
+            continue
+        out.append((what, m.group(1).lower() == "x"))
+    return out
+
+
+def add_spec_sections(t):
+    """Insert the missing Ziel/Abnahme/Grenzen sections as a template; existing ones stay.
+
+    They go in their own order at the end of the body, just before ## Verlauf when present.
+    """
+    body, verlauf = split_verlauf(t.get("body"))
+    added = []
+    for heading in SPEC_SECTIONS:
+        if section_of(t, heading) is not None:
+            continue
+        body = (body.rstrip("\n") + "\n\n" if body else "") + f"{heading}\n\n{SPEC_TEMPLATE[heading].rstrip(chr(10))}"
+        added.append(heading[3:])
+    t["body"] = (body + "\n") if not verlauf else (body.rstrip("\n") + "\n\n" + verlauf + "\n")
+    return added
+
+
+def cmd_spec(a):
+    t = read(a.id)
+    added = add_spec_sections(t)
+    if added:
+        write(t)
+    print(f"{a.id}: " + (f"ergänzt {', '.join(added)}" if added else "alle Abschnitte vorhanden"))
+    for heading in SPEC_SECTIONS:
+        print(f"\n{heading}\n\n{section_of(t, heading) or ''}".rstrip())
 
 
 # ---- commands
@@ -1264,6 +1431,25 @@ def doing_of(agent_key, skip=""):
     return out
 
 
+def dispatch_gates(t):
+    """What keeps this ticket from starting: the spec gate first, then the WIP limit.
+
+    The count leaves the ticket itself out, so re-dispatching a dead `doing` agent is not
+    blocked by its own place in the stage. The roster's per-agent WIP gate (`who.wip`) is a
+    second, hard limit in cmd_dispatch; this one is the home-wide stage limit."""
+    gaps = []
+    if not criteria(t):
+        gaps.append(f"kein Abnahmekriterium unter {ABNAHME} (hub spec {t['id']} legt die Vorlage an)")
+    w = read_wip()
+    use = wip_usage()
+    ids = [x for x in use["arbeit"]["ids"] if x != t["id"]]
+    limit = w["arbeit"]
+    if len(ids) >= limit:
+        gaps.append(f"WIP-Limit für In Arbeit erreicht ({len(ids)}/{limit}): {'; '.join(ids)} "
+                    f"— Limit ändern mit `hub wip arbeit={limit + 1}`")
+    return gaps
+
+
 def cmd_dispatch(a):
     t = read(a.id)
     blockers = open_blockers(t)
@@ -1272,6 +1458,14 @@ def cmd_dispatch(a):
             f"erst abschließen (hub done <id>)")
     if t["status"] in ("doing", "review") and t.get("terminal") and is_live(t["terminal"]):
         die(f"{a.id} already runs in {t['terminal']} (status {t['status']}); talk to it with hc send")
+    gaps = dispatch_gates(t)
+    if gaps:
+        if not a.force:
+            die(f"{a.id}: {' · '.join(gaps)}. Start verweigert; nur mit --force --reason \"…\".")
+        if not a.reason.strip():
+            die("--force verlangt --reason \"…\": der Grund gehört in den Verlauf")
+        add_comment(t, "hub", f"Start-Gate überfahren ({' · '.join(gaps)}): {a.reason.strip()}")
+        write(t)
     # A roster name selects a named agent: its program, model, repo and branch prefix.
     # Unknown names keep working as programs or commands, as before.
     who = roster_of(a.agent)
@@ -1621,16 +1815,23 @@ def cmd_gates(_a):
 
 def cmd_review(a):
     t = read(a.id)
+    # --evidence replaces the list before the gate reads it: the files handed over here are
+    # the ticket's proof, so the Definition of Done must judge them, not the old list.
+    if a.evidence:
+        t["evidence"] = ", ".join(e.strip() for e in a.evidence if e.strip())
     g = gate(t)
     rv = g["review"]
     b = g["base"]
     missing = ([b["reason"]] if b.get("ok") is False else []) + [r for r in (g["reason"], rv["reason"]) if r]
+    dod_missing = [x for x in g["dod"] if not x["ok"]]
     if a.force:
         if not a.reason.strip():
             die("--force verlangt --reason \"…\": der Grund gehört in den Verlauf")
-        add_comment(t, "hub", f"Gate überfahren ({' · '.join(missing) or 'frei'}): {a.reason.strip()}")
-    elif missing:
-        die(f"{a.id}: {' · '.join(missing)}. Übergang nach review verweigert; "
+        gaps = missing + [f"DoD verfehlt: {x['label']} ({x['why']})" for x in dod_missing]
+        add_comment(t, "hub", f"Gate überfahren ({' · '.join(gaps) or 'frei'}): {a.reason.strip()}")
+    elif missing or dod_missing:
+        why = missing + [f"Definition of Done: {x['label']} — {x['why']}" for x in dod_missing]
+        die(f"{a.id}: {' · '.join(why)}. Übergang nach review verweigert; "
             f"nur mit --force --reason \"…\".")
     body, verlauf = split_verlauf(t["body"])
     # Only the old summary goes; the check and review records keep their place right after it.
@@ -1651,9 +1852,6 @@ def cmd_review(a):
     if verlauf:
         t["body"] += f"\n{verlauf}\n"
     set_status(t, "review")
-    # The gate (above) comes from `hub verify` and the reviewer's verdict; --evidence replaces the list.
-    if a.evidence:
-        t["evidence"] = ", ".join(e.strip() for e in a.evidence if e.strip())
     write(t)
     print(f"{a.id}: review")
 
@@ -2755,7 +2953,16 @@ def main():
     d.add_argument("--no-worktree", action="store_true")
     d.add_argument("--branch")
     d.add_argument("--no-lessons", action="store_true")
+    d.add_argument("--force", action="store_true", help="Spec- und WIP-Gate überfahren (verlangt --reason)")
+    d.add_argument("--reason", default="", metavar="TEXT")
     d.set_defaults(fn=cmd_dispatch)
+    wp = sub.add_parser("wip")
+    wp.add_argument("pairs", nargs="*", metavar="arbeit=N|pruefung=M")
+    wp.add_argument("--json", action="store_true")
+    wp.set_defaults(fn=cmd_wip)
+    sp = sub.add_parser("spec")
+    sp.add_argument("id")
+    sp.set_defaults(fn=cmd_spec)
     rb = sub.add_parser("rebase")
     rb.add_argument("id")
     rb.set_defaults(fn=cmd_rebase)
