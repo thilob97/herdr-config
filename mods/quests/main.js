@@ -130,6 +130,8 @@ const WRITEBACK = {
 class Board {
   constructor(view, cx) {
     this.view = view;
+    // Als Fenster-Overlay trägt Board das volle Dreispalten-Layout; das Panel bleibt einspaltig.
+    this.overlay = props()?.overlay ?? null;
     this.settings = null;
     this.src = {}; // source key -> { tickets, error, note, loading }
     this.started = [];
@@ -252,7 +254,7 @@ class Board {
       source: label(tk.source), id: tk.source === "github" ? `#${tk.number} in ${tk.repo}` : tk.id, labels: tk.labels.join(", "),
     });
     const wb = WRITEBACK[tk.source];
-    openOverlay({ mod: "launcher", kind: "dialog", width: 860, height: 680, props: {
+    openOverlay({ mod: "launcher", kind: "dialog", width: 680, height: 520, props: {
       ...(mode ? { mode } : {}),
       ticket: {
         id: tk.id, title: tk.title, url: tk.url ?? "", source: tk.source, body: tk.body ?? "", repo: repo ?? tk.repo ?? "",
@@ -417,6 +419,14 @@ class Board {
     ], this.stage, (value, cx) => { this.stage = value; localStorage.setItem("stage", value); cx.notify(); });
   }
 
+  // Fenster-Kopf des Overlays: × schließt das Popup, ⇥ legt Quests ins rechte Sidepanel.
+  windowBar(t) {
+    return ui.windowHeader(t, "Quests", [ui.spaceChip(t)].filter(Boolean), () => closeOverlay(this.overlay), {
+      meta: "Ticket wählen · ans Team geben oder selbst starten",
+      actions: [ui.surfaceToggle(t, "q-to-panel", "to-panel", () => ui.switchToPanel("quests", this.overlay))],
+    });
+  }
+
   header(t, title) {
     return ui.panelHeader(t, title, [ui.spaceChip(t),
       // Bei der lokalen Fabrik-Liste: derselbe Vorrat als Brett, ein Klick statt ⌘⌥8.
@@ -425,8 +435,11 @@ class Board {
       iconBtn(t, "h-new", `${WC}/plus.svg`, "Neues lokales Ticket", () => openEdit()),
       iconBtn(t, "h-refresh", "mods/orchestra/icons/restart.svg", "Neu laden", (cx) => this.reload(cx, true)),
       iconBtn(t, "h-settings", `${WC}/settings.svg`, "Quellen und Zugangsdaten", () => openSettings()),
-      ...(this.view === "panel" ? [btn(t, "h-page", "Seite", () => run("layout.switch", { name: "quests" }), { tip: "Quests als ganze Seite (Layout quests, ⌃⇧Q)" })] : []),
-    ].filter(Boolean));
+      ...(this.view === "panel" && !this.overlay ? [btn(t, "h-page", "Seite", () => run("layout.switch", { name: "quests" }), { tip: "Quests als ganze Seite (Layout quests, ⌃⇧Q)" })] : []),
+    ].filter(Boolean), {
+      // Nur das Sidepanel kippt ins breite Fenster; Seite und Overlay tragen keinen zweiten Wechsel.
+      actions: this.view === "panel" && !this.overlay ? [ui.surfaceToggle(t, "q-to-window", "to-window", () => ui.switchToWindow("quests"))] : [],
+    });
   }
 
   filterRow(t) {
@@ -441,6 +454,16 @@ class Board {
     const t = theme();
     const box = (id) => v_flex().id(id).min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border);
     const listCol = v_flex().id("q-list").flex_1().min_h(0).px(6).pb(ui.GAP_M).overflow_y_scrollbar().children(this.list(t));
+    // Fenster-Overlay: Quellen · Tickets · Detail nebeneinander, mit echtem Fenster-Kopf.
+    if (this.overlay) {
+      return v_flex().id("quests-window").size_full().min_h(0).rounded(10).overflow_hidden()
+        .bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(T_M)
+        .child(this.windowBar(t))
+        .child(h_flex().flex_1().min_h(0).gap(ui.GAP_M).p(ui.GAP_M)
+          .child(box("q-left").w(240).flex_none().min_h(0).child(this.sourcesCol(t)))
+          .child(box("q-mid").flex_1().min_w(280).min_h(0).child(this.header(t, "Tickets")).child(this.filterRow(t)).child(listCol))
+          .child(box("q-right").w(500).flex_none().min_h(0).child(this.detail(t))));
+    }
     if (this.view === "panel") {
       return box("quests").size_full().text_color(t.foreground).text_size(T_M)
         .child(this.header(t, "Quests")).child(this.filterRow(t)).child(listCol);

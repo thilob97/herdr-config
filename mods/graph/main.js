@@ -410,9 +410,12 @@ export default class FactoryGraph extends View {
     const agents = g.nodes.filter((n) => n.kind !== "orchestrator").length;
     const scope = ui.spaceChip(t);
     const meta = `${agents} Agent${agents === 1 ? "" : "en"} · ${g.ticketNodes.length} Tickets`;
-    const header = props()?.overlay
-      ? ui.windowHeader(t, "Fabrik-Graph", [scope].filter(Boolean), () => closeOverlay(props().overlay), { meta, metaTip: "Agents und Tickets der Fabrik dieses Workspace" })
-      : ui.panelHeader(t, "Fabrik-Graph", [scope].filter(Boolean), { count: meta });
+    const overlay = props()?.overlay;
+    const header = overlay
+      ? ui.windowHeader(t, "Fabrik-Graph", [scope].filter(Boolean), () => closeOverlay(overlay), { meta, metaTip: "Agents und Tickets der Fabrik dieses Workspace",
+        actions: [ui.surfaceToggle(t, "fg-to-panel", "to-panel", () => ui.switchToPanel("factory", overlay))] })
+      : ui.panelHeader(t, "Fabrik-Graph", [scope].filter(Boolean), { count: meta,
+        actions: [ui.surfaceToggle(t, "fg-to-window", "to-window", () => ui.switchToWindow("graph"))] });
 
     const content = !this.loaded && !this.error
       ? v_flex().flex_1().min_h(0).child(ui.loading(t))

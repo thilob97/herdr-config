@@ -236,7 +236,7 @@ export default class Inbox extends View {
     });
   }
 
-  close() { closeOverlay(props().overlay); }
+  close() { const o = props()?.overlay; if (o) closeOverlay(o); }
 
   // ↵ on an entry: go to the agent, peek at the orchestrator, check the ticket.
   activate(e) {
@@ -491,6 +491,7 @@ export default class Inbox extends View {
 
   render(cx) {
     const t = theme();
+    const panel = props()?.panel === true;
     const list = this.entries();
     let i = list.findIndex((e) => e.key === this.key);
     if (i < 0 && list.length) { i = 0; this.key = list[0].key; if (list[0].address) this.load(list[0].address, cx, false); }
@@ -501,8 +502,12 @@ export default class Inbox extends View {
     const questions = note.questions;
     const scope = ui.spaceChip(t);
 
-    const col = v_flex().id("ib-list").w(320).flex_none().h_full().min_h(0).pr(ui.GAP_M).overflow_y_scrollbar().track_scroll(this.scroll)
-      .border_r(1).border_color(t.border);
+    // Popup: Liste links, Detail rechts. Sidepanel (≈400 px): eins übereinander, damit
+    // weder Zeile noch Antwortfeld horizontal gequetscht werden.
+    const col = panel
+      ? v_flex().id("ib-list").flex_1().w_full().min_h(0).px(ui.GAP_M).overflow_y_scrollbar().track_scroll(this.scroll)
+      : v_flex().id("ib-list").w(320).flex_none().h_full().min_h(0).pr(ui.GAP_M).overflow_y_scrollbar().track_scroll(this.scroll)
+        .border_r(1).border_color(t.border);
     let child = 0;
     for (const g of GROUPS) {
       const items = list.filter((e) => e.group === g.key);
@@ -516,6 +521,32 @@ export default class Inbox extends View {
         child++;
       }
     }
+    if (!list.length) col.child(ui.empty(t, "Nichts wartet auf dich. Rückfragen, Abnahmen und fertige Agents erscheinen hier.", { icon: "mods/inbox/icon.svg" }));
+
+    const badge = waits > 0
+      ? div().id("ib-waits").tooltip(`Diesem Workspace: ${waits} wartend · gesamt ${total.blocked + total.review}`)
+        .child(ui.counterBadge(t, waits, t.blocked))
+      : !waits && done > 0
+        ? div().id("ib-done").tooltip(`Diesem Workspace: ${done} fertig · gesamt ${total.done}`)
+          .child(ui.counterBadge(t, done, t.done))
+        : null;
+    const verlauf = questions > 0
+      ? div().id("ib-verlauf-note").flex_none().text_size(T_XS).text_color(t.dim).tooltip(note.text).child(`+ ${questions} Verlauf`)
+      : null;
+
+    if (panel) {
+      return v_flex().id("inbox").track_focus(this.handle).size_full().min_h(0).rounded(10).overflow_hidden()
+        .bg(t.background).border_1().border_color(t.border).text_size(T_M)
+        .on_key_down((ev, cx) => this.onKey(ev, cx, list, sel))
+        .child(ui.panelHeader(t, "Inbox", [scope, badge, verlauf].filter(Boolean), {
+          actions: [ui.surfaceToggle(t, "ib-to-window", "to-window", () => ui.switchToWindow("inbox"))],
+        }))
+        .child(col)
+        .when(Boolean(sel), (el) => el.child(v_flex().id("ib-detail-panel").flex_1().min_h(0).border_t_1().border_color(t.border)
+          .child(this.detail(t, sel).h_full())))
+        .child(h_flex().flex_none().px(ui.GAP_M).py(ui.GAP_S)
+          .child(div().text_size(T_XS).text_color(t.muted).child("↑↓ wählen · ↵ öffnen · r antworten · v Review")));
+    }
 
     // A popup is as tall as its content, at most its mod.json height (0.75 of the window):
     // asking for more than any window has makes the list and the detail fill exactly that.
@@ -524,15 +555,11 @@ export default class Inbox extends View {
       .child(h_flex().h(28).flex_none().gap(ui.GAP_M).items_center()
         .child(div().flex_none().text_size(T_XL).font_semibold().text_color(t.foreground).child("Inbox"))
         .when(Boolean(scope), (el) => el.child(scope))
-        .when(waits > 0, (el) => el.child(div().id("ib-waits").tooltip(`Diesem Workspace: ${waits} wartend · gesamt ${total.blocked + total.review}`)
-          .child(ui.counterBadge(t, waits, t.blocked))))
-        .when(!waits && done > 0, (el) => el.child(div().id("ib-done").tooltip(`Diesem Workspace: ${done} fertig · gesamt ${total.done}`)
-          .child(ui.counterBadge(t, done, t.done))))
-        .when(questions > 0, (el) => el.child(div().id("ib-verlauf-note").flex_none().text_size(T_XS).text_color(t.dim)
-          .tooltip(note.text)
-          .child(`+ ${questions} Verlauf`)))
+        .when(Boolean(badge), (el) => el.child(badge))
+        .when(Boolean(verlauf), (el) => el.child(verlauf))
         .child(div().flex_1())
         .child(div().flex_none().text_size(T_XS).text_color(t.muted).child("↑↓ wählen · ↵ öffnen · r antworten · v Review"))
+        .child(ui.surfaceToggle(t, "ib-to-panel", "to-panel", () => ui.switchToPanel("inbox", props()?.overlay)))
         .child(div().id("ib-esc").flex_none().h(ui.H_CHIP).px(6).flex().items_center().rounded(4).bg(t.raised).text_size(T_XS).text_color(t.dim)
           .cursor_pointer().hover((s) => s.text_color(t.foreground)).tooltip("Schließen (Esc)").on_click(() => this.close()).child("Esc")))
       .child(list.length

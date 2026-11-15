@@ -5,6 +5,9 @@
 import { div, svg, image } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { run, shared, agents, terminals, spaces, panes } from "herdr";
+// Namespace-Zugriff nur für closeOverlay: die Node-Tests ersetzen "herdr" durch einen
+// kleinen Stub, der nicht jeden Export kennt; ein fehlender Name darf sie nicht kippen.
+import * as hostApi from "herdr";
 
 // 5.1 Abstände und Größen
 export const GAP_XS = 4, GAP_S = 6, GAP_M = 8, GAP_L = 12, GAP_XL = 16;
@@ -406,24 +409,52 @@ export function segment(t, id, items, value, onPick) {
 
 // ---------- Köpfe (5.6 Panel-Kopf, Fenster, Dialog, Sektionskopf) ----------
 
-/** Panel-Kopf: h 42, px 14, Titel T_L semibold, optional Zähler, rechts `right` (Elemente). */
-export function panelHeader(t, title, right = [], { count } = {}) {
+/** Panel-Kopf: h 42, px 14, Titel T_L semibold, optional Zähler, rechts `right` (Elemente).
+ *  `actions` stehen vor `action`; beide schließen die rechte Gruppe ab. */
+export function panelHeader(t, title, right = [], { count, action, actions = [] } = {}) {
   return h_flex().h(H_HEADER).flex_none().px(INSET_PANEL).gap(GAP_M).items_center().border_b(1).border_color(t.border)
     .child(div().flex_none().text_size(T_L).font_semibold().text_color(t.foreground).child(title))
     .when(count != null, (el) => el.child(div().text_size(T_XS).text_color(t.dim).child(String(count))))
     .child(div().flex_1())
-    .children(right);
+    .children(right)
+    .children(actions)
+    .when(Boolean(action), (el) => el.child(action));
 }
 
-/** Fenster-Titelzeile: wie Panel-Kopf, bg chrome, als letztes Schließen. */
-export function windowHeader(t, title, right = [], onClose, { meta, metaTip } = {}) {
+/** Fenster-Titelzeile: wie Panel-Kopf, bg chrome, `actions` vor dem Schließen-Knopf. */
+export function windowHeader(t, title, right = [], onClose, { meta, metaTip, actions = [] } = {}) {
   return h_flex().h(H_HEADER).flex_none().px(INSET_PANEL).gap(GAP_M).items_center().bg(t.chrome).border_b(1).border_color(t.border)
     .child(div().flex_none().text_size(T_L).font_semibold().text_color(t.foreground).child(title))
     .when(Boolean(meta), (el) => el.child(div().flex_1().min_w(0).truncate().text_size(T_S).text_color(t.muted)
       .when(Boolean(metaTip), (x) => x.tooltip(metaTip)).child(meta)))
     .when(!meta, (el) => el.child(div().flex_1()))
     .children(right)
+    .children(actions)
     .child(iconButton(t, "win-close", ICON_CLOSE, "Schließen", () => onClose()));
+}
+
+/** Wechsel zwischen Fenster-Overlay und rechtem Sidepanel, ein Klick je Richtung.
+ *  `to-window` (Sidepanel-Kopf) zeigt den externen Pfeil, `to-panel` (Fenster-Kopf) die
+ *  Seitenleiste. Beide Icons gibt es in der Config; kein Icon wird nachgeliefert. */
+const ICON_TO_WINDOW = "mods/orchestra/icons/open.svg";
+const ICON_TO_PANEL = `${WC}/sidebar.svg`;
+export function surfaceToggle(t, id, mode, onTrigger) {
+  return mode === "to-window"
+    ? iconButton(t, id, ICON_TO_WINDOW, "Als großes Popup-Fenster öffnen", () => onTrigger())
+    : iconButton(t, id, ICON_TO_PANEL, "Rechts im Sidepanel anheften", () => onTrigger());
+}
+
+/** Ein Overlay schließen und seinen Mod als Block im rechten Sidepanel zeigen. */
+export function switchToPanel(childId, overlay) {
+  if (overlay) hostApi.closeOverlay?.(overlay);
+  run("layout.show", { id: "panel" });
+  run("layout.select", { stack: "panel-body", child: childId });
+}
+
+/** Den Mod als Fenster-Overlay öffnen; das Sidepanel gibt den Platz dafür frei. */
+export function switchToWindow(modName) {
+  run("layout.hide", { id: "panel" });
+  run("mod.open", { name: modName });
 }
 
 /** Dialog/Popup-Titelzeile: h 28, Titel T_XL, Meta T_S muted, Tastenhinweise T_XS dim, Chip „Esc“. */
