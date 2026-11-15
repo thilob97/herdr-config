@@ -82,14 +82,20 @@ const sameDay = (a, b) => {
 const stamp = (s, now) => (sameDay(s, now) ? clock(s)
   : `${String(new Date(s * 1000).getDate()).padStart(2, "0")}.${String(new Date(s * 1000).getMonth() + 1).padStart(2, "0")}. ${clock(s)}`);
 
-/** Dauer in der Sprache der Leiste: „42 min“, „> 1 h“, „> 2 d“. */
-function durText(seconds) {
+/** Dauer in der Sprache der Leiste: „42 min“, „1 h 03“, „2 d 05 h“.
+ *  Das „>“ gehört nur an eine laufende Lane (end == null): bei einer fertigen kennt
+ *  die Aufzeichnung die genaue Dauer, ein „> 1 h“ für 1 h 03 wäre falsch. */
+function durText(seconds, running = false) {
   if (!(seconds >= 0)) return "—";
   const min = Math.round(seconds / 60);
   if (min < 1) return "jetzt";
   if (min < 60) return `${min} min`;
   const h = Math.floor(min / 60);
-  return h < 24 ? `> ${h} h` : `> ${Math.floor(h / 24)} d`;
+  if (h < 24) return running ? `> ${h} h` : `${h} h ${String(min % 60).padStart(2, "0")}`;
+  const d = Math.floor(h / 24);
+  if (running) return `> ${d} d`;
+  // Kompakt wie die Statusleiste: „2 d“, „2 d 5 h“ — die Spalte ist nur 48 px breit.
+  return h % 24 ? `${d} d ${h % 24} h` : `${d} d`;
 }
 
 // ---- Vertrag -------------------------------------------------------------
@@ -518,7 +524,7 @@ export default class Timeline extends View {
   subMark(t, s, now) {
     if (!this.inView(s.started)) return null;
     const ended = s.ended != null;
-    const tip = `${s.title} · Sub-Agent · ${durText((s.ended ?? now) - (s.started ?? now))}${ended ? "" : " · läuft"}`;
+    const tip = `${s.title} · Sub-Agent · ${durText((s.ended ?? now) - (s.started ?? now), !ended)}${ended ? "" : " · läuft"}`;
     return div().absolute().left(`${this.pct(s.started)}%`).bottom(1).size(6).flex_none().rounded_full()
       .bg(ended ? t.done : t.working).opacity(ended ? 0.7 : 1).tooltip(tip);
   }
@@ -546,7 +552,7 @@ export default class Timeline extends View {
       lane.ticket && `Ticket ${lane.ticket}`,
       STATUS[lane.status] ?? (live ? "arbeitet" : "—"),
       `${clock(lane.start)} – ${live ? "jetzt" : clock(end)}`,
-      durText(end - lane.start),
+      durText(end - lane.start, live),
       lane.cost ? ui.usd(lane.cost) : null,
       clipped ? `Anfang vor dem Fenster · seit ${clock(lane.start)}` : null,
     ].filter(Boolean).join(" · ");
@@ -597,7 +603,7 @@ export default class Timeline extends View {
       .border_b(1).border_color(t.border)
       .child(label).child(track)
       .child(div().w(DUR_W).flex_none().pr(6).text_right().text_size(T_XS).text_color(t.dim)
-        .child(lane.start == null ? "—" : durText(end - lane.start)));
+        .child(lane.start == null ? "—" : durText(end - lane.start, lane.end == null)));
   }
 
   bodyText(t, visible, cx) {
