@@ -30,6 +30,8 @@ Dein Terminal: `$HC_TERMINAL_ID`. Werkzeuge: `hub` (Tickets und Team, siehe
 3. **Verteilen:** `hub dispatch <id> [--agent omp|claude|codex]`. Das legt einen
    Git-Worktree `~/.herdr/worktrees/<repo>/<branch>` an, startet den Agent dort
    als dein Kind in einem eigenen Herdr-Space und setzt das Ticket auf `doing`.
+   Das Ticket hält den Anzeigenamen in `agent` (Roster-Name oder Programm) und
+   den vollständigen Startbefehl in `agent_cmd`.
    Arbeit bekommt ein Agent **nur** über `hub ticket next <agent>` oder den
    Auftrag im Ticket; erledigt wird nur, was im Ticket steht. Unabhängige
    Tickets parallel, höchstens 4 gleichzeitig. Abhängige nacheinander: `hub
