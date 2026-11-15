@@ -1,40 +1,52 @@
-// The orchestrator: one hidden agent terminal named "orchestrator" (no Herdr
-// space; the Team panel is its home, peek opens it). It works in
-// ~/.herdr/orchestrator, whose AGENTS.md/CLAUDE.md are copied from
-// mods/orchestra/orchestrator.md at every start, with bin/hub on its PATH.
-// Team agents it starts with `hub dispatch` are its hc children.
-import { terminals, exec, hc, home, appHome, knownAgents, shared, setShared } from "herdr";
+// The orchestrator: one agent terminal per Herdr space, the factory of that space.
+// `hub orchestrator start` starts it (cwd ~/.herdr/orchestrator, whose AGENTS.md is
+// copied from mods/orchestra/orchestrator.md, labels hub.role=orchestrator and
+// hub.space=<space id>), so the app and the command line take the same path.
+import { terminals, exec, hc, appHome, spaces, focused, shared, setShared } from "herdr";
 
 export const NAME = "orchestrator";
-const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
-
-export const find = () => terminals().find((x) => x.name === NAME && x.state === "live") ?? null;
 export const agentKey = () => shared("orchestra.agent") ?? "omp";
 
+/** The space this window shows: the active one, else the focused terminal's. */
+export function spaceId() {
+  return spaces().find((s) => s.active)?.id ?? focused()?.space ?? "";
+}
+
+/** The orchestrator of the current space — never another factory's. */
+export const find = () => {
+  const sid = spaceId();
+  const live = terminals().filter((x) => x.state === "live");
+  const role = (x) => x.labels?.["hub.role"] === "orchestrator" || x.name === NAME;
+  if (sid) return live.find((x) => (x.labels?.["hub.space"] === sid || x.labels?.["herdr.space"] === sid) && role(x)) ?? null;
+  // A home without space labels keeps the one orchestrator it has.
+  return live.find((x) => !x.labels?.["hub.space"] && role(x)) ?? null;
+};
+
 export async function start() {
-  const ws = `${home()}/.herdr/orchestrator`, mod = `${appHome()}/mods/orchestra`;
-  const prep = await exec("sh", ["-c", `mkdir -p ${q(ws)} && cp ${q(`${mod}/orchestrator.md`)} ${q(`${ws}/AGENTS.md`)} && cp ${q(`${mod}/orchestrator.md`)} ${q(`${ws}/CLAUDE.md`)} && printf %s "\${SHELL:-/bin/sh}"`]);
-  if (prep.code !== 0) throw new Error((prep.stderr || prep.stdout).trim() || "Arbeitsordner nicht anlegbar");
-  const shell = prep.stdout.trim() || "/bin/sh";
-  const known = await knownAgents().catch(() => []);
-  const run = known.find((a) => a.key === agentKey() && a.installed)?.run ?? [agentKey()];
-  // A login shell (the user's PATH), hub in front; a shell stays when the agent exits.
-  const argv = [shell, "-lic", `export PATH=${q(`${mod}/bin`)}:"$PATH"; "$@"; exec "$0" -li`, shell, ...run];
-  const r = await hc(["run", "--bg", "--json", "--keep", "--no-parent", "--name", NAME, "--cwd", ws, "--label", "hub.role=orchestrator", "--", ...argv]);
-  if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim().split("\n").pop());
-  return JSON.parse(r.stdout).address;
+  const argv = ["orchestrator", "start", "--agent", agentKey(), "--json"];
+  const sid = spaceId();
+  if (sid) argv.push("--space", sid);
+  const r = await exec(`${appHome()}/mods/orchestra/bin/hub`, argv);
+  if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim().split("\n").pop() || "Orchestrator nicht startbar");
+  try {
+    return JSON.parse(r.stdout).terminal ?? "";
+  } catch {
+    return "";
+  }
 }
 
 // Ends it and waits (briefly) until it has exited, so its name is free again.
 export async function stop() {
-  await hc(["kill", NAME]);
-  await hc(["wait", NAME, "--timeout", "5"]).catch(() => null);
+  const o = find();
+  if (!o) return;
+  await hc(["kill", o.address]);
+  await hc(["wait", o.address, "--timeout", "5"]).catch(() => null);
 }
 
 export async function send(text) {
   const o = find();
   if (!o) throw new Error("Orchestrator läuft nicht");
-  const r = await hc(["send", NAME, text, ...(o.status === "blocked" ? ["--force"] : [])]);
+  const r = await hc(["send", o.address, text, ...(o.status === "blocked" ? ["--force"] : [])]);
   if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim().split("\n").pop());
 }
 
@@ -43,7 +55,9 @@ const plain = (s) => s.replace(/[\uE000-\uF8FF\u{10000}-\u{10FFFF}]\s*/gu, "");
 // The last lines of its screen (no history: while it works, hc marks history
 // reads incomplete), trailing blanks and hc's own markers dropped.
 export async function screen(lines) {
-  const r = await hc(["read", NAME, "--lines", "0"]);
+  const o = find();
+  if (!o) throw new Error("Orchestrator läuft nicht");
+  const r = await hc(["read", o.address, "--lines", "0"]);
   if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim().split("\n").pop());
   return plain(r.stdout).replace(/\s+$/, "").split("\n").map((l) => l.replace(/\s+$/, "")).filter((l) => !l.startsWith("[hc]")).slice(-lines);
 }
