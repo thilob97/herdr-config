@@ -2107,49 +2107,126 @@ def orchestrator_prompt(space, ws):
             "filtert auf diesen Space. Warte auf Aufträge des Menschen.")
 
 
+# Between a start's check and `hc run`'s first listing the new terminal is invisible to
+# `hc ls`, so the decision leaves a marker: two dashboards starting at once still see
+# one start. The hub lock guards the file; the launch itself stays outside it.
+STARTING = os.path.join(APP, "data", "orchestra", ".orchestrators-starting.json")
+STARTING_TTL = 120 * 1000
+
+
+def read_starting():
+    try:
+        rows = json.load(open(STARTING, encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(rows, dict):
+        return {}
+    return {str(k): v for k, v in rows.items() if isinstance(v, dict)}
+
+
+def write_starting(rows):
+    os.makedirs(os.path.dirname(STARTING), exist_ok=True)
+    if not rows:
+        try:
+            os.unlink(STARTING)
+        except OSError:
+            pass
+        return
+    with open(STARTING, "w", encoding="utf-8") as f:
+        json.dump(rows, f)
+
+
+def start_in_flight(row, now):
+    """Whether a marker still belongs to a running start; a crashed one must not block."""
+    if not isinstance(row, dict):
+        return False
+    if now - (num_ms(row.get("at")) or 0) > STARTING_TTL:
+        return False
+    pid = num_ms(row.get("pid")) or 0
+    if not pid:
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def claim_orchestrator_start(sp, restart):
+    """The terminal a `--restart` replaces, decided once per space under the hub lock.
+
+    Check and marker write are one step, so a second `orchestrator start` (dashboard and
+    team panel at the same time) refuses instead of launching a duplicate; the marker is
+    released by `release_starting` once the launch is done."""
+    sid = sp["id"]
+    with hub_lock():
+        rows = {k: v for k, v in read_starting().items() if start_in_flight(v, now_ms())}
+        if start_in_flight(rows.get(sid), now_ms()):
+            die(f"Im Space {sp['name']} startet gerade schon ein Orchestrator; "
+                f"bitte gleich erneut versuchen")
+        addr, info = orchestrator_of(sp)
+        replace = addr if addr and info.get("state") != "finished" else ""
+        if replace and not restart:
+            die(f"Im Space {sp['name']} läuft schon ein Orchestrator: {replace} "
+                f"(hc send {replace} \"…\"); hub orchestrator start --space {sid} --restart ersetzt ihn")
+        rows[sid] = {"at": now_ms(), "pid": os.getpid()}
+        write_starting(rows)
+        return replace
+
+
+def release_starting(sid):
+    with hub_lock():
+        rows = read_starting()
+        if sid in rows:
+            del rows[sid]
+            write_starting(rows)
+
+
 def cmd_orchestrator_start(a):
     sp = space_ref(a.space) if getattr(a, "space", None) else my_space()
     if not sp or not sp["id"]:
         die("kein Space: --space <id|name> angeben oder aus einem Space-Ordner starten "
             "(HERDR_SPACE, Terminal-Label herdr.space)")
-    addr, info = orchestrator_of(sp)
-    if addr and info.get("state") != "finished":
-        if not a.restart:
-            die(f"Im Space {sp['name']} läuft schon ein Orchestrator: {addr} "
-                f"(hc send {addr} \"…\"); hub orchestrator start --space {sp['id']} --restart ersetzt ihn")
-        end_orchestrator(addr)
-    on = sp.get("machine") or None
-    ws = orchestrator_ws(on)
-    write_orchestrator_rules(ws, on)
-    key = (a.agent or "omp").strip() or "omp"
-    argv_prog = list(AGENTS[key]) if key in AGENTS else (shlex.split(key) or [key])
-    taken = orchestrator_names() | {x["orchestrator"] for x in space_rows() if x["orchestrator"]}
-    name = ORCH_NAME
-    if name in taken:
-        name = (f"{ORCH_NAME}-{slug(sp['name'] or sp['id'], 24) or 'space'}")[:32]
-    while name in taken:
-        name = f"{name[:26]}-{secrets.token_hex(2)}"
-    prompt = orchestrator_prompt(sp, ws)
-    if on:
-        launch = ["sh", "-lc", '"$@"; exec "${SHELL:-sh}" -l', "sh", *argv_prog, prompt]
-    else:
-        sh = shell()
-        launch = [sh, "-lic", '"$@"; exec "$0" -li', sh, *argv_prog, prompt]
-    labels = ["--label", "hub.role=orchestrator", "--label", f"hub.space={sp['id']}",
-              "--label", f"herdr.space={sp['id']}"]
-    cmd = ["hc", "run", "--bg", "--json", "--keep", "--no-parent", "--name", name,
-           "--cwd", ws, *labels]
-    if on:
-        cmd += ["--on", on]
-    r = subprocess.run(cmd + ["--", *launch], capture_output=True, text=True)
-    if r.returncode != 0:
-        die(f"hc run: {(r.stderr or r.stdout).strip()}")
-    out = json.loads(r.stdout)
-    event("orchestrator", "", key, out.get("address") or "",
-          f"Orchestrator für {sp['name']} gestartet", space=sp["id"])
-    print(json.dumps({"space": sp["id"], "space_name": sp["name"], "folder": sp["folder"],
-                      "terminal": out.get("address") or "", "name": name, "agent": key,
-                      "cwd": ws}, ensure_ascii=False))
+    replace = claim_orchestrator_start(sp, a.restart)
+    try:
+        if replace:
+            end_orchestrator(replace)
+        on = sp.get("machine") or None
+        ws = orchestrator_ws(on)
+        write_orchestrator_rules(ws, on)
+        key = (a.agent or "omp").strip() or "omp"
+        argv_prog = list(AGENTS[key]) if key in AGENTS else (shlex.split(key) or [key])
+        taken = orchestrator_names() | {x["orchestrator"] for x in space_rows() if x["orchestrator"]}
+        name = ORCH_NAME
+        if name in taken:
+            name = (f"{ORCH_NAME}-{slug(sp['name'] or sp['id'], 24) or 'space'}")[:32]
+        while name in taken:
+            name = f"{name[:26]}-{secrets.token_hex(2)}"
+        prompt = orchestrator_prompt(sp, ws)
+        if on:
+            launch = ["sh", "-lc", '"$@"; exec "${SHELL:-sh}" -l', "sh", *argv_prog, prompt]
+        else:
+            sh = shell()
+            launch = [sh, "-lic", '"$@"; exec "$0" -li', sh, *argv_prog, prompt]
+        labels = ["--label", "hub.role=orchestrator", "--label", f"hub.space={sp['id']}",
+                  "--label", f"herdr.space={sp['id']}"]
+        cmd = ["hc", "run", "--bg", "--json", "--keep", "--no-parent", "--name", name,
+               "--cwd", ws, *labels]
+        if on:
+            cmd += ["--on", on]
+        r = subprocess.run(cmd + ["--", *launch], capture_output=True, text=True)
+        if r.returncode != 0:
+            die(f"hc run: {(r.stderr or r.stdout).strip()}")
+        out = json.loads(r.stdout)
+        event("orchestrator", "", key, out.get("address") or "",
+              f"Orchestrator für {sp['name']} gestartet", space=sp["id"])
+        print(json.dumps({"space": sp["id"], "space_name": sp["name"], "folder": sp["folder"],
+                          "terminal": out.get("address") or "", "name": name, "agent": key,
+                          "cwd": ws}, ensure_ascii=False))
+    finally:
+        release_starting(sp["id"])
 
 
 def cmd_orchestrator_list(a):
@@ -4438,6 +4515,18 @@ def costs():
         return {}
 
 
+def orchestrator_cost(cost_rows, sid):
+    """One orchestrator's own share, never the home's total (cf. costs.js orchestratorCost).
+
+    `orchestrators[space]` when the watcher split the rows; a home without a split keeps
+    the legacy single `orchestrator` number. A space the split does not name costs 0."""
+    cost_rows = cost_rows or {}
+    per = cost_rows.get("orchestrators") or {}
+    if not per or not sid:
+        return cost_rows.get("orchestrator")
+    return per.get(sid) or 0
+
+
 def report_invalid(ids):
     """One stderr line for all files `hub status` had to skip; the rest still prints."""
     if ids:
@@ -4862,14 +4951,18 @@ def build_timeline(ticket="", since="all", space=None, everyone=False):
             wanted.append((addr, hc_term(addr) if addr else {}, "", ""))
     lanes, by_terminal, orch_lanes = [], {}, []
     for addr, info, sid, sname in wanted:
+        # `hc ls` rows carry no created_ms/finished_ms; one cached `hc get` per
+        # orchestrator (at most two lanes) dates the lane instead of the first event.
+        got = hc_term(addr) if addr else {}
+        state = info.get("state") or got.get("state") or ""
         l = lane("", "", addr, "orchestrator",
                  ((ident.get(addr) or {}).get("name") or info.get("name") or
                   ("Orchestrator" + (f" · {sname}" if sname else ""))),
-                 num_ms(info.get("created_ms")) or first,
-                 now if (not info or info.get("state") == "live") else
-                 (num_ms(info.get("finished_ms")) or now),
-                 lane_status(info) or ("live" if info else ""),
-                 cost_rows.get("orchestrator"), sid, sname)
+                 num_ms(info.get("created_ms")) or num_ms(got.get("created_ms")) or first,
+                 now if (not info and not got) or state == "live" else
+                 (num_ms(info.get("finished_ms")) or num_ms(got.get("finished_ms")) or now),
+                 lane_status(got) or lane_status(info) or ("live" if (info or got) else ""),
+                 orchestrator_cost(cost_rows, sid), sid, sname)
         lanes.append(l)
         orch_lanes.append(l)
         if addr:
