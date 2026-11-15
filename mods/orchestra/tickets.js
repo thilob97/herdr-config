@@ -12,6 +12,10 @@ const FIELDS = ["title", "status", "repo", "labels", "due", "machine", "owner", 
   "review", "review_head", "review_at", "review_summary", "review_rounds", "reviewer", "reviewer_name", "review_terminal",
   "assignee", "blocked_by", "tags", "waiting", "by", "updated", "created", "status_at", "status_log"];
 
+// Keep in step with STATUSES in bin/hub: only these five states are real tickets; any
+// other value would hide the ticket from the board, team panel and stages.
+export const STATUSES = ["todo", "doing", "review", "done", "blocked"];
+
 export function parse(id, text) {
   const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(text);
   const t = { id, body: m ? text.slice(m[0].length) : text };
