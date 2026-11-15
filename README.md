@@ -295,7 +295,7 @@ Feste Agents liegen versioniert in `agents/roster.json`: Name, Rolle, Programm, 
 
 `hub agent list|show <name>|add …|edit …|rm <name>` verwaltet den Roster. `hub dispatch <ticket> --agent Zap` baut das Startkommando aus Programm und Modell, setzt `agent: Zap` ins Ticket, übernimmt `repo` und `branch_prefix`, wenn das Ticket sie nicht hat, und schreibt Rolle und Notizen in die Aufgabe. Ohne Roster-Eintrag gelten weiter die Programmnamen (`omp`, `claude`, `codex`, `pi`) oder ein freies Kommando.
 
-Das Fenster **Team-Hub** (`teams.panel`, `⌘⌥9`) zeigt die Agents als Karten mit Avatar in Agent-Farbe, Rolle, Programm/Modell, Repo sowie Einsätzen und Kosten; ein Klick zeigt die laufenden Tickets und startet auf Wunsch einen vorbelegten Auftrag. Anlegen, Bearbeiten und Löschen passieren im selben Fenster. `hub stats agents` zeigt Einsätze und Kosten je Roster-Agent.
+Das Fenster **Team-Hub** (Knopf „Team-Hub“ in der Tab-Leiste, `⌘⌥9`, sonst `mod.open:teams`) zeigt die Agents als Karten mit Avatar in Agent-Farbe, Rolle, Programm/Modell, Repo sowie Einsätzen und Kosten; ein Klick zeigt die laufenden Tickets und startet auf Wunsch einen vorbelegten Auftrag. Anlegen, Bearbeiten und Löschen passieren im selben Fenster. `hub stats agents` zeigt Einsätze und Kosten je Roster-Agent.
 
 ## Farben und Ebenen
 

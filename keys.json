@@ -64,7 +64,14 @@
     "cmd-j": "status-bar.attention-next",
     "cmd-shift-j": "mod.open:inbox",
     "cmd-shift-r": "mod.open:review",
-    "cmd-shift-t": { "command": "tab.new", "args": { "argv": ["omp"] } },
+    "cmd-shift-t": {
+      "command": "tab.new",
+      "args": {
+        "argv": [
+          "omp"
+        ]
+      }
+    },
     "cmd-shift-n": "mod.open:launcher",
     "control control": "hermes.toggle",
     "cmd-shift-h": "hermes.toggle"
@@ -101,7 +108,7 @@
     "cmd-alt-6": "tabs-graph.panel-quests",
     "cmd-alt-7": "tabs-graph.panel-team",
     "cmd-alt-8": "board.panel",
-    "cmd-alt-9": "teams.panel"
+    "cmd-alt-9": "mod.open:teams"
   },
   "layout:quests": {
     "ctrl-shift-q": "layout.switch:elric"

@@ -84,7 +84,8 @@ export default class Teams extends View {
 
     this.load(cx);
     cx.timer.every(REFRESH, (cx) => { if (this.mode === "list" && !this.busy && !this.loading) this.load(cx); });
-    // While the window is loaded, the bar's "Team-Hub" (teams.panel, ⌘⌥9) closes it again.
+    // The bar's "Team-Hub" opens and closes the window with mod.open (⌘⌥9); while it is
+// loaded, `teams.panel` does the same.
     cx.spawn(async () => {
       for (;;) {
         const c = await nextCommand();
