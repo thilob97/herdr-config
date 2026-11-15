@@ -43,9 +43,9 @@ const DESC = {
 };
 const GROUPS = [
   ["Auftrag und Agents", (a) => /^agent\.|^status-bar\.|^hermes\.|^mod\.open:(inbox|review|launcher)$/.test(a)],
-  // Die Fabrik-Flächen der Tab-Leiste: Team-Hub, Board, Timeline, Quests. Sie stehen
-  // nicht bei den Werkzeugen (Changes, Git, Tree, Blueprint, Docker) im Dialog.
-  ["Fabrik", (a) => /^board\.panel$|^mod\.open:teams$|^tabs-graph\.panel-(quests|team|timeline)$/.test(a)],
+  // Die Fabrik-Flächen der Tab-Leiste: Dashboard, Team-Hub, Board, Timeline, Quests.
+  // Sie stehen nicht bei den Werkzeugen (Changes, Git, Tree, Blueprint, Docker) im Dialog.
+  ["Fabrik", (a) => /^layout\.switch:dashboard$|^board\.panel$|^mod\.open:teams$|^tabs-graph\.panel-(quests|team|timeline)$/.test(a)],
   ["Panels und Seitenleiste", (a) => /^tabs-graph\.|^layout\.toggle:sidebar$/.test(a)],
   ["Tabs", (a) => /^tab\./.test(a)],
   ["Spaces", (a) => /^space\.|^space-folders\./.test(a)],

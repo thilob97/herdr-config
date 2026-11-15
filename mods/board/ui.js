@@ -326,8 +326,9 @@ export const loading = (t, text = "lädt …") => h_flex().gap(GAP_S).items_cent
 
 /** Wer hinter einer Adresse steckt: Name und Avatar ausschließlich aus
  *  shared("agents.identity"). Fehlt der Name, steht `name` als Programm-Kürzel
- *  (`omp` klein) bzw. als Adresse — nie der Programmname („Oh My Pi") — und
- *  `named: false` sagt, dass es keine veröffentlichte Identität ist. */
+ *  (`omp`, klein) oder bleibt leer — nie der Programmname („Oh My Pi") und nie
+ *  die rohe Terminal-Adresse; `named: false` sagt, dass es keine veröffentlichte
+ *  Identität ist. */
 export function identity(address) {
   const a = agents().find((x) => x.address === address) ?? null;
   const x = a ? null : terminals().find((y) => y.address === address && y.state === "live") ?? null;
@@ -336,7 +337,7 @@ export function identity(address) {
   const programKey = program?.key ? String(program.key).toLowerCase() : null;
   return {
     address,
-    name: known?.name ?? programKey ?? address,
+    name: known?.name ?? programKey ?? "",
     named: Boolean(known?.name),
     avatar: known?.avatar ?? null,
     program,
@@ -357,18 +358,19 @@ export function focusAgent(address) {
 
 /** Identitäts-Chip: h 22, Avatar 16 (sonst Programm-Icon), Name T_S, Statusanzeige; Klick fokussiert.
  *  Nur ein Name aus shared("agents.identity") ist eine Identität; sonst steht das
- *  Programm-Kürzel klein und gedämpft (`omp`, „Programm, kein laufender Agent"). */
+ *  Programm-Kürzel klein und gedämpft (`omp`, „Programm, kein laufender Agent").
+ *  Ohne Namen und ohne Programm gibt es keinen Chip — nie die rohe Adresse. */
 export function identityChip(t, id, address, { status } = {}) {
   const who = identity(address);
+  if (!who.named && !who.programKey) return null;
   const st = status !== undefined ? status : who.status;
   const p = who.program;
-  const label = who.named ? who.name : who.programKey ?? address;
+  const label = who.named ? who.name : who.programKey;
   const pic = who.named && who.avatar ? image(who.avatar).w(16).h(16).flex_none()
     : p?.icon ? (p.tint ? svg(p.icon).size(16).flex_none().text_color(t.muted) : image(p.icon).w(16).h(16).flex_none())
       : null;
-  const tip = who.named ? [p?.name, who.space, address].filter(Boolean).join(" · ")
-    : who.programKey ? `Programm${who.live ? " ohne veröffentlichte Identität" : ", kein laufender Agent"} · ${address}`
-      : address;
+  const tip = who.named ? [p?.name, who.space].filter(Boolean).join(" · ")
+    : "Programm, kein laufender Agent";
   return stop(h_flex().id(id).flex_none().min_w(0).h(H_BTN_S).px(6).gap(GAP_XS).items_center().rounded(6).bg(t.raised)
     .tooltip(tip).when(who.live, (el) => el.cursor_pointer().hover((s) => s.bg(t.hover))
       .on_click((_e, cx) => { cx.stopPropagation?.(); focusAgent(address); }))

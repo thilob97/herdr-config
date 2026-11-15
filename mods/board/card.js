@@ -152,9 +152,10 @@ function gateIcons(t, tk, gate) {
 }
 
 // Identität wie im Team-Panel und Dashboard: der veröffentlichte Name des Terminals
-// (`ui.identityChip`). Ohne Terminal zählt der Agentenname aus dem Ticket
-// (`agent_name`/`assignee`) bzw. ein Roster-Name in `agent`; ein Programm-Kürzel
-// (`omp`) steht klein und gedämpft wie im Team-Panel — nie der Programmname („Oh My Pi").
+// (`ui.identityChip`), auch wenn das Terminal beendet ist. Sonst zählt der Agentenname
+// aus dem Ticket (`agent_name`/`assignee`) bzw. ein Roster-Name in `agent`; ein
+// Programm-Kürzel (`omp`) steht klein und gedämpft — nie ein Befehl wie
+// „omp --model=…", nie der Programmname („Oh My Pi") und nie die rohe Adresse.
 const KNOWN_PROGRAM = /^(omp|claude|codex|pi|hermes|aider)$/i;
 const isProgramKey = (key) => {
   const k = String(key ?? "").trim().toLowerCase();
@@ -163,17 +164,31 @@ const isProgramKey = (key) => {
     || agents().some((a) => String(a.program?.key ?? a.app ?? "").toLowerCase() === k)
     || terminals().some((x) => String(x.program?.key ?? x.app ?? "").toLowerCase() === k);
 };
+// The program a ticket names: only the command's first word, and only if it is a known program.
+const programKeyOf = (agent) => {
+  const token = String(agent ?? "").trim().split(/\s+/)[0].toLowerCase();
+  return token && isProgramKey(token) ? token : null;
+};
+// A roster name, not a command: no path, option or assignment, and not a program key.
+const agentNameOf = (agent) => {
+  const raw = String(agent ?? "").trim();
+  if (!raw || raw.includes("/") || raw.includes("=") || raw.split(/\s+/).some((w) => w.startsWith("--"))) return null;
+  return programKeyOf(raw) ? null : raw;
+};
+// A plain chip: name muted, program key dim.
+const plainWho = (t, text, { program = false, tip } = {}) => h_flex().flex_none().max_w(72).h(22).px(4).items_center().rounded(4).bg(t.raised)
+  .tooltip(tip ?? (program ? "Programm, kein laufender Agent" : text))
+  .child(div().min_w(0).truncate().text_size(T_XS).text_color(program ? t.dim : t.muted)
+    .child(program ? text.toLowerCase() : text));
 function whoChip(t, tk) {
-  if (tk.terminal) return div().flex_none().max_w(110).child(ui.identityChip(t, `tk-who-${tk.id}`, tk.terminal));
+  const who = tk.terminal ? ui.identity(tk.terminal) : null;
   const named = String(tk.agent_name || tk.assignee || "").trim();
-  const agentToken = String(tk.agent ?? "").trim().split(/\s+/)[0];
-  const raw = named || agentToken;
-  if (!raw) return null;
-  const program = !named && isProgramKey(agentToken);
-  return h_flex().flex_none().max_w(72).h(22).px(4).items_center().rounded(4).bg(t.raised)
-    .tooltip(program ? "Programm, kein laufender Agent" : raw)
-    .child(div().min_w(0).truncate().text_size(T_XS).text_color(program ? t.dim : t.muted)
-      .child(program ? agentToken.toLowerCase() : raw));
+  const agentName = named ? null : agentNameOf(tk.agent);
+  const name = (who?.named ? who.name : null) || named || agentName || null;
+  if (who?.named) return div().flex_none().max_w(150).child(ui.identityChip(t, `tk-who-${tk.id}`, tk.terminal));
+  if (name) return plainWho(t, name);
+  const program = who?.programKey || programKeyOf(tk.agent);
+  return program ? plainWho(t, program, { program: true }) : null;
 }
 
 const countIcon = (t, icon, n, tip) => h_flex().flex_none().gap(1).items_center().tooltip(tip)

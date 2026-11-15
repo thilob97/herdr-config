@@ -8,7 +8,7 @@
 
 import { div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { run, notify, playSound, openOverlay, shared, setShared, knownAgents, terminals, exec, appHome, settings } from "herdr";
+import { run, notify, playSound, openOverlay, shared, setShared, agents, knownAgents, terminals, exec, appHome, settings } from "herdr";
 import * as orch from "./orchestrator.js";
 import * as tickets from "./tickets.js";
 import * as costs from "./costs.js";
@@ -144,15 +144,33 @@ const gateIcons = (t, tk, gate) => {
   }));
 };
 
-// Identität nur aus shared("agents.identity") (über ui.identity) bzw. dem vom Hub
-// vergebenen Agentennamen (`agent_name`/`assignee`). `tk.agent` ist ein Programm-
-// Kürzel (`omp`), kein Agent: es steht klein und gedämpft, nie als Name.
+// Identität nur aus shared("agents.identity") (über ui.identity, auch für beendete
+// Terminals) bzw. dem vom Hub vergebenen Agentennamen (`agent_name`/`assignee`).
+// `tk.agent` ist meist ein Befehl („omp --model=…"), kein Agent: davon steht nur das
+// Programm-Kürzel (`omp`) klein und gedämpft, nie der Befehl und nie die Adresse.
 // Kein Avatar: die Zeile muss neben Gates und Kosten in eine schmale Karte passen.
+const KNOWN_PROGRAM = /^(omp|claude|codex|pi|hermes|aider)$/i;
+const isProgramKey = (key) => {
+  const k = String(key ?? "").trim().toLowerCase();
+  if (!k) return false;
+  return KNOWN_PROGRAM.test(k)
+    || agents().some((a) => String(a.program?.key ?? a.app ?? "").toLowerCase() === k)
+    || terminals().some((x) => String(x.program?.key ?? x.app ?? "").toLowerCase() === k);
+};
+const programKeyOf = (agent) => {
+  const token = String(agent ?? "").trim().split(/\s+/)[0].toLowerCase();
+  return token && isProgramKey(token) ? token : null;
+};
+const agentNameOf = (agent) => {
+  const raw = String(agent ?? "").trim();
+  if (!raw || raw.includes("/") || raw.includes("=") || raw.split(/\s+/).some((w) => w.startsWith("--"))) return null;
+  return programKeyOf(raw) ? null : raw;
+};
 const whoChip = (t, tk) => {
   const live = tk.terminal ? ui.identity(tk.terminal) : null;
   const raw = String(tk.agent_name || tk.assignee || "").trim();
-  const name = (live?.named ? live.name : null) || raw || null;
-  const prog = String(live?.programKey || tk.agent || "").trim().toLowerCase() || null;
+  const name = (live?.named ? live.name : null) || raw || agentNameOf(tk.agent) || null;
+  const prog = String(live?.programKey || programKeyOf(tk.agent) || "").trim().toLowerCase() || null;
   if (!name && !prog) return null;
   const tip = name ? `${name}${live?.named && live.program ? ` · ${live.program.name}` : ""}` : "Programm, kein laufender Agent";
   return h_flex().flex_none().max_w(72).h(22).px(4).items_center().rounded(4).bg(t.raised)

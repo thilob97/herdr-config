@@ -5,8 +5,9 @@
 // subagents omp's task tool started: helpers/omp-cards.py reads them from omp's
 // session files on the agent's machine, every 5 seconds (a snapshot, not live).
 // Cmd-click selects cards; the selection bar under the list messages, interrupts
-// or watches them as a team (shared "orchestra.groups"). Every agent's name and
-// avatar go to shared "agents.identity" for the other mods' identity chips.
+// or watches them as a team (shared "orchestra.groups"). Every known agent's name and
+// avatar — also after its terminal ended — go to shared "agents.identity" for the
+// other mods' identity chips.
 // Sub-agent births and ends also go to data/agent-cards/subagents.jsonl, so a
 // timeline still knows them after the terminal is gone.
 
@@ -682,12 +683,33 @@ export default class Agents extends View {
           .child(svg("mods/agent-cards/icons/send.svg").size(12))));
   }
 
-  // Every listed agent's name and avatar (docs/ui-spec.md 7.1), written only when it changed.
+  // Every known agent's name and avatar (docs/ui-spec.md 7.1), including agents whose
+  // terminal has ended: their avatars entry keeps the name for a week. Written only
+  // when it changed; at most 300, newest first, emitted sorted by address.
   publishIdentity(list) {
+    const live = new Map(list.map((a) => [a.address, a]));
+    let dirty = false;
+    for (const [address, v] of Object.entries(this.avatars)) {
+      const a = live.get(address);
+      if (!a) continue;
+      const program = a.program?.key ?? a.app ?? null;
+      if (!program || v.program === program) continue;
+      v.program = program;
+      dirty = true;
+    }
+    if (dirty) localStorage.setItem("avatars", JSON.stringify(this.avatars));
+    const known = Object.entries(this.avatars).filter(([, v]) => Boolean(v?.name))
+      .sort(([a, x], [b, y]) => (y.at ?? 0) - (x.at ?? 0) || (a < b ? -1 : a > b ? 1 : 0))
+      .slice(0, 300)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
     const next = {};
-    for (const a of list) {
-      const v = this.avatars[a.address];
-      if (v) next[a.address] = { name: v.name, avatar: AVATARS[v.n] ?? AVATARS[0], program: a.program?.key ?? a.app ?? null };
+    for (const [address, v] of known) {
+      const a = live.get(address);
+      next[address] = {
+        name: v.name,
+        avatar: AVATARS[v.n] ?? AVATARS[0],
+        program: (a ? a.program?.key ?? a.app : null) ?? v.program ?? null,
+      };
     }
     if (JSON.stringify(next) !== JSON.stringify(shared("agents.identity") ?? {})) setShared("agents.identity", next);
   }
