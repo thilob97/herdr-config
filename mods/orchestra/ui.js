@@ -29,6 +29,43 @@ export const statusColor = (t, st) => (st === "error" ? t.blocked : t[st] ?? t.d
 /** Ein Zahlenformat für Kosten (B9): Cent unter $10, sonst ganze Dollar. */
 export const usd = (n) => { const v = Number(n ?? 0); return `$${Math.abs(v) < 10 && v % 1 !== 0 ? v.toFixed(2) : Math.round(v)}`; };
 
+// ---------- Ticket-Zeiten (Felder 7.6: created, updated, status_at, review_at) ----------
+
+// Ticket-Zeitstempel sind "JJJJ-MM-TT HH:MM" (lokal). Alle Werte werden bei jedem
+// Rendern gerechnet: kein Timer, keine Sekunden, damit nichts flackert.
+export function at(ts) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/.exec(String(ts ?? ""));
+  return m ? new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]).getTime() : 0;
+}
+
+/** Minuten seit `ts`; null ohne lesbaren Zeitstempel. */
+export function minutesSince(ts) {
+  const ms = at(ts);
+  return ms ? Math.max(0, Math.round((Date.now() - ms) / 60000)) : null;
+}
+
+/** Kurze Dauer: „jetzt", „42 min", „3 h", „2 d"; „—" ohne Zeitstempel. */
+export const dur = (min) => (min == null ? "—"
+  : min < 1 ? "jetzt" : min < 60 ? `${min} min` : min < 1440 ? `${Math.floor(min / 60)} h` : `${Math.floor(min / 1440)} d`);
+
+/** „vor 42 min" / „gerade eben"; leer ohne Zeitstempel. */
+export const age = (ts) => {
+  const min = minutesSince(ts);
+  return min == null ? "" : min < 1 ? "gerade eben" : `vor ${dur(min)}`;
+};
+
+export const STAGE_WORD = { todo: "geplant", doing: "in Arbeit", review: "in Prüfung", done: "fertig" };
+
+/** Die Stufe des Tickets und wie lange sie gilt: { key, since, min, text }.
+ *  `status_at` schreibt `hub ticket status` beim Wechsel; ältere Tickets fallen auf
+ *  `updated` und `created` zurück (wie Board und Team-Panel bisher rechneten). */
+export function staged(tk) {
+  const key = ["todo", "review", "done"].includes(tk?.status) ? tk.status : "doing";
+  const since = tk?.status_at || tk?.updated || tk?.created || null;
+  const min = minutesSince(since);
+  return { key, since, min, text: min == null ? "Stufe unbekannt" : `${STAGE_WORD[key]} seit ${dur(min)}` };
+}
+
 /** Fokus je Eingabe (5.6: mit Fokus `border(accent)`): in init `this.focus = ui.focusFields()`,
  *  je Feld `this.focus.track(state, "id")`, im Rendern `focused: this.focus.has("id")`. */
 export function focusFields() {

@@ -13,8 +13,8 @@ import { View, div } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
 import { exec, appHome, readTextFile, shared, theme, layout, run, notify, nextCommand, openOverlay, settings } from "herdr";
 import * as ui from "./ui.js";
-import { T_XS, T_S, GAP_S, GAP_M, INSET_PANEL, H_SECTION, usd } from "./ui.js";
-import { STAGES, stageOf, stageColor, ticketCard, blockersOf, at } from "./card.js";
+import { T_XS, T_S, GAP_S, GAP_M, INSET_PANEL, H_SECTION, usd, at } from "./ui.js";
+import { STAGES, stageOf, stageColor, ticketCard, blockersOf } from "./card.js";
 
 const HUB = () => `${appHome()}/mods/orchestra/bin/hub`;
 const REFRESH = 5000, GATE_REFRESH = 15000, COST_REFRESH = 30000;
