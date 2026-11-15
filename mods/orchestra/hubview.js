@@ -6,9 +6,9 @@
 // ends a turn. The panel republishes the tickets too (without notifications), so it is
 // current even where no daemon runs.
 
-import { div, svg } from "gpui-kit";
+import { div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { run, notify, playSound, openOverlay, shared, setShared, knownAgents, terminals, exec, appHome } from "herdr";
+import { run, notify, playSound, openOverlay, shared, setShared, knownAgents, terminals, exec, appHome, settings } from "herdr";
 import * as orch from "./orchestrator.js";
 import * as tickets from "./tickets.js";
 import * as costs from "./costs.js";
@@ -20,14 +20,6 @@ const WC = "mods/workspace-chrome";
 const HUB = () => `${appHome()}/mods/orchestra/bin/hub`;
 // At most two lines of T_S text in the panel's width.
 const clip = (s, n = 140) => (s.length > n ? `${s.slice(0, n - 1).trimEnd()}…` : s);
-// The same cap for the Verlauf preview, cut at a word: the ellipsis must stay visible in
-// the two lines instead of the box clipping a third one mid-word.
-const previewText = (s, n = 84) => {
-  if (s.length <= n) return s;
-  const cut = s.slice(0, n - 1), at = cut.lastIndexOf(" ");
-  return `${(at >= n * 0.6 ? cut.slice(0, at) : cut).trimEnd()}…`;
-};
-
 // The pipeline: ticket status → stage, in the order work moves.
 export const STAGES = [
   { key: "todo", label: "Geplant" },
@@ -36,6 +28,182 @@ export const STAGES = [
   { key: "done", label: "Fertig" },
 ];
 export const stageOf = (tk) => (["todo", "review", "done"].includes(tk.status) ? tk.status : "doing");
+const stageLabel = (key) => STAGES.find((s) => s.key === key)?.label ?? "In Arbeit";
+
+// ---------- Ticket-Karte (Kopie aus mods/board/card.js: Herdr kennt kein Modul über
+// Mod-Ordner hinweg; Optik und Verhalten müssen in beiden Dateien gleich bleiben) ----------
+
+const STOP = new Set(["und", "im", "in", "der", "die", "das", "ein", "eine", "zu", "mit", "fur", "für", "von", "the", "a", "an", "of"]);
+const shortId = (id) => {
+  const raw = String(id ?? "");
+  const num = /(\d+)$/.exec(raw)?.[1];
+  const words = raw.split("-").filter((p) => p && !STOP.has(p));
+  let s = (words[0] || raw).replace(/[^a-z0-9]/gi, "").slice(0, 8).toUpperCase();
+  if (num && !s.endsWith(num)) s = `${s.slice(0, 6)}-${num}`;
+  return s || "TICKET";
+};
+const splitList = (v) => (Array.isArray(v) ? v : String(v ?? "").split(/[,\s]+/)).map((s) => String(s).trim()).filter(Boolean);
+const at = (ts) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/.exec(String(ts ?? ""));
+  return m ? new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]).getTime() : 0;
+};
+const STAGE_AGE = { todo: "geplant", doing: "in Arbeit", review: "in Prüfung", done: "fertig" };
+const shortDur = (min) => (min < 1 ? "jetzt" : min < 60 ? `${min} min` : min < 1440 ? `${Math.floor(min / 60)} h` : `${Math.floor(min / 1440)} d`);
+const minutesSince = (ts) => {
+  const ms = at(ts);
+  return ms ? Math.max(0, Math.round((Date.now() - ms) / 60000)) : null;
+};
+const stageAge = (tk, stage) => {
+  const min = minutesSince(tk.status_at || tk.updated || tk.created);
+  return min == null ? "Stufe unbekannt" : `${STAGE_AGE[stage]} seit ${shortDur(min)}`;
+};
+const ageText = (tk) => {
+  const min = minutesSince(tk.status_at || tk.updated || tk.created);
+  return min == null ? "—" : shortDur(min);
+};
+const updatedStamp = (tk) => String(tk.updated || "nie bearbeitet");
+const PRIO = /^(p[0-3]|prio[-:]?[0-3]|kritisch|hoch|urgent)$/i;
+const labelChips = (t, tk) => {
+  const labels = [...new Set([...splitList(tk.labels), ...splitList(tk.tags)])];
+  const prio = labels.filter((l) => PRIO.test(l));
+  const rest = labels.filter((l) => !PRIO.test(l));
+  const out = prio.map((l) => ({ text: l.toUpperCase(), color: /^(p0|prio[-:]?0|kritisch|urgent)$/i.test(l) ? t.blocked : t.working }));
+  for (const l of rest.slice(0, Math.max(0, 2 - out.length))) out.push({ text: l, color: t.muted });
+  const more = labels.length - out.length;
+  if (more > 0) out.push({ text: `+${more}`, color: t.dim });
+  return out;
+};
+const blockersOf = (tk, all = []) => splitList(tk.blocked_by).map((id) => ({ id, status: all.find((x) => x.id === id)?.status ?? null }))
+  .filter((b) => b.status !== "done");
+const clampTitle = (s, n = 34) => {
+  const text = String(s ?? "");
+  if (text.length <= n) return text;
+  const cut = text.slice(0, n - 1), space = cut.lastIndexOf(" ");
+  return `${(space > n * 0.55 ? cut.slice(0, space) : cut).trimEnd()}…`;
+};
+const evidenceCount = (tk) => (Array.isArray(tk.evidence) ? tk.evidence.length : splitList(tk.evidence).length);
+const commentCount = (tk) => Number(tk.comments ?? tk.verlauf?.length ?? 0);
+const liveReview = (tk) => (tk.review_terminal ? terminals().find((x) => x.address === tk.review_terminal && x.state === "live") : null);
+
+const ICON_CHECK = `${WC}/check.svg`, ICON_X = `${WC}/x.svg`, ICON_MINUS = `${WC}/minus.svg`;
+const ICON_SPIN = `${WC}/spinner.svg`, ICON_COMMENT = `${WC}/square-pen.svg`, ICON_EVIDENCE = `${WC}/file-text.svg`;
+
+const gateState = (tk, gate) => {
+  const checks = gate ? (gate.ok ? "pass" : gate.stale || gate.checks === "fail" ? "fail" : "none")
+    : tk.checks === "pass" ? "pass" : tk.checks === "fail" ? "fail" : "none";
+  const checksTip = checks === "pass"
+    ? `Checks: bestanden${gate?.at ? ` · ${gate.at}` : ""}`
+    : checks === "fail" ? `Checks: rot${gate?.reason ? ` · ${gate.reason}` : tk.checks_exit ? ` (Exit ${tk.checks_exit})` : ""}`
+      : `Checks: noch nicht geprüft${gate?.reason ? ` · ${gate.reason}` : ""}`;
+
+  let review, reviewTip;
+  if (liveReview(tk)) { review = "run"; reviewTip = "Review: läuft gerade"; }
+  else {
+    const r = gate?.review ?? null, verdict = r?.verdict ?? tk.review ?? null;
+    if (r?.stale) { review = "none"; reviewTip = `Review: ${r.reason || "Urteil älter als der letzte Commit"}`; }
+    else if (r ? r.ok : verdict === "pass") { review = "pass"; reviewTip = `Review: grün${r?.summary || tk.review_summary ? ` · ${r?.summary || tk.review_summary}` : ""}`; }
+    else if (verdict === "fail") { review = "fail"; reviewTip = `Review: rot${r?.reason ? ` · ${r.reason}` : ""}`; }
+    else { review = "none"; reviewTip = `Review: noch kein Urteil${r?.reason ? ` · ${r.reason}` : ""}`; }
+  }
+  const ci = tk.ci === "pass" ? "pass" : tk.ci === "fail" ? "fail" : tk.ci === "running" ? "run" : "none";
+  const ciTip = { pass: "CI: grün", fail: "CI: rot", running: "CI: läuft", unknown: "CI: unbekannt" }[tk.ci] ?? "CI: noch nicht geprüft";
+  return [
+    { key: "checks", state: checks, tip: checksTip },
+    { key: "review", state: review, tip: reviewTip },
+    { key: "ci", state: ci, tip: ciTip },
+  ];
+};
+
+const gateIcons = (t, tk, gate) =>
+  h_flex().flex_none().gap(2).items_center().children(gateState(tk, gate).map((g) => {
+    const color = g.state === "pass" ? t.done : g.state === "fail" ? t.blocked : g.state === "run" ? t.working : t.dim;
+    const icon = g.state === "run" ? ICON_SPIN : g.state === "pass" ? ICON_CHECK : g.state === "fail" ? ICON_X : ICON_MINUS;
+    return div().id(`tk-gate-${g.key}-${tk.id}`).size(11).flex_none().flex().items_center().justify_center()
+      .tooltip(g.tip).child(svg(icon).size(11).text_color(color).when(g.state === "run", (el) => el.spin(900)));
+  }));
+
+// Avatar 16 + Vorname; der volle Name steht im Tooltip.
+const whoChip = (t, tk) => {
+  const live = tk.terminal ? ui.identity(tk.terminal) : null;
+  const name = live?.name || String(tk.assignee || tk.agent || "").trim();
+  if (!name) return h_flex().flex_none().h(22).px(4).items_center().gap(3).rounded(4).bg(t.raised)
+    .tooltip("Kein Agent zugewiesen").child(div().text_size(T_XS).text_color(t.dim).child("niemand"));
+  const known = live?.avatar ? live : Object.values(shared("agents.identity") ?? {}).find((x) => x && x.name === name);
+  return h_flex().flex_none().max_w(70).h(22).px(4).gap(3).items_center().rounded(4).bg(t.raised).tooltip(name)
+    .when(Boolean(known?.avatar), (el) => el.child(image(known.avatar).w(16).h(16).flex_none()))
+    .child(div().min_w(0).truncate().text_size(T_XS).text_color(t.muted).child(name.split(" ")[0]));
+};
+const countIcon = (t, icon, n, tip) => h_flex().flex_none().gap(1).items_center().tooltip(tip)
+  .child(svg(icon).size(9).text_color(t.dim))
+  .child(div().text_size(T_XS).text_color(t.muted).child(String(n)));
+const labelPill = (t, text, color) => h_flex().flex_none().h(16).px(3).items_center().rounded(4)
+  .bg(color + "26").text_size(T_XS).font_medium().text_color(color).child(text);
+const miniAction = (t, id, label, action, { enabled = true, primary = false, tip } = {}) =>
+  ui.button(t, id, label, (cx) => action(cx), { kind: primary ? "primary" : "secondary", small: true, enabled, tip });
+
+// Dieselbe Karte wie mods/board/card.js (ticketCard): ID, höchstens zwei Labels,
+// Alter, zweizeiliger Titel, Identität, Gate-Symbole, Kommentar-/Nachweis-Zahlen,
+// Kosten und bei blocked_by ein Sperr-Chip; Hover mit Branch, Öffnen und Agent.
+function ticketCard(t, tk, o = {}) {
+  const stage = stageOf(tk);
+  const spent = Number(o.spent ?? 0), limit = Number(o.limit ?? 0);
+  const over = spent > limit || Boolean(o.stopped);
+  const blocked = blockersOf(tk, o.all ?? []);
+  const labels = labelChips(t, tk);
+  const comments = commentCount(tk), evidence = evidenceCount(tk);
+  const hovered = Boolean(o.hovered), selected = Boolean(o.selected);
+  const box = selected ? t.selected : undefined;
+  const shownLabels = blocked.length ? labels.slice(0, 1) : labels;
+
+  const ageLine = div().flex_none().text_size(T_XS).text_color(t.dim)
+    .tooltip(`${stageAge(tk, stage)} · zuletzt bearbeitet ${updatedStamp(tk)}`).child(ageText(tk));
+
+  const row1 = h_flex().flex_wrap().gap(3).items_center().min_w(0)
+    .child(h_flex().flex_none().h(18).px(4).items_center().rounded(4).bg(t.raised)
+      .text_size(T_XS).font_medium().font_family(settings().font_family).text_color(t.muted)
+      .tooltip(`Ticket ${tk.id}`).child(shortId(tk.id)))
+    .children(shownLabels.map((l) => labelPill(t, l.text, l.color)))
+    .when(blocked.length > 0, (el) => el.child(ui.chip(t, `gesperrt: ${blocked.map((b) => shortId(b.id)).join(", ")}`, t.blocked,
+      { tip: `Sperre: ${blocked.map((b) => `${b.id} (${b.status ?? "unbekannt"})`).join(", ")}` })))
+    .when(comments > 0, (el) => el.child(countIcon(t, ICON_COMMENT, comments, `${comments} Kommentare im ## Verlauf`)))
+    .when(evidence > 0, (el) => el.child(countIcon(t, ICON_EVIDENCE, evidence, `${evidence} Nachweise (evidence)`)))
+    .child(div().flex_1())
+    .child(ageLine);
+
+  const title = div().id(`tk-title-${tk.id}`).w_full().max_h(30).overflow_hidden().text_size(T_M).font_semibold()
+    .line_height(1.2).text_color(stage === "done" ? t.muted : t.foreground).child(clampTitle(tk.title || tk.id));
+
+  const row3 = h_flex().flex_wrap().gap(ui.GAP_XS).items_center().min_w(0)
+    .child(whoChip(t, tk))
+    .child(gateIcons(t, tk, o.gate))
+    .child(div().flex_1())
+    .child(div().flex_none().text_size(T_XS).text_color(over ? t.blocked : t.muted)
+      .tooltip(`Kosten / Budget (${tk.agent || "Agent"}; nur omp meldet Kosten)`).child(`${usd(spent)}/${usd(limit)}`));
+
+  const actions = h_flex().flex_wrap().gap(ui.GAP_XS).items_center()
+    .child(miniAction(t, `tk-open-${tk.id}`, "Öffnen", (cx) => o.onOpen?.(cx), { tip: "Review-Fenster im Ticket-Modus" }))
+    .child(miniAction(t, `tk-agent-${tk.id}`, "Agent", (cx) => o.onAgent?.(cx),
+      { enabled: Boolean(tk.terminal), tip: tk.terminal ? "Zum Terminal des Agents" : "Kein Agent-Terminal im Ticket" }))
+    .when(Boolean(o.next) && !o.next.open, (x) => x.child(miniAction(t, `tk-next-${tk.id}`, o.next.label, (cx) => o.onNext?.(cx), { tip: o.next.tip })))
+    .when(Boolean(o.onRaise), (x) => x.child(miniAction(t, `tk-raise-${tk.id}`, `+${usd(o.raiseStep ?? 3)}`, (cx) => o.onRaise(cx),
+      { tip: "Budget dieses Tickets erhöhen; der Agent macht weiter" })));
+
+  const hover = v_flex().gap(ui.GAP_XS).pt(2).border_t(1).border_color(t.border)
+    .child(div().flex_none().min_w(0).truncate().text_size(T_XS).font_family(settings().font_family)
+      .text_color(t.dim).tooltip(tk.branch || tk.repo || "kein Branch")
+      .child(tk.branch || String(tk.repo ?? "").split("/").filter(Boolean).pop() || "kein Branch"))
+    .child(actions);
+
+  return v_flex().id(`tk-${tk.id}`).relative().flex_none().p(8).gap(ui.GAP_XS).rounded(8)
+    .bg(box ?? t.surface).border_1()
+    .border_color(selected ? t.accent : blocked.length ? t.blocked : t.border)
+    .cursor_pointer().hover((s) => s.bg(box ?? t.hover))
+    .tooltip(`${stageLabel(stage)} · ${stageAge(tk, stage)} · zuletzt bearbeitet ${updatedStamp(tk)}`)
+    .on_hover((on, cx) => o.onHover?.(on, cx))
+    .on_click((_e, cx) => o.onOpen?.(cx))
+    .child(row1).child(title).child(row3)
+    .when(hovered, (el) => el.child(hover));
+}
 
 // The gate of every open ticket, from `hub gates`: only hub can read the worktree's
 // HEAD, so a green chip turns red when a commit lands after the check (every 15 s,
@@ -175,7 +343,7 @@ export class HubSection {
     this.known = [];
     this.reply = InputState.new({ placeholder: "Antwort an den Orchestrator… (↵ senden)" });
     this.reply.on("submit", (_e, cx) => this.sendReply(cx));
-    this.openVerlauf = new Set();   // ticket ids whose whole Verlauf is unfolded
+    this.hoveredTicket = null;      // ticket id under the pointer (Hover-Aktionen)
     this.focus = ui.focusFields();
     this.focus.track(this.reply, "hub-reply");
     cx.spawn(async (cx) => { this.known = (await knownAgents().catch(() => [])).filter((a) => a.installed); cx.notify(); });
@@ -321,99 +489,89 @@ export class HubSection {
 
   // ---------- tickets ----------
 
-  // A Verlauf line: role · time above, the comment below with its @tags highlighted.
-  // Words become spans so the narrow panel wraps between them.
-  verlaufLine(t, v, { preview = false } = {}) {
-    const text = preview ? previewText(v.text) : v.text;
-    return v_flex().min_w(0).gap(0).text_size(T_XS)
-      .child(div().text_color(t.dim).child(`${v.role} · ${v.ts.slice(11)}`))
-      .child(h_flex().min_w(0).flex_wrap().text_color(t.muted)
-        .children(text.split(/\s+/).filter(Boolean).map((w) =>
-          div().when(w.startsWith("@"), (e) => e.text_color(t.accent).font_medium()).child(`${w} `))));
-  }
-
-  // The last two comments, or the whole Verlauf on click ("alle").
-  verlaufBlock(t, tk) {
-    const all = tk.verlauf ?? [];
-    const open = this.openVerlauf.has(tk.id), shown = open ? all : all.slice(-2);
-    return v_flex().id(`tk-verlauf-${tk.id}`).gap(2).pt(2).border_t(1).border_color(t.border)
-      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-      .child(h_flex().items_center().gap(ui.GAP_S)
-        .child(div().text_size(T_XS).text_color(t.dim).child(`Verlauf ${all.length}`))
-        .child(div().flex_1())
-        .child(div().id(`tk-verlauf-all-${tk.id}`).flex_none().text_size(T_XS).text_color(t.muted).cursor_pointer()
-          .hover((s) => s.text_color(t.foreground))
-          .tooltip(open ? "Nur die letzten zwei Kommentare zeigen" : "Den ganzen Verlauf zeigen")
-          .on_click((_e, cx) => {
-            if (open) this.openVerlauf.delete(tk.id); else this.openVerlauf.add(tk.id);
-            cx.notify();
-          }).child(open ? "weniger" : "alle")))
-      .when(open, (el) => el.child(div().max_h(150).overflow_y_scroll().children(shown.map((v) => this.verlaufLine(t, v)))))
-      .when(!open, (el) => el.children(shown.map((v) => div().max_h(48).overflow_hidden().child(this.verlaufLine(t, v, { preview: true })))));
-  }
-
   openReview(tk) {
     openOverlay({ mod: "review", kind: "window", key: "review", width: 960, height: 680,
       props: { ticket: tk.id, terminal: tk.terminal || null, folder: tk.worktree || tk.repo, on: tk.machine || null } });
   }
 
-  ticketRow(t, tk, { primary = false } = {}) {
+  // Die dritte Karten-Aktion: nur wenn der Übergang erlaubt ist; sonst „Prüfen“, wenn
+  // erst `hub verify` oder die Prüfstation im Review-Fenster fehlt.
+  nextOf(tk) {
     const stage = stageOf(tk);
-    const gate = gateOf(tk.id);
-    const live = tk.terminal ? terminals().find((x) => x.address === tk.terminal && x.state === "live") : null;
+    if (stage === "done" || blockersOf(tk, this.all()).length) return null;
+    if (stage === "todo") return {
+      label: "Nächste Stufe", tip: `hub dispatch ${tk.id}: den Agenten im Worktree starten`,
+      run: () => this.hubCmd(["dispatch", tk.id], 120000),
+    };
+    if (stage === "doing") {
+      const gate = gateOf(tk.id);
+      const checksOk = gate ? gate.ok : tk.checks === "pass";
+      if (!checksOk) return {
+        label: "Prüfen", tip: `hub verify ${tk.id}: Checks im Worktree ausführen (Gate für die Prüfung)`,
+        run: () => this.hubCmd(["verify", tk.id], 900000),
+      };
+      const rv = gate?.review ?? null;
+      const reviewOk = rv ? rv.ok : tk.review === "pass";
+      const summary = String(rv?.summary || tk.review_summary || "").trim();
+      if (!reviewOk || !summary) return { label: "Prüfen", tip: "Prüfstation im Review-Fenster starten (hub review-start)", open: true };
+      return {
+        label: "Nächste Stufe", tip: `hub review ${tk.id} --summary …: in die Prüfung übergeben`,
+        run: () => this.hubCmd(["review", tk.id, "--summary", summary], 60000),
+      };
+    }
+    return { label: "Prüfen", tip: "Abnahme im Review-Fenster: Zusammenfassung, Nachweise, Diff", open: true };
+  }
+
+  async hubCmd(args, timeout) {
+    const r = await exec(HUB(), args, { timeout });
+    if (r.code !== 0) throw new Error((r.stderr || r.stdout || `Exit ${r.code}`).trim().split("\n").pop());
+    return r;
+  }
+
+  runCardNext(cx, tk) {
+    const step = this.nextOf(tk);
+    if (!step) return;
+    if (step.open) { this.openReview(tk); return; }
+    if (this.busy) return;
+    this.busy = true;
+    this.note = { ok: null, text: `${step.label} läuft …` };
+    cx.notify();
+    cx.spawn(async (cx) => {
+      try {
+        await step.run();
+        this.note = { ok: true, text: `${step.label}: erledigt` };
+        this.publish(cx);
+        this.gates.refresh(cx);
+      } catch (e) { this.note = { ok: false, text: errorText(e) }; }
+      this.busy = false;
+      cx.notify();
+    });
+  }
+
+  // Die Ticket-Karte, dieselbe wie im Board (ticketCard oben).
+  ticketRow(t, tk, { primary = false } = {}) {
     const c = costs.costs();
-    const spent = c.tickets?.[tk.id], limit = costs.ticketLimit(tk.id);
-    const stopped = Boolean(c.stopped?.[tk.id]) && stage !== "done";
-    const over = stopped || (spent != null && spent > limit);
-    const status = stage === "review" ? "blocked" : stage === "done" ? "done" : stage === "doing" ? live?.status ?? "idle" : "idle";
-    const where = [tk.branch || tk.repo?.split("/").pop(), tk.machine].filter(Boolean).join(" · ");
-    const done = stage === "done";
-    return ui.card(t, `tk-${tk.id}`, { border: stopped ? t.blocked : undefined })
-      .when(!done && Boolean(tk.terminal) && stage !== "review", (el) => el.cursor_pointer().hover((s) => s.bg(t.hover))
-        .tooltip("Klicken: zum Agent").on_click(() => ui.focusAgent(tk.terminal)))
-      .child(h_flex().gap(ui.GAP_M).items_center()
-        .child(ui.statusIcon(t, status))
-        .child(div().flex_1().min_w(0).truncate().text_size(T_M).text_color(done ? t.muted : t.foreground).child(tk.title))
-        .when(spent != null, (el) => el.child(div().flex_none().text_size(T_XS).text_color(over ? t.blocked : t.muted)
-          .tooltip(`Kosten dieses Tickets / Budget (${tk.agent || "Agent"}; nur omp meldet Kosten)`).child(`${usd(spent)} / ${usd(limit)}`))))
-      .child(h_flex().gap(ui.GAP_S).items_center().min_w(0)
-        .when(stage === "review", (el) => el.child(div().flex_none().text_size(T_XS).text_color(t.dim).child("Umsetzer")))
-        .when(Boolean(tk.terminal), (el) => el.child(div().flex_none().max_w(130).child(ui.identityChip(t, `tk-who-${tk.id}`, tk.terminal))))
-        .child(div().flex_1().min_w(0).truncate().text_size(T_S).text_color(t.muted).tooltip(where).child(where))
-        .when(tk.lessons != null, (el) => {
-          const n = tk.lessons.length, tip = [
-            `${n} ${n === 1 ? "Lehre" : "Lehren"} für dieses Repo`,
-            ...tk.lessons.slice(-3).map((l) => `· ${l.text}`),
-            tk.lessonProposal ? "Ein Vorschlag wartet im Review-Fenster." : "",
-          ].filter(Boolean).join("\n");
-          return el.child(div().id(`tk-lessons-${tk.id}`).flex_none().text_size(T_XS)
-            .text_color(tk.lessonProposal ? t.accent : t.muted).tooltip(tip).child(`Lehren ${n}`));
-        }))
-      .when(stage !== "todo", (el) => el.child(h_flex().flex_wrap().gap(ui.GAP_S).items_center()
-        .children(ui.gateChips(t, tk, gate))
-        .when(Boolean(tk.merged), (x) => x.child(ui.chip(t, `gemergt ${tk.merged}`, t.done, { tip: where || tk.merged })))
-        .when(!tk.merged && Boolean(tk.pr), (x) => x.child(ui.chip(t, "PR offen", t.working, { tip: tk.pr })))
-        .when(gate?.base?.ok === false, (x) => x.child(ui.chip(t, "Basis veraltet", t.blocked,
-          { tip: `${gate.base.reason}\nhub rebase ${tk.id}` })))))
-      .when(stage === "review", (el) => el.child(h_flex().gap(ui.GAP_S).items_center().min_w(0)
-        .child(div().flex_none().text_size(T_XS).text_color(t.dim).child("Prüfer"))
-        .when(Boolean(tk.review_terminal || tk.reviewer_name || tk.reviewer),
-          (x) => x.child(ui.reviewerChip(t, `tk-reviewer-${tk.id}`, tk, { maxW: 130 })))
-        .when(!tk.review_terminal && !tk.reviewer_name && !tk.reviewer,
-          (x) => x.child(div().text_size(T_XS).text_color(t.muted).child("noch nicht gestartet")))
-        .child(div().flex_1())
-        .when(Boolean(tk.review_rounds), (x) => x.child(div().flex_none().text_size(T_XS).text_color(t.muted).child(`Runde ${tk.review_rounds}`)))))
-      .when(stage === "review" && Boolean(tk.summary), (el) => el.child(div().max_h(36).overflow_hidden().text_size(T_S).text_color(t.muted).child(clip(tk.summary))))
-      .when((tk.verlauf ?? []).length > 0, (el) => el.child(this.verlaufBlock(t, tk)))
-      .when(stage === "review", (el) => el.child(h_flex().gap(ui.GAP_M).items_center()
-        .child(ui.button(t, `tk-rv-${tk.id}`, "Prüfen", () => this.openReview(tk),
-          { kind: primary ? "primary" : "secondary", small: true, tip: "Zusammenfassung, Nachweise und Diff prüfen; dort Mergen, PR oder Abnehmen" }))
-        .when((tk.evidence ?? []).length > 0, (r) => r.child(div().text_size(T_XS).text_color(t.muted)
-          .child(`${tk.evidence.length} ${tk.evidence.length === 1 ? "Nachweis" : "Nachweise"}`)))))
-      .when(stopped, (el) => el.child(h_flex().gap(ui.GAP_M).items_center()
-        .child(div().flex_1().min_w(0).text_size(T_S).text_color(t.blocked).child("Budget erreicht, Agent angehalten."))
-        .child(ui.button(t, `tk-raise-${tk.id}`, `+${usd(costs.budget().ticket)}`, (cx) => this.act(cx, "Budget erhöht", () => costs.raiseTicket(tk)),
-          { kind: "primary", small: true, tip: "Budget dieses Tickets erhöhen; der Agent macht weiter" }))));
+    const stopped = Boolean(c.stopped?.[tk.id]) && stageOf(tk) !== "done";
+    return ticketCard(t, tk, {
+      gate: gateOf(tk.id),
+      spent: c.tickets?.[tk.id] ?? 0,
+      limit: costs.ticketLimit(tk.id),
+      all: this.all(),
+      stopped,
+      primary,
+      hovered: this.hoveredTicket === tk.id,
+      next: this.nextOf(tk),
+      raiseStep: costs.budget().ticket,
+      onHover: (on, cx) => {
+        if (on) this.hoveredTicket = tk.id;
+        else if (this.hoveredTicket === tk.id) this.hoveredTicket = null;
+        cx.notify();
+      },
+      onOpen: () => this.openReview(tk),
+      onAgent: () => { if (tk.terminal) ui.focusAgent(tk.terminal); },
+      onNext: (cx) => this.runCardNext(cx, tk),
+      onRaise: stopped ? (cx) => this.act(cx, "Budget erhöht", () => costs.raiseTicket(tk)) : null,
+    });
   }
 
   // Budget per ticket and for the whole team (open tickets + orchestrator); click to change.
