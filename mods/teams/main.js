@@ -72,6 +72,11 @@ export default class Teams extends View {
     this.error = "";
     this.notice = "";
     this.command = "";           // `hub agent command` output for the selected/saved agent
+    this.memory = [];            // Gedächtnis entries of the selected agent (`hub memory list`)
+    this.memoryFor = null;       // which agent `memory` belongs to
+    this.memGen = 0;             // stale read guard
+    this.memBusy = false;        // an add is in flight
+    this.memoryNote = null;      // { name, ok, text } after an add
     this.promptGen = 0;
     this.busy = false;
     this.loading = true;
@@ -101,13 +106,16 @@ export default class Teams extends View {
     this.fNotes.on("change", (_e, cx) => cx.notify());
     this.fPrompt = TextareaState.new({ rows: 10, placeholder: "Rollen-Prompt: Auftrag, Vorgehen, Grenzen …" });
     this.fPrompt.on("change", (_e, cx) => cx.notify());
+    this.fMemory = InputState.new({ placeholder: "Was soll der Agent behalten? (hub memory add)" });
+    this.fMemory.on("change", (_e, cx) => cx.notify());
+    this.fMemory.on("submit", (_e, cx) => this.addMemory(cx));
     this.focus = ui.focusFields();
     for (const [id, state] of [["tm-f-name", this.fName], ["tm-f-role", this.fRole], ["tm-f-model", this.fModel],
       ["tm-f-smol", this.fSmol], ["tm-f-slow", this.fSlow], ["tm-f-max-cost", this.fMaxCost],
       ["tm-f-models", this.fModels], ["tm-f-repo", this.fRepo], ["tm-f-branch", this.fBranch],
       ["tm-f-labels", this.fLabels], ["tm-f-skills", this.fSkills], ["tm-f-mcp", this.fMcp],
       ["tm-f-wip", this.fWip], ["tm-f-prompt-path", this.fPromptPath],
-      ["tm-f-notes", this.fNotes], ["tm-f-prompt", this.fPrompt]]) this.focus.track(state, id);
+      ["tm-f-notes", this.fNotes], ["tm-f-prompt", this.fPrompt], ["tm-memory-input", this.fMemory]]) this.focus.track(state, id);
 
     this.load(cx);
     cx.timer.every(REFRESH, (cx) => { if (this.mode === "list" && !this.busy && !this.loading) this.load(cx); });
@@ -155,6 +163,7 @@ export default class Teams extends View {
         if (gen !== this.gen) return;
         this.apply(data);
         this.error = "";
+        this.loadMemory(cx);
       } catch (e) {
         if (gen === this.gen) this.error = clean(e);
       } finally {
@@ -205,6 +214,48 @@ export default class Teams extends View {
 
   activeOf(agent) {
     return this.running(agent.name).length > 0;
+  }
+
+  // The agent's last entries from `hub memory list --agent NAME --json`; null when
+  // the agent changed while the read was in flight, so no foreign list is shown.
+  loadMemory(cx, name = this.selected) {
+    const gen = ++this.memGen;
+    if (!name) { this.memory = []; this.memoryFor = null; cx.notify(); return; }
+    cx.spawn(async (cx) => {
+      let items = null;
+      try { items = json(await hub(["memory", "list", "--agent", name, "--json"], 15000), null); } catch {}
+      if (gen !== this.memGen) return;
+      this.memory = Array.isArray(items) ? items : [];
+      this.memoryFor = name;
+      cx.notify();
+    });
+  }
+
+  // `hub memory add --agent NAME [--ticket ID] TEXT`; the ticket is the agent's
+  // current one when there is one. The list is re-read afterwards.
+  addMemory(cx) {
+    const text = this.fMemory.value().trim();
+    const name = this.selected;
+    if (!text || !name || this.memBusy) return;
+    const ticket = this.running(name)[0]?.id || "";
+    this.memBusy = true;
+    this.memoryNote = { name, ok: null, text: "speichere …" };
+    cx.notify();
+    cx.spawn(async (cx) => {
+      try {
+        await hub(["memory", "add", "--agent", name, ...(ticket ? ["--ticket", ticket] : []), text]);
+        this.fMemory.set_value("");
+        const items = json(await hub(["memory", "list", "--agent", name, "--json"], 15000), []);
+        this.memory = Array.isArray(items) ? items : [];
+        this.memoryFor = name;
+        this.memoryNote = { name, ok: true, text: "Eintrag gespeichert." };
+      } catch (e) {
+        this.memoryNote = { name, ok: false, text: clean(e) };
+      } finally {
+        this.memBusy = false;
+        cx.notify();
+      }
+    });
   }
 
   // ---- roster changes -----------------------------------------------------
@@ -406,6 +457,7 @@ export default class Teams extends View {
         this.command = "";
         this.notice = "";
         localStorage.setItem("teams.selected", agent.name);
+        this.loadMemory(cx);
         cx.notify();
       })
       .child(h_flex().gap(ui.GAP_M).items_center()
@@ -560,6 +612,8 @@ export default class Teams extends View {
     if (same(this.confirm, agent.name)) return this.confirmView(t, agent, cx);
     const color = colorOf(t, agent.color);
     const running = this.running(agent.name);
+    const mem = this.memoryFor === agent.name ? this.memory : [];
+    const memNote = this.memoryNote?.name === agent.name ? this.memoryNote : null;
     const h = agent.harness ?? {};
     const perms = agent.permissions ?? {};
     return v_flex().id("tm-detail").gap(ui.GAP_M)
@@ -602,6 +656,18 @@ export default class Teams extends View {
         .child(ui.button(t, "tm-d-command", "Befehl anzeigen", (cx) => this.showCommand(cx, agent.name),
           { tip: "hub agent command NAME" })))
       .when(Boolean(this.command), (el) => el.child(this.commandBlock(t)))
+      .child(ui.sectionHeader(t, "Gedächtnis", { count: this.memoryFor === agent.name ? this.memory.length : undefined }))
+      .when(!mem.length, (el) => el.child(ui.empty(t, "Noch kein Gedächtnis. Was der Agent gelernt hat, steht hier.", { row: true })))
+      .children(mem.slice(-5).reverse().map((m, i) => h_flex().id(`tm-mem-${i}`).min_h(22).flex_none().gap(ui.GAP_S).items_start()
+        .child(div().w(70).flex_none().text_size(T_XS).text_color(t.dim).child(m.date || "—"))
+        .when(Boolean(m.ticket) && m.ticket !== "-", (el) => el.child(ui.chip(t, m.ticket, t.muted)))
+        .child(div().flex_1().min_w(0).text_size(T_S).text_color(t.foreground).tooltip(m.text).child(m.text))))
+      .child(h_flex().gap(ui.GAP_S).items_center()
+        .child(ui.inputBox(t, "tm-memory-input", Input.new(this.fMemory), { focused: this.focus.has("tm-memory-input") }).flex_1())
+        .child(ui.button(t, "tm-memory-add", "Eintrag hinzufügen", (cx) => this.addMemory(cx),
+          { enabled: !this.memBusy && Boolean(this.fMemory.value().trim()), tip: `hub memory add --agent ${agent.name} …` })))
+      .when(Boolean(memNote), (el) => el.child(div().text_size(T_XS)
+        .text_color(memNote.ok === false ? t.blocked : memNote.ok ? t.done : t.muted).child(memNote.text)))
       .child(ui.sectionHeader(t, "Laufende Tickets", { count: running.length }))
       .when(!running.length, (el) => el.child(ui.empty(t, "Keine laufenden Tickets.", { row: true })))
       .children(running.map((tk) => {

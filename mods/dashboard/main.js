@@ -32,6 +32,10 @@ const DOING_MAX = 5;
 // Team rows keep these columns aligned; the two middle ones share what is left.
 const COL_WHO = 132, COL_STATUS = 68, COL_TIME = 80, COL_COST = 46;
 const SEND_ICON = "mods/orchestra/icons/send.svg";
+const HUB = () => `${appHome()}/mods/orchestra/bin/hub`;
+// A stall is a ticket that sits too long in one station; `hub stalls` owns the
+// thresholds (doing 45 min, review 2 h, todo 1 d), the dashboard only shows them.
+const STALL_REFRESH = 10000;
 
 // Same quoting as mods/orchestra/orchestrator.js, whose start this copies.
 const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
@@ -149,6 +153,10 @@ export default class Dashboard extends View {
     this.tksJson = null;        // the last read, to notify only on change
     this.readingTks = false;
     this.liveSig = null;        // agents/costs signature of the last 5-s pass
+    this.stalls = null;         // `hub stalls --json`; null until the first read
+    this.stallsJson = null;
+    this.readingStalls = false;
+    this.stallNote = null;      // { ok, text } after a nudge
     this.today = null;          // today's omp spend, as the status bar shows it
     this.readingSpend = false;
     this.showDone = false;      // finished agents folded into one row at the team's end
@@ -163,10 +171,11 @@ export default class Dashboard extends View {
     this.focus = ui.focusFields();
     this.focus.track(this.order, "dash-order");
     cx.timer.after(50, () => this.handle.focus());
-    cx.timer.after(100, (cx) => { this.refreshTickets(cx); this.sync(cx); this.loadQuestions(cx); });
+    cx.timer.after(100, (cx) => { this.refreshTickets(cx); this.sync(cx); this.loadQuestions(cx); this.readStalls(cx); });
     cx.timer.after(200, (cx) => this.fetchStats(cx));
     cx.timer.after(600, (cx) => this.fetchToday(cx));
     cx.timer.every(REFRESH, (cx) => { this.refreshTickets(cx); this.sync(cx); this.loadQuestions(cx); this.watchLive(cx); });
+    cx.timer.every(STALL_REFRESH, (cx) => this.readStalls(cx));
     cx.timer.every(SPEND_REFRESH, (cx) => this.fetchToday(cx));
     cx.timer.every(30000, (cx) => this.fetchStats(cx));
     cx.timer.every(20000, (cx) => cx.notify()); // the clock
@@ -244,6 +253,52 @@ export default class Dashboard extends View {
   }
   teamBudget() { return { team: 20, ...(shared("orchestra.budget") ?? {}) }.team; }
   teams() { return shared("orchestra.groups") ?? []; }
+
+  // `hub stalls --json` every 10 s. The row order (In Arbeit, Prüfung, Geplant) and
+  // the thresholds are hub's; a failed read keeps the last rows instead of blanking.
+  readStalls(cx) {
+    if (this.readingStalls) return;
+    this.readingStalls = true;
+    cx.spawn(async (cx) => {
+      try {
+        const r = await exec(HUB(), ["stalls", "--json"], { timeout: 15000 });
+        if (r.code !== 0) return;
+        const next = JSON.parse(r.stdout || "[]");
+        const json = JSON.stringify(next);
+        if (json === this.stallsJson) return;
+        this.stallsJson = json;
+        this.stalls = next;
+        cx.notify();
+      } catch {}
+      finally { this.readingStalls = false; }
+    });
+  }
+
+  // The latest ## Nachtschicht record across the tickets (`hub night` writes it after
+  // a run); no record means the shift is off.
+  nightRecord() {
+    let best = null;
+    for (const tk of this.tickets()) {
+      const n = tk.night;
+      if (n && (!best || n.end > best.end)) best = n;
+    }
+    return best;
+  }
+
+  // "läuft bis 06:00 · 3 gestartet" while the recorded window is still open, else the
+  // last completed window, else "aus".
+  nightText() {
+    const n = this.nightRecord();
+    if (!n) return { text: "Nachtschicht: aus", tip: "hub night startet die Warteschlange, wenn niemand da ist" };
+    const now = new Date();
+    const p = (x) => String(x).padStart(2, "0");
+    const stamp = `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())} ${p(now.getHours())}:${p(now.getMinutes())}`;
+    const time = n.end.slice(11);
+    const text = n.end > stamp
+      ? `Nachtschicht: läuft bis ${time} · ${n.started} gestartet`
+      : `Nachtschicht: zuletzt bis ${time} · ${n.started} gestartet`;
+    return { text, tip: `Letzter Lauf ${n.begin} → ${n.end} · ${n.started} gestartet, ${n.skipped} übersprungen (Tickets, ## Nachtschicht)` };
+  }
 
   // The ticket an agent is working on.
   openTicket(address) { return this.tickets().find((tk) => tk.terminal === address && tk.status !== "done") ?? null; }
@@ -533,6 +588,22 @@ export default class Dashboard extends View {
     });
   }
 
+  // "Nachfragen" on a stall calls `hub nudge`: a message to the live agent plus a
+  // Verlauf comment when it is gone. The row stays until the ticket moves.
+  nudge(row, cx) {
+    this.stallNote = { ok: null, text: `${row.id}: frage nach …` };
+    cx.notify();
+    cx.spawn(async (cx) => {
+      try {
+        const r = await exec(HUB(), ["nudge", row.id], { timeout: 30000 });
+        if (r.code !== 0) throw new Error(errorLine(r));
+        this.stallNote = { ok: true, text: `${row.id}: nachgefragt.` };
+        this.readStalls(cx);
+      } catch (err) { this.stallNote = { ok: false, text: errorText(err) }; }
+      cx.notify();
+    });
+  }
+
   send(cx) {
     const text = this.order.value().trim();
     if (!text || this.sending) return;
@@ -689,6 +760,33 @@ export default class Dashboard extends View {
       .children(questions.map((e) => this.questionRow(t, e, this.key === e.key)));
   }
 
+  // Tickets that sit too long in one station: ticket · stage · age · agent, with
+  // "Nachfragen" (`hub nudge`) and the way to the full Team panel. One quiet line when
+  // nothing is stuck; no primary button here (the screen's primary is "Senden").
+  stallsSection(t) {
+    const rows = this.stalls ?? [];
+    const stageColor = (key) => (key === "review" ? t.blocked : key === "doing" ? t.working : t.muted);
+    const note = this.stallNote;
+    return ui.card(t, "dash-stalls").gap(ui.GAP_XS)
+      .child(h_flex().h(ui.H_SECTION).flex_none().gap(ui.GAP_S).items_center()
+        .child(div().text_size(T_S).font_medium().text_color(t.muted).child("Stockt"))
+        .when(rows.length > 0, (el) => el.child(div().text_size(T_S).text_color(t.blocked).child(String(rows.length))))
+        .child(div().flex_1())
+        .child(ui.link(t, "dash-stalls-all", "Alle anzeigen", () => this.workspace(true),
+          { tip: "Team-Panel im Workspace: alle hängenden Tickets" })))
+      .when(!rows.length, (el) => el.child(ui.empty(t, "Nichts hängt. Alle Stationen bewegen sich.", { row: true })))
+      .children(rows.slice(0, 6).map((r) => h_flex().id(`dash-stall-${rid(r.id)}`).h(ui.H_ROW).flex_none().gap(ui.GAP_S).items_center()
+        .child(div().w(170).flex_none().truncate().text_size(T_XS).text_color(t.muted).tooltip(r.title).child(r.id))
+        .child(ui.chip(t, r.stage_label, stageColor(r.stage)))
+        .child(div().w(78).flex_none().text_size(T_XS).text_color(t.muted).child(`seit ${r.age}`))
+        .child(div().flex_1().min_w(0).truncate().text_size(T_XS).text_color(t.muted).child(r.agent || "—"))
+        .child(ui.button(t, `dash-stall-nudge-${rid(r.id)}`, "Nachfragen", (cx) => this.nudge(r, cx),
+          { small: true, tip: `${r.nudge}: den Agenten nach dem Stand fragen; ohne lebenden Agenten nur ein Kommentar` }))))
+      .when(rows.length > 6, (el) => el.child(div().text_size(T_XS).text_color(t.dim).child(`+${rows.length - 6} weitere`)))
+      .when(Boolean(note), (el) => el.child(div().text_size(T_XS)
+        .text_color(note.ok === false ? t.blocked : note.ok ? t.done : t.muted).child(note.text)));
+  }
+
   stages(t, counts) {
     const count = (n) => (n > 99 ? "99+" : String(n));
     const parts = [];
@@ -826,6 +924,7 @@ export default class Dashboard extends View {
   // days as text bars — no chart framework. A click opens the Team panel for the split.
   fabrikCard(t) {
     const s = this.stats(), d = s?.today;
+    const night = this.nightText();
     const hist = s?.history ?? [];
     const peak = Math.max(1, ...hist.map((h) => h.done));
     const blocks = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
@@ -833,7 +932,7 @@ export default class Dashboard extends View {
     const metric = (label, value, color) => h_flex().flex_none().gap(3).items_end()
       .child(div().text_size(T_L).font_semibold().text_color(color ?? t.foreground).child(value))
       .child(div().text_size(T_XS).text_color(t.muted).child(label));
-    return ui.card(t, "dash-fabrik").w(210).p(8).gap(3).cursor_pointer().hover((x) => x.bg(t.hover))
+    return ui.card(t, "dash-fabrik").w(310).p(8).gap(3).cursor_pointer().hover((x) => x.bg(t.hover))
       .tooltip("Team-Panel im Workspace öffnen: Stationen und Repos aufschlüsseln")
       .on_click((_e, cx) => { cx.stop_propagation(); this.workspace(true, cx); })
       .child(h_flex().h(14).gap(ui.GAP_S).items_center()
@@ -853,7 +952,8 @@ export default class Dashboard extends View {
             .text_color(i === hist.length - 1 ? t.foreground : t.muted)
             .tooltip(`${h.date}: ${h.done} erledigt · ${h.rework} Nacharbeit · Median ${span(h.median_min)}`)
             .child(bar(h)))))
-        .child(div().text_size(T_XS).text_color(t.dim).child("7 Tage · erledigt")));
+        .child(div().text_size(T_XS).text_color(t.dim).child("7 Tage · erledigt"))
+        .child(div().id("dash-night").w_full().truncate().text_size(T_XS).text_color(t.dim).tooltip(night.tip).child(night.text)));
   }
 
   // The money as its own card right of the tickets in work. Two named numbers, each
@@ -945,6 +1045,7 @@ export default class Dashboard extends View {
             .px(16).pt(16).pb(80).gap(ui.GAP_L)
             .child(this.header(t))
             .child(this.waitingSection(t, waits))
+            .child(this.stallsSection(t))
             .child(h_flex().gap(ui.GAP_L).items_start()
               .child(this.teamSection(t))
               .child(this.activitySection(t)))
