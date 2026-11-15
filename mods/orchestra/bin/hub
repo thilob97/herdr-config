@@ -86,10 +86,23 @@ TICKETS = os.path.join(APP, "data", "quests", "tickets")
 FIELDS = ["title", "status", "repo", "labels", "due", "machine", "agent", "branch", "base", "base_head", "worktree", "terminal",
           "space", "tab", "source", "checks", "checks_head", "checks_at", "checks_duration", "checks_exit", "checks_cmd", "verify",
           "evidence", "merged", "pr", "ci", "ci_head", "ci_at", "ci_url", "ci_details",
-          "review", "review_head", "review_at", "review_summary", "review_rounds", "reviewer", "review_terminal",
+          "review", "review_head", "review_at", "review_summary", "review_rounds", "reviewer", "reviewer_name", "review_terminal",
           "assignee", "blocked_by", "tags", "waiting", "by", "updated", "created", "status_at", "status_log"]
 COSTS = os.path.join(APP, "data", "orchestra", "costs.json")  # written by the Team panel's watcher
 AGENTS = {"omp": ["omp"], "claude": ["claude"], "codex": ["codex", "--no-daemon"], "pi": ["pi"]}
+AGENT_NAMES = {"omp": "Oh My Pi", "claude": "Claude", "codex": "Codex", "pi": "Pi"}
+
+
+def agent_name(key):
+    """The reviewer as a person reads it: known agents by name, else the program's basename."""
+    k = (key or "").strip()
+    if k in AGENT_NAMES:
+        return AGENT_NAMES[k]
+    try:
+        first = shlex.split(k)[0]
+    except ValueError:
+        first = k
+    return os.path.basename(first) or "Prüfer"
 LESSON_MAX = 40   # the file never grows past this; the oldest lines fall out
 LESSON_TAIL = 8   # hub dispatch carries this many into the next order
 LESSON_SOURCES = ["review", "human", "ci"]
@@ -386,9 +399,13 @@ def worktree_head(t, on=None):
 
 
 def gate(t):
-    """Whether the recorded check counts: pass, and run on the worktree's current HEAD."""
+    """Whether the recorded check counts: pass, and run on the worktree's current HEAD.
+
+    A landed ticket has no worktree left; its merge commit is not a new check state, so the
+    recorded run and verdict stand (the panel shows them, not a stale red)."""
     on = t.get("machine") or None
-    head, err = head_of(t, on)
+    landed = t.get("status") == "done"
+    head, err = (None, None) if landed else head_of(t, on)
     section = prufung(t)
     meta = meta_fields(section["meta"])
     checks = t.get("checks") or meta.get("checks")
@@ -397,28 +414,36 @@ def gate(t):
          "head": head, "duration": t.get("checks_duration") or meta.get("duration"),
          "at": t.get("checks_at") or meta.get("at"), "exit": t.get("checks_exit") or meta.get("exit"),
          "cmd": t.get("checks_cmd") or meta.get("cmd"),
+         "landed": landed, "stale": False,
          "meta": section["meta"], "tail": section["tail"]}
     if checks != "pass":
         why = (f"Checks rot (Exit {g['exit'] or '?'}): hub verify {t['id']} erneut ausführen"
                if checks == "fail" else f"Noch keine Prüfung: hub verify {t['id']} ausführen")
         g.update(ok=False, reason=why)
+    elif landed:
+        g.update(ok=True, reason="")
     elif err:
         g.update(ok=False, reason=f"{err}; hub verify {t['id']} prüft im Worktree")
     elif not checked:
         g.update(ok=False, reason=f"Prüfung ohne HEAD aufgezeichnet: hub verify {t['id']} erneut ausführen")
     elif head != checked and not (head and head.startswith(checked)):
-        g.update(ok=False, reason=(f"Checks älter als der letzte Commit (geprüft {checked[:7]}, "
-                                   f"jetzt {head[:7]}): hub verify {t['id']} erneut ausführen"))
+        g.update(ok=False, stale=True, reason=(f"Checks älter als der letzte Commit (geprüft {checked[:7]}, "
+                                               f"jetzt {head[:7]}): hub verify {t['id']} erneut ausführen"))
     else:
         g.update(ok=True, reason="")
-    g["review"] = review_gate(t, head, err)
-    g["base"] = base_gate(t, head, err)
+    g["review"] = review_gate(t, head, err, landed)
+    g["base"] = ({"base": t.get("base") or None, "base_head": t.get("base_head") or None, "ok": None,
+                  "reason": "Ticket ist gelandet", "tip": None, "behind": None}
+                 if landed else base_gate(t, head, err))
     return g
 
 
-def review_gate(t, head=None, err=None):
-    """Whether the reviewer's verdict counts: pass, given on the worktree's current HEAD."""
-    if head is None and err is None:
+def review_gate(t, head=None, err=None, landed=False):
+    """Whether the reviewer's verdict counts: pass, given on the worktree's current HEAD.
+
+    For a landed ticket the recorded verdict is what counts; the merge commit on the base
+    branch is not a new review state."""
+    if head is None and err is None and not landed:
         head, err = head_of(t, t.get("machine") or None)
     section = review_section(t)
     meta = review_meta_fields(section["meta"])
@@ -427,16 +452,20 @@ def review_gate(t, head=None, err=None):
     summary = t.get("review_summary") or section["summary"] or ""
     g = {"verdict": verdict, "ok": False, "reason": "", "head": head, "review_head": checked or None,
          "at": t.get("review_at") or meta.get("at"), "rounds": t.get("review_rounds") or meta.get("rounds"),
-         "summary": summary, "reviewer": t.get("reviewer") or meta.get("reviewer") or ""}
+         "summary": summary, "reviewer": t.get("reviewer") or meta.get("reviewer") or "",
+         "reviewer_name": t.get("reviewer_name") or "", "landed": landed, "stale": False}
     if verdict == "fail":
         g["reason"] = f"Review rot: {summary}; Befunde im Verlauf" if summary else "Review rot; Befunde im Verlauf"
     elif verdict != "pass":
         g["reason"] = f"Noch kein Reviewer-Urteil: hub review-start {t['id']}"
+    elif landed:
+        g["ok"] = True
     elif err:
         g["reason"] = f"{err}; hub review-start {t['id']} prüft im Worktree"
     elif not checked:
         g["reason"] = f"Review-Urteil ohne HEAD aufgezeichnet: hub review-verdict {t['id']} erneut ausführen"
     elif head != checked and not (head and head.startswith(checked)):
+        g["stale"] = True
         g["reason"] = (f"Review-Urteil älter als der letzte Commit (geprüft {checked[:7]}, "
                        f"jetzt {(head or '?')[:7]}): hub review-start {t['id']}")
     else:
@@ -957,10 +986,11 @@ def cmd_review_start(a):
     if r.returncode != 0:
         die(f"hc run: {(r.stderr or r.stdout).strip()}")
     out = json.loads(r.stdout)
-    t.update(reviewer=key, review_terminal=out["address"])
+    t.update(reviewer=key, reviewer_name=agent_name(key), review_terminal=out["address"])
     write(t)
     print(json.dumps({"ticket": a.id, "terminal": out["address"], "name": name, "folder": folder,
-                      "branch": branch, "base": base, "agent": key}, ensure_ascii=False))
+                      "branch": branch, "base": base, "agent": key, "reviewer_name": t["reviewer_name"]},
+                     ensure_ascii=False))
 
 
 def cmd_review_verdict(a):
@@ -975,10 +1005,13 @@ def cmd_review_verdict(a):
     summary = " ".join(a.summary.split())
     if not summary:
         die("leere Zusammenfassung")
+    # The reviewer often starts with "Urteil: pass"; the comment already names the verdict.
+    summary = re.sub(r"(?i)^urteil:\s*", "", summary)
     n = int(t.get("review_rounds") or 0) + 1
     at = time.strftime("%Y-%m-%d %H:%M")
     t.update(review=a.verdict, review_head=head, review_at=at, review_summary=summary, review_rounds=str(n))
-    set_review(t, f"- {at} · {a.verdict} · Runde {n} · HEAD {head[:7]} · {t.get('reviewer') or 'review'}\n\n{summary}")
+    set_review(t, f"- {at} · {a.verdict} · Runde {n} · HEAD {head[:7]} · "
+                  f"{t.get('reviewer_name') or t.get('reviewer') or 'review'}\n\n{summary}")
     add_comment(t, "review", f"Urteil: {a.verdict} (Runde {n}) · {summary}")
     if a.verdict == "fail":
         set_status(t, "doing")
@@ -1073,8 +1106,12 @@ def cmd_gate(a):
         return
     r = g["review"]
     b = g["base"]
-    print(f"{a.id}: {'frei' if g['ok'] else 'gesperrt'} · {g['reason'] or 'Checks grün auf dem HEAD des Worktrees'}")
-    print(f"{a.id}: Review {'grün' if r['ok'] else 'offen'} · {r['reason'] or 'Urteil pass auf dem HEAD des Worktrees'}")
+    print(f"{a.id}: {'frei' if g['ok'] else 'gesperrt'} · "
+          f"{g['reason'] or ('aufgezeichnete Prüfung (Ticket ist fertig)' if g.get('landed') else 'Checks grün auf dem HEAD des Worktrees')}")
+    if r.get("landed"):
+        print(f"{a.id}: Review {'grün' if r['ok'] else 'offen'} · aufgezeichnetes Urteil (Ticket ist fertig)")
+    else:
+        print(f"{a.id}: Review {'grün' if r['ok'] else 'offen'} · {r['reason'] or 'Urteil pass auf dem HEAD des Worktrees'}")
     if b.get("ok") is not None:
         what = b["reason"] or f"setzt auf {b['base']} auf"
         print(f"{a.id}: Basis {'aktuell' if b['ok'] else 'veraltet'} · {what}")
