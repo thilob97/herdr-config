@@ -153,13 +153,19 @@ class HubBugsTest(unittest.TestCase):
             rows = {}
         rows[address] = info
         self.write_json(self.get_file, rows)
+        listed = {}
+        try:
+            with open(self.ls_file, encoding="utf-8") as f:
+                listed = {x["address"]: x for x in json.load(f).get("terminals") or [] if x.get("address")}
+        except (OSError, ValueError, KeyError):
+            pass
+        listed[address] = {"address": address, **info}
+        self.write_json(self.ls_file, {"terminals": list(listed.values())})
 
     def orchestrator(self, address="t-orch", **info):
         now = int(time.time() * 1000)
         self.terminal(address, labels={"hub.role": "orchestrator"}, state="live", name="orchestrator",
                       created_ms=now - 17 * 3600_000, **info)
-        self.write_json(self.ls_file, {"terminals": [{"address": address,
-                                                      "labels": {"hub.role": "orchestrator"}}]})
         return address
 
     def timeline(self, *args):

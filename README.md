@@ -297,18 +297,55 @@ Feste Agents liegen versioniert in `agents/roster.json`: Name, Rolle, Programm, 
 
 Das Fenster **Team-Hub** (Knopf „Team-Hub“ in der Tab-Leiste, `⌘⌥9`, sonst `mod.open:teams`) zeigt die Agents als Karten mit Avatar in Agent-Farbe, Rolle, Programm/Modell, Repo sowie Einsätzen und Kosten; ein Klick zeigt die laufenden Tickets und startet auf Wunsch einen vorbelegten Auftrag. Anlegen, Bearbeiten und Löschen passieren im selben Fenster. `hub stats agents` zeigt Einsätze und Kosten je Roster-Agent.
 
-## Mehrere Orchestratoren gleichzeitig
+## Eine Fabrik je Workspace
 
-Ein App-Home kann mehrere Orchestratoren tragen — je einer pro Projekt, etwa ein eigener Herdr-Space mit einem `omp`, dem man sagt „Du bist der Orchestrator dieses Projekts". Was dabei gilt:
+Jeder Herdr-Space ist eine eigene Fabrik: eigener Orchestrator, eigene Tickets, eigene
+Timeline, eigene WIP-Zählung. Der Schlüssel ist die Space-ID, nicht mehr das Terminal des
+Orchestrators — ein Neustart mit neuer Terminal-ID verliert die Tickets nicht.
 
-- **Identität**: `hub` nimmt zuerst das eigene Terminal (`HC_TERMINAL_ID`, geprüft über `hc get` und das Label `hub.role=orchestrator`) und erst danach ein beliebiges Orchestrator-Terminal. `hub whoami` zeigt Orchestrator, Name, eigene Tickets und WIP.
-- **Besitz**: Jedes neue Ticket bekommt `owner` (Terminal-ID des Orchestrators). `hub status`, `stalls`, `night`, `stats` und `cleanup` sehen standardmäßig nur eigene und besitzerlose Tickets; `--all` zeigt alles. `hub nudge` auf fremde Tickets nur mit `--force`.
-- **WIP je Orchestrator**: Die Limits zählen nur die eigenen Tickets (`hub wip --all` zeigt die globale Summe, `hub wip --mine arbeit=2` nur die eigenen).
-- **Schreibsperre**: Ticket- und Ereignis-Schreibvorgänge laufen unter `data/orchestra/.hub.lock` (`flock`, 10 s Timeout) — parallele Kommentare gehen nicht mehr verloren (Test: 20 gleichzeitige Kommentare, 20 im Verlauf).
-- **Geteilt bleibt**: Roster (`agents/roster.json`), Lehren, Agent-Gedächtnis, Kosten, Timeline und das Ticket-Verzeichnis. Das ist gewollt: dieselben Agenten, dieselben Lehren, eine Sicht.
-- **Getrennt bleiben**: Worktrees (`~/.herdr/worktrees/<repo>/<branch>`), Branches, Agenten-Terminals (Kinder des jeweiligen Orchestrators) und die Panel-Sicht (`shared("layout")` pro Fenster).
+- **Ticket**: Neue Tickets tragen `space` (ID, remote `maschine/sp…`), `space_name` und
+  weiterhin `owner` (Terminal, nur als Herkunft). `hub ticket new --space <id|name>` legt
+  ein Ticket in einem anderen Space an. Der Herdr-Space des Agenten heißt jetzt
+  `agent_space`.
+- **Filter überall gleich**: ohne Angabe der eigene Space, `--space <id|name>` dieser,
+  `--all` alle — in `ticket list`, `status`, `stats`, `stalls`, `wip`, `timeline`, `gates`,
+  `night` und `cleanup`. Der eigene Space kommt aus `HERDR_SPACE`, dem eigenen Terminal
+  (`hub.ticket` → Ticket-Space, sonst `herdr.space`/`hub.space`) oder dem aktuellen Ordner.
+- **Identität**: `orchestrator_id()` nimmt zuerst das eigene Terminal
+  (`hub.role=orchestrator`) und dann den Orchestrator **des eigenen Space**; ein fremder
+  Space wird nie still genommen. `hub whoami` zeigt Orchestrator, Space-Name, Space-ID,
+  Ordner, offene Tickets und WIP.
+- **WIP je Space**: Limits zählen die Tickets des Space (`hub wip --all` ist die globale
+  Summe, `--mine` setzt sie für diesen Space). Alte `mine`-Einträge je Terminal werden
+  weiter gelesen; geschrieben wird je Space.
+- **Orchestrator je Space**: `hub orchestrator start [--space …] [--agent …]` startet im
+  Space einen Terminal in `~/.herdr/orchestrator` (dort gilt `AGENTS.md`) mit den Labels
+  `hub.role=orchestrator`, `hub.space=<id>` und `herdr.space=<id>`; der Start-Prompt nennt
+  Space-Name, ID und Ordner. Läuft dort schon einer, verweigert es mit dessen Terminal;
+  `--restart` ersetzt ihn. `hub orchestrator list` zeigt alle. Das Team-Panel startet ihn
+  über denselben Weg (`mods/orchestra/orchestrator.js` ruft `hub orchestrator start`).
+- **`hub spaces [--json]`**: je Space ID, Name, Ordner, Maschine, Orchestrator, `live`,
+  offene Tickets je Stufe und Kosten. `hub spaces --adopt` ordnet Alt-Tickets ohne
+  Workspace per Repo-Ordner zu; `--to <id|name>` fängt auch die per Repo nicht
+  zuordenbaren (Dry-Run ohne `--yes`, nichts wird gelöscht).
+- **Altbestand**: Ein Ticket ohne `space_name` gilt als alt; sein `space` ist der damalige
+  Agent-Space. Es zählt zu dem Space, dessen Ordner sein `repo` enthält; ohne solchen
+  Ordner ist es „ohne Workspace" und nur mit `--all` oder `--space ""`/`none` sichtbar —
+  nie in einer Projekt-Fabrik. `hub status` nennt die Gruppe in einer Fußzeile.
+- **Leistung**: Space-Liste und Terminal-Metadaten werden je hub-Aufruf einmal geholt
+  (`herdr-app ls`, `hc ls --all`), `repo → space` ist gecacht; auch `timeline --json` mit
+  50 Tickets bleibt unter fünf Subprozessen.
+- **Schreibsperre**: Ticket- und Ereignis-Schreibvorgänge laufen unter
+  `data/orchestra/.hub.lock` (`flock`, 10 s Timeout) — parallele Kommentare gehen nicht
+  verloren (Test: 20 gleichzeitige Kommentare, 20 im Verlauf).
+- **Geteilt bleibt**: Roster (`agents/roster.json`), Lehren, Agent-Gedächtnis, Kosten,
+  Ticket-Verzeichnis und die Ereignis-Chronik (mit `space` je Zeile). **Getrennt bleiben**:
+  Sichten, WIP-Zahlen, Orchestratoren, Worktrees (`~/.herdr/worktrees/<repo>/<branch>`),
+  Branches und die Agenten-Terminals ihrer Fabrik.
 
-Grenzen: Das Landen in **dasselbe** Repo aus zwei Orchestratoren ist nicht serialisiert (beide brauchen den Haupt-Checkout auf dem Basis-Branch); für getrennte Projekte ist das irrelevant. Board und Dashboard zeigen den Besitzer noch nicht.
+Vertrag, Beispiele je JSON-Kommando und Migration: `docs/ui/notes-SPACE.md`. Grenzen: Das
+Landen in **dasselbe** Repo aus zwei Spaces ist nicht serialisiert (beide brauchen den
+Haupt-Checkout auf dem Basis-Branch); Board und Dashboard zeigen den Space noch nicht.
 
 ## Timeline: wer wann woran gearbeitet hat
 
