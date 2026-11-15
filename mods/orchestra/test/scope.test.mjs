@@ -26,7 +26,14 @@ export const agents = () => globalThis.__agents ?? [];
 export const terminals = () => globalThis.__terminals ?? [];
 export const spaces = () => globalThis.__spaces ?? [];
 export const focused = () => globalThis.__focused ?? null;
-export const shared = (k) => (globalThis.__shared ?? {})[k] ?? null;
+// Wie der Host: jeder Aufruf gibt eine frische Kopie (bei 70 Tickets ~1 ms). Wer eine
+// Liste je Element braucht, liest sie einmal und gibt sie weiter — sonst wird aus einem
+// Rendern über 70 Tickets mehr als das Zeitbudget, und Herdr schneidet es ab.
+export const shared = (k) => {
+  globalThis.__reads = (globalThis.__reads ?? 0) + 1;
+  const v = (globalThis.__shared ?? {})[k];
+  return v == null ? null : structuredClone(v);
+};
 export const setShared = (k, v) => { (globalThis.__shared ??= {})[k] = v; };
 export const hc = async (...a) => { (globalThis.__hc ??= []).push(a); return { code: 0, stdout: "", stderr: "" }; };
 export const exec = async () => ({ code: 0, stdout: "{}", stderr: "" });
@@ -65,6 +72,7 @@ function world({ active = "spag", agents = [], terminals = [], tickets = TICKETS
   globalThis.__focused = null;
   globalThis.__shared = { "orchestra.tickets": tickets };
   globalThis.__hc = [];
+  globalThis.__reads = 0;
   return { spaces: list, shared: globalThis.__shared };
 }
 
@@ -98,6 +106,18 @@ test("ältere Auslieferungen: das hub.ticket-Label im Space nennt den Workspace"
   const terminals = [{ address: "t-old", name: "omp", state: "live", space: "spag", labels: { "herdr.space": "spag", "hub.ticket": "old-1" } }];
   world({ terminals, tickets });
   assert.equal(ui.workspaceId("spag"), "spa");
+});
+
+// ---------- Rendern: eine Liste je Durchlauf, nicht je Ticket ----------
+
+test("die Bereichsprüfung liest die Ticket-Liste einmal, nicht je Ticket", () => {
+  // 70 Tickets, alle in Alpha: das Rendern gibt die einmal gelesene Liste weiter.
+  const tickets = Array.from({ length: 70 }, (_, i) => ({ id: `t${i}`, status: "doing", space: "spa", space_name: "Alpha" }));
+  world({ active: "spa", tickets });
+  const list = ui.teamTickets();
+  assert.equal(globalThis.__reads, 1, "ein Zugriff für die ganze Liste");
+  for (const tk of list) assert.equal(ui.inScope(tk, list), true);
+  assert.equal(globalThis.__reads, 1, "kein Lesezugriff mehr je Ticket");
 });
 
 // ---------- 2: dispatched agents in the inbox of their workspace ----------

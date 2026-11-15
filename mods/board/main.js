@@ -63,7 +63,10 @@ const sortCards = (a, b) => at(a.status_at || a.updated || a.created) - at(b.sta
 export default class Board extends View {
   init(_props, cx) {
     this.handle = cx.focus_handle();
-    this.tickets = (shared("orchestra.tickets") ?? []).map(normalize).filter(ui.inScope);
+    // Eine Liste je Lauf: `shared()` kopiert bei jedem Aufruf, `inScope` je Ticket wäre
+    // bei 70 Tickets teuer (siehe ui.inScope).
+    const tks = ui.teamTickets();
+    this.tickets = tks.map(normalize).filter((tk) => ui.inScope(tk, tks));
     this.gates = shared("orchestra.gates") ?? [];
     this.space = ui.activeSpace()?.id ?? "";
     this.costFile = null;
@@ -145,7 +148,8 @@ export default class Board extends View {
         if (r.code !== 0) throw new Error((r.stderr || r.stdout || `Exit ${r.code}`).trim().split("\n").pop());
         // Alle lesen, auf die Fabrik des aktiven Workspace filtern: Alt-Tickets ohne
         // `space` bleiben sichtbar (ui.inScope), fremde Spaces nicht.
-        this.tickets = JSON.parse(r.stdout || "[]").map(normalize).filter(ui.inScope);
+        const tks = JSON.parse(r.stdout || "[]");
+        this.tickets = tks.map(normalize).filter((tk) => ui.inScope(tk, tks));
         this.loaded = true;
         this.seen("tickets");
       } catch (e) { this.seen("tickets", e); } finally { this.readingT = false; cx.notify(); }

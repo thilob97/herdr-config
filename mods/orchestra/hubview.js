@@ -466,8 +466,11 @@ export class HubSection {
   }
 
   /** Space-Wechsel (spaces() zeichnet neu): Gates und Kennzahlen sofort für den neuen
-   *  Workspace lesen. Kein Neustart, kein eigener Timer, keine fremde Fabrik. */
+   *  Workspace lesen. Kein Neustart, kein eigener Timer, keine fremde Fabrik.
+   *  Läuft einmal zu Beginn jedes Renderns: hier beginnt der Cache des Renderns. */
   sync(cx) {
+    this.ticketsNow = null;
+    this.costsCache = null;
     const sid = ui.activeSpace()?.id ?? "";
     if (sid === this.space) return;
     this.space = sid;
@@ -551,8 +554,20 @@ export class HubSection {
   }
 
   // The factory of this window's workspace: the orchestrator's tickets, filtered like
-  // every list here (ui.inScope keeps old tickets without `space`).
-  all() { return (shared("orchestra.tickets") ?? []).filter(ui.inScope); }
+  // every list here (ui.inScope keeps old tickets without `space`). Gelesen wird die
+  // Liste einmal je Rendern (sync): jede Karte fragt sie erneut (blockersOf, nextOf),
+  // und `shared()` liefert bei jedem Aufruf eine frische Kopie — je Ticket wäre das
+  // bei 70 Tickets das halbe Render-Budget.
+  all() {
+    if (!this.ticketsNow) {
+      const tks = ui.teamTickets();
+      this.ticketsNow = tks.filter((tk) => ui.inScope(tk, tks));
+    }
+    return this.ticketsNow;
+  }
+
+  /** Die Kosten einmal je Rendern: `ticketRow` braucht sie für jede Karte. */
+  costNow() { return (this.costsCache ??= costs.costs()); }
 
   // ---------- Messwerte ----------
 
@@ -724,7 +739,7 @@ export class HubSection {
 
   // Die Ticket-Karte, dieselbe wie im Board (ticketCard oben).
   ticketRow(t, tk, { primary = false } = {}) {
-    const c = costs.costs();
+    const c = this.costNow();
     const stopped = Boolean(c.stopped?.[tk.id]) && stageOf(tk) !== "done";
     return ticketCard(t, tk, {
       gate: gateOf(tk.id),
@@ -757,7 +772,7 @@ export class HubSection {
   // setting for the home). The spend shown is this workspace's factory — open tickets of
   // the space plus its orchestrator; the tooltip names the whole home.
   budgetRow(t) {
-    const b = costs.budget(), c = costs.costs();
+    const b = costs.budget(), c = this.costNow();
     const sp = ui.activeSpace();
     const open = this.all().filter((tk) => tk.status !== "done");
     const spend = sp

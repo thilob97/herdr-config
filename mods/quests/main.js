@@ -142,6 +142,11 @@ class Board {
     this.focus = ui.focusFields();
     this.focus.track(this.input, "q-filter");
     this.rev = shared(REV)?.at ?? 0;
+    // Die Ticket-Liste der Fabrik, einmal je Rendern gelesen: `shared()` liefert bei
+    // jedem Aufruf eine frische Kopie (~1 ms bei 70 Tickets), und stageOf, look und
+    // card fragen sie je Ticket — je Aufruf wäre das Rendern über dem Budget.
+    this.teamList = null;
+    this.pending = new Map(); // Quelle -> Runde, die sie gerade liest
     this.reload(cx, true);
   }
 
@@ -156,7 +161,10 @@ class Board {
       cx.notify();
       await Promise.all(SOURCES.map(async ({ key }) => {
         if (!settings[key].enabled) { delete this.src[key]; return; }
-        if (!remote && key !== "plain" && this.src[key]) return;
+        // `loading` heißt: noch hat sie niemand zu Ende gelesen (auch eine abgelöste
+        // Runde nicht) — dann neu lesen, statt für immer den Spinner zu zeigen.
+        if (!remote && key !== "plain" && this.src[key] && !this.src[key].loading) return;
+        this.pending.set(key, gen);
         this.src[key] = { ...(this.src[key] ?? { tickets: [] }), loading: true };
         cx.notify();
         let next;
@@ -165,7 +173,14 @@ class Board {
           if (r.repos) this.repos = r.repos;
           next = { tickets: r.tickets, error: r.error ? store.mask(r.error, settings) : null, note: r.note ?? null, loading: false };
         } catch (e) { next = { tickets: [], error: store.mask(errorText(e), settings), loading: false }; }
-        if (gen !== this.gen) return;
+        // Eine abgelöste Runde übernimmt ihr Ergebnis nicht; ihren Spinner nimmt sie
+        // aber mit, damit die Quelle beim nächsten Lauf sicher neu liest.
+        if (this.pending.get(key) !== gen) return;
+        this.pending.delete(key);
+        if (gen !== this.gen) {
+          if (this.src[key]?.loading) this.src[key] = { ...this.src[key], loading: false };
+          return;
+        }
         this.src[key] = next;
         cx.notify();
       }));
@@ -179,7 +194,8 @@ class Board {
   // The team's ticket for this quest, when the orchestrator took it: by source URL, for a
   // local ticket by the same id. Its status is what Quests shows (B1, one language).
   team(tk) {
-    return (shared("orchestra.tickets") ?? []).find((x) => (tk.source === "plain" ? x.id === tk.id : Boolean(tk.url) && x.source === tk.url)) ?? null;
+    const tks = this.teamList ?? ui.teamTickets();
+    return tks.find((x) => (tk.source === "plain" ? x.id === tk.id : Boolean(tk.url) && x.source === tk.url)) ?? null;
   }
 
   // The stage a quest is in: the team's, when it has one, else its source's.
@@ -188,7 +204,7 @@ class Board {
   matches(tk) {
     // Nur die lokale Quelle ist eine Fabrik-Liste: GitHub-, Asana- und Trilium-Quests
     // gehören keinem Workspace. Lokale Tickets ohne `space` (Altbestand) bleiben sichtbar.
-    if (tk.source === "plain" && !ui.inScope(tk)) return false;
+    if (tk.source === "plain" && !ui.inScope(tk, this.teamList)) return false;
     const st = this.stageOf(tk);
     if (this.stage === "todo" && st !== "todo") return false;
     if (this.stage === "doing" && st !== "doing" && st !== "review" && !liveState(this.record(tk))?.alive) return false;
@@ -411,6 +427,7 @@ class Board {
 
   render(cx) {
     this.sync(cx);
+    this.teamList = ui.teamTickets();
     const t = theme();
     const box = (id) => v_flex().id(id).min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border);
     const listCol = v_flex().id("q-list").flex_1().min_h(0).px(6).pb(ui.GAP_M).overflow_y_scrollbar().children(this.list(t));
