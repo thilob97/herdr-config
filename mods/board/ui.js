@@ -242,23 +242,35 @@ export function ticketWorkspace(tk) {
  *  Tickets: sein `agent_space` (ältere Auslieferungen: ein Terminal mit `hub.ticket`)
  *  nennt das Ticket, dessen Workspace gilt. Jeder andere Space ist sein eigener. Ein
  *  Space, den ein Ticket als Workspace nennt, bleibt Workspace — wie `hub spaces`. */
+const WS_CACHE = { tks: null, map: new Map() };
 export function workspaceId(sid) {
   const id = String(sid ?? "").trim();
   if (!id) return "";
   const tks = shared("orchestra.tickets") ?? [];
-  if (tks.some((t) => String(t.space ?? "").trim() === id && String(t.space_name ?? "").trim())) return id;
-  const mine = tks.find((t) => String(t.agent_space ?? "").trim() === id);
-  if (mine) {
-    const ws = ticketWorkspace(mine);
-    if (ws && ws !== id) return ws;
+  // Der Cache hängt an der Ticket-Liste (ein neues Array ungültigt); Kopfzeilen
+  // (Budget, Messwerte) scannen so nicht jedes Mal 70 Tickets × alle Spaces
+  // erneut — das Rendern kommt schneller zurück und wird seltener unterbrochen.
+  if (WS_CACHE.tks !== tks) { WS_CACHE.tks = tks; WS_CACHE.map = new Map(); }
+  const hit = WS_CACHE.map.get(id);
+  if (hit !== undefined) return hit;
+  let ws = id;
+  if (tks.some((t) => String(t?.space ?? "").trim() === id && String(t?.space_name ?? "").trim())) ws = id;
+  else {
+    const mine = tks.find((t) => String(t?.agent_space ?? "").trim() === id);
+    if (mine) {
+      const tk_ws = ticketWorkspace(mine);
+      if (tk_ws && tk_ws !== id) ws = tk_ws;
+    } else {
+      for (const x of terminals()) {
+        if ((x.space ?? x.labels?.["herdr.space"]) !== id) continue;
+        const tk = tks.find((t) => t?.id === x.labels?.["hub.ticket"]);
+        const tk_ws = tk ? ticketWorkspace(tk) : "";
+        if (tk_ws && tk_ws !== id) { ws = tk_ws; break; }
+      }
+    }
   }
-  for (const x of terminals()) {
-    if ((x.space ?? x.labels?.["herdr.space"]) !== id) continue;
-    const tk = tks.find((t) => t.id === x.labels?.["hub.ticket"]);
-    const ws = tk ? ticketWorkspace(tk) : "";
-    if (ws && ws !== id) return ws;
-  }
-  return id;
+  WS_CACHE.map.set(id, ws);
+  return ws;
 }
 
 /** Der Workspace eines Agenten: der seines Tickets — auch eines erledigten —, sonst
