@@ -35,6 +35,60 @@ const machineOf = (address) => (address.includes("/") ? address.slice(0, address
 const baseName = (p) => p.replace(/\/+$/, "").split("/").pop() || p;
 const errorLine = (r) => (r.stderr || r.stdout || `exit ${r.code}`).trim().split("\n").pop().slice(0, 160);
 
+// Labels wie auf der Board-Karte (mods/board/card.js): höchstens zwei Chips, alle Labels
+// im Tooltip; die Chips tragen den vollen Text und schrumpfen selbst. Herdr kennt kein
+// Modul über Mod-Ordner hinweg, deshalb steht die Logik hier wortgleich.
+const PRIO = /^(p[0-3]|prio[-:]?[0-3]|kritisch|hoch|urgent)$/i;
+const splitList = (v) => (Array.isArray(v) ? v : String(v ?? "").split(/[,\s]+/)).map((s) => String(s).trim()).filter(Boolean);
+function labelChips(t, tk) {
+  const ordered = [...new Set([...splitList(tk.labels), ...splitList(tk.tags)])].filter((l) => !PRIO.test(l));
+  if (!ordered.length) return [];
+  const all = ordered.join(", ");
+  const shown = ordered.slice(0, ordered.length > 2 ? 1 : 2);
+  const out = shown.map((l) => ({ text: l, color: t.muted, tip: all }));
+  if (ordered.length > shown.length) out.push({ text: `+${ordered.length - shown.length}`, color: t.dim, tip: all, fixed: true });
+  return out;
+}
+const labelPill = (t, text, color, { tip, shrink = false } = {}) => h_flex().flex_none().h(16).px(2).items_center().rounded(4)
+  .when(shrink, (el) => el.flex_shrink_1().min_w(0)).when(Boolean(tip), (el) => el.tooltip(tip))
+  .bg(color + "26").text_size(T_XS).font_medium().text_color(color)
+  .child(shrink ? div().min_w(0).truncate().child(text) : text);
+
+// Titel auf zwei Zeilen mit „…" an einer Wortgrenze (Kopie aus mods/board/card.js).
+const clampTitle = (s, per = 34) => {
+  const text = String(s ?? "").replace(/\s+/g, " ").trim();
+  const budget = Math.max(8, Math.floor(per));
+  const words = text.split(" ").filter(Boolean);
+  const lines = [];
+  let i = 0;
+  for (let li = 0; li < 2 && i < words.length; li++) {
+    const room = li === 1 ? Math.max(1, budget - 1) : budget;
+    if (words[i].length > room) {
+      lines.push(`${words[i].slice(0, Math.max(1, room - 1))}…`);
+      return lines.join(" ");
+    }
+    let line = words[i++];
+    while (i < words.length && `${line} ${words[i]}`.length <= room) line += ` ${words[i++]}`;
+    lines.push(line);
+  }
+  if (i >= words.length) return lines.join(" ");
+  return `${lines.join(" ")}…`;
+};
+
+// Ein Terminal-Titel beginnt oft mit einem Programm-Glyph und Steuerzeichen („π ", „✳ ").
+// Nur der Anfang fällt weg; der Titel selbst bleibt, wie das Terminal ihn schreibt.
+const TITLE_LEAD = /^[\s\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202f\u2060-\u206f\ufe00-\ufe0f\ufeff\u{e000}-\u{f8ff}\u{1f000}-\u{1faff}\p{So}\p{Sk}]+/u;
+const TITLE_GLYPH = /^(?:π|✳|✻|✽|✢|✶|⏺|●|◐|◑|◒|◓|◆|◇|▲|△|■|□)+/u;
+function cleanTitle(s) {
+  let text = String(s ?? "");
+  for (let i = 0; i < 4; i++) {
+    const next = text.replace(TITLE_LEAD, "").replace(TITLE_GLYPH, "");
+    if (next === text) break;
+    text = next;
+  }
+  return text.trim();
+}
+
 // The sidebar's state for a card: its own or the most urgent of its sub-agents (terminals
 // it started and omp's task sub-agents), so "Arbeitet" counts one number there and here (N8).
 const RANK = { blocked: 4, done: 3, working: 2, idle: 1 };
@@ -240,9 +294,12 @@ export default class Inbox extends View {
     return div().size(16).flex_none();
   }
 
-  // Two-line list row (h 44): who/what and its state; where, below.
+  // Drei Zeilen, höchstens 72 px: wer/was mit Zustand und Labels; darunter der Titel
+  // auf zwei Zeilen (Wortgrenze, „…", Tooltip mit dem ganzen Text); darunter wo und
+  // die Gates. Labels schrumpfen wie auf der Board-Karte, die Metazeile selbst nicht
+  // unter 44 px — so bleibt kein „h…" stehen.
   row(t, e, on, list, i) {
-    let status, name, title, meta, right, named = true;
+    let status, name, title, meta, right, named = true, labels = [];
     if (e.kind === "agent") {
       const a = e.a, m = machineOf(a.address), who = ui.identity(a.address);
       status = e.st ?? a.status;
@@ -250,7 +307,7 @@ export default class Inbox extends View {
       // (`omp` klein und gedämpft). Der Programmname („Oh My Pi") ist keine Identität.
       name = who.name;
       named = who.named;
-      title = ui.plain(a.title);
+      title = cleanTitle(ui.plain(a.title));
       meta = `${m ? `${m} · ` : ""}${a.space_name} · Tab ${a.tab_name}`;
       right = div().flex_none().text_size(T_S).text_color(ui.statusColor(t, status)).child(`${ui.STATUS_WORD[status]}${e.since ? ` · ${ui.ageMs(e.since)}` : ""}`);
     } else if (e.kind === "orch") {
@@ -260,29 +317,42 @@ export default class Inbox extends View {
       status = "working"; name = null; title = e.p.title; meta = "beim Orchestrator · unterwegs, bis ein Ticket da ist";
       right = div().flex_none().text_size(T_S).text_color(t.working).child("unterwegs");
     } else if (e.kind === "question") {
-      status = "blocked"; name = null; title = e.tk.title;
+      status = "blocked"; name = null; title = e.tk.title; labels = labelChips(t, e.tk);
       meta = `Ticket ${e.tk.id} · Frage von ${e.q.role}`;
       right = div().flex_none().text_size(T_S).text_color(t.blocked).child(ui.ageMs(tsMs(e.q.ts)) || "offen");
     } else {
       const tk = e.tk;
-      status = "blocked"; name = null; title = tk.title;
+      status = "blocked"; name = null; title = tk.title; labels = labelChips(t, tk);
       meta = [tk.branch || tk.repo?.split("/").pop(), tk.machine].filter(Boolean).join(" · ");
       right = null;
     }
-    return v_flex().id(`ib-${e.key}`).h(ui.H_ROW2).flex_none().px(8).justify_center().gap(2).rounded(6).cursor_pointer()
+    const fullTitle = String(title ?? "");
+    // Bei Abnahme-Zeilen steht die Metazeile (Branch/Rechner) in Zeile 1 rechts: die
+    // Gate-Chips brauchen die ganze dritte Zeile, sonst schneidet der letzte Chip ab.
+    const metaRight = e.kind === "ticket" && meta
+      ? div().flex_none().max_w(110).truncate().text_size(T_S).text_color(t.muted).tooltip(meta).child(meta)
+      : null;
+    return v_flex().id(`ib-${e.key}`).flex_none().min_h(ui.H_ROW2).px(8).justify_center().gap(2).rounded(6).cursor_pointer()
       .when(on, (el) => el.bg(t.selected))
       .when(!on, (el) => el.hover((s) => s.bg(t.hover)))
       .when(e.group === "work", (el) => el.opacity(0.75))
       .on_click((ev, cx) => { if (ev.click_count === 2) this.activate(e); else { this.select(list, i, cx); this.handle.focus(); } })
-      .child(h_flex().gap(ui.GAP_M).items_center()
+      .child(h_flex().gap(ui.GAP_M).items_center().min_w(0)
         .child(ui.statusIcon(t, status))
         .child(this.avatar(t, e))
         .when(Boolean(name), (el) => el.child(div().flex_none().max_w(110).truncate().text_size(named ? T_M : T_S)
           .text_color(named ? t.foreground : t.dim).when(on && named, (d) => d.font_semibold()).child(name)))
-        .child(div().flex_1().min_w(0).truncate().text_size(T_M).text_color(name ? t.muted : t.foreground).child(title))
-        .when(Boolean(right), (el) => el.child(right)))
+        .when(labels.length > 0, (el) => el.child(h_flex().flex_shrink_1().min_w(0).gap(2).items_center().overflow_hidden()
+          .children(labels.map((l) => labelPill(t, l.text, l.color, { tip: l.tip, shrink: !l.fixed })))))
+        .child(div().flex_1())
+        .when(Boolean(right || metaRight), (el) => el.child(right ?? metaRight)))
+      .when(Boolean(fullTitle), (el) => el.child(div().id(`ib-title-${e.key}`).w_full().pl(40).max_h(30).overflow_hidden()
+        .text_size(T_M).line_height(1.2).text_color(name ? t.muted : t.foreground)
+        .tooltip(fullTitle).child(clampTitle(fullTitle))))
       .child(h_flex().pl(40).min_w(0).gap(ui.GAP_S).items_center()
-        .child(div().flex_1().min_w(0).truncate().text_size(T_S).text_color(on ? t.foreground : t.muted).child(meta))
+        .when(Boolean(meta) && e.kind !== "ticket", (el) => el.child(div().flex_shrink_1().min_w(44).max_w(120).truncate().text_size(T_S)
+          .text_color(on ? t.foreground : t.muted).tooltip(meta).child(meta)))
+        .child(div().flex_1())
         .when(e.kind === "ticket", (el) => el.child(h_flex().flex_none().gap(ui.GAP_XS).children(ui.gateChips(t, e.tk)))));
   }
 
@@ -333,7 +403,10 @@ export default class Inbox extends View {
           .child(div().flex_1().min_w(0).truncate().text_size(T_L).font_semibold().text_color(t.foreground).child(tk.title)))
         .child(h_flex().flex_wrap().gap(ui.GAP_S).items_center()
           .when(Boolean(tk.terminal), (el) => el.child(ui.identityChip(t, "ib-tk-who", tk.terminal)))
-          .child(div().text_size(T_S).text_color(t.dim).child(tk.branch || tk.repo || ""))
+          // Nur das letzte Verzeichnis; der volle Pfad steht im Tooltip.
+          .child(div().flex_none().max_w(180).truncate().text_size(T_S).text_color(t.dim)
+            .tooltip(tk.repo || tk.branch || "")
+            .child(tk.branch || (tk.repo ? baseName(tk.repo) : "")))
           .children(ui.gateChips(t, tk)))
         .child(v_flex().id("ib-summary").flex_1().min_h(0).overflow_y_scrollbar().gap(ui.GAP_S)
           .child(div().text_size(T_S).font_medium().text_color(t.muted).child("Zusammenfassung"))
