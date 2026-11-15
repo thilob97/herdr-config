@@ -148,7 +148,7 @@ reports into it) and show in the Team-Panel under it.
                                             timeline.html and prints its path
 Python 3, standard library only.
 """
-import argparse, datetime, fcntl, html, json, os, pwd, re, secrets, shlex, subprocess, sys, time, unicodedata
+import argparse, contextlib, datetime, fcntl, html, json, os, pwd, re, secrets, shlex, subprocess, sys, time, unicodedata
 
 APP = os.environ.get("HERDR_APP_HOME") or os.path.expanduser("~/.config/herdr-app")
 TICKETS = os.path.join(APP, "data", "quests", "tickets")
@@ -628,7 +628,9 @@ def write(t):
     t["updated"] = time.strftime("%Y-%m-%d %H:%M")
     one = lambda v: re.sub(r"[\r\n]+", " ", str(v or "")).strip()
     head = [f"{k}: {one(t.get(k))}" for k in FIELDS if k in ("title", "status", "repo", "labels", "due") or t.get(k)]
-    tmp = path_of(t["id"]) + ".tmp"
+    # One temp name per process: two writers of the same ticket (a locked command and a
+    # long check that saves afterwards) must never share a scratch file.
+    tmp = f"{path_of(t['id'])}.{os.getpid()}.tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         f.write("---\n" + "\n".join(head) + "\n---\n" + (t.get("body") or ""))
     os.replace(tmp, path_of(t["id"]))
@@ -1172,10 +1174,30 @@ def read_lessons(repo, on=None, name="lessons.md"):
         return []
 
 
+def lesson_guard(on=None):
+    """One hub writer per lesson file: `hub_lock` for a local repo.
+
+    A repo addressed with `--on` lives on another machine, where this home's lock
+    serialises nothing; its ssh write therefore runs without it."""
+    return contextlib.nullcontext() if on else hub_lock()
+
+
 def write_lessons(repo, items, on=None, name="lessons.md"):
     d = lesson_dir(repo)
     path = os.path.join(d, name)
     body = "".join(lesson_line(l) + "\n" for l in items[-LESSON_MAX:])
+    if not on:
+        # Local writes stay in Python: a rename is atomic and the write cannot fail with
+        # a shell message the person cannot act on.
+        try:
+            os.makedirs(d, exist_ok=True)
+            tmp = f"{path}.{os.getpid()}.tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(body)
+            os.replace(tmp, path)
+        except OSError as e:
+            die(f"Lehren nicht schreibbar: {path}: {e.strerror or e}")
+        return
     sh = f"mkdir -p {shlex.quote(d)} && printf %s {shlex.quote(body)} > {shlex.quote(path)}"
     run(["sh", "-c", sh], on)
 
@@ -1188,13 +1210,14 @@ def add_lesson(repo, ticket, source, text, on=None):
     text = one_line(text)
     if not text:
         die("leere Lehre")
-    items = read_lessons(repo, on)
-    for l in items:  # the same lesson twice helps nobody
-        if l["text"] == text:
-            return l
-    l = {"date": time.strftime("%Y-%m-%d"), "ticket": ticket or "-", "source": source, "text": text}
-    items.append(l)
-    write_lessons(repo, items, on)
+    with lesson_guard(on):
+        items = read_lessons(repo, on)
+        for l in items:  # the same lesson twice helps nobody
+            if l["text"] == text:
+                return l
+        l = {"date": time.strftime("%Y-%m-%d"), "ticket": ticket or "-", "source": source, "text": text}
+        items.append(l)
+        write_lessons(repo, items, on)
     return l
 
 
@@ -1567,12 +1590,13 @@ def add_spec_sections(t):
 
 
 def cmd_spec(a):
-    t = load(a.id)
-    if t["status"] in ("done", "review") and not getattr(a, "force", False):
-        die(f"{a.id}: Ticket ist {t['status']} — Abschnitte nur mit --force ergänzen")
-    added = add_spec_sections(t)
-    if added:
-        write(t)
+    with hub_lock():
+        t = load(a.id)
+        if t["status"] in ("done", "review") and not getattr(a, "force", False):
+            die(f"{a.id}: Ticket ist {t['status']} — Abschnitte nur mit --force ergänzen")
+        added = add_spec_sections(t)
+        if added:
+            write(t)
     print(f"{a.id}: " + (f"ergänzt {', '.join(added)}" if added else "alle Abschnitte vorhanden"))
     for heading in SPEC_SECTIONS:
         print(f"\n{heading}\n\n{section_of(t, heading) or ''}".rstrip())
@@ -1612,12 +1636,13 @@ def set_triage(t, g):
 
 
 def cmd_triage(a):
-    t = load(a.id)
-    g = triage_guess(t)
-    if a.apply:
-        set_triage(t, g)
-        add_spec_sections(t)
-        write(t)
+    with hub_lock():
+        t = load(a.id)
+        g = triage_guess(t)
+        if a.apply:
+            set_triage(t, g)
+            add_spec_sections(t)
+            write(t)
     out = {k: g[k] for k in ("type", "size", "priority", "labels", "missing")}
     out.update(id=a.id, applied=bool(a.apply))
     if a.json:
@@ -1709,13 +1734,19 @@ def run_preflight(t):
     tail = output.splitlines()[-PREFLIGHT_TAIL:]
     ok = code == 0
     at = time.strftime("%Y-%m-%d %H:%M")
-    t.update(preflight="pass" if ok else "fail", preflight_at=at,
-             preflight_head=head or rev, preflight_duration=f"{duration:.1f}")
+    fields = {"preflight": "pass" if ok else "fail", "preflight_at": at,
+              "preflight_head": head or rev, "preflight_duration": f"{duration:.1f}"}
     fence = "`" * (max([len(m) for line in tail for m in re.findall(r"`+", line)] + [2]) + 1)
-    set_preflight(t, f"- {at} · {'pass' if ok else 'fail'} · {duration:.1f} s · exit {code} · "
-                     f"HEAD {(head or rev)[:7]} · {label or '-'}\n\n"
-                     f"{fence}text\n{chr(10).join(tail)}\n{fence}")
-    write(t)
+    block = (f"- {at} · {'pass' if ok else 'fail'} · {duration:.1f} s · exit {code} · "
+             f"HEAD {(head or rev)[:7]} · {label or '-'}\n\n"
+             f"{fence}text\n{chr(10).join(tail)}\n{fence}")
+
+    def saved(fresh):
+        fresh.update(fields)
+        set_preflight(fresh, block)
+
+    update_ticket(t["id"], saved)
+    t.update(fields)  # the caller prints these; the file is written from a fresh copy
     return ("pass" if ok else "fail"), tail, f"Preflight {'pass' if ok else 'fail'} · {duration:.1f} s · exit {code}"
 
 
@@ -1953,9 +1984,7 @@ def cmd_night(a):
     end = now_stamp()
     record = night_record(started, skipped, begin, end)
     for tid in started:
-        t = load(tid)
-        add_night_section(t, record)
-        write(t)
+        t = update_ticket(tid, lambda fresh: add_night_section(fresh, record))
         event("night", tid, t.get("agent") or "", t.get("terminal") or "", "Stopp")
     print(f"Nachtschicht: {len(started)} gestartet, {len(skipped)} übersprungen ({begin} → {end})")
 
@@ -1971,19 +2000,37 @@ def cmd_new(a):
     elif body == "-":
         body = sys.stdin.read()
     base = slug(a.title) or "ticket"
-    tid, n = base, 2
-    while os.path.exists(path_of(tid)):
-        tid, n = f"{base}-{n}", n + 1
-    t = {"id": tid, "title": a.title, "repo": a.repo or "", "labels": a.labels or "",
+    t = {"title": a.title, "repo": a.repo or "", "labels": a.labels or "",
          "machine": a.on or "", "source": a.source or "", "by": "orchestrator",
          "owner": orchestrator_id(), "body": (body or "").strip() + "\n"}
     t["created"] = now_stamp()
     set_status(t, "todo", t["created"])
+    print(claim_ticket(t, base))
+
+
+def claim_ticket(t, base):
+    """Create one ticket file under a free id and return that id.
+
+    O_CREAT|O_EXCL is the claim: the kernel decides who owns a name, so two parallel
+    `hub ticket new` calls can never write the same file, even if the lock is bypassed
+    (an old hub, a different home path). A taken id moves on to `-2`, `-3`, … instead of
+    failing, so every caller keeps its own ticket. The lock only keeps the numbering
+    tidy: without it the losers would still win the next free number."""
+    os.makedirs(TICKETS, exist_ok=True)
     with hub_lock():
-        if os.path.exists(path_of(tid)):
-            die(f"{tid} wurde gerade angelegt; bitte erneut")
+        n = 1
+        while True:
+            tid = base if n == 1 else f"{base}-{n}"
+            try:
+                fd = os.open(path_of(tid), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+            except FileExistsError:
+                n += 1
+                continue
+            os.close(fd)
+            break
+        t["id"] = tid
         write(t)
-    print(tid)
+    return tid
 
 
 def cmd_list(a):
@@ -2025,39 +2072,41 @@ def cmd_comment(a):
 
 
 def cmd_assign(a):
-    t = load(a.id)
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", a.agent):
         die(f"bad agent name {a.agent!r}")
-    t["assignee"] = a.agent
-    write(t)
+    with hub_lock():
+        t = load(a.id)
+        t["assignee"] = a.agent
+        write(t)
     print(f"{a.id}: zugewiesen an {a.agent}")
 
 
 def cmd_link(a):
-    t = load(a.id)
-    cur = names(t.get("blocked_by"))
-    for b in a.blocked_by:
-        path_of(b)  # validates the id
-        if b == a.id:
-            die(f"{a.id} kann sich nicht selbst blockieren")
-        if not os.path.exists(path_of(b)):
-            die(f"no ticket {b}")
-        if b in cur:
-            continue
-        seen, todo = set(), [b]  # a cycle would block both forever
-        while todo:
-            x = todo.pop()
-            if x == a.id:
-                die(f"{a.id} -> {b} wäre ein Zyklus")
-            if x in seen:
+    with hub_lock():
+        t = load(a.id)
+        cur = names(t.get("blocked_by"))
+        for b in a.blocked_by:
+            path_of(b)  # validates the id
+            if b == a.id:
+                die(f"{a.id} kann sich nicht selbst blockieren")
+            if not os.path.exists(path_of(b)):
+                die(f"no ticket {b}")
+            if b in cur:
                 continue
-            seen.add(x)
-            p = path_of(x)
-            if os.path.exists(p):
-                todo += names((read(x) or {}).get("blocked_by"))
-        cur.append(b)
-    t["blocked_by"] = ", ".join(cur)
-    write(t)
+            seen, todo = set(), [b]  # a cycle would block both forever
+            while todo:
+                x = todo.pop()
+                if x == a.id:
+                    die(f"{a.id} -> {b} wäre ein Zyklus")
+                if x in seen:
+                    continue
+                seen.add(x)
+                p = path_of(x)
+                if os.path.exists(p):
+                    todo += names((read(x) or {}).get("blocked_by"))
+            cur.append(b)
+        t["blocked_by"] = ", ".join(cur)
+        write(t)
     print(f"{a.id}: blocked_by {t['blocked_by'] or '-'}")
 
 
@@ -2105,14 +2154,15 @@ def cmd_inbox(a):
 
 
 def cmd_watch(a):
-    t = load(a.id)
-    waiting = names(t.get("waiting"))
-    if a.agent in waiting:
-        print(f"{a.id}: wartet bereits auf {a.agent}")
-        return
-    waiting.append(a.agent)
-    t["waiting"] = ", ".join(waiting)
-    write(t)
+    with hub_lock():
+        t = load(a.id)
+        waiting = names(t.get("waiting"))
+        if a.agent in waiting:
+            print(f"{a.id}: wartet bereits auf {a.agent}")
+            return
+        waiting.append(a.agent)
+        t["waiting"] = ", ".join(waiting)
+        write(t)
     print(f"{a.id}: wartet auf eine Antwort von {a.agent}")
 
 
@@ -2226,33 +2276,35 @@ def cmd_agent_add(a):
     name = (getattr(a, "name", None) or getattr(a, "new_name", None) or "").strip()
     if not name:
         die("Name fehlt (hub agent add NAME oder --name NAME)")
-    rows = read_roster()
-    if find_agent(rows, name)[1]:
-        die(f"Agent {name!r} gibt es schon")
-    entry = validate_agent(merge_agent(dict(ROSTER_DEFAULTS, name=name), agent_changes(a)))
+    with hub_lock():
+        rows = read_roster()
+        if find_agent(rows, name)[1]:
+            die(f"Agent {name!r} gibt es schon")
+        entry = validate_agent(merge_agent(dict(ROSTER_DEFAULTS, name=name), agent_changes(a)))
+        rows.append(entry)
+        write_roster(rows)
     if a.prompt_text is not None:
         write_prompt(entry, a.prompt_text)
-    rows.append(entry)
-    write_roster(rows)
     print(f"Agent {name} angelegt")
 
 
 def cmd_agent_edit(a):
-    rows = read_roster(required=True)
-    idx, cur = find_agent(rows, a.current)
-    if not cur:
-        die(f"kein Agent {a.current!r} im Roster")
-    entry = merge_agent(cur, agent_changes(a))
-    if not entry["name"]:
-        die("Name darf nicht leer sein")
-    other, _ = find_agent(rows, entry["name"])
-    if other is not None and other != idx:
-        die(f"Agent {entry['name']!r} gibt es schon")
-    validate_agent(entry)
+    with hub_lock():
+        rows = read_roster(required=True)
+        idx, cur = find_agent(rows, a.current)
+        if not cur:
+            die(f"kein Agent {a.current!r} im Roster")
+        entry = merge_agent(cur, agent_changes(a))
+        if not entry["name"]:
+            die("Name darf nicht leer sein")
+        other, _ = find_agent(rows, entry["name"])
+        if other is not None and other != idx:
+            die(f"Agent {entry['name']!r} gibt es schon")
+        validate_agent(entry)
+        rows[idx] = entry
+        write_roster(rows)
     if a.prompt_text is not None:
         write_prompt(entry, a.prompt_text)
-    rows[idx] = entry
-    write_roster(rows)
     name = entry["name"]
     print(f"Agent {name} geändert" if name == a.current else f"Agent {a.current} in {name} umbenannt")
 
@@ -2273,12 +2325,13 @@ def cmd_agent_prompt(a):
 
 
 def cmd_agent_rm(a):
-    rows = read_roster(required=True)
-    idx, cur = find_agent(rows, a.name)
-    if not cur:
-        die(f"kein Agent {a.name!r} im Roster")
-    rows.pop(idx)
-    write_roster(rows)
+    with hub_lock():
+        rows = read_roster(required=True)
+        idx, cur = find_agent(rows, a.name)
+        if not cur:
+            die(f"kein Agent {a.name!r} im Roster")
+        rows.pop(idx)
+        write_roster(rows)
     print(f"Agent {cur['name']} gelöscht")
 
 
@@ -2684,9 +2737,19 @@ def cmd_rebase(a):
         die(f"{a.id}: Rebase auf {base} gestoppt — Konflikt in {where}. "
             f"Der Worktree {folder} bleibt im Rebase: Konflikte auflösen, git add, git rebase --continue "
             f"(oder --abort); danach hub verify {a.id} und hub review {a.id}.")
-    t["base_head"] = tip
-    write(t)
+    update_ticket(a.id, lambda fresh: fresh.update(base_head=tip))
     print(f"{a.id}: rebased auf {base} ({tip[:7]})")
+
+
+def save_check(tid, fields, block):
+    """Write one check result onto the ticket as it is now, not on a stale copy.
+
+    `hub verify` runs a whole suite between its read and its write; carrying only the
+    check fields onto the fresh file keeps a parallel comment or spec change."""
+    def saved(fresh):
+        fresh.update(fields)
+        set_prufung(fresh, block)
+    return update_ticket(tid, saved)
 
 
 def cmd_verify(a):
@@ -2700,13 +2763,13 @@ def cmd_verify(a):
         # The person reads one German line; the raw git text belongs in the check log.
         detail = (top.stderr or top.stdout).strip()
         at = time.strftime("%Y-%m-%d %H:%M")
-        t.update(checks="fail", checks_head="", checks_at=at, checks_duration="0.0",
-                 checks_exit=str(top.returncode), checks_cmd="git rev-parse --show-toplevel")
         fence = "`" * (max([len(m) for m in re.findall(r"`+", detail)] + [2]) + 1)
-        set_prufung(t, f"- {at} · fail · 0.0 s · exit {top.returncode} · HEAD ? · "
-                       f"git rev-parse --show-toplevel\n\n{fence}text\n{detail}\n{fence}")
-        write(t)
-        event("verify", a.id, t.get("agent") or "", t.get("terminal") or "",
+        saved = save_check(a.id, {"checks": "fail", "checks_head": "", "checks_at": at,
+                                  "checks_duration": "0.0", "checks_exit": str(top.returncode),
+                                  "checks_cmd": "git rev-parse --show-toplevel"},
+                           f"- {at} · fail · 0.0 s · exit {top.returncode} · HEAD ? · "
+                           f"git rev-parse --show-toplevel\n\n{fence}text\n{detail}\n{fence}")
+        event("verify", a.id, saved.get("agent") or "", saved.get("terminal") or "",
               f"fail · kein Git-Repository in {folder}")
         die(f"{a.id}: kein Git-Repository in {folder}; hub verify braucht ein Repo "
             f"(hub ticket set {a.id} repo=/pfad)")
@@ -2727,14 +2790,15 @@ def cmd_verify(a):
     tail = output.splitlines()[-20:]
     head, _ = head_of(t, on)
     ok = r.returncode == 0
-    t.update(checks="pass" if ok else "fail", checks_head=head or "",
-             checks_at=time.strftime("%Y-%m-%d %H:%M"), checks_duration=f"{duration:.1f}",
-             checks_exit=str(r.returncode), checks_cmd=label)
+    at = time.strftime("%Y-%m-%d %H:%M")
+    fields = {"checks": "pass" if ok else "fail", "checks_head": head or "",
+              "checks_at": at, "checks_duration": f"{duration:.1f}",
+              "checks_exit": str(r.returncode), "checks_cmd": label}
     fence = "`" * (max([len(m) for line in tail for m in re.findall(r"`+", line)] + [2]) + 1)
-    set_prufung(t, f"- {t['checks_at']} · {'pass' if ok else 'fail'} · {duration:.1f} s · exit {r.returncode} · "
-                   f"HEAD {(head or '?')[:7]} · {label}\n\n{fence}text\n{chr(10).join(tail)}\n{fence}")
-    write(t)
-    event("verify", a.id, t.get("agent") or "", t.get("terminal") or "",
+    saved = save_check(a.id, fields,
+                       f"- {at} · {'pass' if ok else 'fail'} · {duration:.1f} s · exit {r.returncode} · "
+                       f"HEAD {(head or '?')[:7]} · {label}\n\n{fence}text\n{chr(10).join(tail)}\n{fence}")
+    event("verify", a.id, saved.get("agent") or "", saved.get("terminal") or "",
           f"{'pass' if ok else 'fail'} · {duration:.1f} s · {label}")
     print(f"{a.id}: Checks {'pass' if ok else 'fail'} · {duration:.1f} s · exit {r.returncode} · "
           f"HEAD {(head or '?')[:7]} ({len(tail)} Zeilen Ausgabe unter ## Prüfung)")
@@ -3421,12 +3485,27 @@ def apply_ci(t, res, feedback=True):
 
 
 def wait_ci(t):
-    """Poll until pass/fail/unknown or CI_TIMEOUT; each poll writes `ci`, `ci_at`."""
+    """Poll until pass/fail/unknown or CI_TIMEOUT; each poll writes `ci`, `ci_at`.
+
+    Every poll is its own short locked write: the minutes between polls must not hold the
+    home's write lock. The caller's `t` receives the CI fields so `hub land` sees them."""
     deadline = time.time() + CI_TIMEOUT
     while True:
         res = ci_collect(t)
-        apply_ci(t, res)
-        write(t)
+        holder = {}
+
+        def saved(fresh):
+            apply_ci(fresh, res, feedback=False)
+            holder["terminal"] = fresh.get("terminal") or ""
+            for k in ("ci", "ci_head", "ci_at", "ci_details", "ci_url"):
+                if k in fresh:
+                    t[k] = fresh[k]
+                else:
+                    t.pop(k, None)
+
+        update_ticket(t["id"], saved)
+        if res["state"] == "fail" and holder["terminal"] and is_live(holder["terminal"]):
+            send_agent(holder["terminal"], f"{t['id']}: CI rot, siehe Kommentar")
         if res["state"] in ("pass", "fail", "unknown"):
             return res
         sys.stderr.write(f"hub: CI läuft ({res['open']} offen, {res['state']}) …\n")
@@ -3439,8 +3518,17 @@ def wait_ci(t):
 def cmd_ci(a):
     t = load(a.id)
     res = ci_collect(t)
-    state = apply_ci(t, res)
-    write(t)
+    holder = {}
+
+    def saved(fresh):
+        apply_ci(fresh, res, feedback=False)
+        holder["terminal"] = fresh.get("terminal") or ""
+
+    t = update_ticket(a.id, saved)
+    state = res["state"]
+    notified = state == "fail" and bool(holder["terminal"]) and is_live(holder["terminal"])
+    if notified:
+        send_agent(holder["terminal"], f"{a.id}: CI rot, siehe Kommentar")
     event("ci", a.id, t.get("agent") or "", t.get("terminal") or "", state)
     head = (t.get("ci_head") or "")[:7]
     where = (f" · {t['ci_url']}" if t.get("ci_url") else "") + (
@@ -3451,7 +3539,7 @@ def cmd_ci(a):
         names = ", ".join(c.get("name") or "?" for c in res["checks"]) or "Check"
         print(f"{a.id}: CI rot: {names}{where}")
         print(f"{a.id}: Ticket auf doing, Namen und Log-Auszug im Verlauf"
-              + ("; Agent benachrichtigt" if t.get("terminal") and is_live(t["terminal"]) else ""))
+              + ("; Agent benachrichtigt" if notified else ""))
     elif state == "running":
         print(f"{a.id}: CI läuft: {res['open']} offen{where}")
     else:
@@ -3474,6 +3562,11 @@ def cmd_lesson_add(a):
     repo = target if on else os.path.abspath(target or "")
     if not repo or (not on and not os.path.isdir(repo)):
         die(f"kein Repo: {target}")
+    if not on:
+        folder = lesson_dir(repo)
+        writable = folder if os.path.isdir(folder) else repo
+        if not os.access(writable, os.W_OK):
+            die(f"Lehren nicht schreibbar: {repo} (kein Schreibrecht für {writable})")
     l = add_lesson(repo, tid or "-", a.source, " ".join(a.text), on)
     print(lesson_line(l))
 
@@ -3503,12 +3596,12 @@ def cmd_lesson_propose(a):
     text = one_line(" ".join(a.text))
     if not text:
         die("leere Lehre")
-    items = [l for l in read_lessons(repo, on, "lessons-pending.md") if l["ticket"] != a.id]
-    l = {"date": time.strftime("%Y-%m-%d"), "ticket": a.id, "source": "vorschlag", "text": text}
-    items.append(l)
-    write_lessons(repo, items, on, "lessons-pending.md")
-    add_comment(t, "orchestrator", f"Vorschlag für eine Lehre: {text}")
-    write(t)
+    with lesson_guard(on):
+        items = [l for l in read_lessons(repo, on, "lessons-pending.md") if l["ticket"] != a.id]
+        l = {"date": time.strftime("%Y-%m-%d"), "ticket": a.id, "source": "vorschlag", "text": text}
+        items.append(l)
+        write_lessons(repo, items, on, "lessons-pending.md")
+    update_ticket(a.id, lambda fresh: add_comment(fresh, "orchestrator", f"Vorschlag für eine Lehre: {text}"))
     print(lesson_line(l))
 
 
@@ -3518,14 +3611,14 @@ def cmd_lesson_confirm(a):
     if not repo:
         die(f"{a.id} hat kein Repo; hub ticket set {a.id} repo=/pfad")
     on = t.get("machine") or None
-    pending = [l for l in read_lessons(repo, on, "lessons-pending.md") if l["ticket"] == a.id]
-    if not pending:
-        die(f"kein Lehren-Vorschlag für {a.id}")
-    l = add_lesson(repo, a.id, "review", pending[-1]["text"], on)
-    write_lessons(repo, [x for x in read_lessons(repo, on, "lessons-pending.md") if x["ticket"] != a.id], on,
-                  "lessons-pending.md")
-    add_comment(t, "mensch", f"Lehre übernommen: {l['text']}")
-    write(t)
+    with lesson_guard(on):
+        pending = [l for l in read_lessons(repo, on, "lessons-pending.md") if l["ticket"] == a.id]
+        if not pending:
+            die(f"kein Lehren-Vorschlag für {a.id}")
+        l = add_lesson(repo, a.id, "review", pending[-1]["text"], on)
+        write_lessons(repo, [x for x in read_lessons(repo, on, "lessons-pending.md") if x["ticket"] != a.id], on,
+                      "lessons-pending.md")
+    update_ticket(a.id, lambda fresh: add_comment(fresh, "mensch", f"Lehre übernommen: {l['text']}"))
     print(lesson_line(l))
 
 
