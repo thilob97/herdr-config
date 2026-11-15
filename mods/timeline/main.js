@@ -3,9 +3,10 @@
 // Balken laufen von `start` bis `end` (live bis jetzt, mit pulsierendem Rand) und tragen
 // Statusfarbe und `Identität · Ticket-Kurz-ID`; rechts steht die Dauer. Ereignisse
 // (Dispatch, Prüfung, Urteil, CI, Landen) sitzen als Symbole auf der Zeile ihres Tickets
-// bzw. des Orchestrators. Oben Stundenraster und „jetzt"-Linie, Umschalter 1 h · 24 h ·
-// 7 Tage · Alles und Alle · Ticket; der Ticket-Chip in der Kopfzeile wählt das Ticket
-// (vorbelegt durch props.ticket). Klick auf einen Balken öffnet das Terminal, auf einen
+// bzw. des Orchestrators; die Legende unter der Zeitleiste nennt Symbol und Wort, der
+// Marker-Tooltip erklärt die Art zusätzlich. Oben Stundenraster und „jetzt"-Linie,
+// Umschalter 1 h · 24 h · 7 Tage · Alles und Alle · Ticket; der Ticket-Chip in der Kopfzeile
+// wählt das Ticket (vorbelegt durch props.ticket). Klick auf einen Balken öffnet das Terminal, auf einen
 // Ticket-Marker das Review-Fenster im Ticket-Modus.
 //
 // Daten: `hub timeline --json` alle 15 s; fehlt der Befehl (die Datenquelle entsteht
@@ -37,6 +38,20 @@ const SCOPES = [
 ];
 const STATUS = { working: "arbeitet", blocked: "wartet", done: "fertig", idle: "ruhig" };
 const statusColor = (t, st) => (st === "working" ? t.working : st === "blocked" ? t.blocked : st === "done" ? t.done : t.idle);
+// Die Ereignisarten in einer Sprache: Wort, Farbe, Erklärung. Marker-Tooltip und die
+// Legende unter der Zeitleiste lesen beide hier, damit sie nie auseinanderlaufen.
+const EVENTS = {
+  dispatch: { word: "Dispatch", tip: "ein Agent wurde gestartet" },
+  check: { word: "Prüfung", tip: "die Checks liefen im Worktree" },
+  verdict: { word: "Urteil", tip: "der Prüfer hat sein Urteil geschrieben" },
+  ci: { word: "CI", tip: "ein CI-Lauf wurde beobachtet" },
+  land: { word: "Landen", tip: "der Branch wurde in die Basis gemergt" },
+  other: { word: "Ereignis", tip: "ein Ereignis ohne bekannte Art" },
+};
+const eventOf = (kind) => EVENTS[kind] ?? EVENTS.other;
+const eventColor = (t, kind) => (kind === "dispatch" ? t.accent
+  : kind === "check" || kind === "ci" ? t.working
+    : kind === "verdict" || kind === "land" ? t.done : t.dim);
 const errorText = (e) => String(e?.message ?? e ?? "fehlgeschlagen").replace(/^Error: /, "").replace(/^hub: /, "");
 const lastLine = (r) => (r.stderr || r.stdout || `Exit ${r.code}`).trim().split("\n").pop().slice(0, 240);
 
@@ -458,28 +473,37 @@ export default class Timeline extends View {
   /** Ein Ereignis-Symbol auf der Zeile. */
   eventMark(t, ev, slot) {
     if (!this.inView(ev.at)) return null;
-    const map = {
-      dispatch: { word: "Dispatch", color: t.accent },
-      check: { word: "Prüfung", color: t.working },
-      verdict: { word: "Urteil", color: t.done },
-      ci: { word: "CI", color: t.working },
-      land: { word: "Landen", color: t.done },
-      other: { word: "Ereignis", color: t.dim },
-    }[ev.kind] ?? { word: "Ereignis", color: t.dim };
-    const tip = `${clock(ev.at)} · ${map.word}${ev.text ? ` · ${ev.text}` : ""}`;
+    const e = eventOf(ev.kind), color = eventColor(t, ev.kind);
+    // Der Tooltip nennt Zeit, Art, was die Art bedeutet, und den Ereignistext.
+    const tip = `${clock(ev.at)} · ${e.word} — ${e.tip}${ev.text ? ` · ${ev.text}` : ""}`;
     // 6 px an der Unterkante der Zeile, unter dem Balken: das Ereignis markiert die Zeit,
     // ohne den Balken zu verdecken. Die Art trägt die Farbe, der Tooltip den Rest.
     const mark = div().absolute().left(`${this.pct(ev.at)}%`).bottom(1 + slot * 7).size(6).flex_none()
-      .rounded(2).bg(map.color)
+      .rounded(2).bg(color)
       .cursor_pointer().tooltip(tip);
     return ev.ticket ? mark.on_click((_e, cx) => { cx.stop_propagation(); this.openReview(ev.ticket); }) : mark;
+  }
+
+  /** Die ruhige Zeile unter der Zeitleiste: Ereignis-Symbole in Wörtern. */
+  eventLegend(t) {
+    const item = (key, color, word, tip) => h_flex().id(`tl-event-${key}`).flex_none().gap(GAP_XS).items_center().tooltip(tip)
+      .child(div().size(6).flex_none().rounded(key === "subagent" ? 999 : 2).bg(color))
+      .child(div().text_size(T_XS).text_color(t.dim).child(word));
+    return h_flex().id("tl-event-legend").h(22).flex_none().px(INSET_PANEL).gap(GAP_M).items_center()
+      .child(div().flex_none().text_size(T_XS).text_color(t.dim).child("Ereignisse"))
+      .child(item("dispatch", eventColor(t, "dispatch"), EVENTS.dispatch.word, `Dispatch: ${EVENTS.dispatch.tip}`))
+      .child(item("check", eventColor(t, "check"), EVENTS.check.word, `Prüfung: ${EVENTS.check.tip}`))
+      .child(item("verdict", eventColor(t, "verdict"), EVENTS.verdict.word, `Urteil: ${EVENTS.verdict.tip}`))
+      .child(item("ci", eventColor(t, "ci"), EVENTS.ci.word, `CI: ${EVENTS.ci.tip}`))
+      .child(item("land", eventColor(t, "land"), EVENTS.land.word, `Landen: ${EVENTS.land.tip}`))
+      .child(item("subagent", t.muted, "Sub-Agent", "Sub-Agent: ein Kind-Agent lief auf der Zeile seines Eltern-Agenten"));
   }
 
   /** Ein Sub-Agent als Punkt auf der Elternzeile, mit Titel und Dauer im Tooltip. */
   subMark(t, s, now) {
     if (!this.inView(s.started)) return null;
     const ended = s.ended != null;
-    const tip = `${s.title} · ${durText((s.ended ?? now) - (s.started ?? now))}${ended ? "" : " · läuft"}`;
+    const tip = `${s.title} · Sub-Agent · ${durText((s.ended ?? now) - (s.started ?? now))}${ended ? "" : " · läuft"}`;
     return div().absolute().left(`${this.pct(s.started)}%`).bottom(1).size(6).flex_none().rounded_full()
       .bg(ended ? t.done : t.working).opacity(ended ? 0.7 : 1).tooltip(tip);
   }
@@ -650,7 +674,8 @@ export default class Timeline extends View {
       .child(toolbar)
       .child(this.legend(t))
       .child(this.ruler(t, ticks))
-      .child(content);
+      .child(content)
+      .child(this.eventLegend(t));
   }
 
   nowLine(t) {
