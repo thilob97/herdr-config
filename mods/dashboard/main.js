@@ -1050,9 +1050,10 @@ export default class Dashboard extends View {
 
   // The money as its own card right of the tickets in work. Two named numbers, each
   // from the surface that owns it: "Heute" is the calendar day from omp's stats.db
-  // (the status bar's "$x heute"), "Team gesamt" is the team budget's spend (the Team
-  // panel's head "Team $x / $y"). Per ticket below, as before. A click opens the Team
-  // panel in the Workspace.
+  // (the status bar's "$x heute"), "Team offen" is the team budget's spend on open
+  // tickets plus the orchestrator (the Team panel's head "Team $x / $y"). The card's
+  // tooltip says both meanings at once. Per ticket below, as before. A click opens the
+  // Team panel in the Workspace.
   costsCard(t) {
     const c = this.costs();
     const team = c.teamCost ?? 0;
@@ -1067,7 +1068,7 @@ export default class Dashboard extends View {
     const shown = open.slice(0, 3);
     const more = open.length - shown.length;
     return ui.card(t, "dash-costs").w(210).p(8).gap(3).cursor_pointer().hover((s) => s.bg(t.hover))
-      .tooltip("Team-Panel im Workspace öffnen")
+      .tooltip("Heute: Kalendertag aller Sitzungen · Team offen: offene Tickets + Orchestrator / Budget")
       .on_click((_e, cx) => { cx.stop_propagation(); this.workspace(true, cx); })
       .child(h_flex().h(14).gap(ui.GAP_S).items_center()
         .child(div().text_size(T_S).font_medium().text_color(t.muted).child("Kosten"))
@@ -1077,7 +1078,7 @@ export default class Dashboard extends View {
         .child(div().flex_1().text_size(T_XS).text_color(t.muted).tooltip("Kalendertag, wie die Statusleiste: alle omp-Sitzungen").child("Heute"))
         .child(div().text_size(T_L).font_semibold().text_color(t.foreground).child(this.today == null ? "—" : usd(this.today))))
       .child(h_flex().h(16).gap(ui.GAP_S).items_center()
-        .child(div().flex_1().text_size(T_XS).text_color(t.muted).tooltip("Kosten offener Tickets + Orchestrator / Team-Budget, wie der Team-Panel-Kopf").child("Team gesamt"))
+        .child(div().flex_1().text_size(T_XS).text_color(t.muted).tooltip("Kosten offener Tickets + Orchestrator / Team-Budget, wie der Team-Panel-Kopf").child("Team offen"))
         .child(div().text_size(T_XS).text_color(over ? t.blocked : t.foreground).child(`${usd(team)} / ${usd(budget)}`)))
       .child(div().h(2).w_full().flex_none().rounded_full().bg(t.border)
         .child(div().h(2).rounded_full().w(`${pct}%`).bg(over ? t.blocked : t.done)))
