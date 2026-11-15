@@ -50,27 +50,28 @@ const ageText = (tk) => ui.dur(ui.staged(tk).min);
 const updatedStamp = (tk) => String(tk.updated || "nie bearbeitet");
 
 // Titel auf zwei Zeilen mit „…" an einer Wortgrenze. `per` ist die Zeichenzahl je
-// Zeile (aus der Kartenbreite); passt der Text in zwei Zeilen, bleibt er unverändert.
+// Zeile (aus der gemessenen Kartenbreite); passt der Text in zwei Zeilen, bleibt er
+// unverändert ohne Auslassungszeichen. Kein Wort wird je mitten getrennt: die letzte
+// Zeile hält ein Zeichen für das „…" frei, ein einzelnes zu langes Wort endet mit „…".
 const clampTitle = (s, per = 24) => {
   const text = String(s ?? "").replace(/\s+/g, " ").trim();
-  const width = Math.max(8, Math.floor(per));
-  if (text.length <= width * 2) return text;
-  const words = text.split(" ");
+  const budget = Math.max(8, Math.floor(per));
+  const words = text.split(" ").filter(Boolean);
   const lines = [];
   let i = 0;
   for (let li = 0; li < 2 && i < words.length; li++) {
-    if (words[i].length > width) {
-      lines.push(words[i].slice(0, width));
-      words[i] = words[i].slice(width);
-      continue;
+    const room = li === 1 ? Math.max(1, budget - 1) : budget;
+    if (words[i].length > room) {
+      // Ein zu langes Wort bleibt in seiner Zeile; das „…" zählt in die Zeilenbreite.
+      lines.push(`${words[i].slice(0, Math.max(1, room - 1))}…`);
+      return lines.join(" ");
     }
     let line = words[i++];
-    while (i < words.length && `${line} ${words[i]}`.length <= width) line += ` ${words[i++]}`;
+    while (i < words.length && `${line} ${words[i]}`.length <= room) line += ` ${words[i++]}`;
     lines.push(line);
   }
   if (i >= words.length) return lines.join(" ");
-  while (lines[1].length + 1 > width && lines[1].includes(" ")) lines[1] = lines[1].slice(0, lines[1].lastIndexOf(" "));
-  return `${lines[0]} ${lines[1]}…X`;
+  return `${lines.join(" ")}…`;
 };
 
 const PRIO = /^(p[0-3]|prio[-:]?[0-3]|kritisch|hoch|urgent)$/i;
@@ -88,13 +89,14 @@ function priorityOf(tk) {
 const priorityColor = (t, p) => (p === "p1" ? t.blocked : p === "p2" ? t.working : t.muted);
 const sizeOf = (tk) => (/^[SML]$/i.test(String(tk.size ?? "").trim()) ? String(tk.size).trim().toUpperCase() : null);
 // Höchstens zwei Chips: bei mehr Labels bleibt eines plus `+n`; Priorität steht als eigener
-// Chip davor. Die Chips schrumpfen (min_w 0, truncate); alle Labels stehen im Tooltip.
+// Chip davor. Die Chips tragen den vollen Text und schrumpfen selbst (`min_w(0)`, `truncate`,
+// Ellipse); alle Labels stehen im Tooltip.
 function labelChips(t, tk) {
   const ordered = [...new Set([...splitList(tk.labels), ...splitList(tk.tags)])].filter((l) => !PRIO.test(l));
   if (!ordered.length) return [];
   const all = ordered.join(", ");
   const shown = ordered.slice(0, ordered.length > 2 ? 1 : 2);
-  const out = shown.map((l) => ({ text: l.length > 10 ? `${l.slice(0, 9)}…` : l, color: t.muted, tip: all }));
+  const out = shown.map((l) => ({ text: l, color: t.muted, tip: all }));
   if (ordered.length > shown.length) out.push({ text: `+${ordered.length - shown.length}`, color: t.dim, tip: all, fixed: true });
   return out;
 }

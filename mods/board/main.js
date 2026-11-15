@@ -310,16 +310,19 @@ export default class Board extends View {
       .child(body);
   }
 
-  // 4 Spalten nebeneinander, 2×2 im schmalen Panel, darunter untereinander.
-  // 772 px ist die kleinste Breite, in der vier Karten noch 180 px breit sind.
-  mode(w) { return w >= 772 ? "4" : w >= 330 ? "2" : "1"; }
+  // Spalten nach gemessener Panelbreite (this.width aus on_size_change, echte Pixel ÷ Zoom):
+  // unter 520 px eine Spalte untereinander (der Spaltenkopf ist die Trennzeile), ab 520 px
+  // 2×2, ab 900 px 1×4. Kein Schätzen, keine Zwischenstufe; vor dem ersten Messen steht „1".
+  mode(w) { return w >= 900 ? "4" : w >= 520 ? "2" : "1"; }
 
   // Zeichen je Titelzeile: Innenbreite der Karte ÷ mittlere Zeichenbreite (12 px
-  // semibold ≈ 7,3 px). Zusammen mit clampTitle ergibt das zwei Zeilen mit „…".
+  // semibold ≈ 7,3 px). Innenbreite = Spaltenbreite minus Spaltenpolster (6 je Seite),
+  // Kartenpolster (8 je Seite) und zwei Rahmen; 340 px ist nur der Wert vor dem ersten
+  // on_size_change. Zusammen mit clampTitle ergibt das zwei Zeilen mit „…".
   titleChars() {
-    const w = this.width || 368, cols = { 4: 4, 2: 2, 1: 1 }[this.mode(w)] ?? 2;
-    const inner = Math.max(110, (w - 2 * INSET_PANEL - (cols - 1) * GAP_M) / cols - 16);
-    return Math.max(10, Math.floor(inner / 7.3));
+    const w = this.width || 340, cols = { 4: 4, 2: 2, 1: 1 }[this.mode(w)] ?? 1;
+    const colW = (w - 2 * INSET_PANEL - (cols - 1) * GAP_M) / cols;
+    return Math.max(10, Math.floor(Math.max(60, colW - 30) / 7.3));
   }
 
   render(cx) {
