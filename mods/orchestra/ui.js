@@ -65,46 +65,61 @@ export const statusChip = (t, st, word) => chip(t, word ?? STATUS_WORD[st] ?? st
 // ---------- Gate-Chips (5.6, Felder 7.6) ----------
 
 /** Prüf-Gate eines Tickets: `hub verify` schreibt checks, HEAD, Dauer, Exit und den Auszug.
- *  `gate` (aus `hub gate --json`) überstimmt die Aufzeichnung, weil es den HEAD von jetzt kennt. */
+ *  `gate` (aus `hub gate --json`) überstimmt die Aufzeichnung, weil es den HEAD von jetzt kennt.
+ *  Ohne Prüfung steht `Checks –` in `muted`; ✗ nur bei rot oder einem Commit nach dem Lauf. */
 export function gateChip(t, tk, gate) {
   const ok = gate ? gate.ok : tk.checks === "pass";
   const head = (gate?.checked_head ?? tk.checks_head ?? "").slice(0, 7);
   const dur = (gate?.duration ?? tk.checks_duration) ? `${gate?.duration ?? tk.checks_duration}s` : null;
   if (ok) return chip(t, ["Checks ✓", dur, head && `HEAD ${head}`].filter(Boolean).join(" · "), t.done,
-    { tip: `Prüfung bestanden${(gate?.at ?? tk.checks_at) ? ` · ${gate?.at ?? tk.checks_at}` : ""} (hub verify)` });
-  const why = gate?.reason ?? (tk.checks === "fail" ? `Prüfung rot (Exit ${tk.checks_exit ?? "?"})`
+    { tip: `Checks bestanden${(gate?.at ?? tk.checks_at) ? ` · ${gate?.at ?? tk.checks_at}` : ""} (hub verify)` });
+  const checks = gate ? gate.checks : tk.checks;
+  const why = gate?.reason ?? (checks === "fail" ? `Checks rot (Exit ${tk.checks_exit ?? "?"})`
     : "Noch keine Prüfung");
-  const short = !gate ? (tk.checks === "fail" ? `Exit ${tk.checks_exit ?? "?"}` : "nicht geprüft")
-    : gate.checks === "fail" ? `Exit ${gate.exit ?? "?"}`
-      : gate.checks === "pass" ? "neuer Commit" : "nicht geprüft";
+  if (checks !== "fail" && !gate?.stale) return chip(t, "Checks –", t.muted, { tip: why });
+  const short = checks === "fail" ? `Exit ${gate?.exit ?? tk.checks_exit ?? "?"}` : "neuer Commit";
   return chip(t, `Checks ✗ · ${short}`, t.blocked, { tip: why });
 }
 
-/** Reviewer-Chip der Prüfstation: `gate.review` (aus `hub gate`) überstimmt die Aufzeichnung,
- *  ein laufender Reviewer-Terminal geht vor (er prüft gerade eine neue Runde). */
+/** Prüfungs-Chip: `gate.review` (aus `hub gate`) überstimmt die Aufzeichnung,
+ *  ein laufender Prüfer-Terminal geht vor (er prüft gerade eine neue Runde). */
 export function reviewChip(t, tk, gate) {
   const live = tk.review_terminal
     ? terminals().find((x) => x.address === tk.review_terminal && x.state === "live") : null;
-  if (live) return chip(t, "Review läuft", t.working,
-    { tip: `Prüfstation läuft${tk.reviewer ? ` (${tk.reviewer})` : ""} · ${tk.review_terminal}` });
+  if (live) return chip(t, "Prüfung läuft", t.working,
+    { tip: `Prüfung läuft${tk.reviewer_name ? ` (${tk.reviewer_name})` : ""} · ${tk.review_terminal}` });
   const r = gate?.review ?? null;
   const verdict = r?.verdict ?? tk.review ?? null;
-  const at = r?.at ?? tk.review_at, by = r?.reviewer || tk.reviewer;
-  if (r ? r.ok : verdict === "pass") return chip(t, "Review grün", t.done,
+  const at = r?.at ?? tk.review_at, by = r?.reviewer_name || r?.reviewer || tk.reviewer_name || tk.reviewer;
+  if (r?.stale) return chip(t, `Prüfung ${verdict === "fail" ? "rot" : verdict === "pass" ? "grün" : "–"} (veraltet)`, t.muted,
+    { tip: r.reason || "neuer Commit seit dem Lauf — neu prüfen" });
+  if (r ? r.ok : verdict === "pass") return chip(t, "Prüfung grün", t.done,
     { tip: [r?.summary || tk.review_summary, at, by].filter(Boolean).join(" · ") || "Urteil pass auf dem HEAD" });
-  if (verdict === "fail") return chip(t, "Review rot", t.blocked,
-    { tip: r?.reason ?? (tk.review_summary ? `Review rot: ${tk.review_summary}` : "Review rot; Befunde im Verlauf") });
-  if (verdict === "pass") return chip(t, "Review rot · neuer Commit", t.blocked,
-    { tip: r?.reason ?? "Urteil älter als der letzte Commit: hub review-start" });
-  return chip(t, "Review –", t.muted, { tip: "Noch kein Reviewer-Urteil: hub review-start" });
+  if (verdict === "fail") return chip(t, "Prüfung rot", t.blocked,
+    { tip: r?.reason ?? (tk.review_summary ? `Prüfung rot: ${tk.review_summary}` : "Prüfung rot; Befunde im Verlauf") });
+  if (verdict === "pass") return chip(t, "Prüfung grün (aufgezeichnet)", t.muted,
+    { tip: r?.reason ?? "Urteil pass (aufgezeichnet)" });
+  return chip(t, "Prüfung –", t.muted, { tip: "Noch kein Prüfer-Urteil: hub review-start" });
 }
 
-/** Gate-Chips eines Tickets aus orchestra.tickets: Checks, Reviewer-Urteil, dazu Review offen
+/** Prüfer-Chip: der Live-Terminal, sonst die beim Start ins Ticket geschriebene Identität
+ *  (`reviewer_name`); `review_terminal` bleibt dem Live-Zustand vorbehalten. */
+export function reviewerChip(t, id, tk, { maxW = 160, name } = {}) {
+  const live = tk.review_terminal
+    ? terminals().find((x) => x.address === tk.review_terminal && x.state === "live") : null;
+  if (live) return div().flex_none().max_w(maxW).child(identityChip(t, id, tk.review_terminal));
+  const label = name || tk.reviewer_name || tk.reviewer;
+  if (!label) return null;
+  return chip(t, label, t.muted,
+    { tip: ["Prüfer", tk.reviewer, tk.review_terminal ? `Terminal ${tk.review_terminal}` : null].filter(Boolean).join(" · ") });
+}
+
+/** Gate-Chips eines Tickets aus orchestra.tickets: Checks, Prüfungs-Urteil, dazu Abnahme offen
  *  bzw. abgenommen (die Abnahme des Menschen). */
 export function gateChips(t, tk, gate) {
   const out = [gateChip(t, tk, gate)];
   if (tk.status !== "todo") out.push(reviewChip(t, tk, gate));
-  if (tk.status === "review") out.push(chip(t, "Review offen", t.working, { tip: "Wartet auf deine Abnahme" }));
+  if (tk.status === "review") out.push(chip(t, "Abnahme offen", t.working, { tip: "Wartet auf deine Abnahme" }));
   else if (tk.status === "done") out.push(chip(t, "abgenommen", t.done));
   return out;
 }
@@ -186,10 +201,11 @@ export function panelHeader(t, title, right = [], { count } = {}) {
 }
 
 /** Fenster-Titelzeile: wie Panel-Kopf, bg chrome, als letztes Schließen. */
-export function windowHeader(t, title, right = [], onClose, { meta } = {}) {
+export function windowHeader(t, title, right = [], onClose, { meta, metaTip } = {}) {
   return h_flex().h(H_HEADER).flex_none().px(INSET_PANEL).gap(GAP_M).items_center().bg(t.chrome).border_b(1).border_color(t.border)
     .child(div().flex_none().text_size(T_L).font_semibold().text_color(t.foreground).child(title))
-    .when(Boolean(meta), (el) => el.child(div().flex_1().min_w(0).truncate().text_size(T_S).text_color(t.muted).child(meta)))
+    .when(Boolean(meta), (el) => el.child(div().flex_1().min_w(0).truncate().text_size(T_S).text_color(t.muted)
+      .when(Boolean(metaTip), (x) => x.tooltip(metaTip)).child(meta)))
     .when(!meta, (el) => el.child(div().flex_1()))
     .children(right)
     .child(iconButton(t, "win-close", ICON_CLOSE, "Schließen", () => onClose()));

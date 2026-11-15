@@ -20,6 +20,13 @@ const WC = "mods/workspace-chrome";
 const HUB = () => `${appHome()}/mods/orchestra/bin/hub`;
 // At most two lines of T_S text in the panel's width.
 const clip = (s, n = 140) => (s.length > n ? `${s.slice(0, n - 1).trimEnd()}…` : s);
+// The same cap for the Verlauf preview, cut at a word: the ellipsis must stay visible in
+// the two lines instead of the box clipping a third one mid-word.
+const previewText = (s, n = 84) => {
+  if (s.length <= n) return s;
+  const cut = s.slice(0, n - 1), at = cut.lastIndexOf(" ");
+  return `${(at >= n * 0.6 ? cut.slice(0, at) : cut).trimEnd()}…`;
+};
 
 // The pipeline: ticket status → stage, in the order work moves.
 export const STAGES = [
@@ -316,11 +323,12 @@ export class HubSection {
 
   // A Verlauf line: role · time above, the comment below with its @tags highlighted.
   // Words become spans so the narrow panel wraps between them.
-  verlaufLine(t, v) {
+  verlaufLine(t, v, { preview = false } = {}) {
+    const text = preview ? previewText(v.text) : v.text;
     return v_flex().min_w(0).gap(0).text_size(T_XS)
       .child(div().text_color(t.dim).child(`${v.role} · ${v.ts.slice(11)}`))
       .child(h_flex().min_w(0).flex_wrap().text_color(t.muted)
-        .children(v.text.split(/\s+/).filter(Boolean).map((w) =>
+        .children(text.split(/\s+/).filter(Boolean).map((w) =>
           div().when(w.startsWith("@"), (e) => e.text_color(t.accent).font_medium()).child(`${w} `))));
   }
 
@@ -341,7 +349,7 @@ export class HubSection {
             cx.notify();
           }).child(open ? "weniger" : "alle")))
       .when(open, (el) => el.child(div().max_h(150).overflow_y_scroll().children(shown.map((v) => this.verlaufLine(t, v)))))
-      .when(!open, (el) => el.children(shown.map((v) => div().max_h(32).overflow_hidden().child(this.verlaufLine(t, v)))));
+      .when(!open, (el) => el.children(shown.map((v) => div().max_h(48).overflow_hidden().child(this.verlaufLine(t, v, { preview: true })))));
   }
 
   openReview(tk) {
@@ -359,7 +367,6 @@ export class HubSection {
     const over = stopped || (spent != null && spent > limit);
     const status = stage === "review" ? "blocked" : stage === "done" ? "done" : stage === "doing" ? live?.status ?? "idle" : "idle";
     const where = [tk.branch || tk.repo?.split("/").pop(), tk.machine].filter(Boolean).join(" · ");
-    const landed = tk.merged ? `gemergt ${tk.merged}` : tk.pr ? "PR offen" : "";
     const done = stage === "done";
     return ui.card(t, `tk-${tk.id}`, { border: stopped ? t.blocked : undefined })
       .when(!done && Boolean(tk.terminal) && stage !== "review", (el) => el.cursor_pointer().hover((s) => s.bg(t.hover))
@@ -381,17 +388,19 @@ export class HubSection {
           ].filter(Boolean).join("\n");
           return el.child(div().id(`tk-lessons-${tk.id}`).flex_none().text_size(T_XS)
             .text_color(tk.lessonProposal ? t.accent : t.muted).tooltip(tip).child(`Lehren ${n}`));
-        })
-        .when(Boolean(landed), (el) => el.child(div().flex_none().text_size(T_XS).text_color(t.done).when(Boolean(tk.pr), (x) => x.tooltip(tk.pr)).child(landed))))
+        }))
       .when(stage !== "todo", (el) => el.child(h_flex().flex_wrap().gap(ui.GAP_S).items_center()
         .children(ui.gateChips(t, tk, gate))
+        .when(Boolean(tk.merged), (x) => x.child(ui.chip(t, `gemergt ${tk.merged}`, t.done, { tip: where || tk.merged })))
+        .when(!tk.merged && Boolean(tk.pr), (x) => x.child(ui.chip(t, "PR offen", t.working, { tip: tk.pr })))
         .when(gate?.base?.ok === false, (x) => x.child(ui.chip(t, "Basis veraltet", t.blocked,
           { tip: `${gate.base.reason}\nhub rebase ${tk.id}` })))))
       .when(stage === "review", (el) => el.child(h_flex().gap(ui.GAP_S).items_center().min_w(0)
-        .child(div().flex_none().text_size(T_XS).text_color(t.dim).child("Reviewer"))
-        .when(Boolean(tk.review_terminal), (x) => x.child(div().flex_none().max_w(130).child(ui.identityChip(t, `tk-reviewer-${tk.id}`, tk.review_terminal))))
-        .when(!tk.review_terminal && Boolean(tk.reviewer), (x) => x.child(div().text_size(T_S).text_color(t.muted).child(tk.reviewer)))
-        .when(!tk.review_terminal && !tk.reviewer, (x) => x.child(div().text_size(T_XS).text_color(t.muted).child("noch nicht gestartet")))
+        .child(div().flex_none().text_size(T_XS).text_color(t.dim).child("Prüfer"))
+        .when(Boolean(tk.review_terminal || tk.reviewer_name || tk.reviewer),
+          (x) => x.child(ui.reviewerChip(t, `tk-reviewer-${tk.id}`, tk, { maxW: 130 })))
+        .when(!tk.review_terminal && !tk.reviewer_name && !tk.reviewer,
+          (x) => x.child(div().text_size(T_XS).text_color(t.muted).child("noch nicht gestartet")))
         .child(div().flex_1())
         .when(Boolean(tk.review_rounds), (x) => x.child(div().flex_none().text_size(T_XS).text_color(t.muted).child(`Runde ${tk.review_rounds}`)))))
       .when(stage === "review" && Boolean(tk.summary), (el) => el.child(div().max_h(36).overflow_hidden().text_size(T_S).text_color(t.muted).child(clip(tk.summary))))
