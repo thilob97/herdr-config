@@ -1,0 +1,5 @@
+{
+  "place": "none",
+  "title": "Team-Hub",
+  "overlay": { "kind": "window", "key": "teams", "width": 980, "height": 680 }
+}
