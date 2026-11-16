@@ -13,30 +13,36 @@ export function appendHistory(text, lines, max = HISTORY_MAX, keep = HISTORY_KEE
 }
 
 // Every sub-agent under a terminal, including the ones a sub-agent started itself.
-function flatSubs(list, out = []) {
+// `parent` is the terminal for a sub-agent omp started, the parent sub-agent's id
+// below that, so a timeline can nest the levels it was handed.
+function walkSubs(list, terminal, parent, out = [], ids = new Set()) {
   for (const s of list ?? []) {
-    if (s?.id) out.push(s);
-    flatSubs(s?.children, out);
+    if (!s?.id || ids.has(s.id)) continue;
+    ids.add(s.id);
+    out.push({ s, parent, terminal });
+    walkSubs(s?.children, terminal, s.id, out, ids);
   }
   return out;
 }
 
 // Birth lines for ids first seen in this snapshot, end lines for ids gone from it.
-// `seen` is the last snapshot's id -> parent terminal; the result carries the next.
+// `seen` is the last snapshot's id -> {parent, terminal}; the result carries the next.
 export function subagentEvents(seen, omp, at) {
   const current = new Map();
-  for (const [parent, info] of omp) {
-    for (const s of flatSubs(info.subagents)) {
-      if (!current.has(s.id)) current.set(s.id, { parent, s, model: info.model ?? null });
+  for (const [terminal, info] of omp) {
+    for (const { s, parent } of walkSubs(info.subagents, terminal, terminal)) {
+      if (!current.has(s.id)) current.set(s.id, { parent, terminal, s, model: info.model ?? null });
     }
   }
   const lines = [];
-  for (const [id, { parent, s, model }] of current) {
+  for (const [id, { parent, terminal, s, model }] of current) {
     if (seen.has(id)) continue;
-    lines.push({ at, parent, id, title: s.description || s.agent || "", program: s.agent || "task", model });
+    lines.push({ at, terminal, parent, id, title: s.description || s.agent || "", program: s.agent || "task", model });
   }
-  for (const [id, parent] of seen) if (!current.has(id)) lines.push({ at, parent, id, kind: "end" });
-  return { seen: new Map([...current].map(([id, v]) => [id, v.parent])), lines };
+  for (const [id, { parent, terminal }] of seen) {
+    if (!current.has(id)) lines.push({ at, terminal, parent, id, kind: "end" });
+  }
+  return { seen: new Map([...current].map(([id, v]) => [id, { parent: v.parent, terminal: v.terminal }])), lines };
 }
 
 // One id writes one birth line and one end line; the end needs its own key.
