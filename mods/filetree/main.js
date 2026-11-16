@@ -2,11 +2,11 @@
 // (MIT, Kurt Buhler): git status with line and file counts, a branch row, search across
 // unopened folders, date or size column, keyboard navigation, previews, and Claude's reads,
 // writes and git actions shimmering in the tree (fed by mods/filetree/bridge.ts).
-// Layout-neutral: colors come from theme(), corners and header height from the shown
-// layout's pane frame, fonts from settings().
+// Layout-neutral: colors come from theme(), corners from the shown layout's pane
+// frame, fonts from settings().
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, Editor, EditorState, InputState, Input, Scrollbar, v_virtual_list, VirtualListScrollHandle, TextView } from "gpui-base";
-import ICONS from "./icons.js"; // copied from the file-icons mod (mods cannot import across folders)
+import ICONS from "./icons.js"; // Material Icon Theme's tables, kept beside their SVGs
 import { spaces, panes, agents, focused, exec, readTextFile, watchFolder, theme, settings, window, layout, home, appHome, props, run, notify, openOverlay, closeOverlay, shared, setShared } from "herdr";
 
 const NAME = "filetree";
@@ -90,8 +90,8 @@ function words(command) {
 }
 
 // ── the active setup's look ────────────────────────────────────────────────────────────
-// Corners and header height follow the shown layout's pane frame, so the tree sits in
-// whatever layout it is put in: square in a flush layout, rounded in a card layout.
+// Corners follow the shown layout's pane frame, so the tree sits in whatever
+// layout it is put in: square in a flush layout, rounded in a card layout.
 function frameLook() {
   let pane = null;
   const walk = (n) => {
@@ -101,7 +101,7 @@ function frameLook() {
   };
   try { walk(layout()); } catch {}
   const radius = Number(pane?.radius ?? 6);
-  return { radius: Math.max(0, Math.min(6, Number.isFinite(radius) ? radius : 6)), header: Math.max(26, Math.min(40, Number(pane?.header?.height) || 30)) };
+  return { radius: Math.max(0, Math.min(6, Number.isFinite(radius) ? radius : 6)) };
 }
 // A theme color at some opacity, for tinted backgrounds. Themes may give #rgb, #rrggbb or
 // #rrggbbaa; anything else is returned as is.
@@ -119,11 +119,11 @@ function ago(ms) {
   const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
   return s < 10 ? "now" : s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m` : s < 86400 ? `${Math.floor(s / 3600)}h` : `${Math.floor(s / 86400)}d`;
 }
-// File and folder icons: Material Icon Theme, from the file-icons mod (icons.js copied here,
-// the SVGs read from its icons/ folder), matched the way VS Code does. Names are compared in lower case; a
+// File and folder icons: Material Icon Theme (icons.js beside icons/), matched the way
+// VS Code does. Names are compared in lower case; a
 // path rule (".github/workflows") beats a name, a name beats an extension, the longest
 // extension wins ("spec.ts" over "ts"). Light themes check the light table first.
-const ICON_DIR = "mods/file-icons/icons";
+const ICON_DIR = "mods/filetree/icons";
 const bare = (name) => name.replace(/^__(.+)__$/, "$1").replace(/^[._-]/, "");
 const opened = (id) => (id.endsWith("_light") ? `${id.slice(0, -6)}-open_light` : `${id}-open`);
 const lookup = (table, key, dark) => (dark ? undefined : ICONS.light[table][key]) ?? ICONS[table][key];
@@ -259,7 +259,7 @@ async function revealExternal(abs) {
 }
 function copy(cx, text) {
   cx.write_to_clipboard(text);
-  notify({ title: "Copied", body: text, level: "info", timeout: 2000 });
+  notify({ title: "Kopiert", body: text, level: "info", timeout: 2000 });
 }
 // Types "@path " into the agent of the shown tab, through the clipboard, then puts the
 // clipboard back. The agent's pane takes the keyboard so the question can follow.
@@ -267,7 +267,7 @@ function sendToAgent(cx, abs) {
   const f = focused(), fp = f?.pane ? panes().find((p) => p.pane === f.pane) : null;
   const inTab = agents().filter((a) => a.tab === f?.tab);
   const address = (fp?.status && fp.terminal) || (inTab.find((a) => a.focused) ?? inTab[0])?.address || agents().find((a) => a.focused)?.address;
-  if (!address) { notify({ title: "No agent in this tab", body: "Start one, then send the path again", level: "warning", timeout: 3000 }); return; }
+  if (!address) { notify({ title: "Kein Agent in diesem Tab", body: "Starte einen und sende den Pfad noch einmal", level: "warning", timeout: 3000 }); return; }
   const cwd = panes().find((p) => p.terminal === address)?.cwd;
   const rel = relTo(cwd, abs), path = rel || abs;
   const text = `@${/\s/.test(path) ? `"${path}"` : path} `;
@@ -290,7 +290,9 @@ export default class FileTree extends View {
     this.showHidden = prefs.showHidden ?? true;
     this.showSize = prefs.showSize ?? null;
     this.follow = true; this.pinned = null;
-    this.view = VIEWS.some(([v]) => v === prefs.view) ? prefs.view : "tree";
+    // "Zuletzt" exists once the Claude hook (bridge.ts) has written activity.jsonl.
+    this.hasActivity = false;
+    this.view = VIEWS.some(([v]) => v === prefs.view) && (prefs.view !== "recent" || this.hasActivity) ? prefs.view : "tree";
     try { this.history = JSON.parse(localStorage.getItem("history") ?? "[]"); } catch { this.history = []; }
     this.agoAt = 0;
     this.saved = new Map(); this.flashes = new Map(); this.bashStarts = new Map(); this.recent = [];
@@ -566,10 +568,24 @@ export default class FileTree extends View {
   }
 
   // ── Claude activity, from the hook bridge ────────────────────────────────────────────
+  // Without activity.jsonl there is nothing to put in "Zuletzt": the segment stays
+  // hidden instead of showing an empty list that asks for a hook.
+  noteActivity(has, cx) {
+    const changed = has !== this.hasActivity;
+    this.hasActivity = has;
+    if (!has && this.view === "recent") this.setView("tree", cx);
+    else if (changed) cx.notify();
+  }
+
+  // The views the head offers: "Zuletzt" only with the hook's file.
+  views() { return VIEWS.filter(([id]) => id !== "recent" || this.hasActivity); }
+
   watchActivity(cx) {
     const dir = `${home()}/.local/state/herdr-filetree`;
     cx.spawn(async (cx) => {
       try { await exec("mkdir", ["-p", dir]); } catch {}
+      // Once at startup: whether the file exists decides if "Zuletzt" shows.
+      await this.readActivity(`${dir}/activity.jsonl`, cx);
       try {
         for (;;) {
           await watchFolder(dir);
@@ -581,6 +597,7 @@ export default class FileTree extends View {
 
   async readActivity(file, cx) {
     const text = await readTextFile(file).catch(() => null);
+    this.noteActivity(text !== null, cx);
     if (!text) return;
     const fresh = [];
     for (const line of text.split("\n")) {
@@ -812,7 +829,7 @@ export default class FileTree extends View {
     else if (k === "/") { this.input.focus(); }
     else if (k === ".") { this.showHidden = !this.showHidden; this.savePrefs(); }
     else if (k === "escape") { if (this.query) this.clearSearch(cx); else this.cursor = ""; }
-    else if (/^[1-9]$/.test(k) && VIEWS[Number(k) - 1]) this.setView(VIEWS[Number(k) - 1][0], cx);
+    else if (/^[1-9]$/.test(k) && this.views()[Number(k) - 1]) this.setView(this.views()[Number(k) - 1][0], cx);
     else if (!cur) return;
     else if (cur.flat && (k === "right" || k === "l")) this.revealInTree(cur.rel, cx);
     else if (cur.flat && (k === "left" || k === "h")) return;
@@ -830,7 +847,7 @@ export default class FileTree extends View {
 
   // ── drawing ──────────────────────────────────────────────────────────────────────────
   // Icon button (5.6): 22×22 in rows (the tools beside the filter), 26×26 in the head.
-  button(id, label, tip, on, onClick, t, _R, size = H_BTN_S) {
+  button(id, label, tip, on, onClick, t, size = H_BTN_S) {
     return div().id(id).size(size).flex_none().flex().items_center().justify_center().rounded(6).cursor_pointer()
       .text_size(T_M).text_color(on ? t.foreground : t.dim).when(on, (s) => s.bg(t.selected)).hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip(tip)
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
@@ -858,7 +875,7 @@ export default class FileTree extends View {
       .child(div().flex_none().w(26).text_size(11).text_color(t.dim).text_right().child(ago(h.at)));
   }
 
-  row(r, t, R, now) {
+  row(r, t, R, now, dark) {
     if (r.flat) return this.flatRow(r, t, R, now);
     const { rel, e, depth, open } = r, g = this.git, tone = tones(t);
     const status = g.status.get(rel) ?? (this.underUntracked(rel) ? "?" : null);
@@ -876,7 +893,7 @@ export default class FileTree extends View {
       .when(selected, (el) => el.bg(t.selected)).when(!selected, (el) => el.hover((s) => s.bg(t.hover)))
       .when(Boolean(fl?.bright), (el) => el.bg(alpha(lit, 0.13)))
       .child(e.dir ? svg(ICON(`chevron-${open ? "down" : "right"}`)).size(12).flex_none().text_color(t.dim) : div().w(12).flex_none())
-      .child(image(fileIcon(rel, e.dir, open, settings().dark !== false)).size(16).flex_none().when(Boolean(fl?.bright), pulse))
+      .child(image(fileIcon(rel, e.dir, open, dark)).size(16).flex_none().when(Boolean(fl?.bright), pulse))
       .child(div().flex_1().min_w(0).truncate().text_color(nameColor).when(selected, (el) => el.font_medium())
         .when(status === "D" && !e.dir, (el) => el.line_through()).when(Boolean(fl?.bright), pulse).child(e.name + (e.link ? " ↪" : "")))
       .when(Boolean(meta), (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child(meta)))
@@ -928,7 +945,7 @@ export default class FileTree extends View {
     const color = c ? (c.state === "failed" ? tone.red : tone[c.tone] ?? t.accent) : null;
     const hash = c?.state === "done" ? c.detail.split(" ")[0] : "";
     return h_flex().h(24).flex_none().px(10).gap(8).items_center().text_size(11).border_t(1).border_color(t.border)
-      .child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(this.cursor ? this.cursor : ""))
+      .child(div().flex_1().min_w(0).truncate().text_color(t.dim).tooltip(this.cursor ?? "").child(this.cursor ? this.cursor : ""))
       .when(Boolean(c), (el) => el.child(h_flex().flex_none().gap(4).items_center().text_color(color)
         .child(div().when(c.state === "running", (d) => d.font_semibold().loop("opacity", { from: 0.4, to: 1, period: 1000 })).child(c.state === "running" ? `${c.label}…` : c.state === "done" ? `✓ ${c.label}` : c.label))
         .when(Boolean(hash), (d) => d.child(div().text_color(t.dim).child(hash)))));
@@ -940,12 +957,12 @@ export default class FileTree extends View {
     const item = (id, label, act) => div().id(id).h(28).px(10).flex().items_center().rounded(R).cursor_pointer().text_size(12.5)
       .hover((s) => s.bg(t.hover)).on_click((_e, cx) => { close(); act(cx); }).child(label);
     const items = [];
-    if (!m.dir) items.push(item("m-preview", "Preview", () => setShared(`${NAME}.preview`, { root: m.root, rel: m.rel, n: Date.now() })));
-    if (!m.dir && m.local) items.push(item("m-open", "Open in default app", () => openExternal(m.abs).catch((e) => notify({ title: "Could not open the file", body: String(e?.message ?? e), level: "error" }))));
-    if (m.local) items.push(item("m-reveal", window()?.platform === "macos" ? "Reveal in Finder" : "Show in folder", () => revealExternal(m.abs).catch(() => {})));
-    items.push(item("m-rel", "Copy relative path", (cx) => copy(cx, m.rel)));
-    items.push(item("m-abs", "Copy absolute path", (cx) => copy(cx, m.abs)));
-    items.push(item("m-send", "Send to agent", (cx) => sendToAgent(cx, m.abs)));
+    if (!m.dir) items.push(item("m-preview", "Vorschau", () => setShared(`${NAME}.preview`, { root: m.root, rel: m.rel, n: Date.now() })));
+    if (!m.dir && m.local) items.push(item("m-open", "In Standard-App öffnen", () => openExternal(m.abs).catch((e) => notify({ title: "Datei lässt sich nicht öffnen", body: String(e?.message ?? e), level: "error" }))));
+    if (m.local) items.push(item("m-reveal", window()?.platform === "macos" ? "Im Finder zeigen" : "Im Ordner zeigen", () => revealExternal(m.abs).catch(() => {})));
+    items.push(item("m-rel", "Relativen Pfad kopieren", (cx) => copy(cx, m.rel)));
+    items.push(item("m-abs", "Absoluten Pfad kopieren", (cx) => copy(cx, m.abs)));
+    items.push(item("m-send", "An Agent senden", (cx) => sendToAgent(cx, m.abs)));
     return v_flex().id("ft-menu").size_full().p(5).gap(0).bg(t.popover ?? t.surface).text_color(t.foreground).children(items);
   }
 
@@ -958,35 +975,35 @@ export default class FileTree extends View {
     const want = shared(`${NAME}.view`);
     if (want && want.n !== this.seenView) {
       this.seenView = want.n;
-      if (VIEWS.some(([v]) => v === want.view) && want.view !== this.view) { this.view = want.view; this.hits = null; this.closePreview(); this.savePrefs(); }
+      if (this.views().some(([v]) => v === want.view) && want.view !== this.view) { this.view = want.view; this.hits = null; this.closePreview(); this.savePrefs(); }
     }
-    const t = theme(), look = frameLook(), R = look.radius, now = Date.now();
+    const t = theme(), look = frameLook(), R = look.radius, now = Date.now(), dark = settings().dark !== false;
     const rows = this.file ? [] : this.rows();
     if (this.scrollTo !== null && this.scrollTo !== undefined) {
       const at = rows.findIndex((r) => r.rel === this.scrollTo);
       if (at >= 0) { this.scroll.scroll_to_item(at, "center"); this.scrollTo = null; }
       else if (!this.pending.size && !this.loading) this.scrollTo = null;
     }
-    const btn = (id, label, tip, on, fn) => this.button(id, label, tip, on, fn, t, R);
-    const headBtn = (id, label, tip, fn) => this.button(id, label, tip, false, fn, t, R, H_BTN);
+    const btn = (id, label, tip, on, fn) => this.button(id, label, tip, on, fn, t);
+    const headBtn = (id, label, tip, fn) => this.button(id, label, tip, false, fn, t, H_BTN);
     // Panel head (5.6): the panel's name, its folder as meta, the Tree / Zuletzt segment on the right.
     // While a file shows: back, the file's name and its actions.
     const header = h_flex().h(H_HEADER).flex_none().px(INSET_PANEL).gap(GAP_M).items_center().border_b(1).border_color(t.border)
       .when(Boolean(this.file), (el) => el
         .child(headBtn("ft-back", svg(ICON("chevron-left")).size(14), "Zurück zum Tree (Esc)", () => this.closePreview()).ml(-6))
-        .child(image(fileIcon(this.file, false, false, settings().dark !== false)).size(14).flex_none())
-        .child(div().flex_1().min_w(0).truncate().text_size(T_L).font_semibold().child(this.file))
+        .child(image(fileIcon(this.file, false, false, dark)).size(14).flex_none())
+        .child(div().flex_1().min_w(0).truncate().text_size(T_L).font_semibold().tooltip(this.file).child(this.file))
         .when(!this.on, (el) => el.child(headBtn("ft-ext", "↗", "Mit der Standard-App öffnen (o)", () => openExternal(join(this.root, this.file)).catch(() => {}))))
         .child(headBtn("ft-copy", "⧉", "Pfad kopieren", (cx) => copy(cx, this.file)))
         .child(headBtn("ft-send", "@", "Pfad an den Agent im Tab senden", (cx) => sendToAgent(cx, join(this.root, this.file)))))
       .when(!this.file, (el) => el
         .child(div().flex_none().text_size(T_L).font_semibold().child("Tree"))
-        .when(Boolean(this.root), (el) => el.child(div().flex_1().min_w(0).truncate().text_size(T_S).text_color(t.dim).child(baseOf(this.root))))
+        .when(Boolean(this.root), (el) => el.child(div().flex_1().min_w(0).truncate().text_size(T_S).text_color(t.dim).tooltip(this.root).child(baseOf(this.root))))
         .when(!this.root, (el) => el.child(div().flex_1()))
         // Segment (5.6), icon variant when narrow.
         .child(h_flex().h(H_BTN).p(2).gap(2).flex_none().items_center().rounded(8).bg(t.background).border_1().border_color(t.border)
-          .children(VIEWS.map(([id, label, icon], i) => {
-            const on = this.view === id;
+          .children(this.views().map(([id, label, icon]) => {
+            const on = this.view === id, i = VIEWS.findIndex(([v]) => v === id);
             return h_flex().id(`ft-tab-${id}`).h(H_BTN_S).px(8).gap(GAP_XS).flex_none().items_center().rounded(6).cursor_pointer().text_size(T_S)
               .bg(on ? t.selected : t.background).text_color(on ? t.foreground : t.muted).hover((s) => s.text_color(t.foreground))
               .tooltip(`${label} (${i + 1})`).on_mouse_down("left", (_e, cx) => cx.stop_propagation()).on_click((_e, cx) => this.setView(id, cx))
@@ -1036,7 +1053,7 @@ export default class FileTree extends View {
         .child(v_virtual_list("ft-rows", rows.length, ROW, (i) => rows[i]?.rel ?? String(i), (range) => {
           const shown = rows.slice(range.start, range.end);
           this.visible = shown.filter((r) => !r.flat && r.e?.dir).map((r) => r.rel);
-          return shown.map((r) => this.row(r, t, R, now));
+          return shown.map((r) => this.row(r, t, R, now, dark));
         }).track_scroll(this.scroll).size_full()
           .on_item_click((rel, cx) => this.press(rel, cx))
           .on_item_secondary_click((rel, _e, cx) => { const r = this.rows().find((x) => x.rel === rel); if (!r) return; this.cursor = rel; this.openMenu(rel, r.e.dir); cx.notify(); }))

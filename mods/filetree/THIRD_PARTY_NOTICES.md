@@ -8,8 +8,8 @@ parts, and the original copyright notices are kept here as the licences require.
 | `filetree/mods/filetree` (behaviour and git/command parsing in `bridge.ts`) | claude-code-filetree | MIT | (c) 2026 Kurt Buhler |
 | `ci-dash/mods/ci-dash` | ci-dash-app from herdr-plugins | MIT | (c) 2026 Douglas Cunha |
 | `ci-dash/mods/ci-dash/yaml.js` | `yaml` 2.8.1 | ISC (`yaml.LICENSE` beside it) | Eemeli Aro |
-| `*/mods/file-icons/icons`, `icons.js`, `filetree/mods/filetree/icons.js` | Material Icon Theme | MIT (`LICENSE-material-icon-theme.txt`) | (c) 2025 Material Extensions |
-| `*/mods/file-icons` | the `files` mod shipped with the Herdr app | Apache-2.0 | Herdr |
+| `mods/filetree/icons`, `mods/filetree/icons.js` (the `file-icons` mod, now folded in here) | Material Icon Theme | MIT (`LICENSE-material-icon-theme.txt`) | (c) 2025 Material Extensions |
+| `mods/filetree/icons.js`, `mods/filetree/icons` (from the `file-icons` mod) | the `files` mod shipped with the Herdr app | Apache-2.0 | Herdr |
 
 ## MIT licence text (claude-code-filetree, herdr-plugins, Material Icon Theme)
 
