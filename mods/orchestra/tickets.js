@@ -79,9 +79,10 @@ export function verifyOf(t) {
   let fenced = false;
   for (const line of lines) {
     if (line.trimStart().startsWith("```")) { fenced = !fenced; continue; }
-    // hub entschärft Ausgabezeilen, die mit "## " beginnen, um ein Leerzeichen; hier
-    // zurück, damit die angezeigte Ausgabe wieder die echte ist.
-    if (fenced) tail.push(line.startsWith(" ## ") ? line.slice(1) : line);
+    // hub stellt Ausgabezeilen, die mit "## " beginnen, ein Zero-Width-Zeichen voran;
+    // hier zurück, damit die angezeigte Ausgabe wieder die echte ist. Zeilen, die von
+    // sich aus mit " ## " beginnen, bleiben unangetastet.
+    if (fenced) tail.push(line.startsWith("\u200b## ") ? line.slice(1) : line);
   }
   return { meta, tail, fields: metaFields(meta) };
 }

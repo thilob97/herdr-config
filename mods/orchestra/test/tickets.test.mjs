@@ -41,7 +41,8 @@ status: doing
 
 \`\`\`text
 ok
- ## Kaputt
+\u200b## Kaputt
+ ## echt
 zeile
 \`\`\`
 
@@ -53,8 +54,8 @@ test("verifyOf liest die Ausgabe trotz einer ## Zeile vollständig", () => {
   const t = tickets.parse("x", TICKET);
   const v = tickets.verifyOf(t);
   assert.ok(v, "der ## Prüfung Abschnitt wird gefunden");
-  assert.deepEqual(v.tail, ["ok", "## Kaputt", "zeile"],
-    "eine entschärfte ## Zeile kommt ohne das Schutz-Leerzeichen zurück");
+  assert.deepEqual(v.tail, ["ok", "## Kaputt", " ## echt", "zeile"],
+    "nur die hub-entschärfte ## Zeile kommt ohne Markierung zurück; eine echte ## Zeile bleibt bytegleich");
   assert.equal(v.fields.checks, "pass");
   assert.equal(v.fields.head, "abc1234");
   assert.equal(v.fields.cmd, ".herdr/verify.sh");

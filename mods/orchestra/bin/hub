@@ -1194,13 +1194,16 @@ PRUEFUNG = "## Prüfung"
 
 
 def body_lines(lines):
-    """Captured output as a section body: a line starting with `## ` would end the section."""
-    return [" " + line if line.startswith("## ") else line for line in lines]
+    """Captured output as a section body: a line starting with `## ` would end the section.
+
+    Only lines we write get a zero-width space in front; a line the output itself starts
+    with a space and `## ` stays byte-identical."""
+    return ["\u200b" + line if line.startswith("## ") else line for line in lines]
 
 
 def body_line(line):
-    """The inverse: an escaped `## ` line is the output's own text again."""
-    return line[1:] if line.startswith(" ## ") else line
+    """The inverse: exactly our zero-width marker comes off; other lines stay as written."""
+    return line[1:] if line.startswith("\u200b## ") else line
 
 
 def prufung(t):
