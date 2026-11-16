@@ -400,7 +400,8 @@ export default class FactoryGraph extends View {
       width: this.width || 400 });
     const agents = g.nodes.filter((n) => n.kind !== "orchestrator").length;
     const scope = ui.spaceChip(t);
-    const meta = `${agents} Agent${agents === 1 ? "" : "en"} · ${g.ticketNodes.length} Tickets`;
+    const tks = g.ticketNodes.length;
+    const meta = `${agents} Agent${agents === 1 ? "" : "en"} · ${tks} Ticket${tks === 1 ? "" : "s"}`;
     const overlay = props()?.overlay;
     const header = overlay
       ? ui.windowHeader(t, "Fabrik-Graph", [scope].filter(Boolean), () => closeOverlay(overlay), { meta, metaTip: "Agents und Tickets der Fabrik dieses Workspace",

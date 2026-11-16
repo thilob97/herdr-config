@@ -401,7 +401,10 @@ export default class Inbox extends View {
       .overflow_y_scrollbar().text_size(T_S).text_color(t.muted)
       .when(!p, (el) => el.child(ui.loading(t, "lese Bildschirm …")))
       .when(Boolean(p?.error), (el) => el.child(div().text_color(t.blocked).child(p.error)))
-      .when(Boolean(p && !p.error), (el) => el.children(p.lines.map((l, i) => div().id(`ln-${i}`).whitespace_nowrap().overflow_hidden().child(l || " "))));
+      // Vorschauzeilen kürzen sichtbar (…) und tragen den vollen Text als Tooltip;
+      // whitespace_nowrap().overflow_hidden() schnitt Wörter ohne Hinweis ab.
+      .when(Boolean(p && !p.error), (el) => el.children(p.lines.map((l, i) => div().id(`ln-${i}`).truncate()
+        .when(Boolean(l), (d) => d.tooltip(l)).child(l || " "))));
   }
 
   replyField(t, e) {
