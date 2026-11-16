@@ -67,7 +67,7 @@ const TICKETS = [
   { id: "b1", status: "review", space: "spb", space_name: "Beta", repo: "/repos/beta" },
 ];
 
-// ui.js caches spaces/terminals/identities for 25 ms (one render pass). Each test world
+// ui.js caches spaces/terminals/identities for one tick (HOST_TICK) (one render pass). Each test world
 // is a new pass, so the clock moves past the window before the next one reads.
 let clockSkew = 0;
 const realNow = Date.now;

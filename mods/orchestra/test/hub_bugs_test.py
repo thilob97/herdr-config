@@ -434,6 +434,17 @@ class HubBugsTest(unittest.TestCase):
         path = self.tickets_dir()
         self.assertEqual(os.listdir(path) if os.path.isdir(path) else [], [])
 
+    def test_missing_body_file_is_refused_without_traceback(self):
+        repo = self.repo()
+        missing = os.path.join(self.base, "gibt-es-nicht.md")
+        r = self.hub("ticket", "new", "--title", "Ohne Datei", "--repo", repo, "--body-file", missing)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn(missing, r.stderr)
+        self.assertIn("--body-file", r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+        path = self.tickets_dir()
+        self.assertEqual(os.listdir(path) if os.path.isdir(path) else [], [])
+
     # ---- 13: `status` shows only foreign owners; own, empty and `mensch` follow the spec
 
     def test_status_owner_column_hides_own_and_shows_foreign(self):

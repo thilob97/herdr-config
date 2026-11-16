@@ -263,6 +263,24 @@ class HubRaceTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(len(self.run_lines()), 3)
 
+    def test_review_round_two_is_again_locked(self):
+        tid = self.review_ticket()
+        r = self.hub("review-start", tid, "--agent", "true")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.write_json(self.get_file, {"state": "finished"})
+        r = self.hub("review-verdict", tid, "--verdict", "fail", "--summary", "nachbessern")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+        # Runde 2: der Start leert das alte Urteil, die Runde ist wieder offen.
+        r = self.hub("review-start", tid, "--agent", "true")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.write_json(self.get_file, {"state": "finished"})
+        r = self.hub("review-start", tid, "--agent", "true")
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("Prüfstation Runde 2", r.stderr)
+        self.assertIn("--restart", r.stderr)
+        self.assertEqual(len(self.run_lines()), 2, "Runde 2 bekommt keinen zweiten Reviewer")
+
     def test_review_restart_ends_the_live_reviewer(self):
         tid = self.review_ticket()
         r = self.hub("review-start", tid, "--agent", "true")

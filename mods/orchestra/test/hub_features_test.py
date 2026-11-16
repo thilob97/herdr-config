@@ -11,6 +11,7 @@ agent or GitHub is touched.
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -30,6 +31,19 @@ case "$1" in
     echo '{"address":"t-demo"}' ;;
   send)
     if [ -n "$HC_SEND_LOG" ]; then printf '%s\\n' "$*" >> "$HC_SEND_LOG"; fi ;;
+  exec)
+    # `hc exec --on M --timeout N [--cwd P] [--env K=V] [--json] [-i] ARGV...`: the stub
+    # logs the whole call and runs ARGV here, so a "remote" ticket stays a local test.
+    shift
+    if [ -n "$HC_EXEC_LOG" ]; then printf '%s\\n' "$*" >> "$HC_EXEC_LOG"; fi
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --on|--timeout|--cwd|--env) shift 2 ;;
+        --json|-i|--stdin) shift ;;
+        *) break ;;
+      esac
+    done
+    exec "$@" ;;
   *) exit 0 ;;
 esac
 """
@@ -59,6 +73,7 @@ class HubFeaturesTest(unittest.TestCase):
             os.chmod(p, 0o755)
         self.run_log = os.path.join(self.base, "hc-run.log")
         self.send_log = os.path.join(self.base, "hc-send.log")
+        self.exec_log = os.path.join(self.base, "hc-exec.log")
         self.git_env = {**os.environ, "GIT_AUTHOR_NAME": "Test", "GIT_AUTHOR_EMAIL": "test@example.test",
                         "GIT_COMMITTER_NAME": "Test", "GIT_COMMITTER_EMAIL": "test@example.test"}
 
@@ -90,7 +105,8 @@ class HubFeaturesTest(unittest.TestCase):
         e = dict(os.environ)
         e.update(HOME=self.home, HERDR_APP_HOME=app or self.app,
                  PATH=self.bin + os.pathsep + e.get("PATH", ""),
-                 HC_RUN_LOG=self.run_log, HC_SEND_LOG=self.send_log)
+                 HC_RUN_LOG=self.run_log, HC_SEND_LOG=self.send_log,
+                 HC_EXEC_LOG=self.exec_log)
         e.update(env or {})
         return subprocess.run([sys.executable, HUB, *args], capture_output=True, text=True, env=e)
 
@@ -115,6 +131,10 @@ class HubFeaturesTest(unittest.TestCase):
     def text_of(self, tid):
         with open(os.path.join(self.app, "data", "quests", "tickets", tid + ".md"), encoding="utf-8") as f:
             return f.read()
+
+    def meta_of(self, tid):
+        m = re.match(r"^---\n(.*?)\n---\n", self.text_of(tid), re.S)
+        return dict(line.split(": ", 1) for line in (m.group(1) if m else "").splitlines() if ": " in line)
 
     def lines_of(self, path):
         try:
@@ -178,6 +198,32 @@ class HubFeaturesTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("status: doing", self.text_of(tid))
 
+    def test_dispatch_records_base_and_base_head(self):
+        repo = self.verify_repo("basis")
+        head = self.git("rev-parse", "HEAD", cwd=repo).stdout.strip()
+        tid = self.criteria_ticket("Basis", repo)
+
+        r = self.hub("dispatch", tid, "--no-worktree")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        meta = self.meta_of(tid)
+        self.assertEqual(meta.get("base"), "main", "die Basis steht im Frontmatter")
+        self.assertEqual(meta.get("base_head"), head, "der Basis-Commit beim Start steht im Frontmatter")
+        self.assertEqual(meta.get("repo"), repo)
+
+    def test_roster_sandbox_repo_starts_without_a_worktree(self):
+        repo = self.verify_repo("sandbox")
+        r = self.hub("agent", "add", "Neo", "--program", "omp", "--repo", repo, "--sandbox", "repo",
+                        "--prompt", "Du baust.")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        tid = self.criteria_ticket("Ohne Worktree", repo)
+
+        r = self.hub("dispatch", tid, "--agent", "Neo")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        meta = self.meta_of(tid)
+        self.assertEqual(meta.get("repo"), repo)
+        self.assertNotIn("branch", meta, "sandbox=repo arbeitet ohne Worktree-Branch")
+        self.assertNotIn("worktree", meta, "sandbox=repo arbeitet ohne Worktree")
+
     # ---- preflight
 
     def test_preflight_green_and_red_record_the_section(self):
@@ -231,6 +277,38 @@ class HubFeaturesTest(unittest.TestCase):
         self.assertIn("Preflight pass — gestartet", r.stdout)
         self.assertIn("preflight: pass", self.text_of(tid))
         self.assertIn("status: doing", self.text_of(tid))
+
+    def test_remote_verify_and_preflight_use_a_long_timeout(self):
+        repo = self.verify_repo("remote", line="remote-ok")
+        tid = self.ticket("Fern", repo, base="main", machine="box")
+
+        r = self.hub("preflight", tid)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r = self.hub("verify", tid)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        runs = self.lines_of(self.exec_log)
+        self.assertTrue(any("--timeout 600" in line for line in runs),
+                        "verify/preflight geben hc exec mehr als die 60 s: " + repr(runs[:5]))
+        meta = self.meta_of(tid)
+        self.assertEqual(meta.get("preflight"), "pass")
+        self.assertEqual(meta.get("checks"), "pass")
+
+    def test_a_heading_in_the_output_does_not_end_the_sections(self):
+        repo = self.repo("heads")
+        os.makedirs(os.path.join(repo, ".herdr"))
+        with open(os.path.join(repo, ".herdr", "verify.sh"), "w", encoding="utf-8") as f:
+            f.write("#!/bin/sh\nprintf '## Kaputt\\nzeile\\n'\n")
+        self.git("add", ".herdr/verify.sh", cwd=repo)
+        self.git("commit", "-q", "-m", "verify", cwd=repo)
+        tid = self.criteria_ticket("Kopf", repo)
+
+        r = self.hub("verify", tid)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        text = self.text_of(tid)
+        self.assertEqual(text.count("## Prüfung"), 1, "die Ausgabe beendet den Abschnitt nicht")
+        self.assertIn("\n ## Kaputt\n", text, "die Zeile steht entschärft im Ticket")
+        g = json.loads(self.hub("gate", tid, "--json").stdout)
+        self.assertEqual(g["tail"][-2:], ["## Kaputt", "zeile"], "der Leser sieht die ganze Ausgabe")
 
     # ---- stalls and nudge
 
