@@ -280,7 +280,6 @@ Ausgelieferte Mods werden nicht geändert. Es gibt kein gemeinsames Modul über 
 | `H_BTN_S` | 22 | Knopf, Icon-Knopf in Zeilen und Karten |
 | `H_INPUT` | 30 | Eingabefeld, Filter |
 | `H_CHIP` | 18 | Chip, Badge, Zähler |
-| `H_BAR` | 28 | Statusleiste, Sidebar-Fuß |
 
 ### 5.2 Schrift
 

@@ -54,7 +54,7 @@ export const GROUPS = [
   ["Panels und Seitenleiste", (a) => /^tabs-graph\.|^layout\.toggle:sidebar$/.test(a)],
   ["Tabs", (a) => /^tab\./.test(a)],
   ["Spaces", (a) => /^space\.|^space-folders\./.test(a)],
-  ["Panes", (a) => /^pane\./.test(a)],
+  ["Ausschnitte", (a) => /^pane\./.test(a)],
   ["Terminal", (a) => /^terminal\.|^send:/.test(a)],
   ["App und Layouts", () => true],
 ];
@@ -114,10 +114,10 @@ export const pretty = (k, mac) => {
 
 // Where a binding applies: `global` for every layout, otherwise a short label.
 export const scope = (s) => (s === "global" ? "global" : s === "terminal" ? "im Terminal" : s.startsWith("layout:") ? s.slice(7) : s.replace(/^mod:/, ""));
-// The one scope a row can name: only when every key of the action is bound in the
-// same non-global scope. A global key alongside it wins, and two different
-// non-global scopes have no single label, so both stay without a chip.
-const tag = (sections) => (sections.length === 1 && scope(sections[0]) !== "global" ? scope(sections[0]) : null);
+// The scope a row can name: a global key alongside the others wins and leaves the row
+// without a chip. Otherwise the bound scopes are named — one label, or all of them
+// joined when the same action lives in several layouts (Board, Timeline).
+const tag = (sections) => (sections.includes("global") ? null : sections.length ? sections.map(scope).join(" · ") : null);
 
 // keys() rows -> one row per action (a second key joins it). `sections` keeps
 // every scope the action is bound in, so the group can tell a shared scope from

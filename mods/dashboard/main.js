@@ -1613,7 +1613,7 @@ export default class Dashboard extends View {
     const t = theme();
     // Ein Schnappschuss je Render: jede Zeile liest dieselben Listen, statt die
     // Host-Brücke erneut zu fragen. waitsOnMe und doing laufen genau einmal.
-    // ui.js hält je 25-ms-Pass einen Satz Host-Kopien; der erste Aufruf startet ihn.
+    // ui.js hält je 120-ms-Pass einen Satz Host-Kopien; der erste Aufruf startet ihn.
     // Ohne das liest jeder Identitäts-Chip agents() und agents.identity erneut.
     ui.paneSpaceOf("");
     this.snap = this.snapshot();

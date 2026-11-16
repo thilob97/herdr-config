@@ -317,7 +317,7 @@ class HubFeaturesTest(unittest.TestCase):
         repo = self.repo("heads")
         os.makedirs(os.path.join(repo, ".herdr"))
         with open(os.path.join(repo, ".herdr", "verify.sh"), "w", encoding="utf-8") as f:
-            f.write("#!/bin/sh\nprintf '## Kaputt\\nzeile\\n'\n")
+            f.write("#!/bin/sh\nprintf '## Kaputt\\n ## echt\\nzeile\\n'\n")
         self.git("add", ".herdr/verify.sh", cwd=repo)
         self.git("commit", "-q", "-m", "verify", cwd=repo)
         tid = self.criteria_ticket("Kopf", repo)
@@ -326,9 +326,10 @@ class HubFeaturesTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         text = self.text_of(tid)
         self.assertEqual(text.count("## Prüfung"), 1, "die Ausgabe beendet den Abschnitt nicht")
-        self.assertIn("\n ## Kaputt\n", text, "die Zeile steht entschärft im Ticket")
+        self.assertIn("\n\u200b## Kaputt\n", text, "die hub-eigene Zeile steht entschärft im Ticket")
+        self.assertIn("\n ## echt\n", text, "eine echte Ausgabezeile mit Leerzeichen bleibt bytegleich")
         g = json.loads(self.hub("gate", tid, "--json").stdout)
-        self.assertEqual(g["tail"][-2:], ["## Kaputt", "zeile"], "der Leser sieht die ganze Ausgabe")
+        self.assertEqual(g["tail"][-3:], ["## Kaputt", " ## echt", "zeile"], "der Leser sieht die ganze Ausgabe")
 
     # ---- stalls and nudge
 

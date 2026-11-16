@@ -107,7 +107,7 @@ function view() {
 
 test("ein Render mit 76 Tickets bleibt unter 100 Host-Aufrufen", () => {
   const v = view();
-  // ui.js cached einen Host-Satz für 25 ms und fragt dafür Date.now. Ein Render, der
+  // ui.js cached einen Host-Satz für 120 ms und fragt dafür Date.now. Ein Render, der
   // zufällig länger dauert, würde den Cache mitten im Lauf verlieren und den Test
   // flaky machen; für genau diesen einen Render steht die Uhr still.
   const now = Date.now;

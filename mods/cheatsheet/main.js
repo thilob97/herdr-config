@@ -77,7 +77,7 @@ export default class Cheatsheet extends View {
       .child(h_flex().h(H_INPUT).flex_none().px(10).gap(GAP_S).items_center().rounded(6).border_1().border_color(this.typing ? t.accent : t.input).bg(t.background)
         .child(svg("mods/workspace-chrome/search.svg").size(12).text_color(t.dim))
         .child(Input.new(this.input).flex_1().h_full().text_size(T_M).text_color(t.foreground)))
-      .child(div().id("cs-scroll").flex_1().min_h(0).overflow_y_scrollbar()
+      .child(div().id("cs-scroll").flex_1().min_h(0).overflow_y_scrollbar().mode("always")
         .child(groups.length
           ? h_flex().w_full().gap(GAP_L).items_start()
             .children(cols.map((col, i) => v_flex().id(`cs-col-${i}`).flex_1().min_w(0).gap(GAP_L)

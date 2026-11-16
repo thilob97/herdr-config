@@ -59,6 +59,16 @@ test("eine gemischte Zeile nennt keinen Bereich, auch wenn eine Taste begrenzt i
   assert.equal(quests.tag, null);
 });
 
+test("eine Taste in mehreren Layouts nennt beide Bereiche in einer Zeile", () => {
+  // Board und Timeline liegen in elric und dashboard: ein Chip, keine zweite Zeile.
+  const fabrik = group("Fabrik");
+  for (const action of ["mod.open:board", "mod.open:timeline"]) {
+    const rows = fabrik.filter((r) => r.action === action);
+    assert.equal(rows.length, 1, `${action} bleibt eine Zeile`);
+    assert.equal(rows[0].tag, "elric · dashboard");
+  }
+});
+
 test("allein getippter Modifier ist sein Zeichen", () => {
   assert.equal(chord("control", true), "⌃");
   assert.equal(chord("control", false), "Ctrl");
