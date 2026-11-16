@@ -100,7 +100,9 @@ reports into it) and show in the Team-Panel under it.
   hub verify ID [--or-command CMD]     run the repo's check in the ticket's worktree, on its machine:
                                             .herdr/verify.sh (else the ticket's `verify` command, --or-command);
                                             records checks pass|fail, exit code, duration, checks_head
-                                            and the last 20 lines under ## Prüfung
+                                            and the last 20 lines under ## Prüfung. Auf einer anderen
+                                            Maschine laufen verify und preflight mit `hc exec --timeout 600`
+                                            statt der 60-Sekunden-Vorgabe
   hub gate ID [--json]                 do the recorded check and the reviewer's verdict still count?
                                             checks pass on checks_head = HEAD, verdict pass on review_head = HEAD
   hub gates [--json]                   the same for every open ticket (Team panel)
@@ -1186,6 +1188,16 @@ def add_comment(t, who, text):
 PRUEFUNG = "## Prüfung"
 
 
+def body_lines(lines):
+    """Captured output as a section body: a line starting with `## ` would end the section."""
+    return [" " + line if line.startswith("## ") else line for line in lines]
+
+
+def body_line(line):
+    """The inverse: an escaped `## ` line is the output's own text again."""
+    return line[1:] if line.startswith(" ## ") else line
+
+
 def prufung(t):
     """The ## Prüfung section: its meta line and the captured output lines."""
     m = re.search(r"(?ms)^## Prüfung[ \t]*\n(.*?)(?=\n## |\Z)", t.get("body") or "")
@@ -1199,7 +1211,7 @@ def prufung(t):
             fenced = not fenced
             continue
         if fenced:
-            tail.append(line)
+            tail.append(body_line(line))
     return {"meta": meta, "tail": tail}
 
 
@@ -1604,10 +1616,6 @@ def memory_path_agent(name):
     return os.path.join(MEMORY, (slug(name) or "agent") + ".md")
 
 
-def memory_path_repo(repo):
-    return os.path.join(os.path.abspath(os.path.expanduser(repo)), ".herdr", "memory.md")
-
-
 def memory_line(x):
     return f"- {x['date']} · {x['ticket'] or '-'} · {x['text']}"
 
@@ -1743,10 +1751,16 @@ def cmd_memory(a):
 
 # ---- machines: local commands, or through `hc exec --on`
 
-def run(argv, on=None, cwd=None, check=True):
+REMOTE_TIMEOUT = 600   # hc exec ends its command after 60 s; checks need longer
+
+
+def run(argv, on=None, cwd=None, check=True, timeout=None):
     try:
         if on:
-            cmd = ["hc", "exec", "--on", on] + (["sh", "-c", f"cd {shlex.quote(cwd)} && exec \"$@\"", "sh"] if cwd else []) + argv
+            cmd = ["hc", "exec", "--on", on]
+            if timeout:
+                cmd += ["--timeout", str(timeout)]
+            cmd += (["sh", "-c", f"cd {shlex.quote(cwd)} && exec \"$@\"", "sh"] if cwd else []) + argv
             r = subprocess.run(cmd, capture_output=True, text=True)
         else:
             r = subprocess.run(argv, capture_output=True, text=True, cwd=cwd)
@@ -2397,7 +2411,7 @@ def preflight_section(t):
             fenced = not fenced
             continue
         if fenced:
-            tail.append(line)
+            tail.append(body_line(line))
     return {"meta": meta, "tail": tail}
 
 
@@ -2448,7 +2462,7 @@ def run_preflight(t):
                 argv, label = ["sh", "-c", fallback], " ".join(fallback.split())
             else:
                 return "skip", [], "kein Prüfbefehl (.herdr/verify.sh und verify fehlen)"
-            r = run(argv, on, tmp, check=False)
+            r = run(argv, on, tmp, check=False, timeout=REMOTE_TIMEOUT)
             code = r.returncode
             output = "\n".join(p.rstrip("\n") for p in (r.stdout or "", r.stderr or "") if p)
     finally:
@@ -2463,7 +2477,7 @@ def run_preflight(t):
     fence = "`" * (max([len(m) for line in tail for m in re.findall(r"`+", line)] + [2]) + 1)
     block = (f"- {at} · {'pass' if ok else 'fail'} · {duration:.1f} s · exit {code} · "
              f"HEAD {(head or rev)[:7]} · {label or '-'}\n\n"
-             f"{fence}text\n{chr(10).join(tail)}\n{fence}")
+             f"{fence}text\n{chr(10).join(body_lines(tail))}\n{fence}")
 
     def saved(fresh):
         fresh.update(fields)
@@ -2725,7 +2739,11 @@ def cmd_new(a):
         die("--title darf nicht leer sein")
     body = a.body
     if a.body_file:
-        body = open(a.body_file, encoding="utf-8").read()
+        try:
+            with open(a.body_file, encoding="utf-8") as f:
+                body = f.read()
+        except OSError as e:
+            die(f"--body-file {a.body_file}: {e.strerror or e}")
     elif body == "-":
         body = sys.stdin.read()
     base = slug(a.title) or "ticket"
@@ -3218,7 +3236,9 @@ def cmd_dispatch(a):
         t["base_head"] = base_head
     # Preflight: a red base refuses the start; a missing preflight is run now.
     preflight_gate(t)
-    if not a.no_worktree:
+    # The roster's sandbox says where the agent works: `repo` needs no own checkout.
+    in_repo = bool(who) and (who.get("sandbox") or "worktree") == "repo"
+    if not a.no_worktree and not in_repo:
         common = run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], on, repo).stdout.strip()
         main = common[:-5] if common.endswith("/.git") else common
         labels = t.get("labels", "").lower()
@@ -3301,7 +3321,8 @@ def cmd_dispatch(a):
         fresh.update(agent=agent_key, agent_cmd=agent_cmd,
                      harness=short_harness(who) if who else program,
                      branch=branch or "", worktree=folder if branch else "",
-                     terminal=out["address"], agent_space=agent_space, tab=tab)
+                     terminal=out["address"], agent_space=agent_space, tab=tab,
+                     base=base, base_head=base_head, repo=repo)
         if not (fresh.get("owner") or "").strip():
             fresh["owner"] = me or orchestrator_id()
         # The agent works in the ticket's factory; an old ticket joins it now.
@@ -3410,7 +3431,10 @@ def cmd_review_start(a):
     out = json.loads(r.stdout)
 
     def saved(fresh):
-        fresh.update(reviewer=key, reviewer_name=agent_name(key), review_terminal=out["address"])
+        # Runde 2 beginnt ohne das Urteil der letzten: sonst gilt die Runde als geschlossen
+        # und ein zweiter Reviewer darf parallel in denselben Worktree.
+        fresh.update(reviewer=key, reviewer_name=agent_name(key), review_terminal=out["address"],
+                     review="", review_head="", review_at="", review_summary="")
         if not (fresh.get("space") or "").strip() or not (fresh.get("space_name") or "").strip():
             sid = ticket_space(fresh) or my_space()["id"]
             fresh["space"] = sid
@@ -3525,7 +3549,8 @@ def cmd_verify(a):
                                   "checks_duration": "0.0", "checks_exit": str(top.returncode),
                                   "checks_cmd": "git rev-parse --show-toplevel"},
                            f"- {at} · fail · 0.0 s · exit {top.returncode} · HEAD ? · "
-                           f"git rev-parse --show-toplevel\n\n{fence}text\n{detail}\n{fence}")
+                           f"git rev-parse --show-toplevel\n\n"
+                           f"{fence}text\n{chr(10).join(body_lines(detail.splitlines()))}\n{fence}")
         event("verify", a.id, saved.get("agent") or "", saved.get("terminal") or "",
               f"fail · kein Git-Repository in {folder}")
         die(f"{a.id}: kein Git-Repository in {folder}; hub verify braucht ein Repo "
@@ -3541,7 +3566,7 @@ def cmd_verify(a):
         die(f"{a.id}: kein Prüfbefehl: {script} fehlt. Der Agent legt es beim ersten Ticket an und committet es; "
             f"ersatzweise hub ticket set {a.id} verify=\"<befehl>\".")
     started = time.monotonic()
-    r = run(argv, on, root, check=False)
+    r = run(argv, on, root, check=False, timeout=REMOTE_TIMEOUT)
     duration = time.monotonic() - started
     output = "\n".join(part.rstrip("\n") for part in (r.stdout or "", r.stderr or "") if part)
     tail = output.splitlines()[-20:]
@@ -3554,7 +3579,8 @@ def cmd_verify(a):
     fence = "`" * (max([len(m) for line in tail for m in re.findall(r"`+", line)] + [2]) + 1)
     saved = save_check(a.id, fields,
                        f"- {at} · {'pass' if ok else 'fail'} · {duration:.1f} s · exit {r.returncode} · "
-                       f"HEAD {(head or '?')[:7]} · {label}\n\n{fence}text\n{chr(10).join(tail)}\n{fence}")
+                       f"HEAD {(head or '?')[:7]} · {label}\n\n"
+                       f"{fence}text\n{chr(10).join(body_lines(tail))}\n{fence}")
     event("verify", a.id, saved.get("agent") or "", saved.get("terminal") or "",
           f"{'pass' if ok else 'fail'} · {duration:.1f} s · {label}")
     print(f"{a.id}: Checks {'pass' if ok else 'fail'} · {duration:.1f} s · exit {r.returncode} · "
