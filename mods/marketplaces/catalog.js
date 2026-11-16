@@ -20,7 +20,7 @@ export async function loadCatalog(name, sources, local) {
       if (!text) continue;
       try {
         const cat = shape(JSON.parse(text), name);
-        cat.from = `${s.host} clone${s.m.name ? ` on ${s.m.name}` : ""}`;
+        cat.from = `Klon von ${s.host}${s.m.name ? ` auf ${s.m.name}` : ""}`;
         cat.repo = s.repo ?? null;
         const paths = s.clone ? await gitTree(s.m, s.clone) : null;
         if (paths) count(cat, paths);
@@ -53,15 +53,15 @@ export async function loadCatalog(name, sources, local) {
     if (r?.code === 0) {
       try {
         const list = JSON.parse(r.stdout.slice(r.stdout.search(/[[{]/)));
-        return { name, description: null, from: "Copilot browse (names only)", repo: repo ?? null, plugins: list.map((p) => ({ name: p.name, description: p.description ?? "", version: null, category: null, keywords: [], counts: null, sourcePath: null })) };
+        return { name, description: null, from: "Copilot-Browse (nur Namen)", repo: repo ?? null, plugins: list.map((p) => ({ name: p.name, description: p.description ?? "", version: null, category: null, keywords: [], counts: null, sourcePath: null })) };
       } catch {}
     }
   }
-  throw new Error(errors.length ? errors.slice(-3).join("\n") : "No local clone and no GitHub source to read the catalog from.");
+  throw new Error(errors.length ? errors.slice(-3).join("\n") : "Kein lokaler Klon und keine GitHub-Quelle, aus der der Katalog zu lesen wäre.");
 }
 
 function shape(json, name) {
-  if (!json || !Array.isArray(json.plugins)) throw new Error("not a marketplace catalog (no plugins array)");
+  if (!json || !Array.isArray(json.plugins)) throw new Error("kein Marketplace-Katalog (keine plugins-Liste)");
   const root = String(json.metadata?.pluginRoot ?? json.pluginRoot ?? "").replace(/^\.\//, "").replace(/\/$/, "");
   const plugins = json.plugins.filter((p) => p && typeof p.name === "string").map((p) => {
     let sourcePath = null;

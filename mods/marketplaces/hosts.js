@@ -7,9 +7,9 @@
 import { exec, home, readTextFile, writeTextFile } from "herdr";
 
 export const HOSTS = [
-  { key: "claude", name: "Claude Code", short: "Claude", icon: "icons/claude.svg", bin: "claude", project: "cli" },
-  { key: "omp", name: "omp", short: "omp", icon: "icons/pi.svg", bin: "omp", project: "cli" },
-  { key: "copilot", name: "Copilot CLI", short: "Copilot", icon: "icons/copilot.svg", bin: "copilot", project: "settings" },
+  { key: "claude", name: "Claude Code", short: "Claude", icon: "icons/claude.svg", bin: "claude" },
+  { key: "omp", name: "omp", short: "omp", icon: "icons/pi.svg", bin: "omp" },
+  { key: "copilot", name: "Copilot CLI", short: "Copilot", icon: "icons/copilot.svg", bin: "copilot" },
 ];
 export const hostInfo = (key) => HOSTS.find((h) => h.key === key);
 
@@ -21,7 +21,7 @@ export const localIsWindows = () => /^[A-Za-z]:[\\/]/.test(home());
 const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 export const errorText = (e) => String(e?.message ?? e ?? "failed").trim();
 // A path compared across tools: Windows gives C:/x, C:\x and c:\x for one folder.
-export const samePath = (a, b) => Boolean(a && b) && norm(a) === norm(b);
+const samePath = (a, b) => Boolean(a && b) && norm(a) === norm(b);
 const norm = (p) => p.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
 export const join = (m, dir, ...parts) => {
   const sep = m.win ? "\\" : "/";
@@ -46,7 +46,7 @@ async function must(m, argv, opts) {
 // JSON from a CLI that may print a notice line before it.
 function parseJson(text) {
   const i = text.search(/[[{]/);
-  if (i < 0) throw new Error("no JSON in output");
+  if (i < 0) throw new Error("kein JSON in der Ausgabe");
   return JSON.parse(text.slice(i));
 }
 
@@ -84,7 +84,7 @@ export async function probe(m) {
 }
 
 // User-scope state of one host: configured marketplaces and installed plugins.
-// Marketplace: { name, repo, source, clone, catalogFile, isDefault }.
+// Marketplace: { name, repo, source, clone, catalogFile }.
 // installed: { "name@marketplace": { version, enabled } }.
 export async function readHost(m, key, bin) {
   if (key === "claude") {
@@ -134,7 +134,7 @@ export async function readHost(m, key, bin) {
   ]);
   const marketplaces = parseJson(ml.stdout).map((x) => {
     const repo = String(x.source ?? "").match(/^GitHub:\s*(\S+)/)?.[1] ?? null;
-    return { name: x.name, repo, source: repo ?? String(x.source ?? ""), clone: null, catalogFile: null, isDefault: Boolean(x.isDefault) };
+    return { name: x.name, repo, source: repo ?? String(x.source ?? ""), clone: null, catalogFile: null };
   });
   const installed = {};
   for (const p of parseJson(pl.stdout)) {
@@ -150,7 +150,7 @@ const scopeFlag = (key, scope) => (key === "omp" ? [`--scope=${scope}`] : key ==
 export async function pluginAction(m, key, bin, op, { id, scope = "user", cwd, known, repo }) {
   const [name, market] = id.split("@");
   if (op === "install" && !known) {
-    if (!repo) throw new Error(`${hostInfo(key).name} doesn't have the marketplace ${market}, and its source is unknown.`);
+    if (!repo) throw new Error(`${hostInfo(key).name} hat den Marketplace ${market} nicht, und seine Quelle ist unbekannt.`);
     // Claude adds a missing marketplace (user settings) as part of the install.
     if (key === "claude") return must(m, [bin, "plugin", "install", name, "--marketplace", repo, ...scopeFlag(key, scope)], { cwd, timeout: LONG });
     await must(m, [bin, "plugin", "marketplace", "add", repo], { timeout: LONG });
@@ -161,7 +161,7 @@ export async function pluginAction(m, key, bin, op, { id, scope = "user", cwd, k
       return await must(m, [bin, ...args, ...scopeFlag(key, scope)], { cwd, timeout: LONG });
     } catch (e) {
       const pkg = errorText(e).match(/conflicts with installed package "([^"]+)"/)?.[1];
-      if (pkg) throw new Error(`omp already has ${pkg} as an npm package. Switch it to the marketplace version instead (click its "npm" cell).`);
+      if (pkg) throw new Error(`omp hat ${pkg} bereits als npm-Paket. Wechsle stattdessen auf die Marketplace-Version (Klick auf seine „npm“-Zelle).`);
       throw e;
     }
   }
@@ -227,7 +227,7 @@ export async function editProjectSettings(m, root, id, repo, value) {
   const before = await readTextFile(path, { on: m.name }).catch(() => null);
   let data = {};
   if (before != null && before.trim()) {
-    try { data = JSON.parse(before); } catch { throw new Error(`${path} isn't valid JSON; fix it first.`); }
+    try { data = JSON.parse(before); } catch { throw new Error(`${path} enthält kein gültiges JSON; bitte zuerst korrigieren.`); }
   }
   const market = id.split("@")[1];
   if (value != null) {

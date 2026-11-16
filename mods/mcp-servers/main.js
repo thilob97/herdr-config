@@ -541,11 +541,11 @@ export default class McpServers extends View {
       if (!running.length) return [];
       const names = running.map(agentLabel).slice(0, 4).join(", ") + (running.length > 4 ? ` +${running.length - 4}` : "");
       const how = hostKey === "omp" ? " (oder /mcp reload)" : "";
+      const msg = `Wirkt erst nach Neustart von ${hostInfo(hostKey).name}${how} auf ${mkey || HERE}. Laufend: ${names}`;
       return [h_flex().id(`hint-${key}`).flex_none().mx(INSET_PANEL).mt(GAP_M).pl(10).pr(GAP_XS).py(GAP_XS).gap(GAP_M).items_center().rounded(8)
         .bg(t.working + "26").text_size(T_S)
         .child(div().text_color(t.working).child("↻"))
-        .child(div().flex_1().min_w(0).truncate()
-          .child(`Wirkt erst nach Neustart von ${hostInfo(hostKey).name}${how} auf ${mkey || HERE}. Laufend: ${names}`))
+        .child(div().flex_1().min_w(0).truncate().tooltip(msg).child(msg))
         .child(this.button(t, `hint-x-${key}`, null, (_e, cx) => { this.hints.delete(key); cx.notify(); }, { icon: "mods/pane/close.svg", tip: "Ausblenden", small: true }))];
     });
   }
@@ -576,7 +576,7 @@ export default class McpServers extends View {
       })))
       .child(h_flex().gap(GAP_M).items_center().text_size(T_S)
         .when(Boolean(P?.loading), (el) => el.child(this.spinner(t)))
-        .child(div().flex_1().min_w(0).truncate().text_color(P?.error ? t.blocked : t.muted).child(info))
+        .child(div().flex_1().min_w(0).truncate().text_color(P?.error ? t.blocked : t.muted).tooltip(info).child(info))
         .when(Boolean(note), (el) => el.child(div().flex_none().text_size(T_XS).text_color(t.dim).child(note))));
   }
 
