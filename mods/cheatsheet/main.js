@@ -13,11 +13,10 @@ const INSET_CARD = 10, H_SECTION = 28, H_ROW = 28, H_INPUT = 30, H_CHIP = 18;
 const T_XS = 10.5, T_S = 11, T_M = 12, T_XL = 15;
 
 const SEND = { "\u001bb": "Wort zurück", "\u001bf": "Wort vor", "\u0017": "Wort löschen", "\u0001": "Zeilenanfang", "\u0005": "Zeilenende", "\u0015": "Zeile löschen" };
-const PANEL = { changes: "Changes", graph: "Git", filetree: "Tree", blueprint: "Blueprint", docker: "Docker", quests: "Quests", team: "Team", board: "Board", timeline: "Timeline", factory: "Fabrik" };
+const PANEL = { changes: "Changes", graph: "Git", filetree: "Tree", blueprint: "Blueprint", docker: "Docker", team: "Team", factory: "Fabrik" };
 const DIR = { left: "links", right: "rechts", up: "oben", down: "unten" };
 const DESC = {
   "layout.switch:dashboard": "Dashboard zeigen",
-  "layout.switch:quests": "Quests zeigen",
   "layout.switch:elric": "Zurück zur Werkbank (elric)",
   "mod.open:board": "Board (Popup) öffnen",
   "mod.open:timeline": "Timeline (Popup) öffnen",

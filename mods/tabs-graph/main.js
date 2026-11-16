@@ -1,6 +1,6 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { spaces, panes, agents, terminals, shared, setShared, run, openOverlay, theme, window, layout, settings, nextCommand, appHome, readTextFile, notify } from "herdr";
+import { spaces, panes, agents, terminals, shared, setShared, run, openOverlay, theme, window, layout, settings, nextCommand, notify } from "herdr";
 
 // Tokens (docs/ui-spec.md, 5).
 const GAP_XS = 4, GAP_S = 6, GAP_M = 8;
@@ -12,10 +12,10 @@ const RESERVED = 26 + 40 + 2 * 4;
 // Two kinds of factory view (UX 12): the wide overviews open as popup windows over the
 // work, the vertical companions dock into the right side panel beside the terminal.
 const POPUPS = [
-  { id: "board", label: "Board", icon: "mods/board/icon.svg", fallback: "mods/tabs-graph/board.svg", chord: "⌘⌥8", popup: true, tip: "Board als Popup-Fenster öffnen" },
+  { id: "board", label: "Board", icon: "mods/board/icon.svg", chord: "⌘⌥8", popup: true, tip: "Board als Popup-Fenster öffnen" },
   { id: "timeline", label: "Timeline", icon: "mods/timeline/icon.svg", chord: "⌘⌥0", popup: true, tip: "Timeline als Popup-Fenster öffnen" },
   { id: "quests", label: "Quests", icon: "mods/quests/icon.svg", chord: "⌘⌥6", popup: true, tip: "Quests als Popup-Fenster öffnen" },
-  { id: "teams", label: "Team-Hub", icon: "mods/teams/icon.svg", fallback: "mods/tabs-graph/teams.svg", chord: "⌘⌥9", popup: true, tip: "Team-Hub als Popup-Fenster öffnen" },
+  { id: "teams", label: "Team-Hub", icon: "mods/teams/icon.svg", chord: "⌘⌥9", popup: true, tip: "Team-Hub als Popup-Fenster öffnen" },
 ];
 // Side panel companions: the factory's vertical views, then the tools. Exactly one is
 // open at a time; only that one also shows its name.
@@ -32,7 +32,6 @@ const WERKZEUGE = [
   { id: "docker", label: "Docker", icon: "mods/docker/icon.svg", key: 5, tip: "Docker: Container" },
 ];
 const PANELS = [...SIDEPANELS, ...WERKZEUGE].map(p => p.id);
-const ICONS = [...POPUPS, ...SIDEPANELS, ...WERKZEUGE];
 
 // Status indicator (5.6): one look everywhere, box 12×12. Calm (shared "ui.calm",
 // default on) shows the same mark without spinner or pulse; ⌘⇧A toggles (calm).
@@ -92,10 +91,11 @@ function inScope(tk, sp, tks, terms) {
 function inboxCount() {
   const tks = shared("orchestra.tickets") ?? [];
   const terms = terminals();
+  const ag = agents();
   const sp = activeSpace();
   const mineWs = sp ? workspaceId(sp.id, tks, terms) : "";
   const count = (sp, ws) => {
-    const list = agents();
+    const list = ag;
     const scoped = (a) => !sp || !a.space || workspaceId(a.space, tks, terms) === ws;
     const o = terms.find((x) => x.state === "live" && x.status === "blocked"
       && isOrchestrator(x)
@@ -128,9 +128,9 @@ const ORCH_TIP = "Orchestrator dieses Workspace";
 // mods/orchestra/ui.js (dieser Klon hat keine ui.js-Kopie).
 const isOrchestrator = (x) => x.labels?.["hub.role"] === "orchestrator"
   || x.name === "orchestrator" || String(x.name ?? "").startsWith("orchestrator-");
-function orchestration() {
+function orchestration(paneList = panes()) {
   const live = terminals().filter((x) => x.state === "live" && isOrchestrator(x));
-  const tabOf = new Map(panes().filter((p) => p.terminal).map((p) => [p.terminal, p.tab]));
+  const tabOf = new Map(paneList.filter((p) => p.terminal).map((p) => [p.terminal, p.tab]));
   const tabs = new Set(live.map((x) => tabOf.get(x.address)).filter(Boolean));
   const spaceIds = new Set(spaces().filter((s) => (s.tabs ?? []).some((tb) => tabs.has(tb.id))).map((s) => s.id));
   return { addresses: new Set(live.map((x) => x.address)), tabs, spaces: spaceIds };
@@ -144,27 +144,14 @@ export default class Tabs extends View {
     this.stripW = 0;
     this.hidden = 0;
     this.panels = JSON.parse(localStorage.getItem("panels") ?? "{}");
-    // A panel icon exists only once its package ships; the local placeholder keeps the
-    // button readable until then (one check per lookup, the result stays).
-    this.icons = {};
-    cx.spawn(async () => {
-      const found = {};
-      for (const p of ICONS) {
-        if (!p.fallback) continue;
-        let text = null;
-        try { text = await readTextFile(`${appHome()}/${p.icon}`); } catch { text = null; }
-        found[p.id] = text ? p.icon : p.fallback;
-      }
-      this.icons = found;
-      cx.notify();
-    });
-    // Keys: tabs-graph.panel toggles the side panel, tabs-graph.panel-<id> toggles one panel.
+    // Keys: tabs-graph.panel toggles the side panel, tabs-graph.panel-<id> opens one panel
+    // (a toast's "Team-Panel öffnen" must never close it); only the bar button toggles.
     cx.spawn(async () => {
       for (;;) {
         const c = await nextCommand();
         if (c === "panel") this.togglePanel(null);
         else if (c === "calm") this.toggleCalm();
-        else if (c.startsWith("panel-") && PANELS.includes(c.slice(6))) this.togglePanel(c.slice(6));
+        else if (c.startsWith("panel-") && PANELS.includes(c.slice(6))) this.openPanel(c.slice(6));
       }
     });
   }
@@ -187,6 +174,15 @@ export default class Tabs extends View {
     if (id === null) run(open ? "layout.hide" : "layout.show", { id: "panel" });
     else if (open && body?.active === id) run("layout.hide", { id: "panel" });
     else { run("layout.select", { stack: "panel-body", child: id }); run("layout.show", { id: "panel" }); }
+  }
+
+  // A command (toast, inbox, status bar: "Team-Panel öffnen") always shows the panel:
+  // toggling there would close a panel that is already the right one.
+  openPanel(id) {
+    const root = layout(), panel = find(root, "panel"), body = find(root, "panel-body");
+    if (!panel) return;
+    if (body?.active !== id) run("layout.select", { stack: "panel-body", child: id });
+    run("layout.show", { id: "panel" });
   }
 
   // The side panel is remembered per space: switching shows that space's choice
@@ -241,7 +237,14 @@ export default class Tabs extends View {
     const t = theme();
     const space = spaces().find(p => p.active);
     const allTabs = space?.tabs ?? [];
-    const orch = orchestration();
+    const paneList = panes();
+    const orch = orchestration(paneList);
+    // One program per tab for the whole render: a pane with an agent program wins.
+    const programOf = new Map();
+    for (const p of paneList) {
+      const cur = programOf.get(p.tab);
+      if (!cur || (!cur.agent && p.program?.agent)) programOf.set(p.tab, p.program ?? null);
+    }
     // The orchestrator's tab is pinned left (notes-ORCH-MARK.md): display order only,
     // the model keeps its positions.
     const shown = [...allTabs.filter(c => orch.tabs.has(c.id)), ...allTabs.filter(c => !orch.tabs.has(c.id))];
@@ -253,7 +256,7 @@ export default class Tabs extends View {
       .text_color(t.dim).hover(s => s.bg(t.hover).text_color(t.foreground)).tooltip(tip)
       .on_mouse_down("left", stop).on_click(action).child(icon);
     const item = (c, i) => {
-      const program = panes().find(p => p.tab === c.id && p.program?.agent)?.program ?? panes().find(p => p.tab === c.id)?.program;
+      const program = programOf.get(c.id) ?? null;
       const name = /^tb\d+$/.test(c.name) ? program?.name ?? "Terminal" : c.name;
       const isOrch = orch.tabs.has(c.id);
       return h_flex().id(`tab-${c.id}`).h(H_ROW_TAB).px(10).gap(GAP_S).rounded(6).items_center().flex_none().text_size(T_M)
@@ -301,7 +304,7 @@ export default class Tabs extends View {
         .hover(s => s.bg(on ? t.selected : t.hover).text_color(t.foreground)).on_mouse_down("left", stop)
         .tooltip(tip)
         .on_click(() => (p.popup ? run("mod.open", { name: p.id }) : this.togglePanel(p.id)))
-        .child(svg(this.icons[p.id] ?? p.icon).size(14).flex_none()).when(on, el => el.child(p.label));
+        .child(svg(p.icon).size(14).flex_none()).when(on, el => el.child(p.label));
     };
     const segment = (id, list) => h_flex().id(id).h(H_BTN).p(2).gap(2).flex_none().items_center().rounded(8)
       .bg(t.background).border_1().border_color(t.border).children(list.map(segEntry));

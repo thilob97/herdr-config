@@ -113,10 +113,9 @@
     "cmd-alt-9": "mod.open:teams",
     "cmd-alt-0": "mod.open:timeline"
   },
-  "layout:quests": {
-    "ctrl-shift-q": "layout.switch:elric"
-  },
   "layout:dashboard": {
-    "cmd-shift-0": "layout.switch:elric"
+    "cmd-shift-0": "layout.switch:elric",
+    "cmd-alt-8": "mod.open:board",
+    "cmd-alt-0": "mod.open:timeline"
   }
 }

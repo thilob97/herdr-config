@@ -111,12 +111,13 @@ const clampTitle = (s, per = 24) => {
 };
 const evidenceCount = (tk) => (Array.isArray(tk.evidence) ? tk.evidence.length : splitList(tk.evidence).length);
 const commentCount = (tk) => Number(tk.comments ?? tk.verlauf?.length ?? 0);
-const liveReview = (tk) => (tk.review_terminal ? terminals().find((x) => x.address === tk.review_terminal && x.state === "live") : null);
+const liveReview = (tk, terms) => (tk.review_terminal
+  ? (terms ?? terminals()).find((x) => x.address === tk.review_terminal && x.state === "live") : null);
 
 const ICON_CHECK = `${WC}/check.svg`, ICON_X = `${WC}/x.svg`, ICON_MINUS = `${WC}/minus.svg`;
 const ICON_SPIN = `${WC}/spinner.svg`, ICON_COMMENT = `${WC}/square-pen.svg`, ICON_EVIDENCE = `${WC}/file-text.svg`;
 
-const gateState = (tk, gate) => {
+const gateState = (tk, gate, terms) => {
   const checks = gate ? (gate.ok ? "pass" : gate.stale || gate.checks === "fail" ? "fail" : "none")
     : tk.checks === "pass" ? "pass" : tk.checks === "fail" ? "fail" : "none";
   const checksTip = checks === "pass"
@@ -125,7 +126,7 @@ const gateState = (tk, gate) => {
       : `Checks: noch nicht geprüft${gate?.reason ? ` · ${gate.reason}` : ""}`;
 
   let review, reviewTip;
-  if (liveReview(tk)) { review = "run"; reviewTip = "Review: läuft gerade"; }
+  if (liveReview(tk, terms)) { review = "run"; reviewTip = "Review: läuft gerade"; }
   else {
     const r = gate?.review ?? null, verdict = r?.verdict ?? tk.review ?? null;
     if (r?.stale) { review = "none"; reviewTip = `Review: ${r.reason || "Urteil älter als der letzte Commit"}`; }
@@ -142,9 +143,9 @@ const gateState = (tk, gate) => {
   ];
 };
 
-const gateIcons = (t, tk, gate) => {
+const gateIcons = (t, tk, gate, terms) => {
   // Drei leere Gates wären nur „– – –": die Reihe erscheint, sobald ein Gate etwas sagt.
-  const shown = gateState(tk, gate).filter((g) => g.state !== "none");
+  const shown = gateState(tk, gate, terms).filter((g) => g.state !== "none");
   if (!shown.length) return null;
   return h_flex().flex_none().gap(2).items_center().children(shown.map((g) => {
     const color = g.state === "pass" ? t.done : g.state === "fail" ? t.blocked : g.state === "run" ? t.working : t.dim;
@@ -256,7 +257,7 @@ function ticketCard(t, tk, o = {}) {
     .line_height(1.2).text_color(stage === "done" ? t.muted : t.foreground).child(clampTitle(tk.title || tk.id, o.titleChars));
 
   const who = whoChip(t, tk);
-  const gates = gateIcons(t, tk, o.gate), preflight = preflightMark(t, tk);
+  const gates = gateIcons(t, tk, o.gate, o.terms), preflight = preflightMark(t, tk);
   const row3 = h_flex().gap(ui.GAP_XS).items_center().min_w(0).flex_none()
     .when(Boolean(who), (el) => el.child(who))
     .when(Boolean(gates), (el) => el.child(gates))
@@ -500,6 +501,12 @@ export class HubSection {
   sync(cx) {
     this.ticketsNow = null;
     this.costsCache = null;
+    this.gateCache = null;
+    this.termsCache = null;
+    this.budgetCache = null;
+    this.extraCache = null;
+    this.orchCache = null;
+    this.tksNow = ui.teamTickets();
     const sid = ui.activeSpace()?.id ?? "";
     if (sid === this.space) return;
     this.space = sid;
@@ -589,7 +596,7 @@ export class HubSection {
   // bei 70 Tickets das halbe Render-Budget.
   all() {
     if (!this.ticketsNow) {
-      const tks = ui.teamTickets();
+      const tks = this.tksNow ?? ui.teamTickets();
       this.ticketsNow = tks.filter((tk) => ui.inScope(tk, tks));
     }
     return this.ticketsNow;
@@ -597,6 +604,14 @@ export class HubSection {
 
   /** Die Kosten einmal je Rendern: `ticketRow` braucht sie für jede Karte. */
   costNow() { return (this.costsCache ??= costs.costs()); }
+  /** Gates, Limits, Budget und Live-Terminals ebenfalls einmal je Rendern: jede Karte
+   *  fragt sonst ihre eigene Kopie ab (bei 70 Tickets das halbe Budget). */
+  gateNow(id) { return (this.gateCache ??= new Map((shared("orchestra.gates") ?? []).map((g) => [g.id, g]))).get(id) ?? null; }
+  termsNow() { return (this.termsCache ??= terminals()); }
+  budgetNow() { return (this.budgetCache ??= costs.budget()); }
+  limitNow(id) { return this.budgetNow().ticket + ((this.extraCache ??= shared("orchestra.budgetExtra") ?? {})[id] ?? 0); }
+  /** Der Orchestrator dieses Workspace, einmal je Rendern (card und budgetRow fragen ihn). */
+  orchNow() { return (this.orchCache ??= orch.find(orch.spaceId(this.tksNow), this.tksNow)); }
 
   // ---------- Messwerte ----------
 
@@ -660,11 +675,11 @@ export class HubSection {
   }
 
   card(t) {
-    const o = orch.find();
+    const o = this.orchNow();
     if (!o) return this.startCard(t);
     const st = o.status ?? null;
     const name = this.known.find((a) => a.key === orch.agentKey())?.name ?? orch.agentKey();
-    const cost = costs.orchestratorCost(orch.spaceId());
+    const cost = costs.orchestratorCost(orch.spaceId(this.tksNow));
     const { step, message } = this.digest;
     const blocked = st === "blocked";
     const restart = (cx) => this.act(cx, "neu gestartet", async () => { await orch.stop(); await orch.start(); });
@@ -722,7 +737,7 @@ export class HubSection {
       run: () => this.hubCmd(["dispatch", tk.id], 120000),
     };
     if (stage === "doing") {
-      const gate = gateOf(tk.id);
+      const gate = this.gateNow(tk.id);
       const checksOk = gate ? gate.ok : tk.checks === "pass";
       if (!checksOk) return {
         label: "Prüfen", tip: `hub verify ${tk.id}: Checks im Worktree ausführen (Gate für die Prüfung)`,
@@ -771,15 +786,16 @@ export class HubSection {
     const c = this.costNow();
     const stopped = Boolean(c.stopped?.[tk.id]) && stageOf(tk) !== "done";
     return ticketCard(t, tk, {
-      gate: gateOf(tk.id),
+      gate: this.gateNow(tk.id),
       spent: c.tickets?.[tk.id] ?? 0,
-      limit: costs.ticketLimit(tk.id),
+      limit: this.limitNow(tk.id),
       all: this.all(),
       stopped,
       primary,
       hovered: this.hoveredTicket === tk.id,
       next: this.nextOf(tk),
-      raiseStep: costs.budget().ticket,
+      raiseStep: this.budgetNow().ticket,
+      terms: this.termsNow(),
       onHover: (on, cx) => {
         if (on) this.hoveredTicket = tk.id;
         else if (this.hoveredTicket === tk.id) this.hoveredTicket = null;
@@ -792,20 +808,15 @@ export class HubSection {
     });
   }
 
-  // Die Chips standen zwischen „In Arbeit" und „Geplant" und zerrissen den Fluss. Sie
-  // sitzen jetzt als eigene Zeile rechts unter dem Panel-Kopf (`statsRow`). `main.js`
-  // fügt diese Marke weiter nach „In Arbeit" ein; sie bleibt deshalb leer.
-  budgetChips() { return div(); }
-
   // Budget per ticket and for the whole team; click to change (the budget itself is one
   // setting for the home). The spend shown is this workspace's factory — open tickets of
   // the space plus its orchestrator; the tooltip names the whole home.
   budgetRow(t) {
-    const b = costs.budget(), c = this.costNow();
+    const b = this.budgetNow(), c = this.costNow();
     const sp = ui.activeSpace();
     const open = this.all().filter((tk) => tk.status !== "done");
     const spend = sp
-      ? open.reduce((n, tk) => n + (c.tickets?.[tk.id] ?? 0), 0) + (orch.find() ? costs.orchestratorCost(sp.id) : 0)
+      ? open.reduce((n, tk) => n + (c.tickets?.[tk.id] ?? 0), 0) + (this.orchNow() ? costs.orchestratorCost(sp.id) : 0)
       : c.teamCost ?? 0;
     const over = spend > b.team;
     const total = c.teamCost ?? 0;

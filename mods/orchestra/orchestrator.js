@@ -2,26 +2,16 @@
 // `hub orchestrator start` starts it (cwd ~/.herdr/orchestrator, whose AGENTS.md is
 // copied from mods/orchestra/orchestrator.md, labels hub.role=orchestrator and
 // hub.space=<space id>), so the app and the command line take the same path.
-import { terminals, panes, exec, hc, appHome, spaces, focused, shared, setShared } from "herdr";
+import { terminals, exec, hc, appHome, spaces, focused, shared, setShared } from "herdr";
 import * as ui from "./ui.js";
 
-export const NAME = "orchestrator";
 export const agentKey = () => shared("orchestra.agent") ?? "omp";
 
 /** The space this window shows: the active one, else the focused terminal's. An agent
  *  worktree space is the throwaway space of a ticket; its workspace is the factory. */
-export function spaceId() {
+export function spaceId(tks) {
   const sid = spaces().find((s) => s.active)?.id ?? focused()?.space ?? "";
-  return ui.workspaceId(sid);
-}
-
-/** The space of a terminal that carries no space label: its pane → tab → the tab's
- *  space in `spaces()` (`hc ls` rows of older clients have no labels). "" when
- *  neither the label nor the pane knows. */
-function paneSpaceOf(address) {
-  const tab = panes().find((p) => p.terminal === address)?.tab;
-  if (!tab) return "";
-  return spaces().find((s) => (s.tabs ?? []).some((t) => t.id === tab))?.id ?? "";
+  return ui.workspaceId(sid, tks);
 }
 
 /** The workspace of a terminal: `hub.space` (set by `hub orchestrator start`), else
@@ -29,25 +19,27 @@ function paneSpaceOf(address) {
  *  as the workspace of its ticket. Never another factory's space. `tks` saves the
  *  caller a shared() read per terminal (see ui.workspaceId). */
 export function terminalSpace(x, tks) {
-  const sid = x?.labels?.["hub.space"] || x?.labels?.["herdr.space"] || paneSpaceOf(x?.address) || "";
+  const sid = x?.labels?.["hub.space"] || x?.labels?.["herdr.space"] || ui.paneSpaceOf(x?.address) || "";
   return ui.workspaceId(sid, tks);
 }
 
 /** The orchestrator of one workspace (default: the current space) — never another
  *  factory's. A home without space labels keeps the one orchestrator it has. */
-export function find(sid = spaceId()) {
+export function find(sid, tks) {
+  const list = tks ?? ui.teamTickets();
+  const want = sid ?? spaceId(list);
   const live = terminals().filter((x) => x.state === "live" && ui.isOrchestrator(x));
-  if (sid) { const tks = ui.teamTickets(); return live.find((x) => terminalSpace(x, tks) === sid) ?? null; }
+  if (want) return live.find((x) => terminalSpace(x, list) === want) ?? null;
   return live.find((x) => !x.labels?.["hub.space"]) ?? null;
 }
 
 /** Every live orchestrator, at most one per workspace. An orchestrator without any
  *  space label lands in the workspace its pane names; a home without spaces keeps it
  *  under `spaceId` "". */
-export function all() {
-  const seen = new Set(), out = [], tks = ui.teamTickets();
+export function all(tks) {
+  const seen = new Set(), out = [], list = tks ?? ui.teamTickets();
   for (const x of terminals().filter((t) => t.state === "live" && ui.isOrchestrator(t))) {
-    const sid = terminalSpace(x, tks);
+    const sid = terminalSpace(x, list);
     if (seen.has(sid)) continue;
     seen.add(sid);
     out.push({ ...x, spaceId: sid });

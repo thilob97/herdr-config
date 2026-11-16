@@ -12,14 +12,14 @@ import * as hostApi from "herdr";
 // 5.1 Abstände und Größen
 export const GAP_XS = 4, GAP_S = 6, GAP_M = 8, GAP_L = 12, GAP_XL = 16;
 export const INSET_PANEL = 14, INSET_CARD = 10;
-export const H_HEADER = 42, H_SECTION = 28, H_ROW = 28, H_ROW2 = 44, H_BTN = 26, H_BTN_S = 22, H_INPUT = 30, H_CHIP = 18, H_BAR = 28;
+export const H_HEADER = 42, H_SECTION = 28, H_ROW = 28, H_ROW2 = 44, H_BTN = 26, H_BTN_S = 22, H_INPUT = 30, H_CHIP = 18;
 // 5.2 Schrift
 export const T_XS = 10.5, T_S = 11, T_M = 12, T_L = 13, T_XL = 15;
 // 5.3 Radien stehen als Zahlen im Code (Chip 4, Knopf/Zeile 6, Karte/Segment 8, Panel 10),
 // damit der Prüfbefehl aus Abschnitt 10 sie sieht.
 
 const WC = "mods/workspace-chrome";
-export const ICON_CLOSE = "mods/pane/close.svg";
+const ICON_CLOSE = "mods/pane/close.svg";
 
 // Titel tragen vorne die Marke des Programms: `π > ` (pi), `✳ ` (claude), ein
 // Nerd-Font-Icon oder ein Emoji. Erst das weg, dann die Icons im Text.
@@ -33,10 +33,12 @@ export const plain = (s) => (s ?? "").replace(TITLE_PREFIX, "").replace(/[\uE000
 // Host-Brücke. activeSpace(), workspaceId(), inScope(), isOrchestrator() und die Chips
 // fragen sie aber mehrfach je Rendern — deshalb ein kurzer Tick-Cache: derselbe Pass
 // sieht einen Satz Kopien, der nächste (ein Wechsel zeichnet neu) liest frisch.
-const HOST_TICK = 25;
+// 120 ms, damit auch ein langer Render (Dashboard: gemessen > 25 ms) nicht mittendrin
+// neu liest; ein Wechsel zeichnet ohnehin neu und liest dann frisch.
+const HOST_TICK = 120;
 const host = { at: 0, spaces: null, terminals: null, panes: null, paneSpace: null, agents: null, identities: null };
 function hostTick() {
-  if (Date.now() - host.at < HOST_TICK && host.spaces) return;
+  if (Date.now() - host.at < HOST_TICK) return;
   host.at = Date.now();
   host.spaces = host.terminals = host.panes = host.paneSpace = host.agents = host.identities = null;
 }
@@ -166,7 +168,7 @@ export const statusChip = (t, st, word) => chip(t, word ?? STATUS_WORD[st] ?? st
 /** Prüf-Gate eines Tickets: `hub verify` schreibt checks, HEAD, Dauer, Exit und den Auszug.
  *  `gate` (aus `hub gate --json`) überstimmt die Aufzeichnung, weil es den HEAD von jetzt kennt.
  *  Ohne Prüfung steht `Checks –` in `muted`; ✗ nur bei rot oder einem Commit nach dem Lauf. */
-export function gateChip(t, tk, gate) {
+function gateChip(t, tk, gate) {
   const ok = gate ? gate.ok : tk.checks === "pass";
   const head = (gate?.checked_head ?? tk.checks_head ?? "").slice(0, 7);
   const dur = (gate?.duration ?? tk.checks_duration) ? `${gate?.duration ?? tk.checks_duration}s` : null;
@@ -182,7 +184,7 @@ export function gateChip(t, tk, gate) {
 
 /** Prüfungs-Chip: `gate.review` (aus `hub gate`) überstimmt die Aufzeichnung,
  *  ein laufender Prüfer-Terminal geht vor (er prüft gerade eine neue Runde). */
-export function reviewChip(t, tk, gate) {
+function reviewChip(t, tk, gate) {
   const live = tk.review_terminal
     ? hostTerminals().find((x) => x.address === tk.review_terminal && x.state === "live") : null;
   if (live) return chip(t, "Prüfung läuft", t.working,
