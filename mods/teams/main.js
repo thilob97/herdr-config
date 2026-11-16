@@ -632,12 +632,14 @@ export default class Teams extends View {
             .when(agent.role, (el) => el.child(ui.chip(t, agent.role, color))))
           .child(div().text_size(T_S).text_color(t.dim)
             .child([programKey(agent.program), agent.model].filter(Boolean).join(" · ") || "Programm offen")))
-        .child(ui.button(t, "tm-edit", "Bearbeiten", (cx) => this.openForm(cx, agent), { tip: "Name, Rolle, Programm, Modell, Repo, Labels und Notizen ändern" }))
+        .child(ui.button(t, "tm-edit", "Bearbeiten", (cx) => this.openForm(cx, agent), { tip: "Name, Rolle, Programm, Modell, Repo, Markierungen und Notizen ändern" }))
         .child(ui.button(t, "tm-del", "Löschen", (cx) => { this.confirm = agent.name; cx.notify(); }, { tip: "Mit Rückfrage entfernen" })))
+      // Grenze der Eindeutschung: „Repo“, „MCP“ und „WIP“ bleiben als etablierte
+      // Kurzformen stehen; alles andere im Detail liest deutsch.
       .child(ui.card(t, "tm-detail-card").gap(ui.GAP_S)
         .child(this.row(t, "tm-d-repo", "Repo", agent.repo, agent.repo))
         .child(this.row(t, "tm-d-branch", "Branch-Präfix", agent.branch_prefix || "feat/"))
-        .child(this.row(t, "tm-d-approval", "Approval", h.approval_mode || "Standard",
+        .child(this.row(t, "tm-d-approval", "Freigabe", h.approval_mode || "Standard",
           inert("approval_mode") ? "wirkt nur bei omp" : null, inert("approval_mode")))
         .child(this.row(t, "tm-d-cost", "Kostenlimit", h.max_cost ? usd(h.max_cost) : "",
           inert("max_cost") ? "wirkt nur bei omp" : null, inert("max_cost")))
@@ -646,7 +648,7 @@ export default class Teams extends View {
         .child(this.row(t, "tm-d-lsp", "LSP", h.no_lsp ? "aus" : "an",
           inert("no_lsp") ? "wirkt nur bei omp" : null, inert("no_lsp")))
         .child(this.row(t, "tm-d-prompt", "Prompt", agent.prompt))
-        .child(this.row(t, "tm-d-skills", "Skills", (agent.skills ?? []).join(", ")))
+        .child(this.row(t, "tm-d-skills", "Fertigkeiten", (agent.skills ?? []).join(", ")))
         .child(this.row(t, "tm-d-mcp", "MCP", (agent.mcp ?? []).join(", ")))
         .child(this.row(t, "tm-d-sandbox", "Sandbox", agent.sandbox))
         .child(this.row(t, "tm-d-wip", "WIP", `${running.length}/${agent.wip || "∞"}`))
@@ -654,7 +656,7 @@ export default class Teams extends View {
           [perms.push ? "Push erlaubt" : "kein Push",
             perms.delete_branches ? "Branches löschen erlaubt" : "keine Branches löschen"].join(", ")))
         .child(h_flex().gap(ui.GAP_M).items_start()
-          .child(div().w(96).flex_none().text_size(T_S).text_color(t.dim).child("Labels"))
+          .child(div().w(96).flex_none().text_size(T_S).text_color(t.dim).child("Markierungen"))
           .child(h_flex().flex_1().flex_wrap().gap(ui.GAP_XS)
             .children((agent.labels ?? []).length ? agent.labels.map((l) => ui.chip(t, l, t.muted))
               : [div().text_size(T_S).text_color(t.foreground).child("—")])))
