@@ -12,8 +12,8 @@
 // to zoom. The layout turns top-to-bottom when that fits the pane better.
 //
 // It runs as a pane (pane.split {mod: "blueprint"}) or as a side panel next to
-// Files and Changes (props {panel: true}, see scripts/add-button.sh). As a
-// panel it serves the tab on screen, and its dot runs while the pointer is on it.
+// Files and Changes (props {panel: true}). As a panel it serves the tab on
+// screen, and its dot runs while the pointer is on it.
 //
 // What it shows are the diagrams of the project the tab's terminal is in (its
 // git checkout, so each worktree has its own), kept in the app's data folder
@@ -194,13 +194,13 @@ function pointPrompt(G, n, note, path) {
 }
 
 const clean = (text) => text.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "");
-const LANG_NAMES = { en: "English", ko: "Korean", ja: "Japanese" };
+const LANG_NAMES = { de: "German", en: "English", ko: "Korean", ja: "Japanese" };
 
 // What a newly connected agent is asked: draw the code it is building into a
 // file of this project's folder, keep it current, mark the work in progress.
 // How a Blueprint diagram is written, for every request that asks for one.
 function diagramRules(lang) {
-  return `- Start the file with YAML frontmatter: \`title: ...\`. The title is the diagram's tab in Blueprint: keep it short, 2 to 4 words (e.g. "Login flow", "DB tables"), no parentheses. Write the labels in ${LANG_NAMES[lang] ?? "English"}; a box can carry a second line with \`<br/>\` (e.g. the class, route or columns).
+  return `- Start the file with YAML frontmatter: \`title: ...\`. The title is the diagram's tab in Blueprint: keep it short, 2 to 4 words (e.g. "Login flow", "DB tables"), no parentheses. Write the labels in ${LANG_NAMES[lang] ?? "German"}; a box can carry a second line with \`<br/>\` (e.g. the class, route or columns).
 - Blueprint draws Mermaid flowcharts only. For a database, draw one cylinder box per table (\`users[("users<br/>id · email")]\`) and label the edges with the relation (\`-->|1:N|\`).
 - Draw only what the code has. If the project has no such thing (say, no database), tell me so in your reply and draw what plays that part instead, titled for what it really is (e.g. "Data files"), with plain boxes: a cylinder means a real database table.
 - Every box is a piece of the code, not a step of your task. Tie each box to it: \`%% code: <node id> <path>:<line>\`.
@@ -210,7 +210,7 @@ function diagramRules(lang) {
 
 function drawPrompt(dir, lang) {
   return clean(`Blueprint (the Herdr app panel) is now connected to you for this project. Draw the code you are working on as a Mermaid flowchart and save it as a .mmd file in \`${dir}/\` (the folder exists; one file per diagram, a short kebab-case name such as \`auth-flow.mmd\`). Blueprint shows it as soon as it is saved.
-- Also write the project's main topic, one short line in ${LANG_NAMES[lang] ?? "English"}, to \`${dir}/topic.txt\`: Blueprint's header shows it above the diagrams, whose titles name the part each one covers.
+- Also write the project's main topic, one short line in ${LANG_NAMES[lang] ?? "German"}, to \`${dir}/topic.txt\`: Blueprint's header shows it above the diagrams, whose titles name the part each one covers.
 ${diagramRules(lang)}
 `);
 }
@@ -257,9 +257,9 @@ export default class Blueprint extends View {
     this.paths = {}; // the grid and the edges, built once per look and view
     this.project = null; // { path, dir, meta, name }
     this.useLang("en");
-    // The language picked with blueprint.lang-<en|ko|ja> (kept in shared
+    // The language picked with blueprint.lang-<en|de|ko|ja> (kept in shared
     // state, for every Blueprint and across restarts), else Claude Code's
-    // `language`, else English. Looked at again now and then.
+    // `language`, else German. Looked at again now and then.
     const follow = (cx) => cx.spawn(async (cx) => {
       try {
         const picked = shared(LANG_KEY);
@@ -970,7 +970,7 @@ export default class Blueprint extends View {
 
   targets(all = panes(), tab = this.servedTab(all)) {
     // Name and avatar come from the sidebar's cards (shared "agents.identity", 7.1), else
-    // the program; the program stays in `program` for the tooltip and the fallback icon.
+    // the program (its name, icon and tint).
     const known = shared("agents.identity") ?? {};
     const who = (address, program) => {
       const k = known[address] ?? null;
@@ -979,7 +979,6 @@ export default class Blueprint extends View {
         avatar: k?.avatar ?? null,
         icon: program?.icon ?? null,
         tint: Boolean(program?.tint),
-        program: program?.name ?? null,
       };
     };
     const list = agents().filter((a) => !tab || a.tab === tab).sort((a, b) => b.seq - a.seq)
@@ -1039,7 +1038,7 @@ export default class Blueprint extends View {
     else if (c === "lang-auto") {
       setShared(LANG_KEY, null);
       this.followLang?.(cx);
-    } else if (/^lang-(en|ko|ja)$/.test(c)) {
+    } else if (/^lang-(en|de|ko|ja)$/.test(c)) {
       setShared(LANG_KEY, c.slice(5));
       this.useLang(c.slice(5));
     }
@@ -1446,7 +1445,8 @@ export default class Blueprint extends View {
     // and shows whole in the tooltip. When the tabs don't fit, the longest
     // ones narrow together (short ones keep their size), down to TAB_MIN.
     const age = G ? this.T.ago(minutesSince(G.loaded)) : "";
-    const room = this.width - 20 - (p ? 32 : 0) - (this.asking() ? 96 : 0) - (G ? estimate(age, 11.5) + 16 : 0) - (lead ? leadW + 12 : 0);
+    const room = this.width - 20 - (p ? 32 : 0) - (this.asking() ? 96 : 0) - (G ? estimate(age, 11.5) + 16 : 0) - (lead ? leadW + 12 : 0)
+      - (G ? H_BTN_S + 4 : 0);
     const natural = this.graphs.map((d, i) => estimate(d.tab, 12) + 22 + (d.pinned ? 16 : 0) + (p && i === this.tab ? 21 : 0) + 4);
     const tabMax = this.width > 0 ? tabCap(natural, room, TAB_MIN, TAB_MAX) : TAB_MAX;
     // A tab pressed and let go over another moves there (as Herdr's own tabs
