@@ -4,9 +4,9 @@
 // status, space/tab, ticket, duration, cost, teams as group rows) with "Letzte
 // Aktivität" beside it, "Fabrik" (the pipeline, the oldest tickets in work and
 // the cost card) and "Auftrag" (send to the orchestrator). Rows open their place
-// as a peek (`terminal.peek`, the dashboard stays); the small "Zum Space" button
-// switches to layout elric. ↑↓ choose, ↵ opens, g w goes to the workspace, Esc
-// clears the choice. Every number comes from the same sources Team, Inbox and the
+// as a peek (`terminal.peek`, the dashboard stays); the small "Zum Agent" button
+// switches to the Arbeitsansicht (the elric layout). ↑↓ choose, ↵ opens, g w goes to
+// the Arbeitsansicht, Esc clears the choice. Every number comes from the same sources Team, Inbox and the
 // status bar read: shared("orchestra.tickets") / the ticket files
 // (data/quests/tickets, only while the daemon's heartbeat is stale), agents(),
 // shared("orchestra.costs"), shared("orchestra.budget"), shared("orchestra.groups"),
@@ -44,6 +44,9 @@ const DOING_MAX = 5;
 // Status is the state dot only (its word lives in the tooltip), so every value starts
 // under the same head as its column.
 const COL_WHO = 132, COL_STATUS = 16, COL_TIME = 64, COL_COST = 72;
+// Fester Platz für „Zum Agent" bzw. „Orchestrator starten": sonst springt die Spalte
+// davor, sobald ein Knopf fehlt.
+const COL_ACTION = 84, COL_WS_ACTION = 148;
 const SEND_ICON = "mods/orchestra/icons/send.svg";
 const HUB = () => `${appHome()}/mods/orchestra/bin/hub`;
 // A stall is a ticket that sits too long in one station; `hub stalls` owns the
@@ -121,6 +124,12 @@ const ticketAge = (tk) => {
   const ms = at(tk.status_at || tk.updated || tk.created);
   return ms ? ago(ms) : "";
 };
+
+// Ein Budget-Stopp steht in costs.json nur als true/false. Einen eigenen Zeitpunkt
+// trüge er als Zahl oder { at } — `c.at` ist dagegen der letzte Kosten-Poll, nicht der
+// Stopp. Fehlt der eigene Zeitpunkt, bleibt das Ereignis ohne Zeit statt mit falscher.
+const stopAt = (v) => (typeof v === "number" ? v
+  : v && typeof v === "object" ? Number(v.at) || at(v.at) : 0);
 
 const CHEVRON = "mods/workspace-chrome/chevron-right.svg";
 
@@ -239,19 +248,69 @@ export default class Dashboard extends View {
 
   // ---------- data ----------
 
+  /** Eine Momentaufnahme je render(): jede Host-Funktion (agents, terminals, spaces,
+   *  shared) kopiert ganze Listen über die Brücke. Ohne Schnappschuss fragte jede
+   *  Zeile neu; hier liest ein Render jeden Wert einmal und reicht ihn durch.
+   *  Außerhalb eines Renders (Klick, Timer) lesen die Methoden weiter frisch. */
+  snapshot() {
+    const pick = space.pickOf(shared("dashboard.spaces"));
+    const flat = spaces();
+    const raw = this.spaceRows?.spaces ?? null;
+    const spaceList = raw ? space.workspaceRows(raw) : null;
+    const active = flat.find((s) => s.active)?.id || "";
+    const ownId = space.workspaceOf(raw, active)
+      || space.workspaceOf(raw, this.spaceRows?.space || "")
+      || active || "";
+    const allIds = (spaceList ?? []).map((r) => r.id).filter(Boolean);
+    const selIds = space.effective(pick, ownId, allIds);
+    const list = this.tks ?? shared("orchestra.tickets") ?? [];
+    const agentList = agents();
+    const termList = terminals();
+    const subs = shared("omp.subagents") ?? {};
+    const ticketRows = spaceList ?? flat.map((s) => ({ id: s.id, folder: s.folder, machine: s.machine }));
+    const ticketSpace = new Map(list.map((tk) => [tk.id, space.ticketSpace(tk, ticketRows)]));
+    const agentSpace = new Map(agentList.map((a) => [a.address,
+      space.agentWorkspace(a, list, raw, ownId)]));
+    const status = new Map(agentList.map((a) => [a.address,
+      termList.find((x) => x.address === a.address)?.status ?? a.status]));
+    const effective = new Map(agentList.map((a) => [a.address, effectiveStatus(a, termList, subs)]));
+    const openTickets = new Map();
+    for (const tk of list) {
+      if (tk.terminal && tk.status !== "done" && !openTickets.has(tk.terminal)) openTickets.set(tk.terminal, tk);
+    }
+    const tabName = new Map();
+    for (const s of flat) for (const tab of s.tabs ?? []) tabName.set(tab.id, tab.name);
+    const identity = shared("agents.identity") ?? {};
+    const identityName = new Map(agentList.map((a) => [a.address,
+      identity[a.address]?.name ?? (String(a.program?.key ?? "").toLowerCase() || a.address)]));
+    return {
+      pick, flat, raw, spaceList, ownId, allIds, selIds,
+      overlay: pick.mode === space.ALL || selIds.size > 1,
+      tickets: list, agents: agentList, terminals: termList, subs,
+      costs: shared("orchestra.costs") ?? {},
+      budget: { team: 20, ...(shared("orchestra.budget") ?? {}) }.team,
+      teams: shared("orchestra.groups") ?? [],
+      stats: shared("orchestra.stats") ?? null,
+      attention: shared("attention.since") ?? {},
+      ticketSpace, agentSpace, status, effective, openTickets, tabName,
+      identityName, series: space.seriesOf(allIds),
+    };
+  }
+
   /** Der Orchestrator dieses Workspace: `hub spaces` nennt seinen Terminal. Vor der
    *  ersten Antwort zählt nur ein gleichnamiger Terminal im eigenen Space — nie der
    *  eines fremden (der alte Namensfallback nahm den ersten besten). */
   orchestrator() {
+    const terms = this.snap?.terminals ?? terminals();
     const row = this.spaceRow(this.ownSpaceId());
     if (row) {
       if (!row.live || !row.orchestrator) return null;
-      return terminals().find((x) => x.address === row.orchestrator)
+      return terms.find((x) => x.address === row.orchestrator)
         ?? { address: row.orchestrator, name: ORCH, status: "" };
     }
     if (this.spaceRows) return null;
     const own = this.ownSpaceId();
-    return terminals().find((x) => (x.name === ORCH || x.name?.startsWith(`${ORCH}-`))
+    return terms.find((x) => (x.name === ORCH || x.name?.startsWith(`${ORCH}-`))
       && x.state === "live" && (!own || !x.space || x.space === own)) ?? null;
   }
 
@@ -270,23 +329,34 @@ export default class Dashboard extends View {
   /** Die Workspaces des Fensters mit Orchestrator, offenen Stufen und Kosten (`hub
    *  spaces --json`); Agent-Spaces sind ausgeblendet. null, solange hub schweigt. */
   spaceList() {
+    if (this.snap) return this.snap.spaceList;
     const rows = this.rawSpaceRows();
     return rows ? space.workspaceRows(rows) : null;
   }
   /** Der eigene Space: der gezeigte des Fensters (ein Agent-Space zählt als sein
    *  Workspace), sonst der, den hub als seinen liest. */
   ownSpaceId() {
+    if (this.snap) return this.snap.ownId;
     const active = spaces().find((s) => s.active)?.id || "";
     return space.workspaceOf(this.rawSpaceRows(), active)
       || space.workspaceOf(this.rawSpaceRows(), this.spaceRows?.space || "")
       || active || "";
   }
-  allSpaceIds() { return (this.spaceList() ?? []).map((r) => r.id).filter(Boolean); }
-  pick() { return space.pickOf(shared("dashboard.spaces")); }
+  allSpaceIds() {
+    if (this.snap) return this.snap.allIds;
+    return (this.spaceList() ?? []).map((r) => r.id).filter(Boolean);
+  }
+  pick() { return this.snap?.pick ?? space.pickOf(shared("dashboard.spaces")); }
   /** Die gewählten Space-IDs. Eine leere Menge heißt „nicht filtern" (erste Sekunde,
    *  Fenster ohne Space): dann bleibt das Dashboard bei allen Tickets. */
-  selIds() { return space.effective(this.pick(), this.ownSpaceId(), this.allSpaceIds()); }
-  overlay() { return this.selIds().size > 1; }
+  selIds() {
+    if (this.snap) return this.snap.selIds;
+    return space.effective(this.pick(), this.ownSpaceId(), this.allSpaceIds());
+  }
+  overlay() {
+    if (this.snap) return this.snap.overlay;
+    return this.selIds().size > 1;
+  }
   // "Alle" schließt die Tickets ohne Workspace ein (wie `hub --all`); sonst gilt genau
   // die Auswahl. Eine leere Auswahl heißt „nicht filtern" (erste Sekunde ohne Antwort).
   inSel(sid) {
@@ -298,6 +368,7 @@ export default class Dashboard extends View {
   spaceName(sid) { return this.spaceRow(sid)?.name || (sid ? sid : "ohne Workspace"); }
   /** Farbpunkt je Space; bei genau einem gewählten Space ohne Punkt (ruhig wie bisher). */
   series() {
+    if (this.snap) return this.snap.series;
     const ids = this.allSpaceIds();
     const key = ids.join("\n");
     if (this.seriesKey !== key) { this.seriesKey = key; this.seriesMap = space.seriesOf(ids); }
@@ -306,6 +377,7 @@ export default class Dashboard extends View {
   spaceColor(t, sid) { return sid ? space.spColor(t, this.series().get(sid)) : t.dim; }
   /** Der Space eines Tickets (Alt-Tickets über ihren Repo-Ordner, wie hub rechnet). */
   ticketSpace(tk) {
+    if (this.snap?.ticketSpace.has(tk.id)) return this.snap.ticketSpace.get(tk.id);
     return space.ticketSpace(tk, this.spaceList()
       ?? spaces().map((s) => ({ id: s.id, folder: s.folder, machine: s.machine })));
   }
@@ -313,7 +385,8 @@ export default class Dashboard extends View {
   /** Der Space einer Agent-Zeile: der Workspace seines Tickets (auch eines erledigten),
    *  sonst der seines Herdr-Space — ein Agent-Space zählt als dessen Workspace. */
   agentSpace(address) {
-    const a = agents().find((x) => x.address === address) ?? { address };
+    if (this.snap?.agentSpace.has(address)) return this.snap.agentSpace.get(address);
+    const a = (this.snap?.agents ?? agents()).find((x) => x.address === address) ?? { address };
     return space.agentWorkspace(a, this.tickets(), this.rawSpaceRows(), this.ownSpaceId());
   }
   setPick(value, cx) {
@@ -325,9 +398,9 @@ export default class Dashboard extends View {
 
   // Fresh from disk while the daemon's heartbeat is stale (a layout without a daemon
   // block); fresh shared("orchestra.tickets") otherwise. Null before the first read.
-  tickets() { return this.tks ?? shared("orchestra.tickets") ?? []; }
-  costs() { return shared("orchestra.costs") ?? {}; }
-  stats() { return shared("orchestra.stats") ?? null; }
+  tickets() { return this.snap?.tickets ?? this.tks ?? shared("orchestra.tickets") ?? []; }
+  costs() { return this.snap?.costs ?? shared("orchestra.costs") ?? {}; }
+  stats() { return this.snap?.stats ?? shared("orchestra.stats") ?? null; }
 
   /** The daemon's heartbeat, `orchestra.spaces.at`. 0 = no daemon has published yet. */
   sharedAt() { return Number(shared("orchestra.spaces")?.at ?? 0) || 0; }
@@ -477,8 +550,8 @@ export default class Dashboard extends View {
     return this.statsKeys().map((k) => ({ sid: k, name: this.spaceName(k), out: this.spaceStats.get(k)?.out }))
       .filter((r) => r.out);
   }
-  teamBudget() { return { team: 20, ...(shared("orchestra.budget") ?? {}) }.team; }
-  teams() { return shared("orchestra.groups") ?? []; }
+  teamBudget() { return this.snap?.budget ?? { team: 20, ...(shared("orchestra.budget") ?? {}) }.team; }
+  teams() { return this.snap?.teams ?? shared("orchestra.groups") ?? []; }
 
   // `hub stalls --all --json` every 10 s; the overlay filters the rows by their space.
   // The row order (In Arbeit, Prüfung, Geplant) and the thresholds are hub's; a failed
@@ -529,7 +602,10 @@ export default class Dashboard extends View {
   }
 
   // The ticket an agent is working on.
-  openTicket(address) { return this.tickets().find((tk) => tk.terminal === address && tk.status !== "done") ?? null; }
+  openTicket(address) {
+    return this.snap?.openTickets.get(address)
+      ?? this.tickets().find((tk) => tk.terminal === address && tk.status !== "done") ?? null;
+  }
 
   // The agent a Verlauf role names. `hub ticket comment --from` writes the name the
   // person knows: the identity name (`shared "agents.identity"`), the terminal title or
@@ -539,8 +615,11 @@ export default class Dashboard extends View {
   agentOfRole(role, tk) {
     const name = String(role ?? "").trim();
     if (!name || ["mensch", "hub", "orchestrator", "ci"].includes(name)) return null;
-    const hits = agents().filter((a) => a.address === name || a.title === name
-      || ui.identity(a.address).name === name || a.app === name || a.program?.key === name);
+    const list = this.snap?.agents ?? agents();
+    const nameOf = this.snap?.identityName;
+    const hits = list.filter((a) => a.address === name || a.title === name
+      || (nameOf ? nameOf.get(a.address) : ui.identity(a.address).name) === name
+      || a.app === name || a.program?.key === name);
     return hits.find((a) => a.address === tk?.terminal) ?? (hits.length === 1 ? hits[0] : null);
   }
 
@@ -560,8 +639,10 @@ export default class Dashboard extends View {
 
   // Space and tab as the Team panel names them; an automatic tab number says nothing.
   where(a) {
-    const tab = spaces().flatMap((s) => s.tabs ?? []).find((x) => x.id === a.tab);
-    const name = tab?.name && !/^\d+$/.test(tab.name) ? tab.name : a.title ?? "";
+    const tab = this.snap
+      ? null : spaces().flatMap((s) => s.tabs ?? []).find((x) => x.id === a.tab);
+    const tabName = tab?.name ?? this.snap?.tabName.get(a.tab);
+    const name = tabName && !/^\d+$/.test(tabName) ? tabName : a.title ?? "";
     return [a.space_name, name].filter(Boolean).join(" / ");
   }
 
@@ -569,25 +650,29 @@ export default class Dashboard extends View {
   // once a client looked; the team still needs to know it is finished (and folds it),
   // and the word "fertig" is what the person saw.
   statusOf(a) {
+    if (this.snap?.status.has(a.address)) return this.snap.status.get(a.address);
     const t = terminals().find((x) => x.address === a.address);
     return t?.status ?? a.status;
   }
 
   // The status the Team block shows: the agent's own, or a working/blocked child's.
-  effective(a) { return effectiveStatus(a, terminals(), shared("omp.subagents") ?? {}); }
+  effective(a) {
+    if (this.snap?.effective.has(a.address)) return this.snap.effective.get(a.address);
+    return effectiveStatus(a, terminals(), shared("omp.subagents") ?? {});
+  }
 
   // Since when the agent is in this state: the status bar keeps it for every mod,
   // the local first sight fills the gap right after a start.
   attentionAt(a) {
     const st = this.effective(a);
-    const s = (shared("attention.since") ?? {})[a.address];
+    const s = (this.snap?.attention ?? shared("attention.since") ?? {})[a.address];
     if (s && (s.status === st || (st === "idle" && s.status === "done"))) return s.at;
     return this.since(a.address, st);
   }
 
   // Agents in their teams (shared "orchestra.groups", as the Team panel groups them),
   // the rest by space so no row floats without a group head.
-  teamGroups(list = agents()) {
+  teamGroups(list = this.snap?.agents ?? agents()) {
     const by = new Map(list.map((a) => [a.address, a]));
     const claimed = new Set();
     const groups = [];
@@ -602,7 +687,7 @@ export default class Dashboard extends View {
       const id = `space-${a.space ?? a.space_name ?? ""}`;
       const last = groups.at(-1);
       if (last && !last.team && last.id === id) last.members.push(a);
-      else groups.push({ id, label: a.space_name || "Ohne Space", team: false, members: [a] });
+      else groups.push({ id, label: a.space_name || "ohne Workspace", team: false, members: [a] });
     }
     return groups;
   }
@@ -622,7 +707,7 @@ export default class Dashboard extends View {
     const out = this.tickets().filter((tk) => tk.status === "review" && this.inSelTicket(tk))
       .map((tk) => ({ kind: "ticket", key: `ticket:${tk.id}`, tk }));
     // 1. Blocked agents; the orchestrator too, as the Inbox counts it.
-    const list = agents();
+    const list = this.snap?.agents ?? agents();
     const blocked = list.filter((x) => this.statusOf(x) === "blocked" && this.inSel(this.agentSpace(x.address)));
     const o = this.orchestrator();
     if (o?.status === "blocked" && !list.some((a) => a.address === o.address) && this.inSel(this.ownSpaceId())) blocked.push(o);
@@ -643,7 +728,7 @@ export default class Dashboard extends View {
 
   // The 3–5 rows that matter: a blocked agent first, then the longest in work.
   doing() {
-    const all = agents();
+    const all = this.snap?.agents ?? agents();
     const st = (tk) => { const a = all.find((x) => x.address === tk.terminal); return a ? this.statusOf(a) : "idle"; };
     return this.tickets().filter((tk) => stageOf(tk) === "doing" && this.inSelTicket(tk))
       .sort((x, y) => (STATUS_RANK[st(x)] ?? 9) - (STATUS_RANK[st(y)] ?? 9)
@@ -721,8 +806,8 @@ export default class Dashboard extends View {
       props: { ticket: tk.id, terminal: tk.terminal || null, folder: tk.worktree || tk.repo, on: tk.machine || null } });
   }
 
-  // The workspace is layout elric; the review stage also brings its Team panel.
-  // The panel commands wait for the layout to load, or the switch discards them.
+  // Die Arbeitsansicht ist das elric-Layout; die Prüfstufe bringt auch ihr Team-Panel.
+  // Die Panel-Befehle warten auf das geladene Layout, sonst verwirft der Wechsel sie.
   workspace(team, cx) {
     run("layout.switch", { name: "elric" });
     if (!team) return;
@@ -748,8 +833,8 @@ export default class Dashboard extends View {
     run("terminal.peek", { terminal: address });
   }
 
-  // The deliberate step into the workspace: layout elric, the agent's tab and pane
-  // (the Team panel's click). The dashboard's own row click only peeks.
+  // Der bewusste Schritt in die Arbeitsansicht (elric): Space, Tab und Pane des Agents
+  // (der Klick im Team-Panel). Der Zeilenklick des Dashboards sieht nur als Peek.
   openSpaceAndTerminal(address) {
     run("layout.switch", { name: "elric" });
     const a = agents().find((x) => x.address === address);
@@ -780,8 +865,8 @@ export default class Dashboard extends View {
               : `Ticket ${tk.id} ist geplant`, tk.terminal);
       }
     }
-    const seen = shared("attention.since") ?? {};
-    for (const a of agents()) {
+    const seen = this.snap?.attention ?? shared("attention.since") ?? {};
+    for (const a of this.snap?.agents ?? agents()) {
       if (this.statusOf(a) === "blocked" && this.inSel(this.agentSpace(a.address)))
         push(seen[a.address]?.at, `${ui.identity(a.address).name} wartet auf dich`, a.address);
     }
@@ -789,9 +874,10 @@ export default class Dashboard extends View {
     const allSpaces = this.pick().mode === space.ALL;
     for (const [id, on] of Object.entries(c.stopped ?? {})) {
       if (!on) continue;
-      if (id === "__team") { if (allSpaces) push(c.at, "Team-Budget erreicht"); continue; }
-      if (allSpaces || this.tickets().some((tk) => tk.id === id && this.inSelTicket(tk)))
-        push(c.at, `Budget für Ticket ${id} erreicht`, this.tickets().find((tk) => tk.id === id)?.terminal);
+      const when = stopAt(on);
+      if (id === "__team") { if (allSpaces) push(when, "Team-Budget erreicht"); continue; }
+      const tk = this.tickets().find((x) => x.id === id);
+      if (allSpaces || (tk && this.inSelTicket(tk))) push(when, `Budget für Ticket ${id} erreicht`, tk?.terminal);
     }
     return out.sort((x, y) => y.time - x.time).slice(0, 5);
   }
@@ -802,25 +888,37 @@ export default class Dashboard extends View {
     cx.notify();
   }
 
+  /** Tippt gerade jemand im Auftrag- oder einem Antwortfeld? Dann gehören j/k/g/r/↵
+   *  dem Feld (board/main.js:387), nicht der Auswahl. */
+  typing() {
+    if (this.focus.has("dash-order")) return true;
+    for (const address of this.answers.keys()) if (this.focus.has(`dash-answer-${rid(address)}`)) return true;
+    return false;
+  }
+
   onKey(ev, cx) {
+    const k = ev.key;
+    // ⌘↵ sendet aus jedem Feld; Esc gibt die Auswahl frei und holt den Fokus zurück.
+    if (ev.keystroke === "cmd-enter" || ev.keystroke === "ctrl-enter") { this.send(cx); cx.stop_propagation(); return; }
+    if (k === "escape") {
+      this.armed = null; this.key = null; this.handle.focus(); cx.notify(); cx.stop_propagation(); return;
+    }
+    if (this.typing()) return;
     const list = this.rows();
     const i = list.findIndex((e) => e.key === this.key);
-    const k = ev.key;
     if (this.armed === "g") {
       this.armed = null;
       if (k === "w") { this.workspace(false); cx.stop_propagation(); return; }
     }
-    if (ev.keystroke === "cmd-enter" || ev.keystroke === "ctrl-enter") this.send(cx);
-    else if (k === "down" || k === "j") this.select(list, i + 1, cx);
+    if (k === "down" || k === "j") this.select(list, i + 1, cx);
     else if (k === "up" || k === "k") this.select(list, i - 1, cx);
     else if (k === "enter") { if (i >= 0) this.open(list[i]); }
     else if (k === "r") { const sel = i >= 0 ? list[i] : null; if (sel?.kind === "agent") this.answers.get(sel.address)?.focus(); }
     else if (k === "g") {
-      this.armed = "g"; // g w: workspace
+      this.armed = "g"; // g w: Arbeitsansicht
       cx.notify();
       cx.timer.after(1200, (cx) => { if (this.armed === "g") { this.armed = null; cx.notify(); } });
-    } else if (k === "escape") { this.armed = null; this.key = null; this.handle.focus(); cx.notify(); }
-    else return;
+    } else return;
     cx.stop_propagation();
   }
 
@@ -1031,10 +1129,9 @@ export default class Dashboard extends View {
       .child(ui.button(t, "dash-timeline", "Timeline", () => this.popup("timeline"),
         { small: true, tip: "Timeline als Popup-Fenster öffnen (⌘⌥0, das Dashboard bleibt)" }))
       .child(this.freshDot(t))
-      .child(div().flex_none().text_size(T_XS).text_color(t.dim).child("⌘⇧0 Workspace"))
       .child(div().flex_none().text_size(T_S).text_color(t.muted).child(this.clockText()))
-      .child(ui.button(t, "dash-workspace", "Workspace", () => this.workspace(false),
-        { small: true, tip: "Zum Layout elric (Workspace, ⌘⇧0 oder g w)" }));
+      .child(ui.button(t, "dash-workspace", "Arbeitsansicht", () => this.workspace(false),
+        { small: true, tip: "Arbeitsansicht mit Team-Panel (⌘⇧0 oder g w)" }));
   }
 
   // A ticket ready to check: the author's identity, the title (two lines at most),
@@ -1048,7 +1145,7 @@ export default class Dashboard extends View {
       .cursor_pointer().hover((s) => s.bg(t.hover))
       .on_click((_e, cx) => { this.key = `ticket:${tk.id}`; this.handle.focus(); this.openReview(tk); cx.stop_propagation(); })
       .when(Boolean(who), (el) => el.child(h_flex().flex_none().max_w(150).child(ui.identityChip(t, `dash-who-${rid(tk.id)}`, who))))
-      .child(div().flex_1().min_w(0).max_h(30).overflow_hidden().text_size(T_S).text_color(t.foreground).child(tk.title))
+      .child(div().flex_1().min_w(0).max_h(30).overflow_hidden().text_size(T_S).text_color(t.foreground).tooltip(tk.title).child(tk.title))
       .when(Boolean(tag), (el) => el.child(tag))
       .children(ui.gateChips(t, tk))
       .when(Boolean(age), (el) => el.child(div().flex_none().text_size(T_XS).text_color(t.muted).child(age)))
@@ -1075,10 +1172,10 @@ export default class Dashboard extends View {
         .child(ui.identityChip(t, `dash-q-who-${rid(e.address)}`, e.address))
         .when(Boolean(tag), (el) => el.child(tag))
         .child(div().flex_1().min_w(0).max_h(30).overflow_hidden().text_size(T_S)
-          .text_color(slot?.error ? t.blocked : t.foreground).child(text))
+          .text_color(slot?.error ? t.blocked : t.foreground).tooltip(text).child(text))
         .child(div().flex_none().text_size(T_XS).text_color(t.muted).child(ago(this.attentionAt(e.a ?? { address: e.address, status: "blocked" }))))
-        .child(ui.button(t, `dash-q-space-${rid(e.address)}`, "Zum Space", () => this.openSpaceAndTerminal(e.address),
-          { small: true, tip: "Layout elric: Workspace, Tab und Pane des Agents" })))
+        .child(ui.button(t, `dash-q-space-${rid(e.address)}`, "Zum Agent", () => this.openSpaceAndTerminal(e.address),
+          { small: true, tip: "Arbeitsansicht: Space, Tab und Pane des Agents" })))
       .when(Boolean(input), (el) => el.child(ui.inputBox(t, `dash-answer-${rid(e.address)}`, Input.new(input), {
         focused: this.focus.has(`dash-answer-${rid(e.address)}`),
         send: ui.sendButton(t, `dash-answer-send-${rid(e.address)}`, SEND_ICON, "Antwort senden (↵)", (cx) => this.answer(e.address, cx)),
@@ -1145,7 +1242,7 @@ export default class Dashboard extends View {
         .when(rows.length > 0, (el) => el.child(div().text_size(T_S).text_color(t.blocked).child(String(rows.length))))
         .child(div().flex_1())
         .child(ui.link(t, "dash-stalls-all", "Alle anzeigen", () => this.workspace(true),
-          { tip: "Team-Panel im Workspace: alle hängenden Tickets" })))
+          { tip: "Arbeitsansicht: Team-Panel mit allen hängenden Tickets" })))
       .when(!rows.length, (el) => el.child(ui.empty(t,
         all.length && mine.length ? "Alles, was hängt, steht schon oben." : "Nichts hängt. Alle Stationen bewegen sich.", { row: true })))
       .children(rows.slice(0, 6).map((r) => {
@@ -1175,8 +1272,11 @@ export default class Dashboard extends View {
         .text_color(waits ? t.blocked : n ? t.foreground : t.muted)
         .cursor_pointer().hover((x) => x.bg(t.hover))
         .tooltip(waits ? `${s.label}: ${n} wartet auf dich`
-          : `${s.label}: ${n}. Klicken: ${s.key === "review" ? "Team-Panel im Workspace" : "Workspace"}`)
-        .on_click((_e, cx) => { cx.stop_propagation(); this.workspace(s.key === "review", cx); })
+          : `${s.label}: ${n}. Klicken: ${s.key === "review" ? "Team-Panel in der Arbeitsansicht" : "Board als Popup"}`)
+        .on_click((_e, cx) => {
+          cx.stop_propagation();
+          if (s.key === "review") this.workspace(true, cx); else this.popup("board");
+        })
         .child(s.label)
         .child(div().font_semibold().text_color(waits ? t.blocked : n ? t.foreground : t.muted).child(count(n))));
     });
@@ -1185,8 +1285,8 @@ export default class Dashboard extends View {
   }
 
   doingRow(t, tk, on) {
-    const live = tk.terminal ? agents().find((a) => a.address === tk.terminal) : null;
-    const st = live?.status ?? "idle";
+    const live = tk.terminal ? (this.snap?.agents ?? agents()).find((a) => a.address === tk.terminal) : null;
+    const st = live ? this.effective(live) : "idle";
     const cost = this.costs().tickets?.[tk.id];
     const dur = live ? ago(this.attentionAt(live)) : "";
     const tag = this.spaceTag(t, this.ticketSpace(tk), `dash-space-doing-${rid(tk.id)}`);
@@ -1196,15 +1296,15 @@ export default class Dashboard extends View {
         .tooltip("Klicken: Agent als Peek ansehen (Dashboard bleibt)")
         .on_click((_e, cx) => { cx.stop_propagation(); this.key = `doing:${tk.id}`; this.handle.focus(); this.peekAgent(tk.terminal); }))
       .child(ui.statusIcon(t, st))
-      .child(div().flex_1().min_w(0).truncate().text_size(T_M).text_color(t.foreground).child(tk.title))
+      .child(div().flex_1().min_w(0).truncate().text_size(T_M).text_color(t.foreground).tooltip(tk.title).child(tk.title))
       .when(Boolean(tag), (el) => el.child(tag))
       .when(Boolean(tk.terminal), (el) => el.child(div().flex_none().max_w(150).child(ui.identityChip(t, `dash-doing-who-${rid(tk.id)}`, tk.terminal, { status: st }))))
       .child(div().w(64).flex_none().justify_end().text_size(T_XS).text_color(t.muted).child(dur || "—"))
       .child(div().w(56).flex_none().justify_end().text_size(T_XS).text_color(t.muted)
         .tooltip("Kosten dieses Tickets (nur omp meldet Kosten)").child(cost != null ? usd(cost) : "—"))
-      .when(Boolean(tk.terminal), (el) => el.child(ui.button(t, `dash-doing-space-${rid(tk.id)}`, "Zum Space",
+      .when(Boolean(tk.terminal), (el) => el.child(ui.button(t, `dash-doing-space-${rid(tk.id)}`, "Zum Agent",
         () => this.openSpaceAndTerminal(tk.terminal),
-        { small: true, tip: "Layout elric: Workspace, Tab und Pane des Agents" })));
+        { small: true, tip: "Arbeitsansicht: Space, Tab und Pane des Agents" })));
   }
 
   // ---------- team ----------
@@ -1217,14 +1317,14 @@ export default class Dashboard extends View {
       .child(div().flex_1().min_w(0).child("Space / Tab"))
       .child(div().flex_1().min_w(0).child("Ticket"))
       .child(div().w(COL_TIME).flex_none().pr(ui.GAP_S).justify_end().tooltip("Seit wann der Agent in diesem Zustand ist: Wechsel aus der Statusleiste, sonst erste Sicht des Dashboards").child("Seit"))
-      .child(div().w(COL_COST).flex_none().justify_end().child("Kosten"));
+      .child(div().w(COL_COST).flex_none().justify_end().child("Kosten"))
+      .child(div().w(COL_ACTION).flex_none());
   }
 
   // A group head like the Team panel's (name, count, the most urgent state); a
   // watched team first, the rest by space.
   teamGroupHead(t, g) {
-    const rank = { blocked: 0, working: 1, idle: 2, done: 3 };
-    const top = g.members.reduce((m, a) => { const st = this.effective(a); return (rank[st] ?? 9) < (rank[m] ?? 9) ? st : m; }, "idle");
+    const top = g.members.reduce((m, a) => { const st = this.effective(a); return (STATUS_RANK[st] ?? 9) < (STATUS_RANK[m] ?? 9) ? st : m; }, "idle");
     return h_flex().h(ui.H_SECTION).flex_none().px(ui.GAP_S).gap(ui.GAP_S).items_center().text_size(T_S).font_medium()
       .child(div().flex_none().max_w(320).truncate().text_color(g.team ? t.foreground : t.muted).child(g.label))
       .child(div().flex_none().text_color(t.dim).child(String(g.members.length)))
@@ -1239,7 +1339,7 @@ export default class Dashboard extends View {
     // Identität nur aus shared("agents.identity") (wie Team-Panel und Karten): ohne
     // veröffentlichten Namen steht das Programm-Kürzel klein und gedämpft (`omp`) —
     // ein Programm ist kein Agent.
-    const named = (shared("agents.identity") ?? {})[a.address]?.name ?? null;
+    const named = who.named ? who.name : null;
     const progKey = named ? null : String(a.program?.key ?? a.app ?? "").trim().toLowerCase() || null;
     const label = named ?? progKey ?? who.name;
     const tk = this.openTicket(a.address);
@@ -1273,9 +1373,10 @@ export default class Dashboard extends View {
         .child(since ? ago(since) : "—"))
       .child(div().w(COL_COST).flex_none().justify_end().text_size(T_XS).text_color(t.muted)
         .tooltip("Kosten dieses Agents an seinem Ticket (nur omp meldet Kosten)").child(cost != null ? usd(cost) : "—"))
-      .child(ui.button(t, `dash-team-space-${rid(a.address)}`, "Zum Space",
-        () => this.openSpaceAndTerminal(a.address),
-        { small: true, tip: "Layout elric: Workspace, Tab und Pane des Agents" }));
+      .child(div().w(COL_ACTION).flex_none().justify_end()
+        .child(ui.button(t, `dash-team-space-${rid(a.address)}`, "Zum Agent",
+          () => this.openSpaceAndTerminal(a.address),
+          { small: true, tip: "Arbeitsansicht: Space, Tab und Pane des Agents" })));
   }
 
   // A done agent has finished its turn; whether its pane still shows the last screen
@@ -1284,7 +1385,7 @@ export default class Dashboard extends View {
   ended(a) { return this.statusOf(a) === "done"; }
 
   teamSection(t) {
-    const all = agents().filter((a) => this.inSel(this.agentSpace(a.address)));
+    const all = (this.snap?.agents ?? agents()).filter((a) => this.inSel(this.agentSpace(a.address)));
     const list = all.filter((a) => !this.ended(a));
     const done = all.filter((a) => this.ended(a));
     return v_flex().flex_1().min_w(0).gap(ui.GAP_XS)
@@ -1327,7 +1428,7 @@ export default class Dashboard extends View {
     const split = this.statsSplit().filter((r) => r.out);
     const tip = split.length > 1
       ? ["Fabrik heute je Space", ...split.map((r) => `${r.name}: ${r.out.today?.done ?? 0} erledigt · Median ${span(r.out.today?.median_min)} · ${usd(r.out.today?.cost ?? 0)}`)].join("\n")
-      : "Team-Panel im Workspace öffnen: Stationen und Repos aufschlüsseln";
+      : "Arbeitsansicht: Team-Panel öffnen, Stationen und Repos aufschlüsseln";
     // Echte Balken mit Höhe statt einer Zeile aus Schriftzeichen (die UI-Schrift kennt
     // die Block-Glyphen nicht und zeichnete nur Striche).
     const week = peak > 0
@@ -1436,7 +1537,7 @@ export default class Dashboard extends View {
     const real = rows.filter((r) => r.id);
     if (real.length < 2) return null;
     const loose = rows.find((r) => !r.id);
-    const known = new Set(spaces().map((s) => s.id));
+    const known = new Set((this.snap?.flat ?? spaces()).map((s) => s.id));
     const own = this.ownSpaceId();
     const note = this.spaceNote;
     const rowOf = (r) => {
@@ -1460,10 +1561,11 @@ export default class Dashboard extends View {
         .child(div().w(56).flex_none().justify_end().text_size(T_XS).text_color(t.muted)
           .tooltip(`offene Ticket-Kosten dieses Space (data/orchestra/costs.json, nur Tickets ≠ done); gesamt ${usd(space.totalCost(r))}`)
           .child(usd(space.openCost(r))))
-        .when(!r.live, (el) => el.child(ui.button(t, `dash-ws-start-${rid(r.id)}`,
-          starting ? "Startet …" : "Orchestrator starten", (cx) => this.startSpace(r.id, cx),
-          { small: true, enabled: !this.starting,
-            tip: `hub orchestrator start --space ${r.name || r.id}: Regeln, Labels und Prompt legt hub an` })));
+        .child(div().w(COL_WS_ACTION).flex_none().justify_end()
+          .when(!r.live, (el) => el.child(ui.button(t, `dash-ws-start-${rid(r.id)}`,
+            starting ? "Startet …" : "Orchestrator starten", (cx) => this.startSpace(r.id, cx),
+            { small: true, enabled: !this.starting,
+              tip: `hub orchestrator start --space ${r.name || r.id}: Regeln, Labels und Prompt legt hub an` }))));
     };
     return v_flex().flex_none().gap(ui.GAP_S)
       .child(ui.sectionHeader(t, "Workspaces", { count: real.length }))
@@ -1509,32 +1611,40 @@ export default class Dashboard extends View {
 
   render(cx) {
     const t = theme();
-    const list = this.rows();
-    if (this.key && !list.some((e) => e.key === this.key)) this.key = null;
-    const counts = { todo: 0, doing: 0, review: 0, done: 0 };
-    for (const tk of this.tickets()) if (this.inSelTicket(tk)) counts[stageOf(tk)]++;
-    const waits = this.waitsOnMe();
-    const doing = this.doing();
-    const bar = this.spaceBar(t);
-    const workspaces = this.workspacesSection(t);
-    return v_flex().id("dashboard").track_focus(this.handle).size_full().min_h(0).text_size(T_M).text_color(t.foreground)
-      .on_key_down((ev, cx) => this.onKey(ev, cx))
-      .child(h_flex().size_full().min_h(0).justify_center().items_start().p(PAD)
-        .child(v_flex().id("dash-card").w_full().max_w(MAXW).h_full().min_h(0).rounded(10).overflow_hidden()
-          .bg(t.background).border_1().border_color(t.border)
-          .child(v_flex().id("dash-body").flex_1().min_h(0).overflow_y_scrollbar()
-            // Above the toast surface: the toast sits 36 px off the window bottom and its
-            // card is ~47 px tall, so the last row (Auftrag/Senden) keeps 80 px below it (R3-14).
-            .px(16).pt(16).pb(80).gap(ui.GAP_L)
-            .child(this.header(t))
-            .when(Boolean(bar), (el) => el.child(bar))
-            .child(this.waitingSection(t, waits))
-            .child(this.stallsSection(t, waits))
-            .when(Boolean(workspaces), (el) => el.child(workspaces))
-            .child(h_flex().gap(ui.GAP_L).items_start()
-              .child(this.teamSection(t))
-              .child(this.activitySection(t)))
-            .child(this.factorySection(t, counts, doing))
-            .child(this.orderSection(t)))));
+    // Ein Schnappschuss je Render: jede Zeile liest dieselben Listen, statt die
+    // Host-Brücke erneut zu fragen. waitsOnMe und doing laufen genau einmal.
+    // ui.js hält je 25-ms-Pass einen Satz Host-Kopien; der erste Aufruf startet ihn.
+    // Ohne das liest jeder Identitäts-Chip agents() und agents.identity erneut.
+    ui.paneSpaceOf("");
+    this.snap = this.snapshot();
+    try {
+      const waits = this.waitsOnMe();
+      const doing = this.doing();
+      const list = [...waits, ...doing.map((tk) => ({ key: `doing:${tk.id}` }))];
+      if (this.key && !list.some((e) => e.key === this.key)) this.key = null;
+      const counts = { todo: 0, doing: 0, review: 0, done: 0 };
+      for (const tk of this.tickets()) if (this.inSelTicket(tk)) counts[stageOf(tk)]++;
+      const bar = this.spaceBar(t);
+      const workspaces = this.workspacesSection(t);
+      return v_flex().id("dashboard").track_focus(this.handle).size_full().min_h(0).text_size(T_M).text_color(t.foreground)
+        .on_key_down((ev, cx) => this.onKey(ev, cx))
+        .child(h_flex().size_full().min_h(0).justify_center().items_start().p(PAD)
+          .child(v_flex().id("dash-card").w_full().max_w(MAXW).h_full().min_h(0).rounded(10).overflow_hidden()
+            .bg(t.background).border_1().border_color(t.border)
+            .child(v_flex().id("dash-body").flex_1().min_h(0).overflow_y_scrollbar()
+              // Above the toast surface: the toast sits 36 px off the window bottom and its
+              // card is ~47 px tall, so the last row (Auftrag/Senden) keeps 80 px below it (R3-14).
+              .px(16).pt(16).pb(80).gap(ui.GAP_L)
+              .child(this.header(t))
+              .when(Boolean(bar), (el) => el.child(bar))
+              .child(this.waitingSection(t, waits))
+              .child(this.stallsSection(t, waits))
+              .when(Boolean(workspaces), (el) => el.child(workspaces))
+              .child(h_flex().gap(ui.GAP_L).items_start()
+                .child(this.teamSection(t))
+                .child(this.activitySection(t)))
+              .child(this.factorySection(t, counts, doing))
+              .child(this.orderSection(t)))));
+    } finally { this.snap = null; }
   }
 }

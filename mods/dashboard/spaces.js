@@ -66,8 +66,6 @@ export function toggle(pick, id, ownId, allIds) {
   return { mode: SOME, ids: [...next].sort() };
 }
 
-export const isOn = (pick, id, ownId, allIds) => effective(pick, ownId, allIds).has(id);
-
 // ---------- Zuordnung eines Tickets ----------
 
 const inside = (path, dir) => path === dir || path.startsWith(dir.endsWith("/") ? dir : `${dir}/`);
