@@ -199,11 +199,14 @@ export default class Docker extends View {
       .when(c.state === "running", (el) => el.child(this.icon(t, `shell-${id}`, "mods/workspace-chrome/terminal.svg", "Shell in einem Tab",
         () => this.openTerminal(host.on, `sh ${name}`, ["docker", "exec", "-it", c.id, "sh", "-c", SHELL]))))
       .when(!running, (el) => el.child(this.icon(t, `rm-${id}`, "mods/docker/trash.svg", "Entfernen …", (cx) => { this.confirm = id; cx.notify(); })));
+    // Localhost is right for this computer and WSL, not for a remote ssh machine:
+    // there the chip names the port on that machine and opens nothing.
     const chip = (p) => div().id(`port-${id}-${p}`).flex_none().px(6).h(H_CHIP).flex().items_center().rounded(4)
-      .bg(t.raised).text_size(T_XS).text_color(t.muted).cursor_pointer()
-      .hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip(`http://localhost:${p.split("-")[0]} öffnen`)
-      // shortcut: localhost is right for this computer and WSL, not for a remote ssh machine; use its host then.
-      .on_click((_e, cx) => { cx.stop_propagation(); cx.open_url(`http://localhost:${p.split("-")[0]}`); })
+      .bg(t.raised).text_size(T_XS).text_color(t.muted)
+      .when(!host.on, (el) => el.cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground))
+        .tooltip(`http://localhost:${p.split("-")[0]} öffnen`)
+        .on_click((_e, cx) => { cx.stop_propagation(); cx.open_url(`http://localhost:${p.split("-")[0]}`); }))
+      .when(Boolean(host.on), (el) => el.tooltip(`Port ${p} auf ${host.on}`))
       .child(`:${p}`);
     const bar = (label, pct, text) => h_flex().flex_1().min_w(0).gap(GAP_S).items_center()
       .child(div().flex_none().child(label))
@@ -223,8 +226,8 @@ export default class Docker extends View {
         .child(this.tile(t, l))
         .child(v_flex().flex_1().min_w(0).gap(GAP_XS)
           .child(h_flex().gap(GAP_S).items_center().h(H_BTN_S)
-            .child(div().flex_shrink(1).min_w(0).truncate().font_semibold().text_color(running ? t.foreground : t.muted).child(name))
-            .child(div().flex_1().min_w(0).truncate().text_size(T_S).text_color(t.dim).child(c.image))
+            .child(div().flex_shrink(1).min_w(0).truncate().font_semibold().text_color(running ? t.foreground : t.muted).tooltip(name).child(name))
+            .child(div().flex_1().min_w(0).truncate().text_size(T_S).text_color(t.dim).tooltip(c.image).child(c.image))
             .child(busy ? this.spinner(t, l.color) : open && !asking ? actions : this.dot(l)))
           .child(asking
             ? h_flex().gap(GAP_S).items_center().text_size(T_S)
@@ -232,7 +235,7 @@ export default class Docker extends View {
               .child(this.rowButton(t, `rm-yes-${id}`, "Entfernen", true, (cx) => { this.confirm = null; this.act(cx, id, host.on, ["rm", c.id]); }))
               .child(this.rowButton(t, `rm-no-${id}`, "Abbrechen", false, (cx) => { this.confirm = null; cx.notify(); }))
             : h_flex().gap(GAP_S).items_center().text_size(T_S).text_color(t.dim)
-              .child(div().flex_1().min_w(0).truncate().child(c.status))
+              .child(div().flex_1().min_w(0).truncate().tooltip(c.status).child(c.status))
               .children(ports.map(chip)))
           .when(Boolean(u), (el) => el.child(h_flex().gap(GAP_L).items_center().text_size(T_XS).text_color(t.dim)
             .child(bar("CPU", parseFloat(u.CPUPerc), u.CPUPerc))
@@ -248,7 +251,7 @@ export default class Docker extends View {
       .cursor_pointer().hover((s) => s.text_color(t.foreground))
       .on_click((_e, cx) => { open ? this.folded.add(g.id) : this.folded.delete(g.id); cx.notify(); })
       .child(svg(`mods/workspace-chrome/chevron-${open ? "down" : "right"}.svg`).size(12).flex_none().text_color(t.dim))
-      .child(div().flex_shrink(1).min_w(0).truncate().child(g.project ?? STANDALONE))
+      .child(div().flex_shrink(1).min_w(0).truncate().tooltip(g.project ?? STANDALONE).child(g.project ?? STANDALONE))
       .child(div().id(`n-${g.id}`).flex_none().text_color(up ? t.working : t.dim).tooltip(`${up} von ${g.members.length} laufen`).child(`${up}/${g.members.length}`))
       .child(div().flex_1())
       .when(compose && this.busy.has(g.id), (el) => el.child(this.spinner(t)))
