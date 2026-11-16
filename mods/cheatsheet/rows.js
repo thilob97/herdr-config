@@ -114,8 +114,10 @@ export const pretty = (k, mac) => {
 
 // Where a binding applies: `global` for every layout, otherwise a short label.
 export const scope = (s) => (s === "global" ? "global" : s === "terminal" ? "im Terminal" : s.startsWith("layout:") ? s.slice(7) : s.replace(/^mod:/, ""));
-// The scopes that deserve a chip: everything except the default.
-const tags = (sections) => [...new Set(sections.map(scope).filter((s) => s !== "global"))];
+// The one scope a row can name: only when every key of the action is bound in the
+// same non-global scope. A global key alongside it wins, and two different
+// non-global scopes have no single label, so both stay without a chip.
+const tag = (sections) => (sections.length === 1 && scope(sections[0]) !== "global" ? scope(sections[0]) : null);
 
 // keys() rows -> one row per action (a second key joins it). `sections` keeps
 // every scope the action is bound in, so the group can tell a shared scope from
@@ -142,18 +144,16 @@ export function buildRows(bindings, mac, filter = "") {
       const first = pretty(r.nums[0].keys, mac), last = pretty(r.nums.at(-1).keys, mac);
       r.keys = [r.nums.length > 1 ? `${first} … ${last}` : first];
     }
-    r.tags = tags(r.sections);
+    r.tag = tag(r.sections);
   }
   const f = filter.toLowerCase();
   return [...byKey.values()].filter((r) => !f || r.desc.toLowerCase().includes(f) || r.keys.join(" ").toLowerCase().includes(f) || r.action.toLowerCase().includes(f));
 }
 
 // A group's head chip only when every row is limited to the same non-global
-// scope. Otherwise each row that is limited says its own (global rows say none).
+// scope. Otherwise each row that names a scope says it; global rows say none.
 export function groupChip(rows) {
-  const first = rows[0]?.sections;
-  const same = rows.length > 0 && rows.every((r) => r.sections.length === 1 && scope(r.sections[0]) !== "global"
-    && r.sections[0] === first[0]);
-  const perRow = !same && rows.some((r) => r.tags.length > 0);
-  return { label: same ? scope(first[0]) : null, perRow };
+  const labels = rows.map((r) => r.tag);
+  const same = rows.length > 0 && labels.every((l) => l !== null && l === labels[0]);
+  return { label: same ? labels[0] : null, perRow: !same && labels.some((l) => l !== null) };
 }
