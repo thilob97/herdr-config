@@ -8,7 +8,7 @@
 
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea } from "gpui-base";
-import { exec, theme, props, closeOverlay, openOverlay, nextCommand, appHome, settings } from "herdr";
+import { exec, theme, props, closeOverlay, openOverlay, appHome, settings } from "herdr";
 import * as ui from "./ui.js";
 import { T_XS, T_S, T_M, T_L, T_XL, usd } from "./ui.js";
 
@@ -19,6 +19,15 @@ const PROGRAMS = [
   { key: "codex", name: "Codex" },
   { key: "pi", name: "Pi" },
 ];
+// Spiegel von HARNESS_KEYS in mods/orchestra/bin/hub; `hub agent list/show --json`
+// liefert dieselbe Liste je Agent als `harness_keys`. Nur diese Felder wirken.
+const HARNESS_KEYS = {
+  omp: ["model", "smol", "slow", "models", "approval_mode", "max_cost", "no_lsp"],
+  claude: ["model", "approval_mode"],
+  codex: ["model"],
+  pi: ["model"],
+};
+const harnessKeysOf = (agent, program) => HARNESS_KEYS[program ?? agent?.program] ?? agent?.harness_keys ?? ["model"];
 const COLORS = ["c1", "c2", "c3", "c4", "c5", "c6"];
 // omp's approval modes; "" leaves the program's own default in place.
 const APPROVALS = [
@@ -122,17 +131,6 @@ export default class Teams extends View {
 
     this.load(cx);
     cx.timer.every(REFRESH, (cx) => { if (this.mode === "list" && !this.busy && !this.loading) this.load(cx); });
-    // The bar's "Team-Hub" opens and closes the window with mod.open (⌘⌥9); while it is
-// loaded, `teams.panel` does the same.
-    cx.spawn(async () => {
-      for (;;) {
-        const c = await nextCommand();
-        if (c !== "panel" && c !== "toggle") continue;
-        const overlay = props()?.overlay;
-        if (overlay) closeOverlay(overlay);
-        else openOverlay({ mod: "teams", kind: "window", key: "teams", width: 980, height: 680 });
-      }
-    });
   }
 
   // ---- data ---------------------------------------------------------------
@@ -341,8 +339,8 @@ export default class Teams extends View {
       f.noLsp ? "--no-lsp" : "--lsp", f.push ? "--push" : "--no-push",
       f.deleteBranches ? "--delete-branches" : "--no-delete-branches",
       "--color", f.color);
-    const cost = this.fMaxCost.value().trim();
-    if (cost) args.push("--max-cost", cost);
+    // Always sent: "" removes a limit the previous program had set.
+    args.push("--max-cost", this.fMaxCost.value().trim());
     const prompt = this.fPromptPath.value().trim();
     if (prompt) args.push("--prompt-file", prompt);
     return args;
@@ -422,7 +420,7 @@ export default class Teams extends View {
 
   startOrder(agent) {
     openOverlay({
-      mod: "launcher", kind: "dialog", width: 860, height: 680,
+      mod: "launcher", kind: "dialog", width: 680, height: 520,
       props: { mode: "team", ticket: { title: `Auftrag an ${agent.name}`, repo: agent.repo || "", team: this.orderText(agent) } },
     });
   }
@@ -506,6 +504,8 @@ export default class Teams extends View {
   formView(t, cx) {
     const f = this.form;
     const editing = Boolean(f.editing);
+    const keys = harnessKeysOf(this.agentOf(f.editing), f.program);
+    const has = (key) => keys.includes(key);
     const pick = (key, value) => { f[key] = value; cx.notify(); };
     return v_flex().id("tm-form").gap(ui.GAP_M).p(ui.INSET_PANEL)
       .child(h_flex().gap(ui.GAP_M).items_center()
@@ -529,17 +529,19 @@ export default class Teams extends View {
         .child(ui.segment(t, "tm-f-program", PROGRAMS.map((p) => ({ value: p.key, label: p.name, tip: p.key })),
           f.program, (value, cx) => pick("program", value))))
       .child(this.field(t, "tm-f-model", "Modell (optional)", this.fModel))
-      .child(h_flex().gap(ui.GAP_M).items_start()
-        .child(v_flex().flex_1().min_w(0).child(this.field(t, "tm-f-smol", "Kleines Modell (--smol)", this.fSmol)))
-        .child(v_flex().flex_1().min_w(0).child(this.field(t, "tm-f-slow", "Großes Modell (--slow)", this.fSlow))))
-      .child(h_flex().gap(ui.GAP_M).items_start()
-        .child(v_flex().flex_1().min_w(0).child(this.field(t, "tm-f-max-cost", "Kostenlimit USD (> 0)", this.fMaxCost)))
-        .child(v_flex().flex_1().min_w(0).child(this.field(t, "tm-f-models", "Models für Ctrl+P, kommagetrennt", this.fModels))))
-      .child(v_flex().gap(ui.GAP_XS)
+      // Nur Felder, die das gewählte Programm liest (HARNESS_KEYS); der Rest bleibt in
+      // den Eingaben erhalten, wird aber beim Speichern weiter mitgeschickt.
+      .when(has("smol") || has("slow"), (el) => el.child(h_flex().gap(ui.GAP_M).items_start()
+        .when(has("smol"), (x) => x.child(v_flex().flex_1().min_w(0).child(this.field(t, "tm-f-smol", "Kleines Modell (--smol)", this.fSmol))))
+        .when(has("slow"), (x) => x.child(v_flex().flex_1().min_w(0).child(this.field(t, "tm-f-slow", "Großes Modell (--slow)", this.fSlow))))))
+      .when(has("max_cost") || has("models"), (el) => el.child(h_flex().gap(ui.GAP_M).items_start()
+        .when(has("max_cost"), (x) => x.child(v_flex().flex_1().min_w(0).child(this.field(t, "tm-f-max-cost", "Kostenlimit USD (> 0)", this.fMaxCost))))
+        .when(has("models"), (x) => x.child(v_flex().flex_1().min_w(0).child(this.field(t, "tm-f-models", "Modelle für Ctrl+P, kommagetrennt", this.fModels))))))
+      .when(has("approval_mode"), (el) => el.child(v_flex().gap(ui.GAP_XS)
         .child(div().text_size(T_S).font_medium().text_color(t.muted).child("Approval-Modus"))
-        .child(ui.segment(t, "tm-f-approval", APPROVALS, f.approvalMode, (value, cx) => pick("approvalMode", value))))
-      .child(this.switchField(t, "tm-f-lsp", "LSP", !f.noLsp, (on, cx) => pick("noLsp", !on),
-        { on: "an", off: "aus", tip: "Aus = --no-lsp (keine LSP-Tools, Formatierung, Diagnostik)" }))
+        .child(ui.segment(t, "tm-f-approval", APPROVALS, f.approvalMode, (value, cx) => pick("approvalMode", value)))))
+      .when(has("no_lsp"), (el) => el.child(this.switchField(t, "tm-f-lsp", "LSP", !f.noLsp, (on, cx) => pick("noLsp", !on),
+        { on: "an", off: "aus", tip: "Aus = --no-lsp (keine LSP-Tools, Formatierung, Diagnostik)" })))
 
       // Prompt
       .child(ui.sectionHeader(t, "Prompt", { tip: "Die Datei wird beim Dispatch als \"## Deine Rolle\" vor die Aufgabe gehängt" }))
@@ -605,10 +607,10 @@ export default class Teams extends View {
       .when(Boolean(this.error), (el) => el.child(div().text_size(T_S).text_color(t.blocked).child(this.error)));
   }
 
-  row(t, id, label, value, tip) {
+  row(t, id, label, value, tip, dim = false) {
     return h_flex().id(id).min_h(22).gap(ui.GAP_M).items_start()
       .child(div().w(96).flex_none().text_size(T_S).text_color(t.dim).child(label))
-      .child(div().flex_1().min_w(0).text_size(T_S).text_color(t.foreground).when(Boolean(tip), (el) => el.tooltip(tip)).child(value || "—"));
+      .child(div().flex_1().min_w(0).text_size(T_S).text_color(dim ? t.dim : t.foreground).when(Boolean(tip), (el) => el.tooltip(tip)).child(value || "—"));
   }
 
   detailView(t, agent, cx) {
@@ -619,6 +621,8 @@ export default class Teams extends View {
     const memNote = this.memoryNote?.name === agent.name ? this.memoryNote : null;
     const h = agent.harness ?? {};
     const perms = agent.permissions ?? {};
+    const keys = harnessKeysOf(agent);
+    const inert = (key) => !keys.includes(key);
     return v_flex().id("tm-detail").gap(ui.GAP_M)
       .child(h_flex().gap(ui.GAP_M).items_center()
         .child(this.avatar(t, agent, 34))
@@ -633,10 +637,14 @@ export default class Teams extends View {
       .child(ui.card(t, "tm-detail-card").gap(ui.GAP_S)
         .child(this.row(t, "tm-d-repo", "Repo", agent.repo, agent.repo))
         .child(this.row(t, "tm-d-branch", "Branch-Präfix", agent.branch_prefix || "feat/"))
-        .child(this.row(t, "tm-d-approval", "Approval", h.approval_mode || "Standard"))
-        .child(this.row(t, "tm-d-cost", "Kostenlimit", h.max_cost ? usd(h.max_cost) : ""))
-        .child(this.row(t, "tm-d-models", "Models", (h.models ?? []).join(", ")))
-        .child(this.row(t, "tm-d-lsp", "LSP", h.no_lsp ? "aus" : "an"))
+        .child(this.row(t, "tm-d-approval", "Approval", h.approval_mode || "Standard",
+          inert("approval_mode") ? "wirkt nur bei omp" : null, inert("approval_mode")))
+        .child(this.row(t, "tm-d-cost", "Kostenlimit", h.max_cost ? usd(h.max_cost) : "",
+          inert("max_cost") ? "wirkt nur bei omp" : null, inert("max_cost")))
+        .child(this.row(t, "tm-d-models", "Modelle", (h.models ?? []).join(", "),
+          inert("models") ? "wirkt nur bei omp" : null, inert("models")))
+        .child(this.row(t, "tm-d-lsp", "LSP", h.no_lsp ? "aus" : "an",
+          inert("no_lsp") ? "wirkt nur bei omp" : null, inert("no_lsp")))
         .child(this.row(t, "tm-d-prompt", "Prompt", agent.prompt))
         .child(this.row(t, "tm-d-skills", "Skills", (agent.skills ?? []).join(", ")))
         .child(this.row(t, "tm-d-mcp", "MCP", (agent.mcp ?? []).join(", ")))
@@ -690,12 +698,11 @@ export default class Teams extends View {
           })
           .child(ui.statusIcon(t, tk.status === "review" ? "blocked" : tk.status === "doing" ? "working" : "idle"))
           .child(ui.chip(t, st.label, st.color(t)))
-          .child(div().w(150).flex_none().truncate().text_size(T_XS).text_color(t.dim).child(tk.id))
-          .child(div().flex_1().min_w(0).truncate().text_size(T_S).text_color(t.foreground).child(tk.title || ""))
+          .child(div().w(150).flex_none().truncate().tooltip(tk.id).text_size(T_XS).text_color(t.dim).child(tk.id))
+          .child(div().flex_1().min_w(0).truncate().tooltip(tk.title || "").text_size(T_S).text_color(t.foreground).child(tk.title || ""))
           .when(Boolean(who), (el) => el.child(div().flex_none().max_w(130).child(who)))
           .when(tk.status === "review", (el) => el.child(div().text_size(T_XS).text_color(t.accent).child("prüfen")));
-      }))
-      .when(this.error && this.mode === "list", (el) => el.child(div().text_size(T_S).text_color(t.blocked).child(this.error)));
+      }));
   }
 
   body(t, cx) {

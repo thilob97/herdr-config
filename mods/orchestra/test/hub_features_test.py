@@ -224,6 +224,26 @@ class HubFeaturesTest(unittest.TestCase):
         self.assertNotIn("branch", meta, "sandbox=repo arbeitet ohne Worktree-Branch")
         self.assertNotIn("worktree", meta, "sandbox=repo arbeitet ohne Worktree")
 
+    def test_agent_max_cost_can_be_cleared(self):
+        r = self.hub("agent", "add", "Neo", "--program", "omp", "--max-cost", "5")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        row = json.loads(self.hub("agent", "show", "Neo", "--json").stdout)
+        self.assertEqual(row["harness"]["max_cost"], 5)
+        self.assertIn("max_cost", row["harness_keys"])
+        self.assertIn("--max-cost=5", self.hub("agent", "command", "Neo").stdout)
+
+        r = self.hub("agent", "edit", "Neo", "--max-cost", "")
+        self.assertEqual(r.returncode, 0, f"leeres --max-cost entfernt das Limit: {r.stderr}")
+        row = json.loads(self.hub("agent", "show", "Neo", "--json").stdout)
+        self.assertEqual(row["harness"]["max_cost"], 0, "0 = unbegrenzt")
+        self.assertNotIn("--max-cost", self.hub("agent", "command", "Neo").stdout)
+
+    def test_agent_harness_keys_follow_the_program(self):
+        self.assertEqual(self.hub("agent", "add", "Claude", "--program", "claude").returncode, 0)
+        row = json.loads(self.hub("agent", "list", "--json").stdout)[0]
+        self.assertEqual(row["harness_keys"], ["model", "approval_mode"])
+        self.assertNotIn("max_cost", row["harness_keys"])
+
     # ---- preflight
 
     def test_preflight_green_and_red_record_the_section(self):

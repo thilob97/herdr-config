@@ -467,11 +467,11 @@ widersprechen sich Badge und Liste nicht still. `done` färbt die Badge nur, wen
 ### 7.4 Launcher-Aufruf („Auftrag“) — B stellt bereit, A und C rufen auf
 
 ```js
-openOverlay({ mod: "launcher", kind: "dialog", width: 860, height: 680,
+openOverlay({ mod: "launcher", kind: "dialog", width: 680, height: 520,
               props: { mode: "team" | "self", ticket: { id, title, url, source, body, repo }? } })
 ```
-`run("mod.open", { name: "launcher" })` (Taste ⌘⇧N, Knopf „Auftrag“) = `mode` automatisch: „team“, wenn
-ein Orchestrator läuft, sonst „self“.
+`run("mod.open", { name: "launcher" })` (Taste ⌘⇧N, Knopf „Auftrag“) = `mode` „team“; läuft kein
+Orchestrator, bietet die Seite den Knopf „Orchestrator starten“.
 
 ### 7.5 Review-Fenster — B stellt bereit, A ruft auf
 

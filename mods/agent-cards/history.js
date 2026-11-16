@@ -2,8 +2,8 @@
 // sub-agent, another when it disappears, so a timeline still knows the run after its
 // terminal is gone. Text rules only; main.js does the app's file calls.
 
-export const HISTORY_MAX = 3000;
-export const HISTORY_KEEP = 1500;
+const HISTORY_MAX = 3000;
+const HISTORY_KEEP = 1500;
 
 // The old text plus the new lines; past HISTORY_MAX only the newest HISTORY_KEEP stay.
 export function appendHistory(text, lines, max = HISTORY_MAX, keep = HISTORY_KEEP) {
@@ -13,7 +13,7 @@ export function appendHistory(text, lines, max = HISTORY_MAX, keep = HISTORY_KEE
 }
 
 // Every sub-agent under a terminal, including the ones a sub-agent started itself.
-export function flatSubs(list, out = []) {
+function flatSubs(list, out = []) {
   for (const s of list ?? []) {
     if (s?.id) out.push(s);
     flatSubs(s?.children, out);
@@ -43,7 +43,7 @@ export function subagentEvents(seen, omp, at) {
 const keyOf = (row) => (row?.kind === "end" ? `${row.id}\u0000end` : row?.id);
 
 // The ids the file already holds; an id is written once, so a restart adds nothing.
-export function historyIds(text) {
+function historyIds(text) {
   const ids = new Set();
   for (const line of String(text ?? "").split("\n")) {
     if (!line.trim()) continue;

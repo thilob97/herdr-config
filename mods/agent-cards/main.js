@@ -55,11 +55,11 @@ const ORCH_TIP = "Orchestrator dieses Workspace";
 // mods/orchestra/ui.js (dieser Klon hat keine ui.js-Kopie).
 const isOrchestrator = (x) => x.labels?.["hub.role"] === "orchestrator"
   || x.name === "orchestrator" || String(x.name ?? "").startsWith("orchestrator-");
-function orchestration() {
-  const live = terminals().filter((x) => x.state === "live" && isOrchestrator(x));
-  const tabOf = new Map(panes().filter((p) => p.terminal).map((p) => [p.terminal, p.tab]));
+function orchestration(all, paneList, spaceList) {
+  const live = all.filter((x) => x.state === "live" && isOrchestrator(x));
+  const tabOf = new Map(paneList.filter((p) => p.terminal).map((p) => [p.terminal, p.tab]));
   const tabs = new Set(live.map((x) => tabOf.get(x.address)).filter(Boolean));
-  const spaceIds = new Set(spaces().filter((s) => (s.tabs ?? []).some((tb) => tabs.has(tb.id))).map((s) => s.id));
+  const spaceIds = new Set(spaceList.filter((s) => (s.tabs ?? []).some((tb) => tabs.has(tb.id))).map((s) => s.id));
   return { addresses: new Set(live.map((x) => x.address)), tabs, spaces: spaceIds };
 }
 
@@ -70,8 +70,6 @@ const narrow = () => (find(layout(), "sidebar")?.size?.px ?? Infinity) < 160;
 function toggleSidebar() {
   const width = find(layout(), "sidebar")?.size?.px;
   if (!narrow()) setShared("sidebar.width", width);
-  // Mods edited before the rail went by width still read the flag.
-  setShared("sidebar.collapsed", !narrow());
   run("layout.resize", { id: "sidebar", px: narrow() ? (shared("sidebar.width") ?? 268) : window()?.platform === "macos" ? 76 : 44 });
 }
 
@@ -118,13 +116,13 @@ const WORD = { working: "arbeitet", blocked: "wartet", done: "fertig", idle: "ru
 // The status mark, the same everywhere: a 12×12 box. Calm (shared "ui.calm",
 // default on) keeps the mark still; `false` brings back spinner and pulse.
 const calm = () => shared("ui.calm") ?? true;
-function statusMark(t, status) {
+function statusMark(t, status, still) {
   const box = () => div().size(12).flex_none().flex().items_center().justify_center();
-  if (status === "working") return calm()
+  if (status === "working") return still
     ? box().child(div().size(7).rounded_full().bg(t.working))
     : svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.working).spin(900);
   if (status === "blocked") {
-    return calm()
+    return still
       ? box().child(div().size(7).rounded_full().border(1.5).border_color(t.blocked))
       : box().relative()
         .child(div().absolute().inset_0().rounded_full().bg(t.blocked + "55").loop("opacity", { from: 0, to: 1, period: 900 }))
@@ -452,16 +450,16 @@ export default class Agents extends View {
 
   // The avatar tile (28): bobs while working, blinks while it needs you. A selected
   // card shows a check in its place.
-  avatar(t, a) {
+  avatar(t, a, still) {
     if (this.selected.has(a.address)) {
       return div().size(28).flex_none().flex().items_center().justify_center().rounded(6).bg(t.solid)
         .child(svg("mods/workspace-chrome/check.svg").size(14).text_color(t.solid_foreground));
     }
     const n = this.avatars[a.address]?.n ?? 0;
     const sprite = image(AVATARS[n]).w(24).h(24).absolute().left(1)
-      .when(a.status === "working" && !calm(), (el) => el.loop("top", { from: 3, to: 0, period: 700 }))
-      .when(a.status !== "working" || calm(), (el) => el.top(1))
-      .when(a.status === "blocked" && !calm(), (el) => el.loop("opacity", { from: 0.35, to: 1, period: 900 }))
+      .when(a.status === "working" && !still, (el) => el.loop("top", { from: 3, to: 0, period: 700 }))
+      .when(a.status !== "working" || still, (el) => el.top(1))
+      .when(a.status === "blocked" && !still, (el) => el.loop("opacity", { from: 0.35, to: 1, period: 900 }))
       .when(a.status === "idle" && !a.focused, (el) => el.opacity(0.6));
     return div().relative().size(28).flex_none().rounded(6).bg(t.background).border_1().border_color(t.border).overflow_hidden().child(sprite);
   }
@@ -548,7 +546,7 @@ export default class Agents extends View {
   }
 
   // A sub-agent with a terminal: a list row under its parent's card.
-  subRow(t, s, shown) {
+  subRow(t, s, shown, still) {
     const k = s.t;
     const st = kidStatus(k, this.listed);
     const pic = icon(k.program, 12, t.foreground);
@@ -569,12 +567,12 @@ export default class Agents extends View {
       .when(Boolean(pic), (el) => el.child(div().mr(GAP_S).child(pic)))
       .child(div().flex_1().min_w(0).truncate().text_color(on ? t.foreground : t.muted).child(k.name || k.template || k.program?.name || k.address))
       .when(st === "blocked", (el) => el.child(div().mr(GAP_S).child(statusChip(t, "blocked"))))
-      .child(statusMark(t, st));
+      .child(statusMark(t, st, still));
   }
 
   // A subagent omp's task tool started: no terminal of its own, so nothing to open;
   // its task shows on hover. A failed one says so in words.
-  ompSubRow(t, a, s) {
+  ompSubRow(t, a, s, still) {
     const st = SUB_STATUS[s.status] ?? "idle";
     const failed = { failed: "fehlgeschlagen", cancelled: "abgebrochen", aborted: "abgebrochen" }[s.status];
     return h_flex()
@@ -591,7 +589,7 @@ export default class Agents extends View {
       .children(this.lines(t, ["└"]))
       .child(div().flex_none().mr(GAP_S).px(GAP_XS).h(H_CHIP).rounded(4).bg(t.raised).text_size(T_XS).text_color(t.dim).flex().items_center().child(s.agent))
       .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(s.id))
-      .child(failed ? statusChip(t, "blocked", failed) : statusMark(t, st));
+      .child(failed ? statusChip(t, "blocked", failed) : statusMark(t, st, still));
   }
 
   // How many omp subagents the cap left out.
@@ -678,7 +676,7 @@ export default class Agents extends View {
   // Under the list while cards are selected: what to do with all of them.
   // One 22-px line of actions with their tooltips, the message in the second
   // (docs/ui/review.md A3): the list keeps its height.
-  selectionBar(t) {
+  selectionBar(t, still) {
     const n = this.selected.size;
     const ready = Boolean(this.message.value().trim()) && !this.busy;
     const check = div().size(14).flex_none().flex().items_center().justify_center().rounded(4).border_1()
@@ -690,7 +688,7 @@ export default class Agents extends View {
         .child(div().id("ag-sel-clear").flex_none().text_color(t.dim).cursor_pointer().hover((s) => s.text_color(t.foreground))
           .on_click((_e, cx) => { this.selected.clear(); this.note = null; cx.notify(); }).child("aufheben"))
         .when(this.busy, (el) => el.child(h_flex().pl(GAP_S).flex_1().min_w(0).gap(GAP_XS).items_center().text_size(T_XS).text_color(t.dim)
-          .child(calm() ? div().size(12).flex_none().flex().items_center().justify_center().child("…")
+          .child(still ? div().size(12).flex_none().flex().items_center().justify_center().child("…")
             : svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.dim).spin(900)).child("läuft …")))
         .when(!this.busy && Boolean(this.note), (el) => el.child(div().pl(GAP_S).flex_1().min_w(0).truncate().text_size(T_XS)
           .text_color(this.note.ok ? t.muted : t.blocked).child(this.note.text)))
@@ -756,8 +754,12 @@ export default class Agents extends View {
     this.applyRename();
     this.publishIdentity(list);
     for (const address of this.selected) if (!this.listed.has(address)) this.selected.delete(address);
+    // One host snapshot per render: orchestration, trees, labels and marks all read it.
     const all = terminals();
-    const orch = orchestration();
+    const paneList = panes();
+    const spaceList = spaces();
+    const still = calm();
+    const orch = orchestration(all, paneList, spaceList);
     this.migratePins(all);
     const shown = focused()?.agent;
     const now = Date.now();
@@ -786,8 +788,8 @@ export default class Agents extends View {
       const shownInner = shownSubs(inner);
       return [
         r,
-        ...subs.map((s) => this.subRow(t, s, shown)),
-        ...shownInner.map((s) => this.ompSubRow(t, a, s)),
+        ...subs.map((s) => this.subRow(t, s, shown, still)),
+        ...shownInner.map((s) => this.ompSubRow(t, a, s, still)),
         ...(inner.length > shownInner.length ? [this.ompMoreRow(t, a, inner.length - shownInner.length)] : []),
       ];
     };
@@ -823,8 +825,8 @@ export default class Agents extends View {
     // The second line says which tab: one someone named or the agent's own title,
     // never an automatic tab number unless two cards would otherwise read the same.
     // Read the pane snapshot once: every host read copies the whole list into JS.
-    const leads = leadPanes(panes());
-    const tabs = new Map(spaces().flatMap(s => s.tabs).map(tab => [tab.id, tab]));
+    const leads = leadPanes(paneList);
+    const tabs = new Map(spaceList.flatMap(s => s.tabs).map(tab => [tab.id, tab]));
     const labels = new Map(list.map(a => {
       const tab = tabs.get(a.tab);
       const many = tabCounts.get(a.tab) > 1;
@@ -858,7 +860,7 @@ export default class Agents extends View {
           .child(image(AVATARS[n]).w(16).h(16).flex_none())
           .child(isOrch
             ? svg(ORCH_ICON).size(12).flex_none().text_color(t.accent)
-            : h_flex().w(14).flex_none().items_center().justify_center().child(a.status === "blocked" ? this.bang(t) : statusMark(t, a.status)));
+            : h_flex().w(14).flex_none().items_center().justify_center().child(a.status === "blocked" ? this.bang(t) : statusMark(t, a.status, still)));
       }
       const pic = isOrch ? div().flex_none().tooltip(ORCH_TIP).child(svg(ORCH_ICON).size(16).flex_none().text_color(t.accent)) : icon(a.program, 16, t.foreground);
       // An agent on another machine (`vps/t7`) says which.
@@ -928,20 +930,21 @@ export default class Agents extends View {
           else run("pane.focus", { pane: a.pane });
         })
         .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.openMore(a); })
-        .child(this.avatar(t, a))
+        .child(this.avatar(t, a, still))
         .child(v_flex().flex_1().min_w(0).gap(3)
           .child(h_flex().h(16).gap(GAP_S).items_center()
             .when(Boolean(pic), (el) => el.child(pic))
             .child(div().flex_none().max_w(120).truncate().tooltip(name).text_size(T_L).font_semibold().text_color(idle ? t.muted : t.foreground).child(name))
             .when(isOrch, (el) => el.child(div().h(14).px(4).flex_none().flex().items_center().rounded(4).bg(t.chrome)
               .border_1().border_color(t.accent).text_size(T_XS).font_medium().text_color(t.accent).tooltip(ORCH_TIP).child("Orchestrator")))
-            .child(div().flex_1().min_w(0).truncate().text_size(T_S).text_color(t.dim).child(where))
+            .child(div().flex_1().min_w(0).truncate().tooltip(where).text_size(T_S).text_color(t.dim).child(where))
             // Hovered, the buttons take the place of the status (a spinning mark would paint over them).
             .when(sayWaiting && !hovered, (el) => el.child(statusChip(t, "blocked")))
-            .child(hovered ? div().size(12).flex_none() : statusMark(t, a.status)))
+            .child(hovered ? div().size(12).flex_none() : statusMark(t, a.status, still)))
           .child(h_flex().h(14).gap(GAP_S).items_center()
             .when(kidWorking, (el) => el.child(div().flex_1().min_w(0).truncate().tooltip(tab).text_size(T_XS).text_color(t.muted).child("Sub-Agent arbeitet")))
-            .when(!kidWorking, (el) => el.child(div().flex_1().min_w(0).truncate().text_size(T_S).text_color(t.muted).child(tab || WORD[a.status] || "")))
+            .when(!kidWorking, (el) => el.child(div().flex_1().min_w(0).truncate().tooltip(tab || WORD[a.status] || "")
+              .text_size(T_S).text_color(t.muted).child(tab || WORD[a.status] || "")))
             .when(subs.length + inner.length > 0, (el) => el.child(fold(a, subs, inner)))
             .when(Boolean(when), (el) => el.child(div().flex_none().text_size(T_XS).text_color(t.dim).child(duration(now - when)))))
           .when(facts.length > 0, (el) => el.child(h_flex().id(`omp-${a.address}`).gap(GAP_S).items_center().tooltip(about)
@@ -986,7 +989,7 @@ export default class Agents extends View {
         .child(div().text_color(t.dim).child(String(g.members.length)))
         .child(div().flex_1())
         .when(!open, (el) => el
-          .when(!byPriority && Boolean(top) && top !== "idle", (el) => el.child(statusMark(t, top)))
+          .when(!byPriority && Boolean(top) && top !== "idle", (el) => el.child(statusMark(t, top, still)))
           .child(svg("mods/workspace-chrome/chevron-right.svg").size(12).flex_none().text_color(t.dim)));
     };
     const rows = collapsed
@@ -1012,10 +1015,12 @@ export default class Agents extends View {
         .child(div().flex_1())
         .child(iconBtn(t, "ag-sort", `mods/workspace-chrome/${sort.icon}.svg`, `Sortierung: ${sort.label}`,
           () => openOverlay({ mod: "agent-cards", kind: "popup", width: 210, height: 3 * (H_ROW + 2) + 2 * GAP_XS, props: { sortMenu: true } })))))
-      .when(list.length === 0 && !collapsed, (el) => el.child(div().px(16).py(GAP_S).text_size(T_S).text_color(t.dim)
-        .child("Noch keine Agents. Sie erscheinen hier, sobald sie ihren Status melden (ältere Versionen und Agents in tmux evtl. nicht).")))
+      .when(list.length === 0 && !collapsed, (el) => el.child(v_flex().px(16).py(GAP_S).gap(GAP_S).items_start()
+        .child(div().text_size(T_S).text_color(t.dim)
+          .child("Noch keine Agents. Sie erscheinen hier, sobald sie ihren Status melden (ältere Versionen und Agents in tmux evtl. nicht)."))
+        .child(textBtn(t, "ag-order", "Auftrag", { primary: true }, () => run("mod.open", { name: "launcher" })))))
       .child(v_flex().id("ag-list").flex_1().min_h(0).px(collapsed ? 0 : GAP_M).overflow_y_scrollbar().mode("always").children(rows))
-      .when(!collapsed && this.selected.size > 0, (el) => el.child(this.selectionBar(t)))
+      .when(!collapsed && this.selected.size > 0, (el) => el.child(this.selectionBar(t, still)))
       .when(collapsed, (el) => el.child(h_flex().h(H_ROW).items_center().justify_center()
         .child(div().id("collapse").text_size(T_L).text_color(t.dim).cursor_pointer().tooltip("Sidebar aufklappen")
           .hover((s) => s.text_color(t.foreground)).on_click(toggleSidebar).child("»"))));

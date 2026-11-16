@@ -38,7 +38,7 @@ function until(ms) {
 }
 
 // Ist im Workspace ein Orchestrator live? Label oder Name, siehe `ui.isOrchestrator`.
-const orchestratorHere = (id) => !id || terminals().some((x) => x.state === "live"
+const orchestratorHere = (id, terminalList) => !id || terminalList.some((x) => x.state === "live"
   && (x.labels?.["hub.space"] === id || x.labels?.["herdr.space"] === id)
   && isOrchestrator(x));
 
@@ -46,7 +46,7 @@ const orchestratorHere = (id) => !id || terminals().some((x) => x.state === "liv
 // tickets plus its orchestrator. `total` counts the whole home, for the tooltip. The
 // orchestrator's money is kept per space (costs.json `orchestrators`, as mods/orchestra/
 // costs.js writes it); an older file has only one number, which belongs to this space.
-function teamBudget() {
+function teamBudget(terminalList) {
   const c = shared("orchestra.costs");
   if (!c) return null;
   const budget = { team: 20, ...(shared("orchestra.budget") ?? {}) }.team ?? c.teamBudget;
@@ -56,7 +56,7 @@ function teamBudget() {
   const tks = teamTickets();
   const cost = !sp ? c.teamCost ?? 0
     : tks.filter((t) => t.status !== "done" && inScope(t, tks))
-      .reduce((n, t) => n + (c.tickets?.[t.id] ?? 0), 0) + (orchestratorHere(sp.id) ? own : 0);
+      .reduce((n, t) => n + (c.tickets?.[t.id] ?? 0), 0) + (orchestratorHere(sp.id, terminalList) ? own : 0);
   return { cost, total: c.teamCost ?? 0, budget, over: budget != null && cost > budget };
 }
 
@@ -69,6 +69,8 @@ export default class StatusBar extends View {
     this.data = { limits: {}, costs: {} }; // kind → machine key ("" here) → { at, value, error }
     this.sessions = null;                  // { at, list, errors }
     this.busy = new Set();
+    this.cardOpen = false;                 // the hover card is built only while it is open
+    this.cardHide = 0;                     // hides a pending close after leaving trigger and card
     this.py = {};                          // machine key → promise of "python3" | "python"
     this.src = {};                         // helper path → promise of its text, for other machines
     cx.timer.every(30 * 1000, (cx) => { this.refresh("limits", EVERY.limits, cx); this.refresh("costs", EVERY.costs, cx); });
@@ -95,11 +97,11 @@ export default class StatusBar extends View {
   // Watched teams (shared "orchestra.groups", from the launcher or the Team panel):
   // once a member has worked, the team is finished when none works or waits any
   // more (ended members count as finished). Says so once per round of work.
-  watchTeams() {
+  watchTeams(agentList, terminalList) {
     const groups = shared("orchestra.groups") ?? [];
     if (!groups.length) return;
-    const live = new Map(terminals().filter((x) => x.state === "live").map((x) => [x.address, x.status]));
-    const app = new Map(agents().map((a) => [a.address, a.status]));
+    const live = new Map(terminalList.filter((x) => x.state === "live").map((x) => [x.address, x.status]));
+    const app = new Map(agentList.map((a) => [a.address, a.status]));
     let changed = false;
     const next = groups.map((g) => {
       if (!g.watch) return g;
@@ -164,7 +166,7 @@ export default class StatusBar extends View {
     if (on) {
       this.src[path] ??= readTextFile(path).catch(() => null);
       const src = await this.src[path];
-      if (!src) throw new Error(`can't read ${path}`);
+      if (!src) throw new Error(`${path} nicht lesbar`);
       argv = ["-c", src, ...args];
     }
     const r = await exec(await this.py[key], argv, { on, timeout });
@@ -216,6 +218,23 @@ export default class StatusBar extends View {
     this.refresh("limits", STALE, cx);
     this.refresh("costs", STALE, cx);
     this.refreshSessions(cx);
+  }
+
+  // Builds the card only while the pointer is on its trigger or the card itself. A
+  // pending close waits longer than HoverCard's 300-ms bridge, so crossing the gap
+  // does not remove the card under the pointer.
+  hoverCard(on, cx) {
+    if (on) {
+      this.cardHide++;
+      if (!this.cardOpen) { this.cardOpen = true; cx.notify(); }
+      return;
+    }
+    const gen = ++this.cardHide;
+    cx.timer.after(400, () => {
+      if (gen !== this.cardHide || !this.cardOpen) return;
+      this.cardOpen = false;
+      cx.notify();
+    });
   }
 
   level(pct, t) {
@@ -355,11 +374,11 @@ export default class StatusBar extends View {
       .child(this.costsBlock(c, key, t));
   }
 
-  sessionsBlock(t) {
+  sessionsBlock(t, agentList) {
     const s = this.sessions;
     const v = v_flex().gap(GAP_XS).child(this.heading("Laufende omp-Agents", t));
     if (!s) return v.child(this.loading(this.busy.has("sessions"), t));
-    const byAddress = new Map(agents().map((a) => [a.address, a]));
+    const byAddress = new Map(agentList.map((a) => [a.address, a]));
     for (const x of s.list) {
       const a = byAddress.get(x.address);
       v.child(h_flex().gap(GAP_M).items_center()
@@ -375,7 +394,7 @@ export default class StatusBar extends View {
     return v;
   }
 
-  card(t) {
+  card(t, agentList) {
     const list = this.machines();
     const latest = Math.max(0, ...Object.values(this.data.limits).map((s) => s.at), ...Object.values(this.data.costs).map((s) => s.at));
     const rule = () => div().h(1).flex_none().bg(t.border);
@@ -387,7 +406,7 @@ export default class StatusBar extends View {
       .child(rule())
       .child(h_flex().gap(20).items_start().children(list.map((on) => this.machineColumn(on, t))))
       .child(rule())
-      .child(this.sessionsBlock(t).w(COL_W * list.length + 20 * (list.length - 1)))
+      .child(this.sessionsBlock(t, agentList).w(COL_W * list.length + 20 * (list.length - 1)))
       .child(div().text_size(T_XS).text_color(t.dim)
         .child("Limits alle 5 min, Kosten alle 2 min · omp usage, ~/.omp/stats.db · Tage nach Ortszeit"));
   }
@@ -397,8 +416,11 @@ export default class StatusBar extends View {
     // A machine not read yet (start, or one that just came online) is read now.
     for (const kind of ["limits", "costs"]) this.refresh(kind, EVERY[kind], cx);
     const space = spaces().find(s => s.active);
-    this.trackSince(agents());
-    this.watchTeams();
+    // One host snapshot per render: watch, team budget and the open card all read it.
+    const agentList = agents();
+    const terminalList = terminals();
+    this.trackSince(agentList);
+    this.watchTeams(agentList, terminalList);
     const label = (icon, text) => h_flex().gap(GAP_S).items_center().min_w(0)
       .child(svg(`mods/workspace-chrome/${icon}.svg`).size(14).flex_none()).child(div().truncate().child(text));
     const where = space?.machine ?? HERE;
@@ -406,7 +428,7 @@ export default class StatusBar extends View {
     const cost = this.costToday();
     const chips = this.chips();
     const costText = `${dollars(cost)} heute`;
-    const team = teamBudget();
+    const team = teamBudget(terminalList);
     const teamText = team ? `Team ${dollars(team.cost)} / ${dollars(team.budget)}` : "";
     // Left side + team chip + cost + hint + paddings and gaps, estimated as in fit() (11px mono ≈ 6.6px).
     const used = 6.6 * (where.length + (space?.branch?.length ?? 0) + costText.length + `${hint.key ?? ""} ${hint.text}`.length + "Dashboard".length) + 6.3 * teamText.length
@@ -414,7 +436,7 @@ export default class StatusBar extends View {
     const n = this.fit(chips, used);
     const anyLimits = Object.values(this.data.limits).some((s) => s.value);
     const trigger = h_flex().id("costs-limits").gap(GAP_S).items_center().flex_none()
-      .on_hover((on, cx) => { if (on) this.opened(cx); })
+      .on_hover((on, cx) => { if (on) this.opened(cx); this.hoverCard(on, cx); })
       .children(chips.slice(0, n).map((c) => this.chip(c, t)))
       .when(n < chips.length, (e) => e.child(div().text_size(T_XS).text_color(t.dim).child(`+${chips.length - n}`)))
       .when(!anyLimits, (e) => e.child(div().text_color(t.dim).child("Limits —")))
@@ -430,7 +452,7 @@ export default class StatusBar extends View {
       .child(div().flex_1())
       .child(HoverCard.new("costs-limits-card").anchor("bottom_right").open_delay(250).close_delay(300)
         .trigger(trigger)
-        .content(this.card(t)))
+        .when(this.cardOpen, el => el.content(this.card(t, agentList).on_hover((on, cx) => this.hoverCard(on, cx)))))
       // Team spend against its budget; changing the budget stays in the Team panel.
       .when(Boolean(team), el => el.child(this.pill("team-budget", t)
         .cursor_pointer().bg(team.over ? t.blocked + "26" : t.raised).text_color(team.over ? t.blocked : t.muted)

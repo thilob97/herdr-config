@@ -31,8 +31,6 @@ const narrow = () => (find(layout(), "sidebar")?.size?.px ?? Infinity) < 160;
 function toggleSidebar() {
   const width = find(layout(), "sidebar")?.size?.px;
   if (!narrow()) setShared("sidebar.width", width);
-  // Mods edited before the rail went by width still read the flag.
-  setShared("sidebar.collapsed", !narrow());
   run("layout.resize", { id: "sidebar", px: narrow() ? (shared("sidebar.width") ?? 268) : window()?.platform === "macos" ? 76 : 44 });
 }
 
