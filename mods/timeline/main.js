@@ -1,23 +1,26 @@
-// Timeline: die Zeitachse der Arbeit. Zeilen sind Lanes aus `hub timeline --json`
-// (Orchestrator oben, Agents nach Start, Sub-Agents eingerückt unter ihrem Eltern-Agenten),
-// Balken laufen von `start` bis `end` (live bis jetzt, mit pulsierendem Rand) und tragen
-// Statusfarbe und `Identität · Ticket-Kurz-ID`; rechts steht die Dauer. Ereignisse
-// (Dispatch, Prüfung, Urteil, CI, Landen) sitzen als Symbole auf der Zeile ihres Tickets
-// bzw. des Orchestrators; die Legende unter der Zeitleiste nennt Symbol und Wort, der
-// Marker-Tooltip erklärt die Art zusätzlich. Oben Stundenraster und „jetzt"-Linie,
-// Umschalter 1 h · 24 h · 7 Tage · Alles und Alle · Ticket; der Ticket-Chip in der Kopfzeile
-// wählt das Ticket (vorbelegt durch props.ticket). Klick auf einen Balken öffnet das Terminal, auf einen
-// Ticket-Marker das Review-Fenster im Ticket-Modus.
+// Timeline: die Zeitachse der Arbeit in zwei Ansichten. **Balken** (Standard) zeigt
+// Lanes aus `hub timeline --json` als Gantt-Achse: Orchestrator oben, Agents nach
+// Start, Sub-Agents eingerückt unter ihrem Eltern-Agenten; Balken laufen von `start`
+// bis `end` (live bis jetzt) mit Statusfarbe und Dauer, Ereignisse (Dispatch, Prüfung,
+// Urteil, CI, Landen) sitzen als Marker auf der Zeile. **Graph** zeigt denselben Flow
+// von oben nach unten wie der Fabrik-Graph (`mods/graph`): Orchestrator als Wurzel,
+// Agents in Spalten, Sub-Agents jeder Ebene eingerückt unter ihrem Parent, dazu
+// Ticket-Chips mit Triage-Maß und gestrichelte Rückläufer-Kanten nach einem
+// `fail`-Urteil. Beide Ansichten teilen Zeitfenster (1 h · 24 h · 7 Tage · Alles),
+// den Ticket-Filter und den Ticket-Chip in der Kopfzeile; `timeline.view` merkt die
+// Wahl. Klick auf eine Karte/einen Balken öffnet das Terminal, auf einen Ticket-Chip
+// oder -Marker das Review-Fenster.
 //
 // Daten: `hub timeline --json` alle 15 s; fehlt der Befehl (die Datenquelle entsteht
 // parallel), steht ein ruhiger Hinweis statt eines Absturzes. Live-Balken wachsen
 // sekündlich aus `now` + lokaler Zeit weiter, ohne neu zu lesen.
 // Timeline ist ein Popup: `mod.open:timeline` (mod.json overlay), kein Panel-Kommando.
-import { View, div, svg } from "gpui-kit";
+import { View, div, svg, image, PathBuilder } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
-import { exec, appHome, shared, setShared, theme, run, openOverlay, closeOverlay, props, settings } from "herdr";
+import { exec, appHome, shared, setShared, theme, run, openOverlay, closeOverlay, props, settings, terminals, updates, nextCommand } from "herdr";
 import * as ui from "./ui.js";
 import { T_XS, T_S, GAP_XS, GAP_S, GAP_M, INSET_PANEL, H_CHIP, H_ROW } from "./ui.js";
+import { layoutGraph } from "./graph.js";
 
 const HUB = () => `${appHome()}/mods/orchestra/bin/hub`;
 const REFRESH = 15000;
@@ -35,6 +38,12 @@ const SCOPES = [
   { value: "all", label: "Alle", tip: "alle Lanes im Zeitraum" },
   { value: "ticket", label: "Ticket", tip: "nur Lanes eines Tickets (Chip in der Kopfzeile)" },
 ];
+const VIEWS = [
+  { value: "bars", label: "Balken", tip: "Gantt-Achse: je Lane ein Balken von Start bis Ende" },
+  { value: "graph", label: "Graph", tip: "Flow von oben nach unten: Orchestrator, Agents, Sub-Agents, Rückläufer" },
+];
+// Eine Farbe je Agent, stabil über den Lauf: der Avatar trägt sie am Rand.
+const COLORS = (t) => [t.accent, t.ansi2, t.ansi5, t.ansi3, t.ansi6, t.ansi4, t.ansi1, t.ansi12, t.ansi10, t.ansi13];
 const STATUS = { working: "arbeitet", blocked: "wartet", done: "fertig", idle: "ruhig" };
 const statusColor = (t, st) => (st === "working" ? t.working : st === "blocked" ? t.blocked : st === "done" ? t.done : t.idle);
 // Die Ereignisarten in einer Sprache: Wort, Farbe, Erklärung. Marker-Tooltip und die
@@ -58,6 +67,19 @@ const shortAge = (ms) => {
   return s < 60 ? `${s} s` : s < 3600 ? `${Math.round(s / 60)} min` : `${Math.floor(s / 3600)} h`;
 };
 const lastLine = (r) => (r.stderr || r.stdout || `Exit ${r.code}`).trim().split("\n").pop().slice(0, 240);
+
+// Herdr ab 0.1.12 zoomt `paint_path` selbst (wie `git-graph`: `pathScale()`
+// liefert dann 1); davor lagen die Linien in Layout-Einheiten und brauchten den
+// Zoom. Ohne diese Unterscheidung laufen Kanten 20 % neben den Karten.
+let listsZoom;
+const pathScale = () => listsZoom ??= (() => {
+  try {
+    const v = updates()?.app?.version;
+    if (!v) return Number(settings().zoom) > 0 ? Number(settings().zoom) : 1;
+    const [a, b, c] = String(v).split(".").map(Number);
+    return a > 0 || b > 1 || (b === 1 && c >= 12) ? 1 : (Number(settings().zoom) > 0 ? Number(settings().zoom) : 1);
+  } catch { return 1; }
+})();
 
 // ---- Zeit ----------------------------------------------------------------
 
@@ -112,6 +134,8 @@ const normEvent = (e) => ({
 const normSub = (s) => ({
   id: s?.id ?? s?.title ?? "",
   title: String(s?.title ?? s?.id ?? "Sub-Agent"),
+  // Parent-Sub-Agent für mehrstufige Bäume; fehlt er, hängt der Sub am Lane-Parent.
+  parent: s?.parent != null && s.parent !== "" ? String(s.parent) : null,
   started: sec(s?.started) ?? sec(s?.start),
   ended: sec(s?.ended) ?? sec(s?.end),
 });
@@ -167,6 +191,9 @@ export default class Timeline extends View {
     this.reading = false;
     this.zoom = ZOOMS.some((z) => z.value === localStorage.getItem("timeline.zoom"))
       ? localStorage.getItem("timeline.zoom") : "auto";
+    this.view = VIEWS.some((v) => v.value === localStorage.getItem("timeline.view"))
+      ? localStorage.getItem("timeline.view") : "bars";
+    this.hover = null;
     this.ticket = p.ticket ? String(p.ticket) : null;
     this.scope = this.ticket ? "ticket" : "all";
     this.space = ui.activeSpace()?.id ?? "";
@@ -175,6 +202,15 @@ export default class Timeline extends View {
     this.scroll = ScrollHandle.new();
     this.read(cx);
     cx.timer.every(REFRESH, (cx) => this.read(cx));
+    // Die Ansicht ist auch als Kommando erreichbar (`timeline.view-graph`), für
+    // keys.json und das Testfenster — wie die Filter des Fabrik-Graphs.
+    cx.spawn(async (cx) => {
+      for (;;) {
+        const c = await nextCommand();
+        const v = /^(?:timeline\.)?view-(bars|graph)$/.exec(c);
+        if (v) { this.view = v[1]; this.hover = null; localStorage.setItem("timeline.view", v[1]); cx.notify(); }
+      }
+    });
     // Live: der Balken wächst sekündlich weiter; ein fremder Ticket-Klick kommt über shared.
     cx.timer.every(1000, (cx) => {
       const s = shared("timeline.ticket") ?? null;
@@ -320,13 +356,20 @@ export default class Timeline extends View {
     return by;
   }
 
+  /** Die Tickets dieses Workspace, gescopt wie die Panels (`ui.inScope`): die
+   *  Zeile trägt Triage-Größe und `status_log` für die Rückläufer-Runden. */
+  ticketRows() {
+    const all = shared("orchestra.tickets") ?? [];
+    return all.filter((tk) => tk?.id && ui.inScope(tk, all));
+  }
+
   tickets() {
+    const rows = this.ticketRows();
+    const byId = new Map(rows.map((tk) => [tk.id, tk]));
     const ids = new Set();
     for (const l of this.lanes()) if (l.ticket) ids.add(l.ticket);
     for (const e of this.data?.events ?? []) if (e.ticket) ids.add(e.ticket);
-    const all = shared("orchestra.tickets") ?? [];
-    const title = (id) => all.find((x) => x.id === id)?.title ?? "";
-    return [...ids].sort().map((id) => ({ id, title: title(id) }));
+    return [...ids].sort().map((id) => byId.get(id) ?? { id, title: "" });
   }
 
   // ---------- Achse ----------
@@ -421,7 +464,9 @@ export default class Timeline extends View {
 
   openReview(id) {
     if (!id) return;
-    openOverlay({ mod: "review", kind: "window", key: "review", width: 960, height: 680, props: { ticket: id } });
+    const tk = this.ticketRows().find((x) => x.id === id);
+    openOverlay({ mod: "review", kind: "window", key: "review", width: 960, height: 680,
+      props: { ticket: id, terminal: tk?.terminal || null, folder: tk?.worktree || tk?.repo, on: tk?.machine || null } });
   }
 
   openTicketMenu() {
@@ -608,6 +653,156 @@ export default class Timeline extends View {
     return null;
   }
 
+  // ---------- Graph ----------
+
+  /** Orthogonaler Kantenzug mit gerundeten Ecken; Koordinaten wie in `git-graph`
+   *  mit dem Zoom multipliziert, weil `paint_path` nicht mitzoomt. */
+  polyline(p, points, z) {
+    const pts = points.map(([x, y]) => [x * z, y * z]);
+    if (!pts.length) return p;
+    p = p.move_to(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length - 1; i++) {
+      const [px, py] = pts[i - 1], [cx, cy] = pts[i], [nx, ny] = pts[i + 1];
+      const d1 = Math.hypot(cx - px, cy - py) || 1, d2 = Math.hypot(nx - cx, ny - cy) || 1;
+      const r = Math.min(6 * z, d1 / 2, d2 / 2);
+      const ax = cx + (px - cx) / d1 * r, ay = cy + (py - cy) / d1 * r;
+      const bx = cx + (nx - cx) / d2 * r, by = cy + (ny - cy) / d2 * r;
+      p = p.line_to(ax, ay)
+        .cubic_bezier_to(bx, by, ax + (cx - ax) * 0.55, ay + (cy - ay) * 0.55, bx + (cx - bx) * 0.55, by + (cy - by) * 0.55);
+    }
+    const last = pts[pts.length - 1];
+    return p.line_to(last[0], last[1]);
+  }
+
+  /** Nur die Pfeilspitze: sie zeigt in Richtung des letzten Segments. Für die
+   *  Rückläufer-Kante eine eigene Farbe, damit ein `pass` in der Erfolgsfarbe
+   *  endet, während die Linie gedämpft gestrichelt bleibt. */
+  arrowPath(p, points, z) {
+    if (points.length < 2) return p;
+    const [x2, y2] = points[points.length - 1];
+    const [x1, y1] = points[points.length - 2];
+    const dx = x2 - x1, dy = y2 - y1, len = Math.hypot(dx, dy) || 1;
+    const ux = dx / len, uy = dy / len, nx = -uy, ny = ux, back = 6, wing = 3.2;
+    return p.move_to((x2 - ux * back + nx * wing) * z, (y2 - uy * back + ny * wing) * z)
+      .line_to(x2 * z, y2 * z)
+      .line_to((x2 - ux * back - nx * wing) * z, (y2 - uy * back - ny * wing) * z);
+  }
+
+  avatar(t, node, color, who) {
+    const size = node.narrow ? 16 : 18;
+    if (who.named && who.avatar) {
+      return image(who.avatar).w(size).h(size).flex_none().rounded_full().border(2).border_color(color);
+    }
+    const initial = (who.name || node.label || "?").trim().slice(0, 1).toUpperCase() || "?";
+    return div().size(size).flex_none().rounded_full().border(1).border_color(color).bg(color + "26")
+      .flex().items_center().justify_center().text_size(T_XS).font_semibold().text_color(color).child(initial);
+  }
+
+  /** Kompakte Karte wie im Fabrik-Graph: Avatar, Name, Status-Chip. Der
+   *  Orchestrator ist die Wurzel mit Krone und „verteilt …“; schmale Panels
+   *  stapeln nichts, die Karte bleibt eine Zeile. */
+  card(t, node, color, crowns) {
+    const who = ui.identity(node.terminal);
+    const hot = this.hover === node.id;
+    const crown = node.kind === "orchestrator" || crowns.has(node.terminal);
+    const border = hot ? t.accent : crown ? t.accent + "66" : undefined;
+    const name = who.named ? who.name : node.label;
+    const tip = [node.label, node.ticket, ui.STATUS_WORD[node.status]].filter(Boolean).join(" · ");
+    const el = div().id(node.id).relative().absolute().left(node.x).top(node.y).w(node.w).h(node.h)
+      .rounded(8).bg(t.surface).border_1().border_color(border ?? t.border).cursor_pointer().tooltip(tip)
+      .on_hover((on, cx) => {
+        const next = on ? node.id : this.hover === node.id ? null : this.hover;
+        if (next !== this.hover) { this.hover = next; cx.notify(); }
+      })
+      .on_click((_e, cx) => { cx.stop_propagation(); this.openTerminal(node); });
+    const avatar = this.avatar(t, node, color, who);
+    const title = div().flex_1().min_w(0).truncate().text_size(node.narrow ? T_XS : T_S).font_semibold()
+      .text_color(node.kind === "subagent" ? t.muted : t.foreground).tooltip(tip).child(name);
+    const status = ui.statusChip(t, node.status);
+    if (crown) {
+      return el.px(10).py(4).flex().flex_col().justify_center().gap(1)
+        .child(h_flex().w_full().gap(GAP_S).items_center().min_w(0)
+          .child(div().flex_none().tooltip("Orchestrator dieses Workspace")
+            .child(svg("mods/orchestra/orchestrator.svg").size(12).flex_none().text_color(t.accent)))
+          .child(avatar).child(title).child(status))
+        .child(div().w_full().min_w(0).truncate().text_size(T_XS).text_color(t.dim).child(node.subtitle ?? ""));
+    }
+    // Eine Zeile, auch im schmalen Fenster: Avatar, Name (gekürzt), Status-Chip.
+    return el.px(node.narrow ? 6 : 7).flex().items_center().gap(node.narrow ? 3 : GAP_XS).min_w(0)
+      .child(avatar).child(title).child(status);
+  }
+
+  /** Der Ticket-Chip ist eine eigene Zeile direkt unter der Karte: Kürzel,
+   *  Triage-Maß und Status-Punkt. Sein Tooltip nennt Ticket, Stufe, Größe und
+   *  die Rückläufer-Runden. */
+  chip(t, chip, tickets) {
+    const tk = tickets.find((x) => x.id === chip.ticket);
+    const stage = { todo: t.dim, doing: t.accent, review: t.ansi5, done: t.success };
+    const color = stage[chip.status] ?? t.muted;
+    const rounds = chip.rounds?.length
+      ? `${chip.rounds.length} Runde${chip.rounds.length === 1 ? "" : "n"}: ${chip.rounds.map((r) => (r.pass ? "fail → pass" : "fail → Nacharbeit")).join(", ")}`
+      : null;
+    const tip = [chip.ticket, tk?.title, ui.STAGE_WORD[chip.status], chip.size ? `Größe ${chip.size}` : null, rounds]
+      .filter(Boolean).join(" · ");
+    return h_flex().id(chip.id).absolute().left(chip.x).top(chip.y).w(chip.w).h(chip.h).px(6).gap(GAP_XS).items_center()
+      .rounded(4).bg(color + "22").text_color(color).text_size(T_XS).font_medium().cursor_pointer().tooltip(tip)
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .on_hover((on, cx) => {
+        // Der Chip gehört zur Karte: beide heben dieselben Pfeile hervor.
+        const next = on ? chip.node : this.hover === chip.node ? null : this.hover;
+        if (next !== this.hover) { this.hover = next; cx.notify(); }
+      })
+      .on_click((_e, cx) => { cx.stopPropagation?.(); this.openReview(chip.ticket); })
+      .child(div().size(5).flex_none().rounded_full().bg(color))
+      .child(div().min_w(0).truncate().child(chip.label));
+  }
+
+  /** Der Graph: Linien als `paint_path` nach Stil gebündelt (Muster 796ac15),
+   *  Karten und Chips als divs darüber, die Rückläufer-Marker mit Tooltip. */
+  board(t, g, tickets) {
+    const colors = COLORS(t);
+    const colorOf = new Map();
+    for (const node of g.nodes) if (!colorOf.has(node.laneId)) colorOf.set(node.laneId, colors[colorOf.size % colors.length]);
+    const crowns = new Set(terminals().filter((x) => ui.isOrchestrator(x)).map((x) => x.address));
+    const hoverChips = new Set(g.ticketNodes.filter((c) => c.node === this.hover).map((c) => c.id));
+    const z = pathScale();
+    const lines = new Map(), heads = new Map();
+    for (const edge of g.edges) {
+      const hot = Boolean(this.hover) && (edge.to === this.hover || edge.from === this.hover
+        || hoverChips.has(edge.from) || hoverChips.has(edge.to));
+      const color = hot ? t.accent
+        : edge.kind === "feedback" ? t.blocked + "99"
+          : edge.faint ? t.border : t.muted;
+      const width = (edge.kind === "feedback" || edge.faint ? 1 : 1.5) * z;
+      const key = `${color}|${width}|${edge.dashed ? 1 : 0}`;
+      let line = lines.get(key);
+      if (!line) {
+        let p = PathBuilder.stroke(width);
+        if (edge.dashed) p = p.dash_array([3 * z, 3 * z]);
+        line = { p, color };
+        lines.set(key, line);
+      }
+      line.p = this.polyline(line.p, edge.points, z);
+      const headColor = edge.kind === "feedback" ? (edge.arrow === "success" ? t.done : t.blocked + "99") : color;
+      let head = heads.get(headColor);
+      if (!head) { head = { p: PathBuilder.stroke(Math.max(1, width)), color: headColor }; heads.set(headColor, head); }
+      head.p = this.arrowPath(head.p, edge.points, z);
+    }
+    const layers = [...lines.values(), ...heads.values()].map(({ p, color }) =>
+      div().absolute().left(0).top(0).w(g.width).h(g.height).child(window.paint_path(p.build(), color)));
+    // Reihenfolge: Linien hinten, Karten, Ticket-Chips, Rückläufer-Marker obenauf.
+    const cards = g.nodes.map((node) => this.card(t, node, colorOf.get(node.laneId), crowns));
+    const chips = g.ticketNodes.map((c) => this.chip(t, c, tickets));
+    const badges = g.edges.filter((e) => e.badge).map((e) => {
+      const color = e.arrow === "success" ? t.done : t.blocked;
+      return div().id(`${e.id}-mark`).absolute().left(e.badge[0] - 4).top(e.badge[1] - 4).size(8)
+        .rounded_full().bg(color).border_1().border_color(t.background).tooltip(e.tip);
+    });
+    return div().id("tl-graph-scroll").flex_1().min_h(0).overflow_scrollbar()
+      .child(div().id("tl-graph-canvas").relative().w(g.width).h(g.height)
+        .children(layers).children(cards).children(chips).children(badges));
+  }
+
   renderMenu() {
     const t = theme();
     const p = props() ?? {};
@@ -636,14 +831,27 @@ export default class Timeline extends View {
     const visible = all.map((x) => x.lane);
     const marks = this.markers();
     const ticks = this.ticks();
+    const tickets = this.ticketRows();
+    // Graph-Modus: dieselbe Zeitfenster-/Ticket-Auswahl wie die Balken, aber als
+    // Baum von oben nach unten. Die Rechnung liegt in graph.js (node --test).
+    const g = this.view === "graph"
+      ? layoutGraph({ lanes: this.lanes(), tickets, now, windowStart: this.viewStart(),
+        ticket: this.scope === "ticket" ? this.ticket : null, width: this.width || 400 })
+      : null;
     const count = visible.length;
     const since = stamp(this.viewStart(), now);
-    const meta = `${count} Lanes · seit ${since}`;
+    const agents = g ? g.nodes.filter((n) => n.kind !== "orchestrator").length : 0;
+    const meta = g
+      ? `${agents} Agent${agents === 1 ? "" : "s"} · ${g.ticketNodes.length} Ticket${g.ticketNodes.length === 1 ? "" : "s"} · `
+        + `${g.rounds} Runde${g.rounds === 1 ? "" : "n"}`
+      : `${count} Lanes · seit ${since}`;
     const note = this.error
       ? div().id("tl-note").max_w(180).flex_shrink_1().min_w(0).truncate().text_size(T_XS).text_color(t.dim)
         .tooltip(this.error).child(this.error)
       : null;
-    const toolbar = h_flex().id("tl-toolbar").h(34).flex_none().px(INSET_PANEL).gap(GAP_S).items_center()
+    const toolbar = h_flex().id("tl-toolbar").min_h(34).flex_none().px(INSET_PANEL).py(4).gap(GAP_S).items_center().flex_wrap()
+      .child(ui.segment(t, "tl-view", VIEWS, this.view,
+        (v, cx) => { this.view = v; this.hover = null; localStorage.setItem("timeline.view", v); cx.notify(); }))
       .child(ui.segment(t, "tl-zoom", ZOOMS.map((z) => ({ value: z.value, label: z.label, tip: z.tip })), this.zoom,
         (v, cx) => { this.zoom = v; localStorage.setItem("timeline.zoom", v); cx.notify(); }))
       .child(ui.segment(t, "tl-scope", SCOPES, this.scope, (v, cx) => {
@@ -661,7 +869,9 @@ export default class Timeline extends View {
     const overlay = props()?.overlay;
     const chips = [scope, this.ticketChip(t)].filter(Boolean);
     // Timeline is a popup only (mod.open:timeline, ⌘⌥0); no side-panel counterpart.
-    const header = ui.windowHeader(t, "Timeline", chips, () => closeOverlay(overlay), { meta, metaTip: "Lanes im gewählten Zeitraum" });
+    const header = ui.windowHeader(t, "Timeline", chips, () => closeOverlay(overlay), {
+      meta, metaTip: g ? "Agents, Tickets und Prüfrunden im Zeitfenster" : "Lanes im gewählten Zeitraum",
+    });
 
     const rows = all.map((x, i) => this.row(t, x.lane, x.depth, marks, now, i));
     // Das Raster liegt hinter den Zeilen: senkrechte Linien über die ganze Höhe.
@@ -670,9 +880,13 @@ export default class Timeline extends View {
       .child(v_flex().flex_1().min_h(0).overflow_y_scrollbar().track_scroll(this.scroll).children(rows))
       .child(div().absolute().top(0).bottom(0).left(LABEL_W).right(DUR_W).children(grid))
       .child(this.nowLine(t));
-    const content = visible.length === 0
-      ? v_flex().id("tl-empty").flex_1().min_h(0).child(this.bodyText(t, visible, cx))
-      : chart;
+    const content = g
+      ? g.nodes.length
+        ? this.board(t, g, tickets)
+        : v_flex().id("tl-empty").flex_1().min_h(0).child(this.bodyText(t, visible, cx))
+      : visible.length === 0
+        ? v_flex().id("tl-empty").flex_1().min_h(0).child(this.bodyText(t, visible, cx))
+        : chart;
 
     return v_flex().id("timeline").track_focus(this.handle).size_full().min_h(0).rounded(10).overflow_hidden()
       .bg(t.background).border_1().border_color(t.border).text_color(t.foreground)
@@ -682,10 +896,9 @@ export default class Timeline extends View {
       })
       .child(header)
       .child(toolbar)
-      .child(this.legend(t))
-      .child(this.ruler(t, ticks))
+      .when(!g, (el) => el.child(this.legend(t)).child(this.ruler(t, ticks)))
       .child(content)
-      .child(this.eventLegend(t));
+      .when(!g, (el) => el.child(this.eventLegend(t)));
   }
 
   nowLine(t) {
