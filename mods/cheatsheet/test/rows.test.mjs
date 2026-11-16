@@ -26,11 +26,11 @@ test("Bereiche: global ist der Standard und kein Chip", () => {
 });
 
 test("gemischte Gruppe: kein Kopf-Chip, nur die begrenzten Zeilen nennen ihren Bereich", () => {
-  // Spaces: global plus layout:elric.
+  // Spaces: layout:elric für space-folders, global für die übrigen.
   const spaces = group("Spaces");
   assert.deepEqual(groupChip(spaces), { label: null, perRow: true });
-  assert.ok(spaces.some((r) => r.tags.length === 1 && r.tags[0] === "elric"));
-  assert.ok(spaces.some((r) => r.tags.length === 0));
+  assert.equal(spaces.find((r) => r.action === "space-folders.next").tag, "elric");
+  assert.equal(spaces.find((r) => r.action === "space.next").tag, null);
   // Panels: layout:elric plus global (Seitenleiste).
   const panels = group("Panels und Seitenleiste");
   assert.deepEqual(groupChip(panels), { label: null, perRow: true });
@@ -47,8 +47,16 @@ test("hermes.toggle ist eine Zeile mit beiden Tasten", () => {
   const hermes = rows.filter((r) => r.action === "hermes.toggle");
   assert.equal(hermes.length, 1);
   assert.deepEqual(hermes[0].keys, ["⌃⌃", "⌘⇧H"]);
-  assert.deepEqual(hermes[0].tags, ["im Terminal"]);
-  assert.deepEqual(groupChip(rows), { label: null, perRow: true });
+  // ⌘⇧H gilt global, ⌃⌃ im Terminal: eine gemeinsame Bereichsangabe gibt es nicht.
+  assert.equal(hermes[0].tag, null);
+  assert.deepEqual(groupChip(rows), { label: null, perRow: false });
+});
+
+test("eine gemischte Zeile nennt keinen Bereich, auch wenn eine Taste begrenzt ist", () => {
+  // Quests: ⌃⇧Q global, ⌘⌥6 nur elric.
+  const quests = group("Fabrik").find((r) => r.action === "mod.open:quests");
+  assert.equal(quests.keys.length, 2);
+  assert.equal(quests.tag, null);
 });
 
 test("allein getippter Modifier ist sein Zeichen", () => {

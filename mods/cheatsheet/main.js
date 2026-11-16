@@ -44,8 +44,8 @@ export default class Cheatsheet extends View {
           .children(r.keys.map((k) => div().h(H_CHIP).px(6).flex().items_center().rounded(4).bg(t.raised)
             .text_size(T_XS).text_color(t.foreground).child(k))))
         .child(div().flex_1().min_w(0).truncate().text_size(T_M).text_color(t.foreground).tooltip(r.desc).child(r.desc))
-        .when(perRowScope && r.tags.length > 0, (el) => el.child(div().flex_none().h(H_CHIP).px(6).flex().items_center().rounded(4)
-          .bg(t.raised).text_size(T_XS).text_color(t.muted).child(r.tags.join(" · "))))));
+        .when(perRowScope && Boolean(r.tag), (el) => el.child(div().flex_none().h(H_CHIP).px(6).flex().items_center().rounded(4)
+          .bg(t.raised).text_size(T_XS).text_color(t.muted).child(r.tag)))));
   }
 
   render() {
