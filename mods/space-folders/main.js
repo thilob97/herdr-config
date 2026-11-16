@@ -63,7 +63,7 @@ async function newSpaceIn(machine, id) {
 // A rule of "Collect spaces from" takes a folder and everything in it. "~" is
 // any home, "*" any one folder name, and a rule starting with neither "/" nor
 // "~" is a folder name at any depth ("wbso-ai").
-export function rule(pattern) {
+function rule(pattern) {
   const p = pattern.trim().replace(/\/+$/, "");
   if (!p) return null;
   const body = p.replace(/^~/, "\u0000").split("*").map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join("[^/]*")
@@ -129,11 +129,11 @@ const ORCH_TIP = "Orchestrator dieses Workspace";
 // mods/orchestra/ui.js (dieser Klon hat keine ui.js-Kopie).
 const isOrchestrator = (x) => x.labels?.["hub.role"] === "orchestrator"
   || x.name === "orchestrator" || String(x.name ?? "").startsWith("orchestrator-");
-function orchestration() {
+function orchestration(ps, sp) {
   const live = terminals().filter((x) => x.state === "live" && isOrchestrator(x));
-  const tabOf = new Map(panes().filter((p) => p.terminal).map((p) => [p.terminal, p.tab]));
+  const tabOf = new Map(ps.filter((p) => p.terminal).map((p) => [p.terminal, p.tab]));
   const tabs = new Set(live.map((x) => tabOf.get(x.address)).filter(Boolean));
-  const spaceIds = new Set(spaces().filter((s) => (s.tabs ?? []).some((tb) => tabs.has(tb.id))).map((s) => s.id));
+  const spaceIds = new Set(sp.filter((s) => (s.tabs ?? []).some((tb) => tabs.has(tb.id))).map((s) => s.id));
   return { addresses: new Set(live.map((x) => x.address)), tabs, spaces: spaceIds };
 }
 
@@ -146,7 +146,6 @@ function place(s, ps) {
   const tabs = new Set((s.tabs ?? []).map((c) => c.id));
   return ps.find((p) => tabs.has(p.tab) && p.cwd)?.cwd || s.folder;
 }
-const rowHeight = () => H_ROW;
 const where = (s, ps) => JSON.stringify([s.machine ?? null, place(s, ps)]);
 const base = (path) => path.replace(/\/+$/, "").split("/").pop();
 // Changes made outside Herdr (an editor's save, a commit in another app): looked
@@ -175,13 +174,17 @@ function iconBtn(t, id, icon, tooltip, action) {
 }
 
 // A space speaks up only when something in it needs you.
-export function glyph(status) {
+function glyph(status) {
   return status === "blocked" || status === "done" ? "●" : "·";
 }
 
-export function tone(t, status) {
+function tone(t, status) {
   return t[status] ?? t.unknown;
 }
+
+// A machine's state word as `hc machine ls` names it, in German.
+const MACHINE_STATE = { connected: "verbunden", asleep: "schlafend", unreachable: "nicht erreichbar", offline: "offline" };
+const machineState = (state) => MACHINE_STATE[state] ?? String(state ?? "asleep").replace(/_/g, " ");
 
 const NEW_FOLDER = "Neuer Ordner";
 
@@ -357,8 +360,7 @@ export default class Spaces extends View {
     this.checked[key] = Date.now();
     this.unsure.delete(key);
     try {
-      // No optional locks: a status that touched the index would wake the watch again.
-      // Writes nothing under .git (index lock, fsmonitor cookie): watch() would wake on it.
+      // No optional locks, nothing written under .git (index lock, fsmonitor cookie): watch() would wake on it.
       const r = await exec("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "status", "--porcelain=v2", "--branch"], { cwd, on });
       if (r.code !== 0) {
         // Only git's own "no" is remembered as no repo; anything else is asked again.
@@ -556,12 +558,13 @@ export default class Spaces extends View {
   // then the spaces in none. A worktree goes where its checkout's space goes.
   // Every space goes in `seen` in this order, folded away (`hidden`) or not,
   // for the keys that step through the list.
-  foldered(rows, machine, t, collapsed, { guests = [], nested = false, hidden = false, seen = [] } = {}) {
+  foldered(rows, machine, t, collapsed, { guests = [], nested = false, hidden = false, seen = [], ctx } = {}) {
+    const { ps, colors } = ctx;
     const draw = (r, away) => {
       seen.push({ id: r.w.id, shown: !away, folder: r.folder });
-      return away ? [] : [collapsed ? this.compact(r, t) : this.row(r, t)];
+      return away ? [] : [collapsed ? this.compact(r, t) : this.row(r, t, colors)];
     };
-    const f = folders(machine), { list } = f, ps = panes();
+    const f = folders(machine), { list } = f;
     let parent = null;
     const placed = rows.map((r) => {
       if (!r.tree) parent = folderOf(r.w, f, ps);
@@ -576,7 +579,7 @@ export default class Spaces extends View {
         return [
           ...(hidden ? [] : [this.folderHead(f, n, machine, counted, t, collapsed, nested)]),
           ...inside.flatMap((r) => draw(r, away)),
-          ...visitors.flatMap((g) => this.machineSection(g.m, g.rows, t, collapsed, { nested: true, hidden: away, seen })),
+          ...visitors.flatMap((g) => this.machineSection(g.m, g.rows, t, collapsed, { nested: true, hidden: away, seen, ctx })),
         ];
       }),
       ...placed.filter((r) => !r.folder).flatMap((r) => draw(r, hidden)),
@@ -613,10 +616,10 @@ export default class Spaces extends View {
     // Built like a space's avatar: a filled 18px tile in the folder's color, its mark in the background color.
     const tile = h_flex().size(18).flex_none().rounded(4).items_center().justify_center().bg(f.color ? mark(t, f.color) : t.dim)
       .child(svg("mods/workspace-chrome/folder.svg").size(12).text_color(t.background));
-    if (collapsed) return head.justify_center().child(tile);
+    if (collapsed) return head.justify_center().tooltip(f.name).child(tile);
     return head
       .child(tile)
-      .child(div().flex_1().min_w(0).truncate().font_medium().child(f.name))
+      .child(div().flex_1().min_w(0).truncate().font_medium().tooltip(f.name).child(f.name))
       // Folded, it still says when something in it is running or needs you.
       .when(f.folded && status === "working", (el) => el.child(calm()
         ? div().size(12).flex_none().flex().items_center().justify_center().text_color(t.working).child("…")
@@ -646,7 +649,7 @@ export default class Spaces extends View {
   }
 
   editView(t) {
-    const { machine, overlay } = this.editing;
+    const { machine, fresh, overlay } = this.editing;
     const button = (key, label, primary, action) => h_flex().id(key).h(26).px(10).flex_none().items_center().rounded(6)
       .bg(primary ? t.solid : t.raised).text_color(primary ? t.solid_foreground : t.foreground)
       .text_size(T_M).font_medium().cursor_pointer().hover((s) => (primary ? s.opacity(0.85) : s.bg(t.hover))).on_click(action).child(label);
@@ -659,7 +662,7 @@ export default class Spaces extends View {
       .when(Boolean(hint), (el) => el.child(div().text_size(T_S).text_color(t.dim).child(hint)));
     return v_flex().id("folder-edit").w_full().p(16).gap(12).bg(t.popover).text_color(t.foreground)
       .on_key_down((e, cx) => { if (e.key === "escape") { closeOverlay(overlay); cx.stop_propagation(); } })
-      .child(div().text_size(15).font_semibold().child("Ordner bearbeiten"))
+      .child(div().text_size(15).font_semibold().child(fresh ? "Neuer Ordner" : "Ordner bearbeiten"))
       .child(field("Name", this.name, null))
       .child(field("Neue Spaces starten in", this.path, "Das + und „Neuer Space hier“ öffnen einen Space dort.",
         machine ? null : button("folder-choose", "Wählen …", false, (_e, cx) => this.choose(cx))))
@@ -667,14 +670,14 @@ export default class Spaces extends View {
         "Spaces in diesen Ordnern kommen in diesen. Kommagetrennt: ein Ordnername wie wbso-ai oder ein Pfad wie ~/code/client-*."))
       .child(h_flex().pt(4).gap(8).justify_end()
         .child(button("folder-cancel", "Abbrechen", false, () => closeOverlay(overlay)))
-        .child(button("folder-save", "Sichern", true, () => this.saveFolder())));
+        .child(button("folder-save", "Speichern", true, () => this.saveFolder())));
   }
 
   // Spaces in order, each worktree space moved under its main checkout's — or, where
   // the workspace is no checkout at all (the orchestrator's ~/.herdr/orchestrator),
   // under the workspace its ticket names.
-  ordered() {
-    const sp = spaces(), ps = panes();
+  ordered(ps) {
+    const sp = spaces();
     const ready = (w) => this.shown.has(w.id) || where(w, ps) in this.git || Date.now() - (this.born[w.id] ??= Date.now()) > 1500;
     for (const w of sp) if (!this.shown.has(w.id) && ready(w)) this.shown.add(w.id);
     const list = sp.map((w, i) => ({ w, i, g: this.git[where(w, ps)] ?? null })).filter((r) => this.shown.has(r.w.id));
@@ -722,10 +725,10 @@ export default class Spaces extends View {
   }
 
   // Whether a machine's spaces are still coming in.
-  machineLoading(m) {
-    const layout = machines().find(k => k.name === m)?.layout;
+  machineLoading(m, { ms, sp }) {
+    const layout = ms.find(k => k.name === m)?.layout;
     return layout === "loading" || (!layout && this.machines.some(k => k.name === m && k.state === "connected"))
-      || spaces().some(s => (s.machine ?? null) === m && !this.shown.has(s.id));
+      || sp.some(s => (s.machine ?? null) === m && !this.shown.has(s.id));
   }
 
   loadingRow(m, t, collapsed) {
@@ -735,12 +738,13 @@ export default class Spaces extends View {
   // A machine's header and, unless it's folded, its folders and spaces. In a
   // folder on this computer (`nested`) the header is indented like the
   // folder's spaces, and the machine's folders and spaces a step further (see indent).
-  machineSection(m, mine, t, collapsed, { nested = false, guests = [], hidden = false, seen = [] } = {}) {
+  machineSection(m, mine, t, collapsed, { nested = false, guests = [], hidden = false, seen = [], ctx } = {}) {
     const machine = this.machines.find(k => k.name === m);
     const connected = !m || machine?.state === "connected";
     const folded = this.folded.has(m);
     const head = h_flex().id(`machine-${m ?? "local"}`).h(H_SECTION).flex_none().pl(collapsed ? 2 : nested ? 26 : 8).pr(collapsed ? 2 : 4).gap(6).items_center().rounded(6)
       .text_size(T_S).font_medium().text_color(t.muted)
+      .when(collapsed, el => el.tooltip(m ?? "Dieser Computer"))
       .cursor_pointer().hover(s => s.bg(t.hover))
       .on_click((_e, cx) => {
         folded ? this.folded.delete(m) : this.folded.add(m);
@@ -748,8 +752,8 @@ export default class Spaces extends View {
         cx.notify();
       })
       .child(svg(`mods/workspace-chrome/${m ? "server" : "monitor"}.svg`).size(12).flex_none())
-      .when(!collapsed, el => el.child(div().flex_1().truncate().child(m ?? "Dieser Computer"))
-        .when(!connected, el => el.child(div().flex_none().text_color(t.dim).child((machine?.state ?? "asleep").replace(/_/g, " "))))
+      .when(!collapsed, el => el.child(div().flex_1().truncate().tooltip(m ?? "Dieser Computer").child(m ?? "Dieser Computer"))
+        .when(!connected, el => el.child(div().flex_none().text_color(t.dim).child(machineState(machine?.state))))
         .when(connected, el => el.child(iconBtn(t, `machine-folder-${m ?? "local"}`, "folder-plus", "Neuer Ordner", () => this.newFolder(m))))
         .when(connected, el => el.child(iconBtn(t, `machine-add-${m ?? "local"}`, "plus", "Neuer Space auf dieser Maschine", () => newSpaceIn(m, null))))
         .child(div().size(6).mx(2).rounded_full().flex_none().bg(connected ? t.ansi2 : t.dim))
@@ -758,16 +762,17 @@ export default class Spaces extends View {
       .text_size(12).text_color(t.dim).hover(s => s.bg(t.hover).text_color(t.foreground))
       .on_click(() => newSpaceIn(m, null))
       .child(svg("mods/workspace-chrome/plus.svg").size(12)).when(!collapsed, el => el.child("Neuer Space dort"));
-    const body = mine.length || guests.length ? this.foldered(mine, m, t, collapsed, { guests, nested, hidden: hidden || folded, seen })
-      : [this.machineLoading(m) ? this.loadingRow(m, t, collapsed) : empty];
+    const body = mine.length || guests.length ? this.foldered(mine, m, t, collapsed, { guests, nested, hidden: hidden || folded, seen, ctx })
+      : [this.machineLoading(m, ctx) ? this.loadingRow(m, t, collapsed) : empty];
     return hidden ? [] : [head, ...(folded ? [] : body)];
   }
 
   // The rows, under a header per machine once one isn't this computer. A
   // machine a folder here takes in shows in that folder instead. `seen`
   // collects the spaces in this order (see foldered).
-  grouped(t, collapsed, seen = []) {
-    const rows = this.ordered(), ps = panes();
+  grouped(t, collapsed, seen, ctx) {
+    const { ps } = ctx;
+    const rows = this.ordered(ps);
     const remote = [...new Set([...rows.map(r => r.w.machine).filter(Boolean), ...this.machines.map(m => m.name)])].sort();
     const guests = remote.map((m) => {
       const mine = rows.filter((r) => r.w.machine === m);
@@ -777,11 +782,11 @@ export default class Spaces extends View {
     const loose = guests.filter((g) => !g.folder);
     const local = rows.filter((r) => !r.w.machine);
     if (!loose.length) {
-      return this.machineLoading(null) && !local.length && !housed.length ? [this.loadingRow(null, t, collapsed)] : this.foldered(local, null, t, collapsed, { guests: housed, seen });
+      return this.machineLoading(null, ctx) && !local.length && !housed.length ? [this.loadingRow(null, t, collapsed)] : this.foldered(local, null, t, collapsed, { guests: housed, seen, ctx });
     }
     return [
-      ...this.machineSection(null, local, t, collapsed, { guests: housed, seen }),
-      ...loose.flatMap((g) => this.machineSection(g.m, g.rows, t, collapsed, { seen })),
+      ...this.machineSection(null, local, t, collapsed, { guests: housed, seen, ctx }),
+      ...loose.flatMap((g) => this.machineSection(g.m, g.rows, t, collapsed, { seen, ctx })),
     ];
   }
 
@@ -802,15 +807,14 @@ export default class Spaces extends View {
       .items_center()
       .text_size(T_S)
       .text_color(t.dim)
-      .when(Boolean(where), (el) => el.child(div().min_w(0).truncate().child(where)))
+      .when(Boolean(where), (el) => el.child(div().min_w(0).truncate().tooltip(where).child(where)))
       .when(g.ahead > 0, (el) => el.child(div().flex_none().text_color(t.ansi2).child(`\u2191${g.ahead}`)))
       .when(g.behind > 0, (el) => el.child(div().flex_none().text_color(t.ansi1).child(`\u2193${g.behind}`)));
   }
 
-  row({ w, i, g, tree, folder, nested }, t) {
+  row({ w, i, g, tree, folder, nested }, t, colors) {
     const on = w.active;
     const isOrch = this.orch?.spaces.has(w.id);
-    const colors = shared("space.colors") ?? {};
     const color = colors[w.id] ?? "ansi6";
     const fill = mark(t, color);
     return v_flex()
@@ -818,7 +822,7 @@ export default class Spaces extends View {
       .id(`space-${w.id}`)
       .pl(indent(folder, nested))
       .pr(8)
-      .h(rowHeight({ tree }))
+      .h(H_ROW)
       .flex_none()
       .justify_center()
       .rounded(6)
@@ -876,6 +880,7 @@ export default class Spaces extends View {
       .gap(4)
       .when(w.active, (el) => el.bg(t.raised))
       .hover((s) => s.bg(t.hover))
+      .tooltip(w.name)
       .when(isOrch, (el) => el.tooltip(ORCH_TIP))
       .on_click(() => run("space.select", { id: w.id }))
       .child(div().text_color(isOrch ? t.accent : w.active ? t.foreground : t.muted).child(String(i + 1)))
@@ -911,23 +916,23 @@ export default class Spaces extends View {
     if (this.folderMenu) return this.folderMenuView(t);
     if (this.editing) return this.editView(t);
     const collapsed = narrow();
-    this.orch = orchestration();
-    const palette = MARKS;
-    const sp = spaces();
+    const ctx = { ps: panes(), sp: spaces(), ms: machines(), colors: shared("space.colors") ?? {} };
+    this.orch = orchestration(ctx.ps, ctx.sp);
+    const sp = ctx.sp;
     const ids = new Set(sp.map(p => p.id));
-    const kept = Object.fromEntries(Object.entries(shared("space.colors") ?? {}).filter(([id]) => ids.has(id)));
-    let changed = Object.keys(kept).length !== Object.keys(shared("space.colors") ?? {}).length;
+    const kept = Object.fromEntries(Object.entries(ctx.colors).filter(([id]) => ids.has(id)));
+    let changed = Object.keys(kept).length !== Object.keys(ctx.colors).length;
     for (const p of sp) {
       if (kept[p.id] || p.name === "~") continue;
       const uses = c => Object.values(kept).filter(v => v === c).length;
-      kept[p.id] = palette.reduce((best, c) => uses(c) < uses(best) ? c : best);
+      kept[p.id] = MARKS.reduce((best, c) => uses(c) < uses(best) ? c : best);
       changed = true;
     }
-    if (changed) setShared("space.colors", kept);
+    if (changed) { setShared("space.colors", kept); ctx.colors = kept; }
     // While a space in a folder is dragged, a place to drop it out of the folder.
-    const dragged = this.pressed !== null ? spaces()[this.pressed] : null;
-    const leaving = Boolean(dragged && folderOf(dragged, folders(dragged.machine ?? null), panes()));
-    const seen = [], rows = this.grouped(t, collapsed, seen);
+    const dragged = this.pressed !== null ? sp[this.pressed] : null;
+    const leaving = Boolean(dragged && folderOf(dragged, folders(dragged.machine ?? null), ctx.ps));
+    const seen = [], rows = this.grouped(t, collapsed, seen, ctx);
     this.seen = seen;
     if (!collapsed) this.fit(rows.length);
     return v_flex().size_full().min_h(0).bg(t.chrome).text_size(13)
