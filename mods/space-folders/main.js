@@ -676,8 +676,7 @@ export default class Spaces extends View {
   // Spaces in order, each worktree space moved under its main checkout's — or, where
   // the workspace is no checkout at all (the orchestrator's ~/.herdr/orchestrator),
   // under the workspace its ticket names.
-  ordered(ps) {
-    const sp = spaces();
+  ordered(ps, sp) {
     const ready = (w) => this.shown.has(w.id) || where(w, ps) in this.git || Date.now() - (this.born[w.id] ??= Date.now()) > 1500;
     for (const w of sp) if (!this.shown.has(w.id) && ready(w)) this.shown.add(w.id);
     const list = sp.map((w, i) => ({ w, i, g: this.git[where(w, ps)] ?? null })).filter((r) => this.shown.has(r.w.id));
@@ -772,7 +771,7 @@ export default class Spaces extends View {
   // collects the spaces in this order (see foldered).
   grouped(t, collapsed, seen, ctx) {
     const { ps } = ctx;
-    const rows = this.ordered(ps);
+    const rows = this.ordered(ps, ctx.sp);
     const remote = [...new Set([...rows.map(r => r.w.machine).filter(Boolean), ...this.machines.map(m => m.name)])].sort();
     const guests = remote.map((m) => {
       const mine = rows.filter((r) => r.w.machine === m);
