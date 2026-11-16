@@ -9,19 +9,25 @@
 
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
-import { agents, terminals, theme, shared, setShared, props, settings } from "herdr";
+import { agents, terminals, theme, shared, setShared, props, settings, run } from "herdr";
 import { HubDaemon, HubSection, STAGES, stageOf } from "./hubview.js";
 import * as ui from "./ui.js";
 import { T_XS, T_S, T_L } from "./ui.js";
 
 // Der Space einer Adresse: laufender Agent, sonst das Terminal-Label (wie
 // `hub orchestrator start` es setzt). null, wenn beides fehlt (beendet, ohne Label).
-const spaceOfAddress = (address) => agents().find((a) => a.address === address)?.space
-  ?? terminals().find((x) => x.address === address)?.labels?.["hub.space"]
-  ?? terminals().find((x) => x.address === address)?.labels?.["herdr.space"] ?? null;
+const spaceOfAddress = (address, cache) => {
+  const a = (cache?.agents ?? agents()).find((x) => x.address === address);
+  if (a?.space) return a.space;
+  const t = (cache?.terms ?? terminals()).find((x) => x.address === address);
+  return t?.labels?.["hub.space"] ?? t?.labels?.["herdr.space"] ?? ui.paneSpaceOf(address) ?? null;
+};
 
 export default class Orchestra extends View {
   init(_props, cx) {
+    // Quests is a popup now; a home that last showed the removed `quests` layout must not
+    // start into nothing. The daemon block sits in elric and dashboard, so the guard runs.
+    if (shared("layout") === "quests") run("layout.switch", { name: "elric" });
     if (props()?.role === "daemon") { this.daemon = new HubDaemon(cx); return; }
     this.hub = new HubSection(cx);
     this.showDone = false;
@@ -42,10 +48,15 @@ export default class Orchestra extends View {
     const sp = ui.activeSpace();
     const list = this.allGroups();
     if (!sp) return list;
+    // One agent/terminal read per render for every group's members, not per member.
+    const cache = {};
+    const known = (g) => (g.members ?? []).map((a) => spaceOfAddress(a, cache)).filter(Boolean);
     return list.filter((g) => {
       if (g.space) return g.space === sp.id;
-      const known = (g.members ?? []).map(spaceOfAddress).filter(Boolean);
-      return !known.length || known.includes(sp.id);
+      cache.agents ??= agents();
+      cache.terms ??= terminals();
+      const ids = known(g);
+      return !ids.length || ids.includes(sp.id);
     });
   }
 
@@ -133,7 +144,6 @@ export default class Orchestra extends View {
       add(ui.sectionHeader(t, "In Arbeit", { count: by.doing.length, color: t.working }), "doing");
       if (!by.doing.length) add(ui.empty(t, "Nichts in Arbeit.", { row: true }));
       for (const tk of by.doing) add(this.hub.ticketRow(t, tk));
-      add(this.hub.budgetChips(t));
       add(ui.sectionHeader(t, "Geplant", { count: by.todo.length }), "todo");
       if (!by.todo.length) add(ui.empty(t, "Nichts geplant.", { row: true }));
       for (const tk of by.todo) add(this.hub.ticketRow(t, tk));
@@ -154,7 +164,8 @@ export default class Orchestra extends View {
 
     // Der Chip sitzt im Kopf; sein Platz wird von der Stufenzeile freigehalten.
     const scope = ui.spaceChip(t, { maxW: 120 });
-    const reserve = scope ? Math.min(120, (ui.activeSpace()?.name?.length ?? 0) * 6.2 + 18) : 0;
+    const sp = ui.activeSpace();
+    const reserve = scope ? Math.min(120, (sp?.name?.length ?? 0) * 6.2 + 18) : 0;
 
     return v_flex().id("orchestra").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground)
       // on_size_change meldet echte Pixel; Kopf und Stufenzeile rechnen in Layout-Pixeln.

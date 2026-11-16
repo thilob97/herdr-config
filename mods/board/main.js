@@ -18,8 +18,7 @@
 // "orchestra.costs" (Datei data/orchestra/costs.json als Rückfall) für die Kosten,
 // shared "agents.identity" für Avatare (über ui.identityChip). Eigene `hub ticket
 // list`/`hub gates`-Aufrufe nur, wenn shared noch leer ist (Kaltstart ohne Daemon) und
-// beim Klick auf „Daten alt". "board.panel" schaltet das Panel um; die Tab-Leiste
-// trägt der Orchestrator ein (nicht dieser Mod).
+// beim Klick auf „Daten alt". Das Board ist ein Popup (mod.open:board, ⌘⌥8).
 //
 // Datenfrische: jeder Leseversuch stempelt Erfolg oder den ersten Fehler seit dem letzten
 // Erfolg. Ist eine Quelle älter als 30 s (oder hat sie einen Fehler), steht „Daten alt" in
@@ -27,7 +26,7 @@
 // alle vier sofort neu. Kein eigener Timer: die Refreshes oben tragen den Zustand.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, ScrollHandle } from "gpui-base";
-import { exec, appHome, readTextFile, shared, theme, layout, run, notify, nextCommand, openOverlay, settings, props, closeOverlay } from "herdr";
+import { exec, appHome, readTextFile, shared, theme, run, notify, openOverlay, settings, props, closeOverlay } from "herdr";
 import * as ui from "./ui.js";
 import { T_XS, T_S, T_L, GAP_S, GAP_M, INSET_PANEL, H_HEADER, H_SECTION, H_ROW, usd, at } from "./ui.js";
 import { STAGES, stageOf, stageColor, ticketCard, blockersOf } from "./card.js";
@@ -48,15 +47,6 @@ const shortAge = (ms) => {
   const s = Math.max(0, Math.round(ms / 1000));
   return s < 60 ? `${s} s` : s < 3600 ? `${Math.round(s / 60)} min` : `${Math.floor(s / 3600)} h`;
 };
-
-function find(node, id) {
-  if (node?.id === id) return node;
-  for (const child of node?.children ?? []) {
-    const found = find(child, id);
-    if (found) return found;
-  }
-  return null;
-}
 
 const normalize = (t) => ({ ...t, comments: t.comments ?? t.verlauf?.length ?? 0 });
 // Vom HubDaemon gepflegte Listen. Ein nie gesetztes shared (null) ist keine Liste: dann
@@ -117,13 +107,6 @@ export default class Board extends View {
     cx.timer.every(WIP_REFRESH, (cx) => this.readWip(cx));
     cx.timer.every(20000, (cx) => cx.notify()); // die Alter in der Stufe
     cx.timer.after(50, () => this.handle.focus());
-    // Kommando der Tab-Leiste: board.panel zeigt das Panel (idempotent, Kaltstart-fest).
-    cx.spawn(async (cx) => {
-      for (;;) {
-        const c = await nextCommand();
-        if (c === "panel") this.showPanel(cx);
-      }
-    });
   }
 
   // ---------- Daten ----------
@@ -239,9 +222,11 @@ export default class Board extends View {
   }
 
   budget() { return { ticket: 3, team: 20, ...(shared("orchestra.budget") ?? {}) }; }
-  limitOf(tk) { return this.budget().ticket + ((shared("orchestra.budgetExtra") ?? {})[tk.id] ?? 0); }
-  spentOf(tk) { return Number(this.costs().tickets?.[tk.id] ?? 0); }
-  gateOf(id) { return this.gates.find((g) => g.id === id) ?? null; }
+  // One read per render: card(), the column sums and the header ask for costs, budget and
+  // the extras for every ticket; each shared() call copies its list (~1 ms at 70 tickets).
+  limitOf(tk) { return (this.budgetNow ?? this.budget()).ticket + ((this.extraNow ?? shared("orchestra.budgetExtra") ?? {})[tk.id] ?? 0); }
+  spentOf(tk) { return Number((this.costsNow ?? this.costs()).tickets?.[tk.id] ?? 0); }
+  gateOf(id) { return (this.gateById ?? new Map(this.gates.map((g) => [g.id, g]))).get(id) ?? null; }
   openBlockers(tk) { return blockersOf(tk, this.tickets); }
 
   // ---------- Aktionen ----------
@@ -306,22 +291,6 @@ export default class Board extends View {
       }
       cx.notify();
     });
-  }
-
-  // board.panel: dasselbe wie tabs-graph.togglePanel, aber ohne den fremden Mod zu ändern,
-  // und idempotent: das Board wird gezeigt, nicht umgeschaltet. So kann die Tab-Leiste
-  // zuerst das Panel zeigen und danach dieses Kommando schicken (Kaltstart, solange der
-  // Block noch nie gerendert wurde, ist das Kommando unbekannt; select+show genügt dann).
-  showPanel(cx) {
-    const root = layout(), panel = find(root, "panel"), body = find(root, "panel-body"), me = find(root, "board");
-    if (!panel || !body || !me) {
-      this.note = { ok: false, text: "Board steht noch nicht im Layout; der Orchestrator trägt es ein." };
-      notify({ title: "Board", body: this.note.text, level: "info", timeout: 10000 });
-      cx.notify();
-      return;
-    }
-    if (body.active !== "board") run("layout.select", { stack: "panel-body", child: "board" });
-    if (panel.hidden) run("layout.show", { id: "panel" });
   }
 
   // ---------- Auswahl ----------
@@ -505,6 +474,11 @@ export default class Board extends View {
   }
 
   render(cx) {
+    // Alle Quellen einmal je Rendern: Karten, Spalten und Kopf fragen sie sonst je Ticket.
+    this.costsNow = this.costs();
+    this.budgetNow = this.budget();
+    this.extraNow = shared("orchestra.budgetExtra") ?? {};
+    this.gateById = new Map(this.gates.map((g) => [g.id, g]));
     const t = theme();
     // Space-Wechsel (spaces() zeichnet neu): Board, Gates und WIP sofort für den neuen
     // Workspace lesen — kein Neustart, kein zusätzlicher Timer.
@@ -548,12 +522,8 @@ export default class Board extends View {
       ...right,
     ].filter(Boolean);
     // Breite: vier Spalten leben vom Fenster (1120), im 368er Panel stehen sie gestapelt.
-    const overlay = props()?.overlay;
-    const header = overlay
-      ? ui.windowHeader(t, "Board", chips, () => closeOverlay(overlay),
-        { actions: [ui.surfaceToggle(t, "board-to-panel", "to-panel", () => ui.switchToPanel("board", overlay))] })
-      : ui.panelHeader(t, "Board", chips,
-        { actions: [ui.surfaceToggle(t, "board-to-window", "to-window", () => ui.switchToWindow("board"))] });
+    // Board is a popup only (mod.open:board, ⌘⌥8); no side-panel counterpart.
+    const header = ui.windowHeader(t, "Board", chips, () => closeOverlay(props()?.overlay));
 
     let body;
     if (mode === "4") {

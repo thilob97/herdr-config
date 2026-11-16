@@ -22,7 +22,6 @@ import { T_XS, T_S, T_M, T_L } from "./ui.js";
 const READ = ["--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "diff.autoRefreshIndex=false"];
 const REFRESH = 5000;
 const MAX_LINES = 1500;
-const ORCH = "orchestrator";
 const hubBin = () => `${appHome()}/mods/orchestra/bin/hub`;
 const machineOf = (address) => (address?.includes("/") ? address.slice(0, address.indexOf("/")) : null);
 const countLines = (text) => (text ? text.split("\n").length - Number(text.endsWith("\n")) : 0);
@@ -58,13 +57,15 @@ function diffRows(lines) {
 }
 
 // Tells the orchestrator of the ticket's factory (if it runs); a blocked one waits on a
-// question, so --force. The terminal address is the destination, never the shared name:
-// several spaces name their orchestrator "orchestrator".
-async function tellOrchestrator(text, space) {
+// question, so --force. The terminal address is the destination, never a name: the
+// orchestrator may be `orchestrator-<space>`, so ui.isOrchestrator decides, and its
+// space is read like orch.find() (labels, else the pane's space).
+const orchSpace = (x) => x.labels?.["hub.space"] || x.labels?.["herdr.space"] || ui.paneSpaceOf(x.address) || "";
+export async function tellOrchestrator(text, space) {
   const own = ui.workspaceId(space ?? "");
-  const live = terminals().filter((x) => x.name === ORCH && x.state === "live");
+  const live = terminals().filter((x) => x.state === "live" && ui.isOrchestrator(x));
   const o = own
-    ? live.find((x) => ui.workspaceId(x.labels?.["hub.space"] || x.labels?.["herdr.space"] || "") === own)
+    ? live.find((x) => ui.workspaceId(orchSpace(x)) === own)
     : live[0];
   if (!o) return false;
   const r = await hc(["send", o.address, text, ...(o.status === "blocked" ? ["--force"] : [])]);

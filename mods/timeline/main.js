@@ -12,11 +12,10 @@
 // Daten: `hub timeline --json` alle 15 s; fehlt der Befehl (die Datenquelle entsteht
 // parallel), steht ein ruhiger Hinweis statt eines Absturzes. Live-Balken wachsen
 // sekündlich aus `now` + lokaler Zeit weiter, ohne neu zu lesen.
-// Das Panel trägt `timeline.panel` (idempotent, Kaltstart-fest wie das Board); als
-// Fenster öffnet `mod.open:timeline` (mod.json overlay).
+// Timeline ist ein Popup: `mod.open:timeline` (mod.json overlay), kein Panel-Kommando.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
-import { exec, appHome, shared, setShared, theme, layout, run, nextCommand, openOverlay, closeOverlay, props, settings } from "herdr";
+import { exec, appHome, shared, setShared, theme, run, openOverlay, closeOverlay, props, settings } from "herdr";
 import * as ui from "./ui.js";
 import { T_XS, T_S, GAP_XS, GAP_S, GAP_M, INSET_PANEL, H_CHIP, H_ROW } from "./ui.js";
 
@@ -186,13 +185,6 @@ export default class Timeline extends View {
         return;
       }
       if (this.live()) cx.notify();
-    });
-    // Der Chip schickt seine Wahl über shared (ein anderes Fenster desselben Mods).
-    cx.spawn(async (cx) => {
-      for (;;) {
-        const c = await nextCommand();
-        if (!props()?.overlay && c === "panel") this.showPanel(cx);
-      }
     });
     cx.timer.after(50, () => this.handle.focus());
   }
@@ -418,15 +410,6 @@ export default class Timeline extends View {
   chartPx() {
     const w = this.width || 368;
     return Math.max(60, w - 2 * INSET_PANEL - LABEL_W - DUR_W);
-  }
-
-  // ---------- Panel ----------
-
-  showPanel(cx) {
-    const root = layout(), panel = find(root, "panel"), body = find(root, "panel-body"), me = find(root, "timeline");
-    if (!panel || !body || !me) { cx.notify(); return; }
-    if (body.active !== "timeline") run("layout.select", { stack: "panel-body", child: "timeline" });
-    if (panel.hidden) run("layout.show", { id: "panel" });
   }
 
   // ---------- Aktionen ----------
@@ -677,11 +660,8 @@ export default class Timeline extends View {
     const scope = ui.spaceChip(t);
     const overlay = props()?.overlay;
     const chips = [scope, this.ticketChip(t)].filter(Boolean);
-    const header = overlay
-      ? ui.windowHeader(t, "Timeline", chips, () => closeOverlay(overlay), { meta, metaTip: "Lanes im gewählten Zeitraum",
-        actions: [ui.surfaceToggle(t, "tl-to-panel", "to-panel", () => ui.switchToPanel("timeline", overlay))] })
-      : ui.panelHeader(t, "Timeline", [...chips, div().flex_none().text_size(T_XS).text_color(t.dim).child(`seit ${since}`)],
-        { count: `${count} Lanes`, actions: [ui.surfaceToggle(t, "tl-to-window", "to-window", () => ui.switchToWindow("timeline"))] });
+    // Timeline is a popup only (mod.open:timeline, ⌘⌥0); no side-panel counterpart.
+    const header = ui.windowHeader(t, "Timeline", chips, () => closeOverlay(overlay), { meta, metaTip: "Lanes im gewählten Zeitraum" });
 
     const rows = all.map((x, i) => this.row(t, x.lane, x.depth, marks, now, i));
     // Das Raster liegt hinter den Zeilen: senkrechte Linien über die ganze Höhe.
@@ -711,13 +691,4 @@ export default class Timeline extends View {
   nowLine(t) {
     return div().absolute().top(0).bottom(0).left(`${this.pct(this.now())}%`).w(1).bg(t.blocked + "88");
   }
-}
-
-function find(node, id) {
-  if (node?.id === id) return node;
-  for (const child of node?.children ?? []) {
-    const found = find(child, id);
-    if (found) return found;
-  }
-  return null;
 }

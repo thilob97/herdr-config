@@ -18,8 +18,10 @@ const none = () => null;
 export const div = none, svg = none, image = none, v_flex = none, h_flex = none;
 export class InputState { static new() { return { on() {}, value() { return ""; }, set_value() {} }; } }
 export class ScrollHandle { static new() { return {}; } }
+export const Scrollbar = none, v_virtual_list = none;
 export const Input = { new: (s) => s }, Textarea = {}, TextareaState = { new: (s) => s };
 export const run = none, theme = () => ({}), props = () => ({}), closeOverlay = none, openOverlay = none;
+export const settings = () => ({ zoom: 1, font_family: "mono" }), layout = () => null, window = () => null;
 export const appHome = () => "/tmp", home = () => "/tmp", knownAgents = async () => [];
 export const machines = () => [], readTextFile = async () => null, notify = none;
 export const agents = () => globalThis.__agents ?? [];
@@ -51,6 +53,7 @@ registerHooks({
 const ui = await import(pathToFileURL(join(here, "..", "ui.js")).href);
 const orch = await import(pathToFileURL(join(here, "..", "orchestrator.js")).href);
 const inbox = await import(pathToFileURL(join(here, "..", "..", "inbox", "main.js")).href);
+const review = await import(pathToFileURL(join(here, "..", "..", "review", "main.js")).href);
 
 const WORKSPACES = [
   { id: "spa", name: "Alpha", folder: "/repos/alpha", machine: null, active: false },
@@ -64,8 +67,15 @@ const TICKETS = [
   { id: "b1", status: "review", space: "spb", space_name: "Beta", repo: "/repos/beta" },
 ];
 
+// ui.js caches spaces/terminals/identities for 25 ms (one render pass). Each test world
+// is a new pass, so the clock moves past the window before the next one reads.
+let clockSkew = 0;
+const realNow = Date.now;
+Date.now = () => realNow() + clockSkew;
+
 /** A fresh home: spaces, tickets, agents/terminals, shared state. */
 function world({ active = "spag", agents = [], terminals = [], tickets = TICKETS } = {}) {
+  clockSkew += 1000;
   const list = WORKSPACES.map((s) => ({ ...s, active: s.id === active }));
   globalThis.__spaces = list;
   globalThis.__agents = agents;
@@ -152,6 +162,40 @@ test("ein Agent, dessen Ticket zu Alpha gehört, bleibt in Alpha sichtbar", () =
   const keys = inboxView().entries().map((e) => e.address);
   assert.deepEqual(keys, ["t-a"]);
   assert.equal(inbox.inboxCount().blocked, 1);
+});
+
+// ---------- 1: the orchestrator is `orchestrator` or `orchestrator-<space>` ----------
+
+test("ein Orchestrator mit Space-Namen wartet in der Inbox und zählt mit", () => {
+  const terminals = [{ address: "t-o", name: "orchestrator-sauerteig-app", state: "live", status: "blocked",
+    labels: { "hub.space": "spa" } }];
+  world({ active: "spa", terminals });
+  const orchEntry = inboxView().entries().find((e) => e.kind === "orch");
+  assert.equal(orchEntry?.address, "t-o", "der wartende Orchestrator fehlt nicht mehr");
+  assert.equal(inbox.inboxCount().blocked, 1);
+});
+
+test("Review schickt an orchestrator-<space> des Tickets, nicht an einen fremden", async () => {
+  world({ active: "spa", terminals: [
+    { address: "t-o-a", name: "orchestrator-sauerteig-app", state: "live", labels: { "hub.space": "spa" } },
+    { address: "t-o-b", name: "orchestrator-beta", state: "live", labels: { "hub.space": "spb" } },
+  ] });
+  globalThis.__hc = [];
+  assert.equal(await review.tellOrchestrator("Merge-Konflikt", "spa"), true);
+  const send = globalThis.__hc.at(-1)[0];
+  assert.deepEqual(send.slice(0, 2), ["send", "t-o-a"]);
+  assert.equal(globalThis.__hc.filter((c) => c[0][1] === "t-o-b").length, 0, "Beta bekommt nichts");
+
+  // Ohne Label zählt der Space des Panes (wie orch.find()).
+  const panes = [{ terminal: "t-o-c", tab: "tb1" }];
+  const spaces = [{ id: "spb", name: "Beta", active: true, tabs: [{ id: "tb1" }] }];
+  globalThis.__spaces = spaces;
+  globalThis.__panes = panes;
+  globalThis.__terminals = [{ address: "t-o-c", name: "orchestrator-ohne-label", state: "live", labels: {} }];
+  globalThis.__shared = { "orchestra.tickets": [] };
+  clockSkew += 1000;
+  await review.tellOrchestrator("auch das", "spb");
+  assert.equal(globalThis.__hc.at(-1)[0][1], "t-o-c");
 });
 
 // ---------- 7: handover lines stay in the workspace they were sent from ----------

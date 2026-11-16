@@ -15,7 +15,7 @@
 // `mod.open:graph` (mod.json overlay).
 import { View, div, svg, image, PathBuilder } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { exec, appHome, shared, setShared, theme, settings, props, openOverlay, closeOverlay, run, nextCommand, layout, terminals, updates } from "herdr";
+import { exec, appHome, shared, setShared, theme, settings, props, openOverlay, closeOverlay, run, nextCommand, terminals, updates } from "herdr";
 import * as ui from "./ui.js";
 import { T_XS, T_S, GAP_XS, GAP_S, INSET_PANEL } from "./ui.js";
 import { layoutGraph } from "./layout.js";
@@ -113,7 +113,6 @@ export default class FactoryGraph extends View {
     cx.spawn(async (cx) => {
       for (;;) {
         const c = await nextCommand();
-        if (!props()?.overlay && c === "panel") { this.showPanel(cx); continue; }
         const f = /^filter-(all|working|blocked|done)$/.exec(c);
         if (f) { this.filter = f[1]; localStorage.setItem("graph.filter", f[1]); cx.notify(); continue; }
         const w = /^window-(1h|24h|7d|all)$/.exec(c);
@@ -214,14 +213,6 @@ export default class FactoryGraph extends View {
       }
       cx.notify();
     });
-  }
-
-  /** Der Tab-Knopf ruft `factory.panel`; das Panel zeigt und selektiert den Block. */
-  showPanel(cx) {
-    const root = layout(), panel = find(root, "panel"), body = find(root, "panel-body"), me = find(root, "factory");
-    if (!panel || !body || !me) { cx.notify(); return; }
-    if (body.active !== "factory") run("layout.select", { stack: "panel-body", child: "factory" });
-    if (panel.hidden) run("layout.show", { id: "panel" });
   }
 
   // ---------- Zeichnen ----------
@@ -433,13 +424,4 @@ export default class FactoryGraph extends View {
       .child(this.toolbar(t))
       .child(content);
   }
-}
-
-function find(node, id) {
-  if (node?.id === id) return node;
-  for (const child of node?.children ?? []) {
-    const found = find(child, id);
-    if (found) return found;
-  }
-  return null;
 }

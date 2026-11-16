@@ -436,8 +436,8 @@ export default class StatusBar extends View {
         .cursor_pointer().bg(team.over ? t.blocked + "26" : t.raised).text_color(team.over ? t.blocked : t.muted)
         .when(team.over, e => e.font_medium())
         .hover(s => s.bg(team.over ? t.blocked + "55" : t.hover).text_color(team.over ? t.blocked : t.foreground))
-        .tooltip(team.over ? `Team-Budget überschritten (gesamt ${dollars(team.total)}): Team-Panel öffnen (⌘⌥7)`
-          : `Offene Tickets + Orchestrator dieses Workspace · gesamt ${dollars(team.total)} / ${dollars(team.budget)}: Team-Panel öffnen (⌘⌥7)`)
+        .tooltip(team.over ? `Team-Budget überschritten (gesamt ${dollars(team.total)}): Team-Panel öffnen (⌘⌥⇧7)`
+          : `Offene Tickets + Orchestrator dieses Workspace · gesamt ${dollars(team.total)} / ${dollars(team.budget)}: Team-Panel öffnen (⌘⌥⇧7)`)
         .on_click(() => run("tabs-graph.panel-team"))
         .child(teamText)))
       // The keyboard hint is what the person acts on: muted (dim is below 4.5:1).
