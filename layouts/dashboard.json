@@ -14,6 +14,12 @@
       "type": "block",
       "content": { "mod": "orchestra", "props": { "role": "daemon" } },
       "size": { "px": 0 }
+    },
+    {
+      "id": "hermes-host",
+      "type": "block",
+      "content": { "mod": "hermes", "props": { "role": "host" } },
+      "size": { "px": 0 }
     }
   ]
 }
