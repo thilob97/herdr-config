@@ -124,15 +124,18 @@ export default class Review extends View {
   // system, so an evidence screenshot elsewhere is copied there once for its preview.
   previewEvidence(tk, cx) {
     for (const p of (tk.evidence ?? []).filter((x) => /\.(png|jpe?g|gif|webp)$/i.test(x) && !tk.machine)) {
-      if (this.previews[p] || this.copying.has(p)) continue;
+      // undefined = noch nicht versucht; null = fehlgeschlagen (gelöschter Worktree) und
+      // damit endgültig: sonst kopierte jeder Render erneut und notify'te sich selbst.
+      if (p in this.previews || this.copying.has(p)) continue;
       this.copying.add(p);
       const rel = `data/review/previews/${p.replace(/[^a-zA-Z0-9._-]+/g, "_")}`;
       cx.spawn(async (cx) => {
         try {
           await exec("mkdir", ["-p", `${appHome()}/data/review/previews`]);
           const r = await exec("cp", ["-f", p, `${appHome()}/${rel}`]);
-          if (r.code === 0) this.previews[p] = rel;
-        } finally { this.copying.delete(p); cx.notify(); }
+          this.previews[p] = r.code === 0 ? rel : null;
+        } catch { this.previews[p] = null; }
+        finally { this.copying.delete(p); cx.notify(); }
       });
     }
   }
@@ -371,7 +374,7 @@ export default class Review extends View {
           .when(stale, (x) => x.tooltip("neuer Commit seit dem Lauf — neu prüfen")).child(tk.ci_at)))
         .when(Boolean(url), (el) => el.child(ui.link(t, "rv-ci-url", "PR öffnen", (c) => c.open_url(url), { tip: url })))
         .child(div().flex_1())
-        .when(Boolean(tk.pr), (el) => el.child(ui.button(t, "rv-ci-check", this.busy === "ci" ? "Prüft …" : "Erneut prüfen",
+        .when(Boolean(tk.pr), (el) => el.child(ui.button(t, "rv-ci-check", this.busy === "ci" ? "Prüft …" : "CI neu prüfen",
           (c) => this.checkCi(c), { small: true, enabled: !this.busy && tk.status !== "done",
             tip: stale ? `Der Lauf ist älter als der Worktree-HEAD: hub ci ${tk.id} prüft den PR neu`
               : "gh pr checks: Ergebnis ins Ticket; Fehlschläge mit Log in den Verlauf" }))))
@@ -555,7 +558,7 @@ export default class Review extends View {
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .on_click((_e, cx) => this.pick(f.path, cx))
       .child(div().w(12).flex_none().text_size(T_S).text_color(color).child(f.status))
-      .child(h_flex().flex_1().min_w(0)
+      .child(h_flex().flex_1().min_w(0).tooltip(f.path)
         .child(div().min_w(0).truncate().text_color(t.dim).child(parts.length ? `${parts.join("/")}/` : ""))
         .child(div().flex_none().max_w(200).truncate().text_color(t.foreground).child(name)))
       .when(f.add > 0, (e) => e.child(div().text_size(T_XS).text_color(t.ansi2).child(`+${f.add}`)))
@@ -759,8 +762,12 @@ export default class Review extends View {
             .on_click(() => exec("open", [p]).catch(() => null))
             .when(pic && Boolean(this.previews[p]), (x) => x.child(v_flex().flex_none().w(64).gap(2)
               .child(image(this.previews[p]).w(48).h(48).flex_none().rounded(4).border_1().border_color(t.border))
-              .child(div().w(64).truncate().text_size(T_XS).text_color(t.muted).child(baseName(p)))))
-            .when(pic && !this.previews[p], (x) => x.child(svg("mods/review/icon.svg").size(16).text_color(t.muted)))
+              .child(div().w(64).truncate().tooltip(p).text_size(T_XS).text_color(t.muted).child(baseName(p)))))
+            .when(pic && this.previews[p] === null, (x) => x.child(v_flex().flex_none().w(64).gap(2)
+              .child(div().size(48).flex_none().flex().items_center().justify_center().rounded(4).border_1().border_color(t.border)
+                .child(svg("mods/review/icon.svg").size(16).text_color(t.blocked)))
+              .child(div().w(64).tooltip(p).text_size(T_XS).text_color(t.blocked).child("Nachweis nicht mehr vorhanden"))))
+            .when(pic && this.previews[p] === undefined, (x) => x.child(svg("mods/review/icon.svg").size(16).text_color(t.muted)))
             .when(!pic, (x) => x.child(div().text_size(T_S).text_color(t.muted).hover((s) => s.text_color(t.foreground)).child(baseName(p))));
         }))
         .when(!local && evidence.length > 0, (x) => x.child(div().text_size(T_XS).text_color(t.muted).child(`auf ${tk.machine}`)))))

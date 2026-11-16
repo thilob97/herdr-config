@@ -1,7 +1,8 @@
 // Auftrag: the one way in for new work (tab bar "Auftrag", ⌘⇧N, Quests).
-// props { mode?: "team" | "self", ticket? } (spec 7.4); without a mode it asks the
-// team when an orchestrator runs, else starts by hand.
-// - "Ans Team": a text to the orchestrator (hc send orchestrator; --force while it
+// props { mode?: "team" | "self", ticket? } (spec 7.4); without a mode it is always
+// "Ans Team". Without a live orchestrator that page offers the button "Orchestrator
+// starten" (hub orchestrator start for this workspace).
+// - "Ans Team": a text to the orchestrator (hc send <address>; --force while it
 //   waits on a question). It plans tickets, dispatches them and brings them back
 //   checked, through the inbox.
 // - "Selbst starten": one or more agents (fan out: one per picked agent) in a space,
@@ -19,11 +20,11 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea } from "gpui-base";
-import { spaces, focused, exec, hc, knownAgents, notify, props, closeOverlay, theme, shared, setShared, home, appHome, readTextFile, terminals } from "herdr";
+import { spaces, panes, focused, exec, hc, knownAgents, notify, props, closeOverlay, theme, shared, setShared, home, appHome, readTextFile, terminals } from "herdr";
 import * as fs from "fs/promises";
 import { place, git, repoOf, homeOn, slug } from "./git.js";
 import * as ui from "./ui.js";
-import { T_XS, T_S, T_M } from "./ui.js";
+import { T_S, T_M } from "./ui.js";
 
 const WC = "mods/workspace-chrome";
 const TEMPLATES = () => `${appHome()}/mods/launcher/templates`;
@@ -115,8 +116,9 @@ export default class Launcher extends View {
     if (tk.space && spaces().some((s) => s.id === tk.space)) return tk.space;
     const hint = String(tk.repo ?? "").trim().toLowerCase().replace(/\/+$/, "");
     if (!hint) return null;
+    const all = panes();
     return spaces().find((s) => {
-      const at = String(place(s) ?? "").toLowerCase().replace(/\/+$/, "");
+      const at = String(place(s, all) ?? "").toLowerCase().replace(/\/+$/, "");
       return at === hint || s.name.toLowerCase() === hint || at.endsWith(`/${hint}`);
     })?.id ?? null;
   }
@@ -131,7 +133,7 @@ export default class Launcher extends View {
     this.agents = null;
     if (!s) return;
     const on = s.machine ?? null;
-    const folder = place(s) ?? "";
+    const folder = place(s, panes()) ?? "";
     this.folder.set_value(folder);
     cx.spawn(async (cx) => {
       const [repo, list] = await Promise.all([folder ? repoOf(folder, on).catch(() => null) : null, knownAgents({ on }).catch(() => [])]);
@@ -234,7 +236,7 @@ export default class Launcher extends View {
     const text = this.task.value();
     const made = [];
     for (const l of list) {
-      let folder = this.folder.value().trim() || place(s) || "";
+      let folder = this.folder.value().trim() || place(s, panes()) || "";
       let branch = null;
       if (worktree) {
         branch = list.length > 1 ? `${base}-${l.key}` : base;
@@ -352,6 +354,7 @@ export default class Launcher extends View {
 
   selfBody(t) {
     const s = this.space();
+    const all = panes();
     const r = this.repo;
     const n = this.picked.size;
     const repoLine = !s ? "" : r === undefined ? "lese Repository …" : r === null ? "kein Git-Repository: kein Worktree möglich" : `${r.name} · ${r.top}`;
@@ -362,7 +365,7 @@ export default class Launcher extends View {
         .children(this.templates.map((tp) => this.listRow(t, `tp-${tp.id}`, this.template === tp.id, tp.name, tp.body.split("\n")[0], (cx) => this.useTemplate(tp, cx)))))
       .child(this.label(t, "Space · Maschine"))
       .child(v_flex().id("ln-spaces").flex_1().min_h(80).overflow_y_scrollbar().gap(2)
-        .children(spaces().map((x) => this.listRow(t, `sp-${x.id}`, x.id === this.spaceId, x.name, `${x.machine ?? "dieser Rechner"} · ${place(x) ?? ""}`, (cx) => this.pick(cx, x.id)))));
+        .children(spaces().map((x) => this.listRow(t, `sp-${x.id}`, x.id === this.spaceId, x.name, `${x.machine ?? "dieser Rechner"} · ${place(x, all) ?? ""}`, (cx) => this.pick(cx, x.id)))));
 
     const right = v_flex().flex_1().min_w(0).h_full().min_h(0).gap(ui.GAP_S)
       .child(this.label(t, `Agents${n > 1 ? ` · ${n} parallel` : ""}`))

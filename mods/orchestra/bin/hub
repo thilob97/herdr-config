@@ -226,6 +226,11 @@ HARNESS_KEYS = {
 }
 
 
+def roster_payload(entry):
+    """The roster entry plus the harness fields its program actually reads."""
+    return {**entry, "harness_keys": list(HARNESS_KEYS.get(entry.get("program") or "omp", ["model"]))}
+
+
 def as_list(value):
     if isinstance(value, str):
         return [x.strip() for x in value.split(",") if x.strip()]
@@ -2944,13 +2949,17 @@ def agent_changes(a):
             die(f"unbekannter Approval-Modus {mode!r} (erlaubt: {', '.join(APPROVAL_MODES)})")
         harness["approval_mode"] = mode
     if getattr(a, "max_cost", None) is not None:
-        try:
-            cost = float(a.max_cost)
-        except (TypeError, ValueError):
-            die(f"Kostenlimit muss eine Zahl sein: {a.max_cost!r}")
-        if cost <= 0:
-            die("Kostenlimit muss größer als 0 sein (nicht setzen = unbegrenzt)")
-        harness["max_cost"] = cost
+        raw = str(a.max_cost).strip()
+        if not raw:
+            harness["max_cost"] = 0  # "" entfernt das Limit; 0 heißt unbegrenzt
+        else:
+            try:
+                cost = float(raw)
+            except (TypeError, ValueError):
+                die(f"Kostenlimit muss eine Zahl sein: {a.max_cost!r}")
+            if cost <= 0:
+                die("Kostenlimit muss größer als 0 sein (leer lassen oder \"\" entfernt es)")
+            harness["max_cost"] = cost
     if getattr(a, "models", None) is not None:
         harness["models"] = as_list(a.models)
     if getattr(a, "no_lsp", None) is not None:
@@ -3002,7 +3011,7 @@ def agent_view(entry):
 def cmd_agent_list(a):
     rows = read_roster()
     if a.json:
-        print(json.dumps(rows, ensure_ascii=False, indent=1))
+        print(json.dumps([roster_payload(r) for r in rows], ensure_ascii=False, indent=1))
         return
     if not rows:
         print("keine Agents")
@@ -3018,7 +3027,7 @@ def cmd_agent_show(a):
     if not found:
         die(f"kein Agent {a.name!r} im Roster")
     if a.json:
-        print(json.dumps(found, ensure_ascii=False, indent=1))
+        print(json.dumps(roster_payload(found), ensure_ascii=False, indent=1))
         return
     for k, v in agent_view(found):
         print(f"{k}: {v or '-'}")
@@ -5246,7 +5255,8 @@ def main():
         p.add_argument("--models", help="Models-Liste für Ctrl+P, kommagetrennt")
         p.add_argument("--approval-mode", metavar="MODE",
                        help="always-ask|always-ask-cached|write|yolo")
-        p.add_argument("--max-cost", dest="max_cost", metavar="USD", help="Kostenlimit in USD (> 0)")
+        p.add_argument("--max-cost", dest="max_cost", metavar="USD",
+                       help="Kostenlimit in USD (> 0); \"\" entfernt es")
         p.add_argument("--no-lsp", dest="no_lsp", action="store_true", default=None)
         p.add_argument("--lsp", dest="no_lsp", action="store_false", default=None)
         p.add_argument("--skills", help="kommagetrennt")

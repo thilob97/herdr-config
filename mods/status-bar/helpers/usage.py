@@ -15,7 +15,7 @@ def omp(*args, timeout):
     r = subprocess.run([exe, *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
     if r.returncode != 0:
         lines = [l for l in (r.stderr or r.stdout).splitlines() if l.strip()]
-        raise RuntimeError(f"omp {args[0]} exited {r.returncode}: {(lines or ['no output'])[-1][:160]}")
+        raise RuntimeError(f"omp {args[0]} endete mit Code {r.returncode}: {(lines or ['keine Ausgabe'])[-1][:160]}")
     return r.stdout
 
 
@@ -42,12 +42,12 @@ def limits():
             "error": str(rep.get("error"))[:160] if rep.get("error") else None,
             "windows": windows,
         })
-    # Accounts omp can't read limits of: shown dimmed with the reason, never as a made-up %.
-    disabled = [{"provider": d.get("provider"), "reason": str(d.get("cause") or "disabled")[:160]}
+    # Konten, deren Limits omp nicht lesen kann: gedämpft mit Grund, nie als erfundene %.
+    disabled = [{"provider": d.get("provider"), "reason": str(d.get("cause") or "deaktiviert")[:160]}
                 for d in data.get("disabledCredentials") or []]
     for a in data.get("accountsWithoutUsage") or []:
         a = a if isinstance(a, dict) else {"provider": str(a)}
-        disabled.append({"provider": a.get("provider"), "reason": str(a.get("reason") or "no usage API")[:160]})
+        disabled.append({"provider": a.get("provider"), "reason": str(a.get("reason") or "keine Usage-API")[:160]})
     return {"providers": providers, "disabled": disabled}
 
 
@@ -55,7 +55,7 @@ def costs():
     omp("stats", "--json", timeout=120)  # syncs new session entries into stats.db; its own JSON covers ~2 days only
     db = pathlib.Path(os.path.expanduser("~/.omp/stats.db"))
     if not db.exists():
-        raise RuntimeError("no ~/.omp/stats.db")
+        raise RuntimeError("keine ~/.omp/stats.db")
     con = sqlite3.connect(db.as_uri() + "?mode=ro", uri=True)
     midnight = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     t = lambda days: int((midnight - datetime.timedelta(days=days)).timestamp() * 1000)

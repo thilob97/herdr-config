@@ -1,8 +1,9 @@
 // Git and place helpers, as the shipped worktree mod and quests do it.
-import { exec, panes } from "herdr";
+import { exec } from "herdr";
 
 // Where a space is now: its first terminal's live folder, else where it was made.
-export function place(s, all = panes()) {
+// `all` is the caller's pane snapshot (one host read per render, not one per space).
+export function place(s, all) {
   if (!s) return null;
   const tabs = new Set((s.tabs ?? []).map((c) => c.id));
   return all.find((p) => tabs.has(p.tab) && p.cwd)?.cwd || s.folder || null;
