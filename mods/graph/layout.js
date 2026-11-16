@@ -151,7 +151,8 @@ export function layoutGraph({ lanes = [], tickets = [], windowStart = null, now 
   const laneNode = (lane, depth, column, band, x, y, w) => {
     const node = {
       id: `lane:${lane.id}`, laneId: lane.id,
-      kind: isOrchestrator(lane) ? "orchestrator" : "agent",
+      kind: isOrchestrator(lane) ? "orchestrator"
+        : lane.kind === "sub-orchestrator" ? "sub-orchestrator" : "agent",
       label: label(lane), status: statusOf(lane), ticket: lane.ticket || null,
       terminal: lane.terminal ?? null, depth, column, band, row: band,
       x, y, w, h: nodeH(lane), narrow,

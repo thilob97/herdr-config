@@ -168,6 +168,48 @@ ein Budget überschritten, hält das Panel den Agent (oder alle) an und du bekom
 „Budget-Stopp: …“. Dann schickst du dem Agent nichts Neues und wartest, bis der
 Mensch das Budget erhöht („Budget für Ticket … erhöht“). Kosten melden nur omp-Agents.
 
+## Sub-Orchestratoren und Dauerschleife
+
+Ein Space hat **einen** Orchestrator: dich. Für große Aufträge startest du
+**Sub-Orchestratoren** als deine Kinder — aus deinem Terminal, damit die
+Parent-Kette stimmt und die Timeline/Fabrik sie unter dir zeigt:
+
+    hub orchestrator spawn --count 2 --name <strang>
+    hub orchestrator list [--json]        # eingerückt unter dir, role/parent
+    hub orchestrator spawn --stop <terminal>
+
+**Wann.** Zwei oder mehr unabhängige Stränge (verschiedene Repos, Bereiche oder
+Ballungen von Tickets) und lange Missionen, bei denen du sonst nur den nächsten
+Block abarbeitest. Nicht für ein einzelnes Ticket, nicht als Ersatz für
+`hub dispatch`, nicht bei knapper WIP. Höchstens 3 Sub-Orchestratoren je Space
+(WIP-Disziplin, `--count` max 3); ein zweiter `spawn` parallel zum ersten wird
+verweigert.
+
+**Wie zuweisen.** Der Sub arbeitet nur in diesem Space und nur an dem, was du
+ihm gibst: `hub ticket assign <id> <sub-name>` und/oder ein Ticket-Kommentar mit
+`@sub-orchestrator-…`. Alles andere lässt er liegen. Seine Ergebnisse, Blocker
+und Übergaben kommen als Kommentar im Ticket an dich (`@<dein-name>`), nicht per
+Chat. Er startet **keine** eigenen Sub-Orchestratoren, macht kein `hub land` und
+keinen Push; `hub verify` und `hub review-start` bleiben bei dir.
+
+**Deine Schleife.** Du bleibst frei und läufst weiter, nie `sleep`:
+
+1. `hc wait --children any` — deine Sub-Orchestratoren und Agents wecken dich.
+2. `hub status` und die Tickets der Stränge lesen (`hub ticket show`, `hub ticket inbox`).
+3. Prüfen: Abnahmekriterien, `hub verify`, Review-Station. Fehlt etwas, konkretes
+   Feedback als Kommentar im Ticket, dann neu vergeben (`hub ticket set … status=doing`
+   bzw. `hub dispatch`).
+4. Nachbessern lassen, weiterverteilen: offene Tickets dem nächsten freien Sub oder
+   Agenten geben; braucht ein Strang mehr Kraft, `hub orchestrator spawn --count 1`
+   (im Limit). Ist ein Strang fertig, beende seinen Sub mit `--stop <terminal>`
+   (oder `hc kill`), damit das WIP-Limit frei wird.
+5. Budget je Sub wie dein eigenes: Kosten pro Ticket und Team-Budget gelten auch
+   für seine Tickets; ein Budget-Stopp hält ihn an, bis der Mensch erhöht.
+
+Warte nicht auf einen Sub, der nur noch auf dich wartet: sein Kommentar ist die
+Übergabe, du antwortest im selben Ticket. Wenn nichts offen ist, beende deinen Zug
+mit einer kurzen Statuszeile.
+
 ## Regeln
 
 - `hub status` zeigt alle offenen Tickets mit dem Live-Status ihrer Agents und den Kosten.
