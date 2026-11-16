@@ -80,18 +80,27 @@ async function must(m, argv, opts) {
   return r;
 }
 
+// The bytes of a file readTextFile won't return: it stops at 1 MiB, and a
+// ~/.claude.json past that is no reason to treat the file as absent.
+async function readByExec(m, path) {
+  const r = m.win
+    ? await exec("cmd", ["/d", "/c", "type", path], { timeout: READ }).catch(() => null)
+    : await exec("sh", ["-c", 'cat "$1"', "sh", path], { on: m.name, timeout: READ }).catch(() => null);
+  return r?.code === 0 ? r.stdout : null;
+}
+
 // A JSON file's text (null when absent) and data; invalid JSON fails instead of reading as empty,
 // so an edit never replaces a file it couldn't parse.
-// shortcut: readTextFile reads up to 1 MiB; a bigger ~/.claude.json fails to read, then read it by exec.
-async function readJson(m, path) {
-  const text = await readTextFile(path, { on: m.name }).catch(() => null);
+export async function readJson(m, path) {
+  let text = await readTextFile(path, { on: m.name }).catch(() => null);
+  if (text == null) text = await readByExec(m, path);
   if (text == null || !text.trim()) return { text, data: null };
-  try { return { text, data: JSON.parse(text) }; } catch { throw new Error(`${path} isn't valid JSON.`); }
+  try { return { text, data: JSON.parse(text) }; } catch { throw new Error(`${path} enthält kein gültiges JSON.`); }
 }
 
 function parseJson(text) {
   const i = text.search(/[[{]/);
-  if (i < 0) throw new Error("no JSON in output");
+  if (i < 0) throw new Error("kein JSON in der Ausgabe");
   return JSON.parse(text.slice(i));
 }
 
@@ -233,17 +242,17 @@ async function editJson(m, path, mutate) {
     return;
   }
   // Written in place (not moved over) so the file keeps its permissions: it may hold tokens.
-  const script = '[ "$(cat "$3" 2>/dev/null)" = "$(printf %s "$4")" ] || { echo "$3 changed meanwhile; try again." >&2; exit 3; }; mkdir -p "$1" && printf "%s" "$2" > "$3"';
+  const script = '[ "$(cat "$3" 2>/dev/null)" = "$(printf %s "$4")" ] || { echo "$3 wurde inzwischen geändert; bitte erneut versuchen." >&2; exit 3; }; mkdir -p "$1" && printf "%s" "$2" > "$3"';
   await must(m, ["sh", "-c", script, "sh", dirOf(path), out, path, text ?? ""]);
 }
 
 const putServer = (name, def, schema) => (d) => {
-  if (d.mcpServers?.[name]) throw new Error(`${name} is already there.`);
+  if (d.mcpServers?.[name]) throw new Error(`${name} ist dort schon vorhanden.`);
   if (schema) d.$schema ??= OMP_SCHEMA;
   d.mcpServers = { ...(d.mcpServers ?? {}), [name]: def };
 };
 const dropServer = (name) => (d) => {
-  if (!d.mcpServers?.[name]) throw new Error(`${name} isn't in this file any more.`);
+  if (!d.mcpServers?.[name]) throw new Error(`${name} steht nicht mehr in dieser Datei.`);
   delete d.mcpServers[name];
 };
 

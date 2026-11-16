@@ -87,7 +87,7 @@ export default class WorkspaceChrome extends View {
         const dot = (tool.id === "settings" && ready) || (tool.toggle && calmOn());
         return dot ? b.child(div().absolute().top(3).right(3).size(6).rounded_full().bg(t.accent)) : b;
       }))
-      .when(collapsed, (el) => el.child(this.button("footer-more", H_BTN_S, "more", "Marketplaces, MCP-Server, Maschinen, Tastenkürzel",
+      .when(collapsed, (el) => el.child(this.button("footer-more", H_BTN_S, "more", TOOLS.slice(1).map((tool) => tool.label).join(", "),
         () => openOverlay({ mod: "sidebar-footer", kind: "popup", width: 240, height: 5 * (H_ROW + 2) + 2 * GAP_XS, props: { more: true } }))));
   }
 

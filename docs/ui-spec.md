@@ -127,7 +127,7 @@ Der Toast unten rechts in einigen Bildern („herdr-core 0.1.21 is ready“) ist
 | G6 | **Sprache** gemischt: „Needs you“, „Working“, „Idle“, „Pinned“, „Settings“, „MCP servers“, „Add machine“, „5 agents“, „Costs & limits“ neben „wartet“, „Tastenkürzel“, „Starten“. | agent-cards, sidebar-footer, status-bar |
 | G7 | **Sektionsköpfe** mal Großbuchstaben (Inbox, Launcher, Cheatsheet, Statusleisten-Karte), mal nicht; Abstände `pt(6)`/`pt(10)` im selben Panel. | `inbox:159`, `launcher:180`, `cheatsheet:122`, `orchestra/main.js:268`, `hubview.js:205` |
 | G8 | **Hex-Farben** statt Theme in `space-folders/main.js:138,578,794`. | |
-| G9 | **Pink doppelt belegt**: Theme `accent` = `blocked` = `#ff5fb4`. Fokus-Rahmen und „wartet auf dich“ sind dieselbe Farbe. | `themes/elric.json` |
+| G9 | **Statusfarben getrennt** (früher Pink doppelt belegt): Fokus `accent` `#4c8dff`, „wartet“ `blocked` `#ef6d6d`. | `themes/elric.json` |
 | G10 | Popups: Titel 15 ohne Kopfzeile (Inbox, Launcher, Cheatsheet), Fenster mit Kopfzeile 44/46 (Review, Marketplaces, MCP). Esc-Chip nur in Inbox/Launcher. | |
 | G11 | Ausgelieferte Teile bleiben englisch und eigen (Pane-Kopf „Needs you“, Changes „No uncommitted changes“, „+“-Menü). | nicht änderbar ohne Klon; bewusst so gelassen |
 
@@ -321,9 +321,9 @@ Keine Großbuchstaben-Labels (außer Tastenkürzel). Kein `font_bold` außer dem
 Tönungen nur als Theme-Farbe + Alpha-Suffix: `"26"` (Chip-Hintergrund), `"55"` (Halo), `"88"` (leise Linie).
 Keine Hex-Literale in Mods.
 
-**Pink ist doppelt belegt** (`accent` = `blocked`): Pink bedeutet „Tastaturfokus“ (Pane, Eingabe,
-fokussierte Agent-Karte) oder „wartet auf dich“. „Wartet“ wird deshalb nie nur über Farbe gezeigt, immer
-mit Statusanzeige 5.6 und Wort. Auswahl in Listen ist `selected` (kein pinker Rand). Das Theme bleibt.
+**Akzent und Warten sind getrennt**: `accent` `#4c8dff` (blau) zeigt Tastaturfokus (Pane, Eingabe,
+fokussierte Agent-Karte), `blocked` `#ef6d6d` (rot) „wartet auf dich“. „Wartet“ wird nie nur über Farbe
+gezeigt, immer mit Statusanzeige 5.6 und Wort. Auswahl in Listen ist `selected`.
 
 ### 5.5 Icons
 
@@ -423,7 +423,7 @@ Nur diese Änderungen; IDs bleiben, `orchestra-daemon` bleibt.
 { "id": "sidebar-footer", "type": "block", "content": { "mod": "sidebar-footer", "props": { "footer": true } }, "size": { "px": 28 } }
 ```
 
-Alles andere (Breiten 268/368, `work-body` padding 8 / gap 8, `tabs` 42, `status-row` 28,
+Alles andere (Breiten 268/368, `work-body` padding 10 / gap 10, `tabs` 42, `status-row` 28,
 Pane-Rahmen) bleibt.
 
 ---
@@ -491,178 +491,6 @@ Mit `ticket` öffnet es im Ticket-Modus (4.1 Punkt 4).
 
 `run("tabs-graph.panel-team")` und `run("tabs-graph.panel-quests")` (bestehen schon). Die Statusleiste
 nutzt das für den Budget-Chip.
-
----
-
-## 8. Umsetzungspakete
-
-Jedes Paket arbeitet in seinem Worktree, prüft mit `docs/ui-preview.sh` (Abschnitt 1) und legt
-Vorher/Nachher-Screenshots unter `/tmp/ui-audit/<A|B|C>-…png` ab. Ein Mod gilt erst als fertig mit
-`docs/ui-preview.sh check <mod>` grün und Sichtprüfung im Test-Fenster. Für alle gilt: Tokens aus
-Abschnitt 5, keine Hex-Farben, deutsche Texte, Prüfbefehle aus Abschnitt 10 ohne Treffer in den eigenen
-Dateien.
-
-### Paket A — Sidebar und Agent-Darstellung
-
-**Dateien (nur diese):** `mods/space-folders/**`, `mods/agent-cards/**`, `mods/sidebar-footer/**`,
-`layouts/elric.json`, `docs/ui/notes-A.md` (neu).
-
-- [ ] A1 `layouts/elric.json` wie Abschnitt 6.
-- [ ] A2 `sidebar-footer` Kopf (ohne `props.footer`): h 42, Logo 20, „Herdr“ `T_L` semibold, Icon-Knöpfe
-      26 (Suche, Sidebar ein/aus); Rail-Verhalten unverändert.
-- [ ] A3 `sidebar-footer` Fuß (`props.footer`): **eine** Zeile h 28, `bg(chrome)`, `border_t`, Icon-Knöpfe
-      22 mit Icon 14 nebeneinander: Einstellungen (mit Update-Punkt), Marketplaces, MCP-Server,
-      Maschine hinzufügen, Tastenkürzel; Tooltips deutsch mit Taste (`⌘/` bei Tastenkürzel). Im Rail
-      (76 px) passt keine Zeile mit fünf Knöpfen: dort Einstellungen + Icon-Knopf „…“ (Popup mit den übrigen vier).
-- [ ] A4 `space-folders` Kopf: Sektionskopf h 28 „Spaces“; Zeilen h 28, radius 6; Maschinen-Zeile als
-      Sektionskopf-Variante (Icon 12, `T_S`); Hex-Farben (`main.js:138,578,794`) durch Theme-Farben
-      ersetzen (Kacheln: `ansi*`, Glyphe `background`).
-- [ ] A5 `space-folders` passt die Höhe von `spaces` dem Inhalt an:
-      `run("layout.resize", {id: "spaces", px})` mit px = Kopf + sichtbare Zeilen × 28 + 8, begrenzt auf
-      [90, 40 % der Höhe von `sidebar-lists`]; nur wenn sich die Zeilenzahl ändert (keine Schleife über
-      `on_size_change`), nie im Rail.
-- [ ] A6 `agent-cards` Karte nach 5.6: radius 8, `surface`, ohne Seitenstreifen, p 10, Abstand 6;
-      Zeile 1: Avatar 28 · Name `T_L` semibold · Space `T_S` dim · Statusanzeige; Zeile 2: Tab/Titel `T_S`
-      muted · Dauer `T_XS` dim; Zeile 3 (omp): Modell · ctx · Kosten `T_XS` dim + ctx-Balken 2 px.
-      Zielhöhe ≤ 56 px. Kopf „Agents“ als Sektionskopf h 28 (ohne `pt(14)`); Gruppenköpfe h 28.
-- [ ] A7 `agent-cards` Statusanzeige und Wörter nach 5.6; Sektionen deutsch („Wartet auf dich“,
-      „Arbeitet“, „Fertig“, „Ruhig“, „Angeheftet“); Leertext deutsch.
-- [ ] A8 Hover-Knöpfe: **Review** (7.5 mit `terminal`), **Unterbrechen** (`hc interrupt`), **Mehr (…)**
-      → Popup mit Plugins, MCP-Server, Anheften/Lösen, Umbenennen.
-- [ ] A9 Mehrfachauswahl: ⌘-Klick wählt/abwählt (Karte `selected`, Häkchen statt Avatar); bei Auswahl
-      erscheint über dem Sidebar-Fuß eine Auswahlleiste (`bg(chrome)`, `border_t`): „n ausgewählt“ ·
-      Link „aufheben“ · Eingabe „Nachricht an die Auswahl…“ mit Senden (wie heute `orchestra/main.js:114-151`,
-      inkl. „auch wartende“ → `--force`) · Sekundärknöpfe „Unterbrechen“, „Als Team beobachten“ (7.2).
-- [ ] A10 `agents.identity` veröffentlichen (7.1).
-- [ ] A11 `docs/ui/notes-A.md`: was sich für den Menschen ändert (für README, siehe 9).
-
-**Abnahme A**
-- `A-sidebar.png`: Sidebar-Kopf und Tab-Leiste enden auf derselben Linie; Fuß ist eine 28-px-Zeile auf
-  Höhe der Statusleiste; zwischen letztem Space und „Agents“ ≤ 12 px Leerraum bei 3 Spaces.
-- `A-sidebar-many.png` mit 10 Spaces (`do space.new …`): Spaces-Block wächst bis 40 % und scrollt dann.
-- Mit 5 Demo-Agents (`up`) sind alle 5 Karten ohne Scrollen sichtbar.
-- `A-select.png`: zwei Karten ausgewählt, Auswahlleiste sichtbar; Nachricht kommt bei beiden an
-  (`docs/ui-preview.sh hc read t1`); „Als Team beobachten“ erzeugt ein Team, das im Team-Panel erscheint.
-- `A-hover.png`: Hover-Knöpfe Review/Unterbrechen/Mehr; Review öffnet das Review-Fenster.
-- `shared.json` des Test-Homes enthält `agents.identity` mit Namen, die den Karten entsprechen.
-- `A-rail.png` (76 px): Rail funktioniert wie vorher.
-
-### Paket B — Agenten-Fabrik
-
-**Dateien (nur diese):** `mods/orchestra/**` (inkl. `bin/hub`, `orchestrator.md`), `mods/quests/**`,
-`mods/inbox/**`, `mods/review/**`, `mods/toast-review/**`, `mods/launcher/**`, `layouts/quests.json`,
-`layouts/quests.svg`, `README.md`.
-
-- [ ] B1 Team-Panel Kopf nach 5.6: Titel „Team“; rechts Stufenleiste (Segment-Optik, nur Anzeige +
-      Sprung): `Geplant n › In Arbeit n › Prüfung n › Fertig n`; Prüfung in `blocked`-Farbe, wenn > 0.
-      Entfällt: „Starten“, Status-Zusammenfassung.
-- [ ] B2 Orchestrator-Karte kompakt (Karte 5.6): Zeile 1 Icon 14 · „Orchestrator“ `T_L` · Status-Chip ·
-      Agent-Wahl `T_S` dim · Kosten · Icon-Knöpfe Öffnen/Neu starten/Anhalten; Zeile 2 Schritt bzw. letzte
-      Nachricht, höchstens 2 Zeilen `T_S` muted (Klick: Terminal). Eingabe nur, wenn er `blocked` ist
-      („Antwort an den Orchestrator…“). Ohne laufenden Orchestrator: Satz + Sekundärknopf „Starten“
-      (das einzige verbliebene „Starten“, es startet den Orchestrator, nicht Arbeit). Zielhöhe ≤ 84 px.
-- [ ] B3 Sektionen in der Reihenfolge 4.1 Punkt 5, Sektionsköpfe 5.6.
-- [ ] B4 Ticket-Zeile (zweizeilig, Karte): Statusanzeige · Titel `T_M` · rechts Kosten `$x / $y`
-      (`T_XS`, über Budget `blocked`); Zeile 2: Identitäts-Chip des Agents (7.1) · Branch `T_S` dim ·
-      Gate-Chips (7.6). Prüfung: zusätzlich Zusammenfassung (2 Zeilen, `T_S` muted) und **ein**
-      Primärknopf „Prüfen“ (7.5 mit `ticket`). Budget-Stopp: Zeile in `blocked` + Primärknopf „+$n“.
-- [ ] B5 Agent-Graph, Auswahl und Auswahl-Aktionen aus `orchestra/main.js` entfernen (zieht nach A).
-      Sektion Teams bleibt (Gruppenkarte mit Identitäts-Chips statt Programmnamen).
-- [ ] B6 Budget-Chips ans Ende der Sektion „In Arbeit“ (Chip-Stil 5.6), Verhalten wie heute.
-- [ ] B7 `bin/hub review` mit `--checks` und `--evidence`; `tickets.js` und `orchestra.tickets` tragen
-      die Felder (7.6); `orchestrator.md` verlangt sie.
-- [ ] B8 Review-Fenster: Titelzeile 5.6; Ticket-Modus mit Kopfbereich (Titel, Gate-Chips, Zusammenfassung,
-      Nachweise als Links `exec("open", [pfad])`), Diff wie heute, Fußleiste `bg(chrome)`:
-      Mergen (primär) · PR · Änderungen … (Eingabe → Orchestrator) · Link „Nur abnehmen“. Terminal-Modus
-      wie heute, Knöpfe nach 5.6. Ergebnis-Meldung im Fenster.
-- [ ] B9 Inbox: Titelzeile 5.6, Sektionen „Rückfragen“, „Abnahmen“, „Fertig“, „Arbeitet“ (4.1 Punkt 3),
-      Abnahmen-Zeile öffnet das Review-Fenster im Ticket-Modus; Orchestrator-Rückfrage mit Antwortfeld;
-      Zähler im Kopf = 7.3; Liste füllt die Höhe (kein `h(520)`); Identitäts-Chips.
-- [ ] B10 Launcher als „Auftrag“-Dialog: Titel „Auftrag“, Segment „Ans Team | Selbst starten“ (7.4);
-      „Ans Team“: großes Textfeld + Primärknopf „An das Team“ (`hc send orchestrator`, bei blocked
-      `--force`), Hinweis, falls kein Orchestrator läuft; „Selbst starten“ wie heute. `props.ticket`
-      füllt Text, Tab-Name und Branch vor. Sektionsköpfe ohne Großbuchstaben.
-- [ ] B11 Quests: Panel-Kopf 5.6 (Titel „Quests“, kein Icon davor), Segment, Zeilen 5.6; „Orchestrator“
-      (Hover) und „An Orchestrator“/„Start“ (Detail) öffnen den Auftrag-Dialog mit `ticket` und passendem
-      `mode`. Quests-Layout (`layouts/quests.json`) nur, wenn für den Kopf nötig.
-- [ ] B12 Toasts: Knöpfe nach 5.6 (Review = Sekundär), Text `T_M`/`T_S`.
-- [ ] B13 `README.md`: Agent-Zentrale auf den neuen Stand; Abschnitte aus `docs/ui/notes-A.md` und
-      `docs/ui/notes-C.md` einarbeiten (Ablauf in 9).
-
-**Abnahme B**
-- `B-team.png`: Kopf ohne „Starten“; Stufenleiste zeigt 1/1/1/1 (Demo-Daten); Prüfung-Ticket mit
-  Gate-Chips und einem Knopf „Prüfen“; Orchestrator-Karte ≤ 84 px; kein Agent-Graph.
-- `B-review-ticket.png`: Review-Fenster aus „Prüfen“ zeigt Zusammenfassung, Nachweise, Diff von
-  `feat/demo-review` gegen `main` und die Fußleiste; „Mergen“ mergt im Demo-Repo
-  (`git -C ~/.herdr/ui-preview/<wt>/demo/repo log --oneline` zeigt den Merge).
-- `B-inbox.png`: Rückfragen (Demo-claude blocked), Abnahmen (demo-1), Fertig; Zähler = Tab-Leisten-Zahl.
-- `B-auftrag.png`: Dialog im Modus „Ans Team“; Senden erscheint im Fake-Orchestrator
-  (`docs/ui-preview.sh hc read orchestrator` zeigt den gesendeten Text als Terminal-Echo).
-- `B-quests.png`: Panel-Kopf wie Changes; „Orchestrator“ öffnet den Auftrag-Dialog mit Ticket.
-- `docs/ui-preview.sh hub review demo-1 --summary x --checks pass --evidence /tmp/ui-audit/B-team.png`
-  setzt die Felder; die Chips erscheinen.
-
-### Paket C — Rahmen und Werkzeuge
-
-**Dateien (nur diese):** `mods/tabs-graph/**`, `mods/status-bar/**`, `mods/filetree/**`,
-`mods/file-icons/**`, `mods/git-graph/**`, `mods/blueprint/**`, `mods/docker/**`, `mods/cheatsheet/**`,
-`mods/marketplaces/**`, `mods/mcp-servers/**`, `themes/elric.json`, `keys.json`, `docs/ui/notes-C.md` (neu).
-
-- [ ] C1 Tab-Leiste: Tabs h 28, radius 6, `T_M`, Statusanzeige 5.6; „+“ direkt hinter dem letzten Tab
-      (Icon-Knopf 26). Rechts: Primärknopf **Auftrag** (Icon 14 + Text, ⌘⇧N, 7.4) · Leisten-Knopf
-      **Inbox** mit Zähler-Badge nach 7.3 · Icon-Knopf **Review** (Tooltip mit ⌘⇧R) · Segment *Fabrik*
-      (Quests, Team) · Segment *Werkzeuge* (Changes, Git, Tree, Blueprint, Docker), 8 px Abstand zwischen
-      den Segmenten; offenes Panel zeigt seinen Namen.
-- [ ] C2 Statusleiste: links Ort und Branch; entfernt: „N agents“, Attention-Badge (Logik
-      `attention.since`, ⌘J und Team-Beobachtung bleiben!); rechts: Limits-Chips, „$x heute“, Chip
-      „Team $x / $y“ (aus `orchestra.costs`/`orchestra.budget`, über Budget `blocked`; Klick
-      `tabs-graph.panel-team`), Palette-Hinweis. Hover-Karte „Kosten und Limits“ deutsch, ohne
-      Großbuchstaben-Labels. Höhe 28, `T_S`.
-- [ ] C3 Panel-Köpfe nach 5.6: Git (Titel „Git“, Branch-Chip, Update-Hinweis als Chip, Icon-Knöpfe),
-      Tree (Titel „Tree“, Segment Tree/Recent rechts), Blueprint (Titel „Blueprint“, Agent-Chip, Update als
-      Chip), Docker (Titel „Docker“ ohne Icon, Segment Running/All). Inhalte unverändert; Knöpfe,
-      Segmente, Eingabefelder, Leerzustände nach 5.6.
-- [ ] C4 Fenster Marketplaces und MCP-Server: Titelzeile 42 nach 5.6, Scope-Segment, Knöpfe/Chips
-      nach 5.6, Schrift auf die Skala (9.5/14/14.5 entfallen).
-- [ ] C5 Tastenkürzel-Dialog: Titelzeile 5.6, Gruppenköpfe ohne Großbuchstaben, Tasten-Chips `T_XS`;
-      `DESC` für „Auftrag“ (⌘⇧N) und geänderte Beschriftungen nachziehen.
-- [ ] C6 `keys.json`: Belegungen bleiben; nur anpassen, falls ein Kommando umbenannt wird (keins geplant).
-- [ ] C7 `themes/elric.json` bleibt unverändert (5.4); nur ändern nach Rückfrage beim Orchestrator.
-- [ ] C8 `docs/ui/notes-C.md`: was sich für den Menschen ändert; dazu „lokal angepasst“-Vermerk je
-      externem Addon (blueprint, filetree, git-graph) für README.
-
-**Abnahme C**
-- `C-tabs.png`: „Auftrag“ einmal, primär; „+“ hinter den Tabs; zwei Segmente; Inbox-Zähler = Inbox-Kopf.
-- `C-status.png`: keine Agent-Zahl, kein Attention-Badge; Team-Budget-Chip öffnet das Team-Panel;
-  ⌘J springt weiter zum wartenden Agent (Demo-claude).
-- `C-panels.png` (Collage Changes, Git, Tree, Blueprint, Docker, Quests, Team): alle Köpfe 42 px,
-  Titel an derselben x-Position (14 px) und in derselben Größe wie Changes.
-- `C-windows.png`: Marketplaces und MCP mit gleicher Titelzeile wie Review.
-- Prüfbefehle aus 10 ohne Treffer in den C-Dateien (externe Addons: nur geänderte Zeilen).
-
----
-
-## 9. Datei-Eigentum und Merge
-
-| Datei | Eigentümer | andere Pakete |
-|---|---|---|
-| `layouts/elric.json` | **A** | nur lesen |
-| `README.md` | **B** | schreiben `docs/ui/notes-A.md` bzw. `notes-C.md` |
-| `keys.json`, `themes/elric.json` | **C** | nur lesen |
-| `layouts/quests.json`, `layouts/quests.svg` | **B** | — |
-| `docs/ui-spec.md`, `docs/ui-preview.sh`, `.gitignore` | dieses Ticket | nicht ändern; Fehler im Spec → Orchestrator |
-| `programs.json`, `settings.json` | niemand | — |
-
-Jeder Mod-Ordner gehört genau einem Paket (Listen in 8). Geteilte Daten laufen nur über die Verträge in 7.
-
-Merge-Reihenfolge: **A → C → B**. B rebased vor seinem `hub review` auf `main` (mit A und C),
-überträgt `docs/ui/notes-A.md` und `docs/ui/notes-C.md` in `README.md` und löscht die beiden Dateien
-danach. Konflikte außerhalb von `README.md` dürfen dabei nicht entstehen; sonst hat ein Paket fremde
-Dateien geändert.
-
-Wer einen Vertrag (7) erst bedienen kann, wenn das andere Paket fertig ist (z. B. A ruft den Ticket-Modus
-des Review-Fensters auf), baut gegen den Vertrag und prüft mit Fallback (ohne Ticket-Modus öffnet das
-heutige Review-Fenster). Nach dem Merge von B ist die ganze Kette im Test-Fenster nachzuweisen.
 
 ---
 
