@@ -102,6 +102,17 @@ test("ein Agent-Space wirkt als der Workspace seines Tickets", () => {
   assert.equal(ui.inScope({ id: "old", repo: "/repos/alpha/x" }), true, "Alt-Ticket über repo");
 });
 
+test("ein Space-Wechsel im 120-ms-Fenster liefert sofort den neuen Space", () => {
+  const w = world({ active: "spa" });
+  assert.equal(ui.activeSpace()?.id, "spa");
+  // Wie `space.select`: neue Space-Liste und Fokus im neuen Space, aber die Uhr bleibt
+  // im Tick-Fenster. Der alte Satz Kopien darf den Wechsel nicht überdecken.
+  globalThis.__spaces = w.spaces.map((s) => ({ ...s, active: s.id === "spb" }));
+  globalThis.__focused = { space: "spb" };
+  assert.equal(ui.activeSpace()?.id, "spb");
+  assert.equal(ui.activeSpace()?.folder, "/repos/beta");
+});
+
 test("der Orchestrator wird mit der Workspace-ID gesucht, nicht mit dem Agent-Space", () => {
   const terminals = [
     { address: "t-a", name: "omp", state: "live", space: "spag", labels: { "herdr.space": "spag", "hub.ticket": "a1" } },

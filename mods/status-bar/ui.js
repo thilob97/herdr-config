@@ -34,9 +34,21 @@ export const plain = (s) => (s ?? "").replace(TITLE_PREFIX, "").replace(/[\uE000
 // fragen sie aber mehrfach je Rendern — deshalb ein kurzer Tick-Cache: derselbe Pass
 // sieht einen Satz Kopien, der nächste (ein Wechsel zeichnet neu) liest frisch.
 // 120 ms, damit auch ein langer Render (Dashboard: gemessen > 25 ms) nicht mittendrin
-// neu liest; ein Wechsel zeichnet ohnehin neu und liest dann frisch.
+// neu liest. Der Tick allein reicht für einen Space-Wechsel aber nicht: der Render, den
+// `space.select` auslöst, fällt selbst ins Fenster und liest sonst den alten Space.
+// Deshalb fragt `activeSpace()` vor jedem Zugriff `focused().space` — das ist der
+// billige, ungecachte Host-Wert des aktuellen Fensters — und verwirft den Satz, sobald
+// er vom gecachten aktiven Space abweicht.
 const HOST_TICK = 120;
 const host = { at: 0, spaces: null, terminals: null, panes: null, paneSpace: null, agents: null, identities: null };
+
+/** Verwirft den Satz Kopien; der nächste Zugriff liest frisch. Auch von außen nutzbar,
+ *  wenn ein Mod einen Wechsel direkt mitbekommt (Event, Test). */
+export function resetHostCache() {
+  host.at = 0;
+  host.spaces = host.terminals = host.panes = host.paneSpace = host.agents = host.identities = null;
+}
+
 function hostTick() {
   if (Date.now() - host.at < HOST_TICK) return;
   host.at = Date.now();
@@ -245,9 +257,22 @@ export function counterBadge(t, n, color) {
 
 // ---------- Workspace (Fabrik je Space) ----------
 
+/** Der Space, den `focused()` als aktuellen Fensterkontext meldet; "" ohne Aussage.
+ *  Namespace-Zugriff, weil der Node-Stub der Tests `focused` nicht immer kennt. */
+function liveSpaceId() {
+  try { return String(hostApi.focused?.()?.space ?? ""); } catch { return ""; }
+}
+
 /** Der aktive Workspace dieses Fensters: { id, name, folder, machine }, sonst null.
- *  `spaces()` zeichnet die Mods bei jedem Wechsel neu — kein eigener Timer nötig. */
+ *  `spaces()` zeichnet die Mods bei jedem Wechsel neu — kein eigener Timer nötig.
+ *  Liegt der Render noch im 120-ms-Fenster, verrät `focused().space` den Wechsel: dann
+ *  wird der Satz verworfen und frisch gelesen, statt den alten Space zu zeigen. */
 export function activeSpace() {
+  if (host.spaces) {
+    const now = liveSpaceId();
+    const cached = host.spaces.find((x) => x.active)?.id ?? "";
+    if (now && now !== cached) resetHostCache();
+  }
   const s = hostSpaces().find((x) => x.active) ?? null;
   return s ? { id: s.id, name: s.name ?? "", folder: s.folder ?? "", machine: s.machine ?? null } : null;
 }
