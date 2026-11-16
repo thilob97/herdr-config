@@ -370,7 +370,43 @@ class HubTimelineTest(unittest.TestCase):
         lane = next(l for l in self.timeline("--ticket", tid)["lanes"] if l["terminal"] == "t-a")
         self.assertEqual(len(lane["subagents"]), 1)
         self.assertEqual(lane["subagents"][0], {"id": "s1", "title": "Scout",
-                                               "started": now - 300_000, "ended": now - 200_000})
+                                               "started": now - 300_000, "ended": now - 200_000,
+                                               "parent": ""})
+
+    def test_nested_subagents_keep_their_parent_chain(self):
+        repo = self.repo()
+        now = int(time.time() * 1000)
+        orch = self.orchestrator()
+        tid = self.criteria_ticket("Nest", repo, status="doing", terminal="t-a")
+        self.terminal("t-a", name="Moxie", state="live", created_ms=now - 600_000, parent=orch)
+        path = os.path.join(self.app, "data", "agent-cards", "subagents.jsonl")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+
+        def iso(ms):
+            return time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(ms / 1000))
+
+        def line(at, parent, sid, **extra):
+            return json.dumps({"at": iso(at), "terminal": "t-a", "parent": parent, "id": sid,
+                               "title": extra.pop("title", sid), "program": "task", **extra}) + "\n"
+
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(line(now - 300_000, "t-a", "s1", title="Suche"))
+            f.write(line(now - 200_000, "s1", "s2", title="Tests"))
+            f.write(line(now - 100_000, "s2", "s3", title="Tiefe"))
+            f.write(json.dumps({"at": iso(now - 50_000), "kind": "end", "id": "s1"}) + "\n")
+            # Alte Datei ohne `terminal`: parent war die Terminal-Adresse.
+            f.write(json.dumps({"id": "s0", "title": "Alt", "started": now - 400_000,
+                                "ended": now - 350_000, "parent": "t-a"}) + "\n")
+
+        lane = next(l for l in self.timeline("--ticket", tid)["lanes"] if l["terminal"] == "t-a")
+        subs = {s["id"]: s for s in lane["subagents"]}
+        self.assertEqual(sorted(subs), ["s0", "s1", "s2", "s3"], "eine End-Zeile startet keinen zweiten Eintrag")
+        self.assertEqual([subs[i]["parent"] for i in ("s0", "s1", "s2", "s3")],
+                         ["t-a", "t-a", "s1", "s2"])
+        self.assertEqual([subs[i]["title"] for i in ("s1", "s2", "s3")], ["Suche", "Tests", "Tiefe"])
+        self.assertEqual(subs["s1"]["started"] // 1000, (now - 300_000) // 1000, "started kommt aus dem ISO-`at`")
+        self.assertEqual(subs["s1"]["ended"] // 1000, (now - 50_000) // 1000, "die End-Zeile schließt s1")
+        self.assertIsNone(subs["s2"]["ended"])
 
     def test_write_makes_a_self_contained_html_with_both_lanes(self):
         repo = self.repo()

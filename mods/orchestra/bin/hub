@@ -5051,9 +5051,27 @@ def identities():
         return {}
 
 
+def iso_ms(value):
+    """Milliseconds from an ISO-8601 stamp ("...Z" as agent-cards writes it), else None."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        d = datetime.datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if d.tzinfo is None:
+        d = d.replace(tzinfo=datetime.timezone.utc)
+    return int(d.timestamp() * 1000)
+
+
 def read_subagents():
-    """The subagents agent-cards recorded, one JSON object per line; missing is no error."""
-    rows = []
+    """The subagents agent-cards recorded, one JSON object per line; missing is no error.
+
+    A line names its lane terminal (`terminal`; older files carried it only as
+    `parent`) and its parent: the terminal address for a sub-agent omp started
+    itself, the parent sub-agent's id below that. An `end` line closes the row with
+    the same id instead of starting a second one."""
+    rows, by_id = [], {}
     try:
         with open(SUBAGENTS, encoding="utf-8") as f:
             text = f.read()
@@ -5066,12 +5084,32 @@ def read_subagents():
             continue
         if not isinstance(row, dict):
             continue
-        rows.append({"id": str(row.get("id") or row.get("name") or ""),
-                     "title": str(row.get("title") or ""),
-                     "started": num_ms(row.get("started")),
-                     "ended": num_ms(row.get("ended")),
-                     "terminal": str(row.get("terminal") or row.get("parent") or ""),
-                     "agent": str(row.get("agent") or "")})
+        sid = str(row.get("id") or row.get("name") or "")
+        if not sid:
+            continue
+        at = num_ms(row.get("at"))
+        if at is None:
+            at = iso_ms(row.get("at"))
+        if str(row.get("kind") or "") == "end":
+            closed = by_id.get(sid)
+            if closed is not None and at is not None:
+                closed["ended"] = at
+            continue
+        started = num_ms(row.get("started"))
+        if started is None:
+            started = at
+        ended = num_ms(row.get("ended"))
+        if started is None and ended is None:
+            continue
+        entry = {"id": sid,
+                 "title": str(row.get("title") or ""),
+                 "started": started,
+                 "ended": ended,
+                 "terminal": str(row.get("terminal") or row.get("parent") or ""),
+                 "parent": str(row.get("parent") or ""),
+                 "agent": str(row.get("agent") or row.get("program") or "")}
+        by_id[sid] = entry
+        rows.append(entry)
     return rows
 
 
@@ -5305,7 +5343,7 @@ def build_timeline(ticket="", since="all", space=None, everyone=False):
             if floor is not None and started is not None:
                 started = max(started, floor)
             l["subagents"].append({"id": s["id"], "title": s["title"], "started": started,
-                                   "ended": s["ended"]})
+                                   "ended": s["ended"], "parent": s["parent"]})
         kept.append(l)
     kept.sort(key=lambda l: (l["kind"] != "orchestrator", l["space"].casefold(),
                              l["start"] is None, l["start"] or 0, l["label"].casefold()))
