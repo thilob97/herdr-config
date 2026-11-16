@@ -5,12 +5,12 @@
 // (written by the launcher, see its HANDOVER): Quests records it (data/quests/started.json),
 // makes a local ticket the orchestrator's (by: orchestrator) and tells the source (comment /
 // label / status, unless switched off; global dry run in the settings).
-// props.view picks the face: "panel" (elric's side panel), "page" (the quests layout's three
-// columns), "bar" (that layout's title bar), and the dialogs "settings" and "edit" {id?}.
+// props.view picks the face: "panel" (standalone) or the dialogs "settings" and "edit" {id?};
+// as a window (mod.open:quests, ⌘⌥6, mod.json overlay) the board shows its three columns.
 
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, TextView } from "gpui-base";
-import { props, theme, run, spaces, agents, terminals, notify, openOverlay, closeOverlay, shared, setShared, window as host } from "herdr";
+import { props, theme, run, spaces, agents, terminals, notify, openOverlay, closeOverlay, shared, setShared } from "herdr";
 import * as store from "./store.js";
 import * as ui from "./ui.js";
 import { T_XS, T_S, T_M, T_L } from "./ui.js";
@@ -18,11 +18,9 @@ import { SOURCES, label, stage, load, writeback, place, errorText } from "./sour
 
 const WC = "mods/workspace-chrome";
 const SPINNER = `${WC}/spinner.svg`;
-// Copies (panel, page, dialogs) tell each other to re-read the files: { at, scope: "local" | "all" }. No data in it.
+// Copies (panel, dialogs) tell each other to re-read the files: { at, scope: "local" | "all" }. No data in it.
 const REV = "quests.rev";
 const bump = (scope) => setShared(REV, { at: Date.now(), scope });
-// The page's selected ticket key ("github:owner/repo#1").
-const SEL = "quests.selected";
 // What the Auftrag dialog started for a ticket (see the header).
 const HANDOVER = "quests.handover";
 // Handovers to the orchestrator without a ticket yet (read by the Inbox, pruned here).
@@ -33,8 +31,8 @@ const keyOf = (t) => `${t.source}:${t.id}`;
 // GitHub, Asana oder Trilium.
 const SOURCE_WORD = { plain: "Fabrik (lokal)" };
 const sourceName = (key) => SOURCE_WORD[key] ?? label(key);
-// Der direkte Weg von der lokalen Fabrik-Liste ins Brett.
-const openBoard = () => run("tabs-graph.panel-board");
+// Der direkte Weg von der lokalen Fabrik-Liste ins Brett: dasselbe Popup wie ⌘⌥8.
+export const openBoard = () => run("mod.open", { name: "board" });
 // One language with the Team panel and the Inbox (B1): Geplant / In Arbeit / Prüfung / Fertig.
 const STAGE_WORD = { todo: "Geplant", doing: "In Arbeit", review: "Prüfung", done: "Fertig" };
 // A team ticket's status as a pipeline stage (unknown values run).
@@ -92,12 +90,21 @@ function recordIdentity(t, rec, id) {
 const area = (t, state, h, focused = false) => Textarea.new(state).h(h).px(10).py(6).rounded(6).border_1().border_color(focused ? t.accent : t.input).bg(t.background).text_size(T_M).text_color(t.foreground);
 
 // A started quest now: its agent's status, or just whether its tab is still there.
-function liveState(rec) {
+// The lists come from one cache per render (agents()/terminals()/spaces() copy their
+// whole lists over the host bridge; per row would cost the whole render budget).
+function liveCache() {
+  const byAgent = new Map(agents().map((a) => [a.address, a]));
+  const byTerm = new Map(terminals().filter((x) => x.state === "live").map((x) => [x.address, x]));
+  const tabs = new Set(spaces().flatMap((s) => (s.tabs ?? []).map((tb) => tb.id)));
+  return { byAgent, byTerm, tabs };
+}
+function liveState(rec, cache) {
   if (!rec) return null;
-  const a = agents().find((x) => x.address === rec.terminal);
+  const c = cache ?? liveCache();
+  const a = c.byAgent.get(rec.terminal);
   // Handed to the orchestrator: a terminal without a tab of its own.
-  const term = a ? null : terminals().find((x) => x.address === rec.terminal && x.state === "live");
-  return { status: a?.status ?? term?.status ?? null, alive: Boolean(a || term) || spaces().some((s) => s.tabs.some((c) => c.id === rec.tab)) };
+  const term = a ? null : c.byTerm.get(rec.terminal);
+  return { status: a?.status ?? term?.status ?? null, alive: Boolean(a || term) || c.tabs.has(rec.tab) };
 }
 
 function lastRecord(list, key) {
@@ -105,8 +112,7 @@ function lastRecord(list, key) {
   return null;
 }
 
-function openRecord(rec, fromPage) {
-  if (fromPage) run("layout.switch", { name: "elric" });
+function openRecord(rec) {
   if (!rec.space) return run("terminal.peek", { terminal: rec.terminal });
   run("space.select", { id: rec.space });
   run("tab.select", { id: rec.tab });
@@ -127,10 +133,10 @@ const WRITEBACK = {
 
 // ---- panel and page: the tickets of every enabled source
 
-class Board {
-  constructor(view, cx) {
-    this.view = view;
-    // Als Fenster-Overlay trägt Board das volle Dreispalten-Layout; das Panel bleibt einspaltig.
+export class Board {
+  constructor(cx) {
+    // Quests is a popup: the window carries the three columns (sources · tickets · detail),
+    // the middle column keeps the panel header.
     this.overlay = props()?.overlay ?? null;
     this.settings = null;
     this.src = {}; // source key -> { tickets, error, note, loading }
@@ -143,8 +149,8 @@ class Board {
     this.stage = st === "todo" || st === "doing" ? st : "all";
     this.folded = new Set();
     this.hovered = null;
-    // The page comes back fresh after every layout switch: shared selection.
-    this.selected = view === "page" ? shared(SEL) ?? null : null;
+    // The window keeps its choice while it is open; clicking a row selects it.
+    this.selected = null;
     this.gen = 0;
     this.input = InputState.new({ placeholder: "Quests filtern …" });
     this.input.on("change", (_e, cx) => { this.filter = this.input.value().trim().toLowerCase(); cx.notify(); });
@@ -216,7 +222,7 @@ class Board {
     if (tk.source === "plain" && !ui.inScope(tk, this.teamList)) return false;
     const st = this.stageOf(tk);
     if (this.stage === "todo" && st !== "todo") return false;
-    if (this.stage === "doing" && st !== "doing" && st !== "review" && !liveState(this.record(tk))?.alive) return false;
+    if (this.stage === "doing" && st !== "doing" && st !== "review" && !liveState(this.record(tk), this.live)?.alive) return false;
     if (!this.filter) return true;
     return [tk.title, tk.id, tk.project, tk.assignee, ...tk.labels].some((s) => String(s ?? "").toLowerCase().includes(this.filter));
   }
@@ -314,7 +320,6 @@ class Board {
   select(tk, cx) {
     if (this.selected === keyOf(tk)) return;
     this.selected = keyOf(tk);
-    setShared(SEL, this.selected);
     cx.notify();
   }
 
@@ -332,7 +337,6 @@ class Board {
     this.prunePending();
     const rev = shared(REV);
     if (rev && rev.at !== this.rev) { this.rev = rev.at; this.reload(cx, rev.scope === "all"); }
-    if (this.view === "page") this.selected = shared(SEL) ?? null;
     this.takeHandover(cx);
   }
 
@@ -341,7 +345,7 @@ class Board {
   // the agent's live status while one runs. Only a start without a team ticket says
   // "beendet", because the stage would claim work that is no longer there.
   look(t, tk, rec) {
-    const live = liveState(rec);
+    const live = liveState(rec, this.live);
     const st = this.stageOf(tk);
     const status = live?.alive ? live.status ?? "idle" : st === "review" ? "blocked" : st === "done" ? "done" : null;
     const ended = Boolean(rec) && !live?.alive && !this.team(tk) && st !== "done";
@@ -353,7 +357,7 @@ class Board {
     const k = keyOf(tk);
     const rec = this.record(tk);
     const l = this.look(t, tk, rec);
-    const sel = this.view === "page" && this.selected === k;
+    const sel = this.selected === k;
     const hov = this.hovered === k;
     // A local ticket's project is its repo path: its last folder says enough here.
     // Ein Start zeigt seine Identität (Avatar, Name, Programm), nicht die Kommandozeile.
@@ -365,7 +369,7 @@ class Board {
       ? h_flex().flex_none().gap(ui.GAP_XS).items_center()
         // Running work: go to it, do not start it again (B2). Only then is there a primary button.
         .when(alive, (el) => el
-          .child(btn(t, `open-${k}`, "Zum Agent", () => openRecord(rec, this.view === "page"), { primary: true, tip: "Zum laufenden Agent dieses Tickets" }))
+          .child(btn(t, `open-${k}`, "Zum Agent", () => openRecord(rec), { primary: true, tip: "Zum laufenden Agent dieses Tickets" }))
           .child(iconBtn(t, `orch-${k}`, "mods/orchestra/icon.svg", "An Orchestrator: was noch fehlt (er plant, verteilt und bringt es geprüft zur Abnahme)", () => this.auftrag(tk, "team"), true)))
         .when(!alive, (el) => el
           .child(iconBtn(t, `orch-${k}`, "mods/orchestra/icon.svg", "Orchestrator: Auftrag ans Team (er plant, verteilt und bringt es geprüft zur Abnahme)", () => this.auftrag(tk, "team"), true))
@@ -374,7 +378,7 @@ class Board {
     return v_flex().id(`q-${k}`).h(ui.H_ROW2).flex_none().px(8).gap(2).justify_center().rounded(6).cursor_pointer()
       .when(sel, (el) => el.bg(t.selected)).when(!sel, (el) => el.hover((s) => s.bg(t.hover)))
       .on_hover((on, cx) => { if (on) this.hovered = k; else if (this.hovered === k) this.hovered = null; cx.notify(); })
-      .on_click((_e, cx) => (this.view === "page" ? this.select(tk, cx) : this.auftrag(tk)))
+      .on_click((_e, cx) => this.select(tk, cx))
       .child(h_flex().h(ui.H_BTN_S).gap(ui.GAP_M).items_center()
         .child(l.status ? ui.statusIcon(t, l.status) : div().size(12).flex_none())
         .child(div().flex_1().min_w(0).truncate().text_size(T_M).text_color(this.stageOf(tk) === "done" ? t.muted : t.foreground).child(tk.title))
@@ -419,11 +423,10 @@ class Board {
     ], this.stage, (value, cx) => { this.stage = value; localStorage.setItem("stage", value); cx.notify(); });
   }
 
-  // Fenster-Kopf des Overlays: × schließt das Popup, ⇥ legt Quests ins rechte Sidepanel.
+  // Fenster-Kopf des Popups: × schließt es. Quests lebt nur als Fenster (bewusst Popup-only).
   windowBar(t) {
     return ui.windowHeader(t, "Quests", [ui.spaceChip(t)].filter(Boolean), () => closeOverlay(this.overlay), {
       meta: "Ticket wählen · ans Team geben oder selbst starten",
-      actions: [ui.surfaceToggle(t, "q-to-panel", "to-panel", () => ui.switchToPanel("quests", this.overlay))],
     });
   }
 
@@ -435,11 +438,7 @@ class Board {
       iconBtn(t, "h-new", `${WC}/plus.svg`, "Neues lokales Ticket", () => openEdit()),
       iconBtn(t, "h-refresh", "mods/orchestra/icons/restart.svg", "Neu laden", (cx) => this.reload(cx, true)),
       iconBtn(t, "h-settings", `${WC}/settings.svg`, "Quellen und Zugangsdaten", () => openSettings()),
-      ...(this.view === "panel" && !this.overlay ? [btn(t, "h-page", "Seite", () => run("layout.switch", { name: "quests" }), { tip: "Quests als ganze Seite (Layout quests, ⌃⇧Q)" })] : []),
-    ].filter(Boolean), {
-      // Nur das Sidepanel kippt ins breite Fenster; Seite und Overlay tragen keinen zweiten Wechsel.
-      actions: this.view === "panel" && !this.overlay ? [ui.surfaceToggle(t, "q-to-window", "to-window", () => ui.switchToWindow("quests"))] : [],
-    });
+    ].filter(Boolean));
   }
 
   filterRow(t) {
@@ -451,27 +450,18 @@ class Board {
   render(cx) {
     this.sync(cx);
     this.teamList = ui.teamTickets();
+    this.live = liveCache();   // agents/terminals/spaces once for every row and the detail
     const t = theme();
     const box = (id) => v_flex().id(id).min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border);
     const listCol = v_flex().id("q-list").flex_1().min_h(0).px(6).pb(ui.GAP_M).overflow_y_scrollbar().children(this.list(t));
-    // Fenster-Overlay: Quellen · Tickets · Detail nebeneinander, mit echtem Fenster-Kopf.
-    if (this.overlay) {
-      return v_flex().id("quests-window").size_full().min_h(0).rounded(10).overflow_hidden()
-        .bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(T_M)
-        .child(this.windowBar(t))
-        .child(h_flex().flex_1().min_h(0).items_stretch().gap(ui.GAP_M).p(ui.GAP_M)
-          .child(box("q-left").w(250).flex_none().h_full().child(this.sourcesCol(t)))
-          .child(box("q-mid").flex_1().min_w(340).h_full().child(this.header(t, "Tickets")).child(this.filterRow(t)).child(listCol))
-          .child(box("q-right").w(400).flex_none().h_full().child(this.detail(t))));
-    }
-    if (this.view === "panel") {
-      return box("quests").size_full().text_color(t.foreground).text_size(T_M)
-        .child(this.header(t, "Quests")).child(this.filterRow(t)).child(listCol);
-    }
-    return h_flex().id("quests-page").size_full().min_h(0).gap(ui.GAP_M).text_color(t.foreground).text_size(T_M)
-      .child(box("q-left").w(240).flex_none().h_full().child(this.sourcesCol(t)))
-      .child(box("q-mid").flex_1().min_w(280).h_full().child(this.header(t, "Tickets")).child(this.filterRow(t)).child(listCol))
-      .child(box("q-right").w(500).flex_none().h_full().child(this.detail(t)));
+    // Quests is a popup only: sources · tickets · detail side by side, with a window header.
+    return v_flex().id("quests-window").size_full().min_h(0).rounded(10).overflow_hidden()
+      .bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(T_M)
+      .child(this.windowBar(t))
+      .child(h_flex().flex_1().min_h(0).items_stretch().gap(ui.GAP_M).p(ui.GAP_M)
+        .child(box("q-left").w(250).flex_none().h_full().child(this.sourcesCol(t)))
+        .child(box("q-mid").flex_1().min_w(340).h_full().child(this.header(t, "Tickets")).child(this.filterRow(t)).child(listCol))
+        .child(box("q-right").w(400).flex_none().h_full().child(this.detail(t))));
   }
 
   sourcesCol(t) {
@@ -502,10 +492,10 @@ class Board {
       .child(v_flex().id("l-started").flex_1().min_h(0).px(6).pb(ui.GAP_M).overflow_y_scrollbar()
         .when(!recent.length, (el) => el.child(div().px(8).child(ui.empty(t, "Noch nichts gestartet.", { row: true }))))
         .children(recent.map((rec) => {
-          const live = liveState(rec);
+          const live = liveState(rec, this.live);
           return v_flex().id(`r-${rec.at}`).h(ui.H_ROW2).flex_none().px(8).justify_center().rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
             .tooltip(live?.alive ? "Zeigen" : "Nicht mehr da")
-            .on_click(() => { if (live?.alive) openRecord(rec, true); })
+            .on_click(() => { if (live?.alive) openRecord(rec); })
             .child(h_flex().gap(ui.GAP_M).items_center()
               .child(live?.alive ? ui.statusIcon(t, live.status ?? "idle") : div().size(12).flex_none())
               .child(div().flex_1().min_w(0).truncate().text_size(T_M).text_color(live?.alive ? t.foreground : t.dim).child(rec.title)))
@@ -519,6 +509,8 @@ class Board {
     if (!tk) return ui.empty(t, "Wähle ein Ticket: hier stehen seine Beschreibung und die Wege weiter.", { icon: "mods/quests/icon.svg" });
     const k = keyOf(tk);
     const recs = this.started.filter((r) => r.key === k).reverse();
+    const rec = this.record(tk);
+    const alive = Boolean(liveState(rec, this.live)?.alive);
     const meta = [label(tk.source), tk.source === "github" ? `#${tk.number} · ${tk.repo}` : tk.source === "plain" ? `${tk.id}.md` : tk.id,
       STAGE_WORD[this.stageOf(tk)], tk.assignee, tk.due && `bis ${tk.due}`, tk.source !== "github" && String(tk.project ?? "").replace(/\/+$/, "").split("/").pop()].filter(Boolean);
     return v_flex().size_full().min_h(0)
@@ -532,10 +524,10 @@ class Board {
           .child(div().text_size(T_S).text_color(t.muted).child(meta.join(" · ")))
           .children(tk.labels.map((x, i) => chip(t, `d-l${i}`, x))))
         .child(h_flex().gap(ui.GAP_M).items_center()
-          .when(Boolean(liveState(this.record(tk))?.alive), (el) => el
-            .child(btn(t, "d-open", "Zum Agent", () => openRecord(this.record(tk), true), { primary: true, tip: "Zum laufenden Agent dieses Tickets" }))
+          .when(alive, (el) => el
+            .child(btn(t, "d-open", "Zum Agent", () => openRecord(rec), { primary: true, tip: "Zum laufenden Agent dieses Tickets" }))
             .child(btn(t, "d-orch", "An Orchestrator", () => this.auftrag(tk, "team"), { tip: "Was noch fehlt, an das Team geben" })))
-          .when(!liveState(this.record(tk))?.alive, (el) => el
+          .when(!alive, (el) => el
             .child(btn(t, "d-orch", "An Orchestrator", () => this.auftrag(tk, "team"), { primary: true, tip: "Auftrag ans Team: er plant, verteilt und bringt es geprüft zur Abnahme" }))
             .child(btn(t, "d-start", "Start", () => this.auftrag(tk, "self"), { tip: "Selbst Agents starten: Branch, Worktree, Agent" }))))
         .children(recs.map((rec) => {
@@ -545,7 +537,7 @@ class Board {
             .child(l.live?.alive ? ui.statusIcon(t, l.status ?? "idle") : div().size(12).flex_none())
             .when(Boolean(who), (el) => el.child(who))
             .child(div().flex_1().min_w(0).truncate().text_size(T_S).text_color(t.muted).child(`${rec.branch} · ${rec.machine ?? "dieser Rechner"} · ${l.text}`))
-            .when(Boolean(l.live?.alive), (el) => el.child(iconBtn(t, `dr-open-${rec.at}`, "mods/orchestra/icons/open.svg", "Öffnen", () => openRecord(rec, true), true)))
+            .when(Boolean(l.live?.alive), (el) => el.child(iconBtn(t, `dr-open-${rec.at}`, "mods/orchestra/icons/open.svg", "Öffnen", () => openRecord(rec), true)))
             .child(iconBtn(t, `dr-x-${rec.at}`, `${WC}/x.svg`, "Diesen Start vergessen (Worktree und Tab bleiben)", (cx) => cx.spawn(async () => { await store.forgetStarted(rec.at); bump("local"); }), true));
         }))
         .child(div().rounded(8).bg(t.surface).border_1().border_color(t.border).px(12).py(ui.GAP_M).text_size(T_M)
@@ -735,31 +727,12 @@ class Edit {
   }
 }
 
-// The quests layout's title bar: back to elric and, where the system draws none, the window buttons.
-class Bar {
-  render() {
-    const t = theme();
-    const w = host();
-    const win = (id, icon, tip, cmd) => iconBtn(t, id, icon, tip, () => run(cmd));
-    return h_flex().size_full().px(ui.INSET_PANEL).gap(ui.GAP_M).items_center().bg(t.chrome).border_b(1).border_color(t.border)
-      .child(div().text_size(T_L).font_semibold().text_color(t.foreground).child("Quests"))
-      .child(div().text_size(T_S).text_color(t.muted).child("Ticket wählen · ans Team geben oder selbst starten"))
-      .child(div().flex_1())
-      .child(btn(t, "bar-back", "Zurück zu Elric", () => run("layout.switch", { name: "elric" }), { icon: `${WC}/chevron-left.svg`, tip: "Zurück zum Layout elric (⌃⇧Q)" }))
-      .when(Boolean(w?.buttons), (el) => el
-        .child(win("minimize", "mods/tabs-graph/win-min.svg", "Minimieren", "window.minimize"))
-        .child(win("maximize", `mods/tabs-graph/${w.maximized ? "win-restore" : "win-max"}.svg`, "Maximieren", "window.maximize"))
-        .child(win("close-window", "mods/tabs-graph/win-close.svg", "Schließen", "window.close")));
-  }
-}
-
 export default class Quests extends View {
   init(_props, cx) {
     const view = props()?.view ?? "panel";
-    this.screen = view === "bar" ? new Bar()
-      : view === "settings" ? new Settings(cx)
+    this.screen = view === "settings" ? new Settings(cx)
       : view === "edit" ? new Edit(cx)
-      : new Board(view === "page" ? "page" : "panel", cx);
+      : new Board(cx);
   }
 
   render(cx) {

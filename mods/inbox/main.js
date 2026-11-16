@@ -15,9 +15,11 @@ import { agents, terminals, run, hc, exec, theme, props, closeOverlay, openOverl
 import * as ui from "./ui.js";
 import { T_XS, T_S, T_M, T_L, T_XL } from "./ui.js";
 
-const ORCH = "orchestrator";
 const PENDING = "quests.pending";
 const hubBin = () => `${appHome()}/mods/orchestra/bin/hub`;
+// The orchestrator may be `orchestrator-<space>`: ui.isOrchestrator names it, its space
+// comes from the labels, else from the pane (`orch.find()` reads the same way).
+const orchSpace = (x) => x.labels?.["hub.space"] || x.labels?.["herdr.space"] || ui.paneSpaceOf(x.address) || "";
 const tsMs = (ts) => { const d = new Date(String(ts ?? "").replace(" ", "T")); return Number.isNaN(d.getTime()) ? null : d.getTime(); };
 const GROUPS = [
   { key: "ask", label: "Rückfragen", color: (t) => t.blocked },
@@ -125,8 +127,8 @@ export function inboxCount() {
     const own = space ? ui.workspaceId(space.id, tks) : "";
     const all = agents();
     const scoped = (a) => { const ws = ui.agentWorkspace(a, tks); return !own || !ws || ws === own; };
-    const orchestratorBlocked = terminals().some((x) => x.name === ORCH && x.state === "live" && x.status === "blocked"
-      && (!own || ui.workspaceId(x.labels?.["hub.space"] || x.labels?.["herdr.space"] || "", tks) === own));
+    const orchestratorBlocked = terminals().some((x) => ui.isOrchestrator(x) && x.state === "live" && x.status === "blocked"
+      && (!own || ui.workspaceId(orchSpace(x), tks) === own));
     return {
       blocked: all.filter((a) => a.status === "blocked" && scoped(a)).length + (orchestratorBlocked ? 1 : 0),
       review: tks.filter((t) => t.status === "review" && (!space || ui.inScope(t, tks))).length,
@@ -192,8 +194,8 @@ export default class Inbox extends View {
       .map((a) => ({ a, st: effectiveStatus(a, terms, subs) }))
       .filter(({ st }) => st in group)
       .map(({ a, st }) => ({ kind: "agent", key: a.address, address: a.address, group: group[st], a, st, since: at({ ...a, status: st }), order: at(a) ?? a.seq }));
-    const o = terminals().find((x) => x.name === ORCH && x.state === "live"
-      && (!own || ui.workspaceId(x.labels?.["hub.space"] || x.labels?.["herdr.space"] || "", tks) === own));
+    const o = terms.find((x) => ui.isOrchestrator(x) && x.state === "live"
+      && (!own || ui.workspaceId(orchSpace(x), tks) === own));
     if (o?.status === "blocked" && !list.some((e) => e.address === o.address)) {
       list.push({ kind: "orch", key: "orch", address: o.address, group: "ask", o, since: null, order: -1 });
     }
