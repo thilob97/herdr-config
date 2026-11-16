@@ -18,13 +18,15 @@ Ticket `clean-1-panel-fehler-render-last-toter-c`. Stand: 2026-11-16, Branch `fe
 - **Team-Panel (`hubview.js`)**: `tksNow`, `gateCache`, `termsCache`, `budgetCache`, `extraCache`, `orchCache` einmal je `sync`/Render; `ticketRow` reicht Gates, Limit, Budget, Terminals an `ticketCard` weiter.
 - **`tabs-graph`**: `panes()` einmal je Render (Programm-Map, `orchestration(paneList)`), `agents()` einmal in `inboxCount`.
 - **`orchestra/main.js`**: Space-Cache je Gruppe; `quests/main.js`: `liveCache()` einmal je Render, Detail-Start einmal.
-- **`ui.js` Tick-Cache**: `if (Date.now() - host.at < HOST_TICK) return;` — Identity-Leser (`shared("agents.identity")`) cachen jetzt mit. Danach `sh mods/orchestra/bin/sync-ui` (11 Kopien).
+- **`ui.js` Tick-Cache**: `if (Date.now() - host.at < HOST_TICK) return;` — Identity-Leser (`shared("agents.identity")`) cachen jetzt mit; `HOST_TICK = 120` ms, damit ein langer Dashboard-Render nicht mittendrin neu liest. Danach `sh mods/orchestra/bin/sync-ui` (11 Kopien).
 
 ## Toter Code
 
 Gelöscht: `layouts/quests.json`, `layouts/quests.svg`, `keys.json` `layout:quests`; Quests-Seite (`Seite`-Knopf, Panel-/Page-Zweige, `class Bar`, `fromPage`, `SEL`); Panel-Kommandos `board.panel`, `timeline.panel`, `graph.panel` + `showPanel`/`find`/`layout`-Importe (tabs-graph ruft sie nicht); `tabs-graph` Icon-Ersatz (`fallback`, Prüf-Spawn, `readTextFile`/`appHome`, `board.svg`, `teams.svg`); `ui.js` `H_BAR`, Export von `ICON_CLOSE`/`gateChip`/`reviewChip`; `budgetChips`; eigene `paneSpaceOf`-Kopie in `orchestrator.js` (nutzt `ui.paneSpaceOf`); `NAME`.
 
 `git grep` für alle diese Bezeichner: keine Aufrufer mehr (Ausnahme: Kommentare in historischen `docs/ui/notes-*.md`).
+
+Im Layout `dashboard` gibt es kein `tabs-graph`: dort greifen weder `tabs-graph.panel-*` noch der Popup-Knopf; `mods/dashboard/**` blieb unverändert (nur die `ui.js`-Kopie via sync-ui).
 
 Zwei Absicherungen aus dem Ticket:
 
