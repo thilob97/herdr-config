@@ -1015,8 +1015,8 @@ export default class Agents extends View {
         .child(div().flex_1())
         .child(iconBtn(t, "ag-sort", `mods/workspace-chrome/${sort.icon}.svg`, `Sortierung: ${sort.label}`,
           () => openOverlay({ mod: "agent-cards", kind: "popup", width: 210, height: 3 * (H_ROW + 2) + 2 * GAP_XS, props: { sortMenu: true } })))))
-      .when(list.length === 0 && !collapsed, (el) => el.child(h_flex().px(16).py(GAP_S).gap(GAP_M).items_center()
-        .child(div().flex_1().min_w(0).text_size(T_S).text_color(t.dim)
+      .when(list.length === 0 && !collapsed, (el) => el.child(v_flex().px(16).py(GAP_S).gap(GAP_S).items_start()
+        .child(div().text_size(T_S).text_color(t.dim)
           .child("Noch keine Agents. Sie erscheinen hier, sobald sie ihren Status melden (ältere Versionen und Agents in tmux evtl. nicht)."))
         .child(textBtn(t, "ag-order", "Auftrag", { primary: true }, () => run("mod.open", { name: "launcher" })))))
       .child(v_flex().id("ag-list").flex_1().min_h(0).px(collapsed ? 0 : GAP_M).overflow_y_scrollbar().mode("always").children(rows))

@@ -765,8 +765,9 @@ export default class Review extends View {
               .child(div().w(64).truncate().tooltip(p).text_size(T_XS).text_color(t.muted).child(baseName(p)))))
             .when(pic && this.previews[p] === null, (x) => x.child(v_flex().flex_none().w(64).gap(2)
               .child(div().size(48).flex_none().flex().items_center().justify_center().rounded(4).border_1().border_color(t.border)
-                .child(svg("mods/review/icon.svg").size(16).text_color(t.blocked)))
-              .child(div().w(64).tooltip(p).text_size(T_XS).text_color(t.blocked).child("Nachweis nicht mehr vorhanden"))))
+                .tooltip(`Nachweis nicht mehr vorhanden: ${p}`)
+                .child(svg("mods/review/icon.svg").size(16).text_color(t.dim)))
+              .child(div().w(64).tooltip(`Nachweis nicht mehr vorhanden: ${p}`).text_size(T_XS).text_color(t.blocked).child("fehlt"))))
             .when(pic && this.previews[p] === undefined, (x) => x.child(svg("mods/review/icon.svg").size(16).text_color(t.muted)))
             .when(!pic, (x) => x.child(div().text_size(T_S).text_color(t.muted).hover((s) => s.text_color(t.foreground)).child(baseName(p))));
         }))
