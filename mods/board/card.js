@@ -253,7 +253,8 @@ export function ticketCard(t, tk, o = {}) {
   // Zwei Zeilen mit „…"; die Zeichenzahl kommt aus der Kartenbreite (board) oder
   // bleibt beim Standard für die Team-Spalte.
   const title = div().id(`tk-title-${tk.id}`).w_full().max_h(30).overflow_hidden().text_size(T_M).font_semibold()
-    .line_height(1.2).text_color(stage === "done" ? t.muted : t.foreground).child(clampTitle(tk.title || tk.id, o.titleChars));
+    .line_height(1.2).text_color(stage === "done" ? t.muted : t.foreground)
+    .tooltip(tk.title || tk.id).child(clampTitle(tk.title || tk.id, o.titleChars));
 
   const who = whoChip(t, tk);
   const gates = gateIcons(t, tk, o.gate);
