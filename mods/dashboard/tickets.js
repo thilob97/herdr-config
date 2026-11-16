@@ -1,7 +1,8 @@
 // The orchestrator's tickets as the Start screen draws them, read straight from
 // data/quests/tickets/<id>.md — the files the Team panel's daemon publishes as
-// shared("orchestra.tickets"). The dashboard layout has no daemon, so without this
-// reader the screen kept the copy it first saw; it re-reads the files every 5 s.
+// shared("orchestra.tickets"). The daemon also runs the dashboard layout; these files
+// are read only while its heartbeat (`orchestra.spaces.at`) is stale, so the screen
+// does not keep the copy it first saw. It re-reads them every 5 s.
 // A mod owns no module outside its folder, so this carries only the fields the
 // dashboard draws (stage, agent, worktree, checks, Verlauf), not the whole ticket.
 import * as fs from "fs/promises";
