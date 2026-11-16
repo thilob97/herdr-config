@@ -68,6 +68,8 @@ function sec(v) {
 const normSub = (s) => ({
   id: String(s?.id ?? s?.name ?? ""),
   title: String(s?.title ?? s?.description ?? s?.id ?? "Sub-Agent"),
+  // Parent-Sub-Agent für mehrstufige Bäume; fehlt er, hängt der Sub an der Lane.
+  parent: s?.parent != null && s.parent !== "" ? String(s.parent) : null,
   started: sec(s?.started) ?? sec(s?.at),
   ended: sec(s?.ended),
 });

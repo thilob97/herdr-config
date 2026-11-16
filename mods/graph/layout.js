@@ -202,22 +202,35 @@ export function layoutGraph({ lanes = [], tickets = [], windowStart = null, now 
       below += CHIP_GAP + TICKET_H;
     }
     let nextTop = below + SUB_GAP;
-    const children = [];
-    for (const sub of lane.subagents ?? []) {
-      if (!subVisible(sub)) continue;
-      const id = `sub:${lane.id}:${sub.id}`;
-      if (byId.has(id)) continue;
-      children.push({ sub, id });
+    // Sub-Agents nach `parent`: ein Eintrag, dessen parent die id eines anderen
+    // Sub-Agents derselben Lane nennt, hängt unter diesem; alles andere direkt
+    // unter der Lane. Ein Zyklus bleibt eine Karte, kein Lauf.
+    const subs = (lane.subagents ?? []).filter(subVisible);
+    const known = new Set(subs.map((s) => String(s.id)));
+    const childOf = new Map(), subRoots = [];
+    for (const sub of subs) {
+      const p = sub.parent == null ? "" : String(sub.parent);
+      if (p && p !== String(sub.id) && known.has(p)) {
+        const list = childOf.get(p) ?? [];
+        list.push(sub);
+        childOf.set(p, list);
+      } else subRoots.push(sub);
     }
-    for (const { sub, id } of children) {
-      const childIndent = Math.min((depth) * INDENT, Math.max(0, w - MIN_CARD_W));
+    const subOrder = (a, b) => ((a.started ?? Infinity) - (b.started ?? Infinity))
+      || String(a.title ?? a.id ?? "").localeCompare(String(b.title ?? b.id ?? ""), "de");
+    for (const list of childOf.values()) list.sort(subOrder);
+    subRoots.sort(subOrder);
+    const walkSub = (sub, parentNode, level, sx, sw) => {
+      const id = `sub:${lane.id}:${sub.id}`;
+      if (byId.has(id)) return;
+      const indent = Math.min(INDENT, Math.max(0, sw - MIN_CARD_W));
       const sn = {
         id, laneId: lane.id, kind: "subagent", label: String(sub.title ?? sub.id ?? "Sub-Agent"),
         status: sub.ended != null ? "done" : "working", ticket: lane.ticket || null,
-        terminal: null, depth: depth + 1, column, band, row: band,
-        x: x + childIndent, y: nextTop, w: Math.max(MIN_CARD_W, w - childIndent), h: cardH, narrow,
+        terminal: null, depth: level, column, band, row: band,
+        x: sx + indent, y: nextTop, w: Math.max(MIN_CARD_W, sw - indent), h: cardH, narrow,
         started: sub.started ?? null, ended: sub.ended ?? null,
-        parent: node.id, waits: [], subtitle: null, ownsTicket: false,
+        parent: parentNode.id, waits: [], subtitle: null, ownsTicket: false,
       };
       nodes.push(sn);
       byId.set(id, sn);
@@ -226,7 +239,9 @@ export function layoutGraph({ lanes = [], tickets = [], windowStart = null, now 
         sn.ownsTicket = true;
       }
       nextTop = sn.y + sn.h + (sn.ownsTicket ? CHIP_GAP + TICKET_H : 0) + SUB_GAP;
-    }
+      for (const child of childOf.get(String(sub.id)) ?? []) walkSub(child, sn, level + 1, sn.x, sn.w);
+    };
+    for (const sub of subRoots) walkSub(sub, node, depth + 1, x, w);
     for (const child of kids.get(lane.id) ?? []) {
       const childIndent = Math.min(depth * INDENT, Math.max(0, w - MIN_CARD_W));
       const childW = Math.max(MIN_CARD_W, w - childIndent);
