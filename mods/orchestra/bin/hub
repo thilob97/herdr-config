@@ -113,7 +113,7 @@ reports into it) and show in the Team-Panel under it.
   hub gate ID [--json]                 do the recorded check and the reviewer's verdict still count?
                                             checks pass on checks_head = HEAD, verdict pass on review_head = HEAD
   hub gates [--json]                   the same for every open ticket (Team panel)
-  hub review-start ID [--agent ...] [--restart]
+  hub review-start ID [--agent ...] [--restart] [--force --reason TEXT]
                                             Prüfstation: startet einen zweiten Agent (Standard: anderes Modell
                                             als der Umsetzer) im Worktree review-<id> auf dessen Branch;
                                             er liest <base>...HEAD, prüft die Abnahmekriterien des Tickets
@@ -121,7 +121,9 @@ reports into it) and show in the Team-Panel under it.
                                             Urteil (`hub review-verdict`). Eine offene Runde (gestartet,
                                             kein Urteil) verweigert einen zweiten Start; --restart beendet
                                             den laufenden Reviewer und startet einen neuen. Nach einem
-                                            Urteil beginnt ein neuer Lauf eine neue Runde
+                                            Urteil beginnt ein neuer Lauf eine neue Runde. Der Umsetzer
+                                            selbst startet keine Prüfrunde (HC_TERMINAL_ID = ticket
+                                            terminal); nur --force --reason überfährt das
   hub review-verdict ID --verdict pass|fail --summary TEXT
                                             das Urteil des Reviewers, gültig für den HEAD des Worktrees;
                                             ein neuer Commit macht es ungültig; fail setzt das Ticket auf
@@ -2477,10 +2479,29 @@ SPEC_TEMPLATE = {
 CRITERION = re.compile(r"^\s*[-*]\s*\[([ xX])\]\s*(.*\S)\s*$")
 
 
+HEADING = re.compile(r"^##[ \t]+(.+?)[ \t]*:?[ \t]*$", re.M)
+
+
+def body_text(t):
+    """The ticket body with one line ending, so a CRLF body reads like an LF one."""
+    return re.sub(r"\r\n?", "\n", t.get("body") or "")
+
+
 def section_of(t, heading):
-    """The body of one `##` section, or None when the heading is absent."""
-    m = re.search(rf"(?ms)^{re.escape(heading)}[ \t]*\n(.*?)(?=^## |\Z)", t.get("body") or "")
-    return m.group(1).strip("\n") if m else None
+    """The body of one `##` section, or None when the heading is absent.
+
+    The heading counts when it stands on its own line, with or without a trailing colon
+    and even as the last line without a newline: a manually filled `## Grenzen` must not
+    be appended a second time by `hub spec`."""
+    body = body_text(t)
+    heads = list(HEADING.finditer(body))
+    want = heading[3:].strip().lower()
+    for i, m in enumerate(heads):
+        if m.group(1).strip().lower() != want:
+            continue
+        end = heads[i + 1].start() if i + 1 < len(heads) else len(body)
+        return body[m.end():end].strip("\n")
+    return None
 
 
 def criteria(t):
@@ -2505,7 +2526,7 @@ def add_spec_sections(t):
 
     They go in their own order at the end of the body, just before ## Verlauf when present.
     """
-    body, verlauf = split_verlauf(t.get("body"))
+    body, verlauf = split_verlauf(body_text(t))
     added = []
     for heading in SPEC_SECTIONS:
         if section_of(t, heading) is not None:
@@ -2624,13 +2645,23 @@ def run_preflight(t):
     repo = t.get("repo") or ""
     if not repo or run(["test", "-d", repo], on, check=False).returncode != 0:
         die(f"{t['id']}: kein Repo: hub ticket set {t['id']} repo=/pfad")
-    rev = (t.get("base_head") or t.get("base") or "").strip()
-    if not rev:
-        die(f"{t['id']}: keine Basis im Ticket (base/base_head); hub dispatch schreibt sie")
     top = run(["git", "rev-parse", "--show-toplevel"], on, repo, check=False)
     if top.returncode != 0:
         die(f"{t['id']}: kein Git-Repository in {repo}: {(top.stderr or top.stdout).strip()}")
     root = top.stdout.strip()
+    # Without a recorded base the ticket was never dispatched: check the repo's main line
+    # (or its HEAD) instead of refusing. Only the report is written, never base/base_head.
+    rev = (t.get("base_head") or t.get("base") or "").strip()
+    if not rev:
+        for cand in ("main", "master", "origin/main", "origin/master"):
+            if run(["git", "rev-parse", "--verify", "--quiet", f"{cand}^{{commit}}"],
+                   on, root, check=False).returncode == 0:
+                rev = cand
+                break
+    if not rev:
+        rev = run(["git", "rev-parse", "HEAD"], on, root, check=False).stdout.strip()
+    if not rev:
+        die(f"{t['id']}: keine Basis im Ticket und kein HEAD in {root}")
     tmp = run(["mktemp", "-d"], on).stdout.strip()
     if not tmp:
         die(f"{t['id']}: mktemp -d lieferte kein Verzeichnis")
@@ -3552,6 +3583,16 @@ def cmd_review_start(a):
     t = load(a.id)
     if t["status"] == "done":
         die(f"{a.id} ist bereits fertig")
+    me = os.environ.get("HC_TERMINAL_ID") or ""
+    if me and me == (t.get("terminal") or ""):
+        # The implementer must not judge itself: Prüfrunden belong to the orchestrator.
+        if not a.force:
+            die(f"{a.id}: Prüfrunden startet der Orchestrator, nicht der Umsetzer ({me}); "
+                f"nur mit --force --reason \"…\"")
+        if not a.reason.strip():
+            die("--force verlangt --reason \"…\": der Grund gehört in den Verlauf")
+        note = f"Prüfstation vom Umsetzer selbst gestartet ({me}): {a.reason.strip()}"
+        update_ticket(a.id, lambda fresh: add_comment(fresh, "hub", note))
     g = gate(t)
     if not g["ok"]:
         die(f"{a.id}: {g['reason']}. Prüfstation erst nach grünem hub verify.")
@@ -3898,6 +3939,8 @@ def cmd_done(a):
         for k in ("terminal", "agent_space", "tab"):
             if t.get(k) == "" and fresh.get(k):
                 fresh[k] = ""
+        if res.get("evidence") and res["evidence"] != fresh.get("evidence"):
+            fresh["evidence"] = res["evidence"]
         set_status(fresh, "done")
 
     update_ticket(a.id, saved)
@@ -4092,11 +4135,56 @@ def close_space(t, space):
     return True, f"Tab {', '.join(tab.get('id') for tab in closable)} geschlossen; Space {name} bleibt"
 
 
+def absorb_worktree_files(t, wt, on=None):
+    """Keep an uncommitted worktree from blocking `done`.
+
+    Evidence files listed on the ticket move to `<repo>/.herdr/evidence/<id>/` so their
+    path stays readable after the worktree is gone; the ticket's evidence field follows
+    them. Whatever else is uncommitted is committed on the ticket's branch as
+    "wip: Nachweise". Returns (notes, error); an error means the worktree stays."""
+    notes, moved = [], {}
+    files = names(t.get("evidence"))
+    main = main_checkout(t, on) or ""
+    dest_root = os.path.join(main, ".herdr", "evidence", t["id"]) if main else ""
+    if dest_root:
+        for path in files:
+            if not os.path.isabs(path) or not inside(path, wt):
+                continue
+            if run(["test", "-f", path], on, check=False).returncode != 0:
+                continue
+            dest = os.path.join(dest_root, os.path.relpath(path, wt))
+            parent = os.path.dirname(dest)
+            if parent and run(["mkdir", "-p", parent], on, check=False).returncode != 0:
+                continue
+            if run(["cp", "-p", path, dest], on, check=False).returncode != 0:
+                continue
+            moved[path] = dest
+        if moved:
+            t["evidence"] = ", ".join(moved.get(p, p) for p in files)
+            notes.append(f"Nachweise nach {dest_root} übernommen ({len(moved)})")
+    dirty = run(["git", "status", "--porcelain"], on, wt, check=False)
+    if dirty.returncode != 0 or not dirty.stdout.strip():
+        return notes, ""
+    if run(["git", "add", "-A"], on, wt, check=False).returncode != 0:
+        return notes, "git add -A fehlgeschlagen"
+    commit = ["git", "commit", "-q", "-m", "wip: Nachweise"]
+    r = run(commit, on, wt, check=False)
+    if r.returncode != 0:
+        # A checkout without an identity still gets its proof committed, not dropped.
+        r = run(["git", "-c", "user.name=hub", "-c", "user.email=hub@localhost", *commit],
+                on, wt, check=False)
+    if r.returncode != 0:
+        return notes, (r.stderr or r.stdout).strip()
+    notes.append("uncommittete Dateien auf dem Ticket-Branch committet (wip: Nachweise)")
+    return notes, ""
+
+
 def cleanup_ticket(t, tickets=None, keep_worktree=False, keep_space=False):
     """End the agent, remove the ticket's clean worktree and close its own space/tab.
 
-    Uncommitted changes abort everything: nothing is ended or removed, and the caller says why.
-    A worktree another ticket claims is never touched. The branch always stays.
+    Uncommitted proof files move to the repo's evidence dir and the rest is committed as
+    "wip: Nachweise"; only when that fails does anything abort. A worktree another ticket
+    claims is never touched. The branch always stays.
     """
     on = t.get("machine") or None
     tickets = all_tickets() if tickets is None else tickets
@@ -4112,8 +4200,15 @@ def cleanup_ticket(t, tickets=None, keep_worktree=False, keep_space=False):
         else:
             dirty = run(["git", "status", "--porcelain"], on, wt, check=False)
             if dirty.returncode == 0 and dirty.stdout.strip():
-                return {"notes": [], "skipped": [f"nichts aufgeräumt: {wt} hat uncommittete Änderungen"],
-                        "aborted": True, "worktree_removed": False}
+                kept, err = absorb_worktree_files(t, wt, on)
+                notes += kept
+                still = run(["git", "status", "--porcelain"], on, wt, check=False)
+                if err or (still.returncode == 0 and still.stdout.strip()):
+                    why = f" ({err})" if err else ""
+                    return {"notes": notes,
+                            "skipped": [f"nichts aufgeräumt: {wt} hat uncommittete Änderungen{why}"],
+                            "aborted": True, "worktree_removed": False,
+                            "evidence": t.get("evidence")}
     term = t.get("terminal") or ""
     if term and keep_space:
         notes.append(f"Agent {term} bleibt (--keep-space)")
@@ -4154,7 +4249,8 @@ def cleanup_ticket(t, tickets=None, keep_worktree=False, keep_space=False):
                 (notes if ok else skipped).append(message)
     if ended and term:
         t["terminal"] = ""
-    return {"notes": notes, "skipped": skipped, "aborted": False, "worktree_removed": removed}
+    return {"notes": notes, "skipped": skipped, "aborted": False, "worktree_removed": removed,
+            "evidence": t.get("evidence")}
 
 
 def expired_at(info, now_ms):
@@ -4875,6 +4971,13 @@ def measure(t, now, spent):
     except (TypeError, ValueError):
         recorded = 0
     rounds = max(sum(1 for _ts, state in ev if state == "review"), recorded)
+    # A fail verdict sends the ticket back to doing while its status is still doing, so
+    # the log has no review→doing move to count. Every round after the first is one return.
+    extra = rounds - 1 - len(rework)
+    if extra > 0:
+        at = epoch(t.get("review_at")) or next((ts for ts, state in reversed(ev) if state == "review"), None)
+        if at is not None:
+            rework += [at] * extra
     return {"id": t["id"], "title": t.get("title") or "", "repo": t.get("repo") or "",
             "status": t.get("status") or "todo",
             "created": int(ev[0][0]) if ev else None, "done_at": int(done_ts) if done_ts else None,
@@ -5677,6 +5780,9 @@ def main():
                     help="Reviewer; Standard ist ein anderes Programm als der Umsetzer")
     rs.add_argument("--restart", action="store_true",
                     help="eine offene Prüfstation beenden und einen neuen Reviewer starten")
+    rs.add_argument("--force", action="store_true",
+                    help="den Start durch den Umsetzer selbst überfahren (verlangt --reason)")
+    rs.add_argument("--reason", default="", metavar="TEXT")
     rs.set_defaults(fn=cmd_review_start)
     rvd = sub.add_parser("review-verdict")
     rvd.add_argument("id")
