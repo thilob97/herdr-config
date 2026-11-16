@@ -64,8 +64,16 @@ const TICKETS = [
   { id: "b1", status: "review", space: "spb", space_name: "Beta", repo: "/repos/beta" },
 ];
 
+// ui.js hält die Host-Listen 25 ms lang (ein Render-Pass, HOST_TICK). Jedes `world()` ist
+// ein neuer Pass: die Uhr rückt vor, damit der nächste Zugriff frische Kopien liest —
+// sonst sieht die zweite Szene noch die Spaces der ersten.
+const realNow = Date.now;
+let ahead = 0;
+Date.now = () => realNow() + ahead;
+
 /** A fresh home: spaces, tickets, agents/terminals, shared state. */
 function world({ active = "spag", agents = [], terminals = [], tickets = TICKETS } = {}) {
+  ahead += 1000;
   const list = WORKSPACES.map((s) => ({ ...s, active: s.id === active }));
   globalThis.__spaces = list;
   globalThis.__agents = agents;
