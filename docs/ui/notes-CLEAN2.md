@@ -25,7 +25,9 @@ Host-Satz, den `ui.js` für Identitäts-Chips ohnehin je Pass cacht.
 
 Zähltest `mods/dashboard/test/render-count.test.mjs` (Stub zählt `agents`,
 `terminals`, `spaces`, `shared`, `machines`; 76 Tickets, 6 Agents, 3 Spaces):
-**37 Host-Aufrufe** je Render (Ziel < 100; vorher 1.621 laut Audit).
+**37 Host-Aufrufe** je Render (Ziel < 100; vorher 1.621 laut Audit). Der Test
+friert `Date.now` für den einen Render ein, damit `ui.js`' 25-ms-Host-Cache
+nicht mitten im Lauf verfällt; 20 Läufe hintereinander grün.
 
 ## 2. Tasten beim Tippen (`main.js`)
 

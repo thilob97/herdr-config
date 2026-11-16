@@ -107,9 +107,16 @@ function view() {
 
 test("ein Render mit 76 Tickets bleibt unter 100 Host-Aufrufen", () => {
   const v = view();
-  assert.ok(v.render({}));
-  assert.equal(v.snap, null, "der Schnappschuss endet mit dem Render");
-  const calls = globalThis.__calls;
-  const total = Object.values(calls).reduce((n, x) => n + x, 0);
-  assert.ok(total <= 100, `Host-Aufrufe je Render: ${total}\n${JSON.stringify(calls)}`);
+  // ui.js cached einen Host-Satz für 25 ms und fragt dafür Date.now. Ein Render, der
+  // zufällig länger dauert, würde den Cache mitten im Lauf verlieren und den Test
+  // flaky machen; für genau diesen einen Render steht die Uhr still.
+  const now = Date.now;
+  Date.now = () => 1_700_000_000_000;
+  try {
+    assert.ok(v.render({}));
+    assert.equal(v.snap, null, "der Schnappschuss endet mit dem Render");
+    const calls = globalThis.__calls;
+    const total = Object.values(calls).reduce((n, x) => n + x, 0);
+    assert.ok(total <= 100, `Host-Aufrufe je Render: ${total}\n${JSON.stringify(calls)}`);
+  } finally { Date.now = now; }
 });
