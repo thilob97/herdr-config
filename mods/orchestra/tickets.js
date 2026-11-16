@@ -4,17 +4,6 @@ import * as fs from "fs/promises";
 import { appHome, shared, setShared } from "herdr";
 
 export const ticketsDir = () => `${appHome()}/data/quests/tickets`;
-const FIELDS = ["title", "status", "repo", "labels", "due", "machine", "owner", "agent", "agent_cmd", "harness", "branch", "base", "base_head", "worktree", "terminal",
-  "space", "tab", "source", "type", "size", "priority", "triaged",
-  "preflight", "preflight_at", "preflight_head", "preflight_duration",
-  "checks", "checks_head", "checks_at", "checks_duration", "checks_exit", "checks_cmd", "verify", "evidence",
-  "merged", "pr", "ci", "ci_head", "ci_at", "ci_url", "ci_details",
-  "review", "review_head", "review_at", "review_summary", "review_rounds", "reviewer", "reviewer_name", "review_terminal",
-  "assignee", "blocked_by", "tags", "waiting", "by", "updated", "created", "status_at", "status_log"];
-
-// Keep in step with STATUSES in bin/hub: only these five states are real tickets; any
-// other value would hide the ticket from the board, team panel and stages.
-export const STATUSES = ["todo", "doing", "review", "done", "blocked"];
 
 export function parse(id, text) {
   const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(text);
@@ -28,12 +17,6 @@ export function parse(id, text) {
   return t;
 }
 
-export function serialize(t) {
-  const one = (v) => String(v ?? "").replace(/[\r\n]+/g, " ").trim();
-  const head = FIELDS.filter((k) => ["title", "status", "repo", "labels", "due"].includes(k) || t[k]).map((k) => `${k}: ${one(t[k])}`);
-  return `---\n${head.join("\n")}\n---\n${t.body ?? ""}`;
-}
-
 export async function list() {
   let names;
   try { names = await fs.readdir(ticketsDir()); } catch { return []; }
@@ -42,22 +25,6 @@ export async function list() {
     try { out.push(parse(n.slice(0, -3), await fs.readFile(`${ticketsDir()}/${n}`, "utf8"))); } catch {}
   }
   return out;
-}
-
-export async function setStatus(id, status) {
-  const path = `${ticketsDir()}/${id}.md`;
-  const t = parse(id, await fs.readFile(path, "utf8"));
-  const d = new Date(), p = (n) => String(n).padStart(2, "0");
-  const stamp = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
-  // The same status log `hub` keeps: `hub stats` counts lead time and rework from it.
-  const log = String(t.status_log ?? "").split("|").filter(Boolean);
-  if (status !== t.status || !log.length) {
-    t.status = status;
-    t.status_at = stamp;
-    if (log.at(-1)?.split("@")[0] !== status) t.status_log = [...log, `${status}@${stamp}`].join("|");
-  }
-  t.updated = stamp;
-  await fs.writeFile(path, serialize(t));
 }
 
 // The orchestrator's summary section that `hub review` appends; it ends where the next
@@ -112,7 +79,9 @@ export function verifyOf(t) {
   let fenced = false;
   for (const line of lines) {
     if (line.trimStart().startsWith("```")) { fenced = !fenced; continue; }
-    if (fenced) tail.push(line);
+    // hub entschärft Ausgabezeilen, die mit "## " beginnen, um ein Leerzeichen; hier
+    // zurück, damit die angezeigte Ausgabe wieder die echte ist.
+    if (fenced) tail.push(line.startsWith(" ## ") ? line.slice(1) : line);
   }
   return { meta, tail, fields: metaFields(meta) };
 }
