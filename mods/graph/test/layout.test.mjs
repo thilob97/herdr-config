@@ -90,6 +90,35 @@ test("Sub-Agents hängen eingerückt unter ihrem Parent", () => {
   assert.deepEqual(parentEdge.points[parentEdge.points.length - 1], [subs[0].x + subs[0].w / 2, subs[0].y]);
 });
 
+test("drei Ebenen Sub-Agents hängen über parent verschachtelt", () => {
+  const g = graph([
+    lane({ id: "orch", kind: "orchestrator", start: 10 }),
+    lane({
+      id: "a", parent: "orch", ticket: "tk-1", start: 20, subagents: [
+        { id: "s1", title: "Suche", started: 30, ended: 35 },
+        { id: "s2", title: "Tests", started: 36, parent: "s1" },
+        { id: "s3", title: "Tiefe", started: 37, parent: "s2" },
+      ],
+    }),
+  ], [{ id: "tk-1", status: "doing", size: "M" }]);
+  const a = node(g, "lane:a");
+  const s1 = node(g, "sub:a:s1"), s2 = node(g, "sub:a:s2"), s3 = node(g, "sub:a:s3");
+  assert.ok(s1 && s2 && s3, "alle drei Ebenen sind Karten");
+  assert.equal(s1.parent, "lane:a");
+  assert.equal(s2.parent, "sub:a:s1");
+  assert.equal(s3.parent, "sub:a:s2");
+  assert.deepEqual([s1, s2, s3].map((n) => n.depth), [2, 3, 4]);
+  assert.deepEqual([s1, s2, s3].map((n) => n.column), [a.column, a.column, a.column],
+    "Sub-Agents bleiben in der Spalte ihres Parents");
+  assert.ok(s1.x > a.x && s2.x > s1.x && s3.x > s2.x, "jede Ebene rückt weiter ein");
+  assert.ok(s1.w < a.w && s2.w < s1.w && s3.w < s2.w, "und wird schmaler");
+  assert.ok(s1.y > a.y + a.h && s2.y > s1.y + s1.h && s3.y > s2.y + s2.h);
+  for (const x of g.nodes) for (const y of g.nodes) if (x.id < y.id) assert.equal(overlap(x, y), false, `${x.id} überlappt ${y.id}`);
+  assert.deepEqual(g.edges.filter((e) => e.kind === "parent").map((e) => [e.from, e.to]), [
+    ["lane:a", "sub:a:s1"], ["sub:a:s1", "sub:a:s2"], ["sub:a:s2", "sub:a:s3"],
+  ]);
+});
+
 test("Ticket-Kürzel bleiben auch bei gleichem Wortstamm unterscheidbar", () => {
   const ids = ["graph-spalten-verteilen", "graph-kanten-ziehen", "graph-chips-bundeln"];
   assert.equal(new Set(ids.map(shortId)).size, ids.length);
