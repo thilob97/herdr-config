@@ -60,7 +60,7 @@ Aktiv ist das Layout `elric` (Klon von `main`), daneben `dashboard`. Eigene Mods
 | `graph` | Fabrik-Graph: der Baum des aktiven Workspace von oben nach unten — Orchestrator, Agents, Sub-Agents, Ticket-Kürzel und `blocked_by`-Pfeile; Layout-Tests mit `node --test mods/graph/test/*.test.mjs` |
 | `docker` | Panel mit Containern, Compose-Gruppen und Aktionen |
 | `marketplaces`, `mcp-servers` | Fenster für Agent-Plugin-Marketplaces und MCP-Server je Host, Maschine und Projekt |
-| `blueprint`, `filetree`, `file-icons`, `git-graph` | Extern, siehe unten |
+| `blueprint`, `filetree`, `git-graph` | Extern, siehe unten |
 
 ## Agent-Zentrale
 
@@ -244,12 +244,11 @@ Sauber aus folgenden Quellen installiert; vorhandene Lizenzen liegen bei den Mod
 | Addon | Quelle | Version / Commit | lokal angepasst |
 |---|---|---|---|
 | `blueprint` | [chappse6/herdr-blueprint-app](https://github.com/chappse6/herdr-blueprint-app), `mods/blueprint` | 0.3.5 · `9e6533ace80e392a14311ad05c1dbda10696deda` | `main.js`: Panel-Kopf (Titel „Blueprint“, Projekt als Meta, Agent- und Update-Chip, Icon-Knöpfe 26, „Neu laden“ in der Diagramm-Zeile), Kopfhöhe 42. Diagramme, Sprachen (`i18n.js`) und Abläufe unverändert. Erkennt sich als Panel über `props.panel` im Layout-Block `blueprint`. |
-| `filetree` | [cybertron288/herdr-mods](https://github.com/cybertron288/herdr-mods), `filetree/mods/filetree` | `34e7c3348e954fd0a1147b846898db8c3e37e526` | `main.js`: Panel-Rahmen, Kopf mit Titel „Tree“ und Segment „Tree/Zuletzt“, Werkzeug-Knöpfe, Filterfeld, Leerzustände (deutsch). Baum, Git-Zusammenfassung und Vorschau unverändert. |
-| `file-icons` | [cybertron288/herdr-mods](https://github.com/cybertron288/herdr-mods), `file-icons/mods/file-icons` | `34e7c3348e954fd0a1147b846898db8c3e37e526` | — |
+| `filetree` | [cybertron288/herdr-mods](https://github.com/cybertron288/herdr-mods), `filetree/mods/filetree` | `34e7c3348e954fd0a1147b846898db8c3e37e526` | `main.js`: Panel-Rahmen, Kopf mit Titel „Tree“ und Segment „Tree/Zuletzt“, Werkzeug-Knöpfe, Filterfeld, Leerzustände (deutsch). Baum, Git-Zusammenfassung und Vorschau unverändert. Die Icons des früheren Mods `file-icons` (Material Icon Theme, MIT/Apache-2.0) liegen mit ihrer Tabelle unter `mods/filetree/icons/` und `mods/filetree/icons.js`; `mods/file-icons` gibt es nicht mehr. |
 | `git-graph` | [rabeeh-ta/herdr-git-graph](https://github.com/rabeeh-ta/herdr-git-graph), `mods/git-graph` | 0.3.2 · `2f4fe0fc22e7cc726f3c1a2a654887c96227c37b` | `graph.js`: Panel-Kopf (Titel, Branch- und Update-Chip, Icon-Knöpfe 26 mit Tooltips), Segment „Alle Zweige/Aktueller Zweig“, Checkbox „Remotes“, Leerzustände (deutsch). Graph, Details und Dialoge unverändert. |
 | `space-folders` | [jankeesvw/herdr-space-folders](https://github.com/jankeesvw/herdr-space-folders), `mods/space-folders` | `63a78b20d5ed30d57166a3c7165a6eb558c3ef84` | Kopf, Zeilenhöhen (28), Radien, Knöpfe (22 px mit Tooltip), Schriftgrößen und Theme-Farben; die Höhe des Spaces-Blocks folgt dem Inhalt (`layout.resize`, nur wenn sich die Zeilenzahl ändert, nie im Rail; Grenze 40 % mit `shared("agent-cards.height")`). Inhalte und Texte der Ordner-Dialoge unverändert. |
 
-**Plattformgrenzen:** SpaceFolders benötigt POSIX-`sh` für die Ordnerpersistenz. Git-Graph benötigt Git. Git-Graph und Blueprint können upstream automatisch öffentliche Versionsmetadaten abfragen; das ist keine automatische Neuinstallation.
+**Plattformgrenzen:** SpaceFolders benötigt POSIX-`sh` für die Ordnerpersistenz. Git-Graph benötigt Git. Die Update-Prüfungen von Git-Graph und Blueprint sind in dieser Kopie ausgeschaltet: Beide haben lokale Anpassungen (Kopf, deutsche Texte), und der Update-Auftrag an einen Agenten würde die Dateien überschreiben. Updates laufen bewusst von Hand (neue Fassung ansehen, lokale Änderungen übernehmen), nicht über Chip oder `*-update-check-*`.
 
 ## Blueprint-Panel
 

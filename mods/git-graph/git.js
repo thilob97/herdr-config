@@ -200,7 +200,7 @@ export const menuHeight = (items) => 10 + items.reduce((n, i) => n + (i.separato
 
 const remoteChoice = (ctx) => ({ id: "remote", label: "Remote", value: ctx.remotes.includes("origin") ? "origin" : ctx.remotes[0],
   options: ctx.remotes.map((r) => ({ value: r, label: r })) });
-const mergeNote = (a) => (a.merge ? " It's a merge commit: its changes against its first parent are used." : "");
+const mergeNote = (a) => (a.merge ? " Es ist ein Merge-Commit: es zählen seine Änderungen gegen den ersten Parent." : "");
 
 // The dialog an action asks first, or null when it runs at once.
 // A Manygit row's menu. Herdr's own first: an agent's tab (most picked first, as
@@ -229,42 +229,42 @@ function repoMenu(r, ctx) {
 export function dialogFor(action, ctx) {
   const cur = currentName(ctx), a = action;
   switch (a.type) {
-    case "checkoutRemote": return { title: "Checkout remote branch", detail: `Create a local branch that tracks ${a.name}, and check it out.`,
-      inputs: [{ id: "name", label: "Local branch name", value: a.branch }], confirm: "Checkout" };
-    case "checkoutCommit": return { title: "Checkout commit", detail: `Check out commit ${a.short}? You'll be on a detached HEAD: new commits belong to no branch until you create one.`, confirm: "Checkout" };
-    case "createBranch": return { title: "Create branch", detail: `At commit ${a.short}.`,
-      inputs: [{ id: "name", label: "Branch name", value: "" }], checks: [{ id: "checkout", label: "Check out the new branch", value: false }], confirm: "Create" };
-    case "addTag": return { title: "Add tag", detail: `At commit ${a.short}.`,
-      inputs: [{ id: "name", label: "Tag name", value: "" }, { id: "message", label: "Message (makes an annotated tag)", value: "", optional: true }], confirm: "Add tag" };
-    case "renameBranch": return { title: "Rename branch", detail: `Rename ${a.name}.`, inputs: [{ id: "name", label: "New name", value: a.name }], confirm: "Rename" };
-    case "deleteBranch": return { title: "Delete branch", detail: `Delete the local branch ${a.name}?`,
-      checks: [{ id: "force", label: "Force delete, even if it isn't merged", value: false }], confirm: "Delete", danger: true };
-    case "deleteRemoteBranch": return { title: "Delete remote branch", detail: `Delete ${a.branch} on ${a.remote}? This changes the remote for everyone who uses it.`, confirm: "Delete", danger: true };
-    case "deleteTag": return { title: "Delete tag", detail: `Delete the local tag ${a.name}?`, confirm: "Delete", danger: true };
-    case "merge": return { title: "Merge", detail: `Merge ${a.what} into ${cur}?`,
-      checks: [{ id: "noff", label: "Create a merge commit even if it could fast-forward", value: false }], confirm: "Merge" };
-    case "rebase": return { title: "Rebase", detail: `Rebase ${cur} on ${a.what}?`, confirm: "Rebase" };
-    case "cherryPick": return { title: "Cherry pick", detail: `Apply commit ${a.short} on top of ${cur}?${mergeNote(a)}`, confirm: "Cherry pick" };
-    case "revert": return { title: "Revert", detail: `Add a commit to ${cur} that undoes ${a.short}?${mergeNote(a)}`, confirm: "Revert" };
-    case "reset": return { title: "Reset", detail: `Move ${cur} to commit ${a.short}.`, confirm: "Reset",
-      choice: { id: "mode", label: "Mode", value: "mixed", options: [
-        { value: "soft", label: "Soft", detail: "Keep every change, staged" },
-        { value: "mixed", label: "Mixed", detail: "Keep every change, unstaged" },
-        { value: "hard", label: "Hard", detail: "Discard every change", danger: true }] } };
-    case "push": return { title: "Push branch", detail: `Push ${a.name}.`, choice: remoteChoice(ctx),
-      checks: [{ id: "upstream", label: "Set as upstream", value: true }], confirm: "Push" };
-    case "pushTag": return { title: "Push tag", detail: `Push the tag ${a.name}.`, choice: remoteChoice(ctx), confirm: "Push" };
-    case "commit": return { title: "Commit", detail: ctx.current ? `Commit to ${ctx.current}.` : "You're on a detached HEAD: the commit belongs to no branch until you create one.",
-      inputs: [{ id: "message", label: "Message", value: "", text: true }],
+    case "checkoutRemote": return { title: "Remote-Branch auschecken", detail: `Einen lokalen Branch anlegen, der ${a.name} folgt, und ihn auschecken.`,
+      inputs: [{ id: "name", label: "Name des lokalen Branches", value: a.branch }], confirm: "Auschecken" };
+    case "checkoutCommit": return { title: "Commit auschecken", detail: `Commit ${a.short} auschecken? Du bist danach auf einem detached HEAD: neue Commits gehören zu keinem Branch, bis du einen anlegst.`, confirm: "Auschecken" };
+    case "createBranch": return { title: "Branch anlegen", detail: `Bei Commit ${a.short}.`,
+      inputs: [{ id: "name", label: "Branch-Name", value: "" }], checks: [{ id: "checkout", label: "Den neuen Branch auschecken", value: false }], confirm: "Anlegen" };
+    case "addTag": return { title: "Tag anlegen", detail: `Bei Commit ${a.short}.`,
+      inputs: [{ id: "name", label: "Tag-Name", value: "" }, { id: "message", label: "Nachricht (ergibt einen annotierten Tag)", value: "", optional: true }], confirm: "Tag anlegen" };
+    case "renameBranch": return { title: "Branch umbenennen", detail: `${a.name} umbenennen.`, inputs: [{ id: "name", label: "Neuer Name", value: a.name }], confirm: "Umbenennen" };
+    case "deleteBranch": return { title: "Branch löschen", detail: `Den lokalen Branch ${a.name} löschen?`,
+      checks: [{ id: "force", label: "Löschen erzwingen, auch wenn er nicht gemergt ist", value: false }], confirm: "Löschen", danger: true };
+    case "deleteRemoteBranch": return { title: "Remote-Branch löschen", detail: `${a.branch} auf ${a.remote} löschen? Das ändert das Remote für alle, die es nutzen.`, confirm: "Löschen", danger: true };
+    case "deleteTag": return { title: "Tag löschen", detail: `Den lokalen Tag ${a.name} löschen?`, confirm: "Löschen", danger: true };
+    case "merge": return { title: "Mergen", detail: `${a.what} in ${cur} mergen?`,
+      checks: [{ id: "noff", label: "Merge-Commit anlegen, auch wenn ein Fast-Forward möglich wäre", value: false }], confirm: "Mergen" };
+    case "rebase": return { title: "Rebase", detail: `${cur} auf ${a.what} rebasen?`, confirm: "Rebase" };
+    case "cherryPick": return { title: "Cherry-Pick", detail: `Commit ${a.short} auf ${cur} anwenden?${mergeNote(a)}`, confirm: "Cherry-Pick" };
+    case "revert": return { title: "Revert", detail: `Einen Commit auf ${cur} anlegen, der ${a.short} rückgängig macht?${mergeNote(a)}`, confirm: "Revert" };
+    case "reset": return { title: "Zurücksetzen", detail: `${cur} auf Commit ${a.short} setzen.`, confirm: "Zurücksetzen",
+      choice: { id: "mode", label: "Modus", value: "mixed", options: [
+        { value: "soft", label: "Soft", detail: "Alle Änderungen behalten, gestaged" },
+        { value: "mixed", label: "Mixed", detail: "Alle Änderungen behalten, ungestaged" },
+        { value: "hard", label: "Hard", detail: "Alle Änderungen verwerfen", danger: true }] } };
+    case "push": return { title: "Branch pushen", detail: `${a.name} pushen.`, choice: remoteChoice(ctx),
+      checks: [{ id: "upstream", label: "Als Upstream setzen", value: true }], confirm: "Pushen" };
+    case "pushTag": return { title: "Tag pushen", detail: `Den Tag ${a.name} pushen.`, choice: remoteChoice(ctx), confirm: "Pushen" };
+    case "commit": return { title: "Committen", detail: ctx.current ? `Auf ${cur} committen.` : "Du bist auf einem detached HEAD: der Commit gehört zu keinem Branch, bis du einen anlegst.",
+      inputs: [{ id: "message", label: "Nachricht", value: "", text: true }],
       // With changes already staged, commit just those unless the person ticks this.
-      checks: [{ id: "all", label: "Stage every change first (untracked too)", value: !a.staged }], confirm: "Commit" };
-    case "pull": return { title: "Pull", detail: `Fast-forward ${cur} to ${a.upstream}? A pull that can't fast-forward changes nothing.`, confirm: "Pull" };
-    case "stash": return { title: "Stash uncommitted changes", inputs: [{ id: "message", label: "Message", value: "", optional: true }],
-      checks: [{ id: "untracked", label: "Include untracked files", value: true }], confirm: "Stash" };
-    case "resetUncommitted": return { title: "Reset uncommitted changes", detail: "Reset the working tree to HEAD.", confirm: "Reset",
-      choice: { id: "mode", label: "Mode", value: "mixed", options: [
-        { value: "mixed", label: "Mixed", detail: "Unstage everything, keep the changes" },
-        { value: "hard", label: "Hard", detail: "Discard every change to tracked files", danger: true }] } };
+      checks: [{ id: "all", label: "Vorher alle Änderungen stagen (auch unversionierte)", value: !a.staged }], confirm: "Committen" };
+    case "pull": return { title: "Pullen", detail: `Fast-Forward von ${cur} auf ${a.upstream}? Ein Pull, der nicht fast-forwarden kann, ändert nichts.`, confirm: "Pullen" };
+    case "stash": return { title: "Uncommittete Änderungen stashen", inputs: [{ id: "message", label: "Nachricht", value: "", optional: true }],
+      checks: [{ id: "untracked", label: "Unversionierte Dateien einschließen", value: true }], confirm: "Stashen" };
+    case "resetUncommitted": return { title: "Uncommittete Änderungen zurücksetzen", detail: "Den Arbeitsbaum auf HEAD zurücksetzen.", confirm: "Zurücksetzen",
+      choice: { id: "mode", label: "Modus", value: "mixed", options: [
+        { value: "mixed", label: "Mixed", detail: "Alles unstagen, die Änderungen behalten" },
+        { value: "hard", label: "Hard", detail: "Alle Änderungen an versionierten Dateien verwerfen", danger: true }] } };
     default: return null;
   }
 }
@@ -290,11 +290,11 @@ export function validate(action, v, ctx) {
   for (const input of spec?.inputs ?? []) {
     const text = String(v[input.id] ?? "").trim();
     if (input.optional) continue;
-    if (!text) return `${input.label} is empty.`;
+    if (!text) return `${input.label} ist leer.`;
     if (input.text) continue; // free text, passed as one argument after its option
-    if (text.startsWith("-") || /\s/.test(text)) return `${input.label} can't start with "-" or contain spaces.`;
+    if (text.startsWith("-") || /\s/.test(text)) return `${input.label} darf nicht mit „-“ beginnen oder Leerzeichen enthalten.`;
   }
-  if (spec?.choice && !spec.choice.options.some((o) => o.value === v[spec.choice.id])) return `Pick a ${spec.choice.label.toLowerCase()}.`;
+  if (spec?.choice && !spec.choice.options.some((o) => o.value === v[spec.choice.id])) return `Bitte ${spec.choice.label} wählen.`;
   return null;
 }
 

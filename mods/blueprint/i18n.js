@@ -1,17 +1,19 @@
-// UI text in English (the default), Korean and Japanese. The language follows
-// Claude Code's `language` setting (~/.claude/settings.json): the agent next to
-// Blueprint answers in it. Anything else, or no setting, is English.
+// UI text in German (the default), English, Korean and Japanese. The language
+// follows Claude Code's `language` setting (~/.claude/settings.json): the agent
+// next to Blueprint answers in it. No setting (or an unknown one) is German.
 //
 // What goes to the agent ("In Blueprint I pointed at ...") stays English: the
 // Blueprint skill recognises that wording. The person's own note goes as typed.
 
-export const LANGS = ["en", "ko", "ja"];
+export const LANGS = ["de", "en", "ko", "ja"];
 
 export function pickLang(value) {
   const v = String(value ?? "").trim().toLowerCase();
+  if (/^(de|deu|ger|german)\b/.test(v) || v.includes("deutsch")) return "de";
+  if (/^(en|eng|english)\b/.test(v)) return "en";
   if (/^(ko|kor|korean)\b/.test(v) || v.includes("한국")) return "ko";
   if (/^(ja|jp|jpn|japanese)\b/.test(v) || v.includes("日本")) return "ja";
-  return "en";
+  return "de";
 }
 
 // Shortcut keys typed with a Korean (2-set) or Japanese (kana) input source on:
@@ -78,6 +80,66 @@ const TEXT = {
     drawFailed: "Couldn't draw this diagram. Refresh to try again",
     broken: "Blueprint couldn't draw this view. Refresh to try again",
     partial: "Too big to draw at once here: zoom in to see the rest",
+  },
+  de: {
+    updateTip: (latest, cur) => `Blueprint ${latest} ist da (installiert: ${cur}). Klick: dein Agent aktualisiert`,
+    update: "Aktualisieren",
+    updateTitle: (latest) => `Blueprint ${latest}`,
+    updateAsked: (name) => `${name} soll Blueprint aktualisieren`,
+    updateNoAgent: "Öffne einen Agent in diesem Tab und klicke erneut, oder bitte einen Agent, das Blueprint-Mod zu aktualisieren",
+    newTip: "Den Agent um ein weiteres Diagramm bitten",
+    newDiagram: "Neues Diagramm",
+    newPlaceholder: "Was soll es zeichnen? z. B. das Datenmodell",
+    newHint: "Wird in eine neue Datei gezeichnet; sie öffnet als Tab",
+    drawingNew: "Zeichnet …",
+    suggest: ["Das Datenmodell", "Der Ablauf einer API-Anfrage", "Der Aufbau des ganzen Projekts", "Dieses Feature im Detail: "],
+    pinTip: "Anheften: über 7 Tage hinaus behalten",
+    unpinTip: "Anheftung lösen",
+    editTip: "Bearbeiten: auf einen Kasten zeigen und fragen (E)",
+    noProject: "Kein Agent in diesem Tab",
+    emptyTitle: "Noch kein Diagramm für dieses Projekt",
+    pickAgent: "Verbinde einen Agent: er zeichnet, was er baut, hier",
+    noAgentHere: "Starte einen Agent in diesem Tab (Claude Code, Codex, Grok…), um ihn zu verbinden",
+    asked: (name) => `${name} soll zeichnen`,
+    waitingBody: "Es erscheint hier, sobald die Datei gespeichert ist",
+    pin: "Anheften",
+    pinned: "Angeheftet",
+    keepHint: "Bleibt nach der letzten Nutzung 7 Tage, außer angeheftet",
+    openPane: "Als Pane öffnen",
+    emptyHint: "Diagramme liegen je Projekt und Worktree",
+    status: { working: "arbeitet", blocked: "wartet auf dich", done: "fertig", idle: "untätig" },
+    noAgent: "Kein Agent",
+    ago: (m) => (m < 1 ? "gerade eben" : m < 60 ? `${m} min her` : `${Math.floor(m / 60)} h her`),
+    edit: "Bearbeiten",
+    editing: "Bearbeitet",
+    editMode: "Bearbeitungsmodus",
+    pickNode: "Klick auf einen Knoten, um ihn zu ändern · Esc beendet",
+    enterSend: "Enter sendet · Esc bricht ab",
+    placeholder: "Was soll sich ändern? z. B. hier ein Rate-Limit ergänzen",
+    noTarget: "Kein Agent zum Senden",
+    sendsWith: "Sendet den Kasten, seine Stelle im Quelltext und seinen Code",
+    openAgent: "Öffne einen Agent in diesem Tab, um zu senden",
+    cancel: "Abbrechen",
+    send: "Senden",
+    sending: "Sendet …",
+    sent: (name) => `An ${name} gesendet`,
+    sendFailed: "Senden fehlgeschlagen",
+    noAgentBody: "Öffne einen Agent in diesem Tab und sende erneut",
+    pngHover: "Einmal mit dem Zeiger über das Diagramm fahren, dann PNG erneut drücken",
+    pngSaved: "PNG gespeichert und kopiert",
+    pngFailed: "PNG ließ sich nicht erzeugen",
+    fit: "Einpassen",
+    saving: "Speichert …",
+    hintEdit: "E fragt hier nach einer Änderung",
+    hintEditing: "Klick auf einen Knoten, um seinen Agent um eine Änderung zu bitten",
+    hintNarrow: "Klick auf einen Knoten zeigt seinen Fluss",
+    hint: "Klick auf einen Knoten leuchtet seinen Fluss aus · E bearbeiten · ziehen zum Verschieben · ⌘/Ctrl-Scrollen zum Zoomen",
+    refreshTip: "Neu laden: Diagramme erneut lesen und zeichnen",
+    closeTip: "Schließen: öffnet sich wieder, wenn der Agent die Datei ändert",
+    laying: "Ordnet an …",
+    drawFailed: "Dieses Diagramm ließ sich nicht zeichnen. Neu laden versucht es erneut",
+    broken: "Blueprint konnte diese Ansicht nicht zeichnen. Neu laden versucht es erneut",
+    partial: "Zu groß für eine Ansicht: hineinzoomen zeigt den Rest",
   },
   ko: {
     updateTip: (latest, cur) => `Blueprint ${latest}이 나왔어요(지금 ${cur}). 누르면 에이전트가 업데이트해요`,

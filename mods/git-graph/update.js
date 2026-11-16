@@ -7,7 +7,10 @@ import { v_flex, h_flex, TextView } from "gpui-base";
 import { props, shared, setShared, closeOverlay, openOverlay, theme, settings } from "herdr";
 
 export const VERSION = "0.3.2";
-const CHECK = true;
+// Off on purpose: this copy carries local changes (panel head, German dialogs),
+// and the agent's update text says to replace the files. Updates run by hand
+// (README, "Externe Addons").
+const CHECK = false;
 const REPO = "rabeeh-ta/herdr-git-graph";
 const DAY = 24 * 60 * 60 * 1000;
 export const PROMPT = `Update the git-graph mod from github.com/${REPO}`;

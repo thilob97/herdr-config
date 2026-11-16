@@ -14,6 +14,10 @@ export const REPO = "https://github.com/chappse6/herdr-blueprint-app";
 const REMOTE = "https://raw.githubusercontent.com/chappse6/herdr-blueprint-app/master/mods/blueprint/mod.json";
 const KEY = "blueprint.update";
 const DAY = 86400000, HOUR = 3600000;
+// Off on purpose: this copy carries local changes (panel head, German text), and
+// the agent's update text says to overwrite the files. Updates run by hand
+// instead (README, "Externe Addons").
+const CHECK = false;
 
 /** a > b, comparing dotted numbers ("0.10.0" > "0.9.2"); junk is never newer. */
 export function newer(a, b) {
@@ -39,7 +43,7 @@ export async function installedVersion() {
 /** The shared answer: { checked, latest, off }. Asks GitHub when a day old. */
 export async function checkUpdate(now = Date.now()) {
   const known = shared(KEY) ?? {};
-  if (known.off || now - (known.checked ?? 0) < DAY) return known;
+  if (!CHECK || known.off || now - (known.checked ?? 0) < DAY) return known;
   // Marked as checked first, so other Blueprints starting now don't ask too.
   setShared(KEY, { ...known, checked: now });
   // Why the last check failed stays in `error`, for whoever wonders why no

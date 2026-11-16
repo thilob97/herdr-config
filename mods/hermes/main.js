@@ -14,15 +14,15 @@
 // session; it ends only when Hermes itself exits (then the window closes and
 // the next toggle starts a new one).
 
-import { View, div } from "gpui-kit";
+import { View, div, svg } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { props, hc, exec, terminals, openOverlay, closeOverlay, shared, setShared, theme, notify, nextCommand, readTextFile, appHome } from "herdr";
+import { props, hc, exec, terminals, openOverlay, closeOverlay, shared, setShared, theme, settings, notify, nextCommand, readTextFile, appHome } from "herdr";
 
 const NAME = "hermes";
 const WIDTH = 480, HEIGHT = 600;
 const TOP = 78; // below the tab bar, level with the panes' top edge
 const MARGIN = 12;
-const BAR = 30;
+const BAR = 42;
 
 const find = () => terminals().find((t) => t.name === NAME && t.state === "live") ?? null;
 
@@ -77,14 +77,17 @@ export default class Hermes extends View {
       notify({ title: "Hermes startet nicht", body: String(e?.message ?? e), level: "error" });
       return;
     }
-    const x = this.width ? Math.max(0, this.width - WIDTH - MARGIN) : undefined;
+    // `at` is in window pixels, WIDTH in layout units: the zoom scales the window,
+    // so a 480-unit chat is 576 px wide at zoom 1.2 and must start that much earlier.
+    const zoom = settings()?.zoom ?? 1;
+    const x = this.width ? Math.max(0, this.width - WIDTH * zoom - MARGIN) : undefined;
     this.overlay = openOverlay({
       kind: "window", key: "hermes", width: WIDTH, height: HEIGHT,
       ...(x !== undefined ? { at: { x, y: TOP } } : {}),
       layout: {
         type: "column",
         children: [
-          { type: "block", size: { px: BAR }, content: { mod: "hermes", props: { role: "titlebar", terminal: address } } },
+          { type: "block", size: { px: BAR }, content: { mod: "hermes", props: { role: "titlebar" } } },
           { id: "hermes-terminal", type: "block", content: { terminal: address } },
         ],
       },
@@ -102,19 +105,19 @@ export default class Hermes extends View {
     });
   }
 
+  // Title row (5.6): h 42, px 14, the title at T_L; no icon, the close button as
+  // an icon button with its shortcut in the tooltip.
   titlebar() {
     const t = theme();
     const overlay = props().overlay;
-    return h_flex().id("hermes-bar").size_full().px(10).gap(8).items_center().bg(t.chrome).text_size(12)
+    return h_flex().id("hermes-bar").size_full().px(14).gap(8).items_center().bg(t.chrome)
       .border_b(1).border_color(t.border)
-      .child(div().text_color(t.accent).child("☤"))
-      .child(div().font_semibold().text_color(t.foreground).child("Hermes"))
+      .child(div().text_size(13).font_semibold().text_color(t.foreground).child("Hermes"))
       .child(div().flex_1())
-      .child(div().text_color(t.dim).child("⌃⌃ · ⌘⇧H"))
-      .child(div().id("hermes-close").px(6).rounded(4).text_color(t.muted)
-        .hover((s) => s.bg(t.hover).text_color(t.foreground))
+      .child(div().id("hermes-close").size(22).flex().items_center().justify_center().rounded(4).text_color(t.muted)
+        .hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip("Schließen (⌘⇧H)")
         .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
         .on_click(() => closeOverlay(overlay))
-        .child("✕"));
+        .child(svg("mods/pane/close.svg").size(12)));
   }
 }

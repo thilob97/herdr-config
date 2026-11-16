@@ -452,11 +452,9 @@ export class Graph {
 
   // A row is a whole number of screen pixels (21.6 at zoom 0.9 leaves hairline gaps between rows): rowPx is that,
   // rowH the same in the units an element's h() takes (the zoom scales it back).
-  rowPx() { return Math.max(1, Math.round(ROW * (settings().zoom ?? 1))); }
-  rowH() { return this.rowPx() / (settings().zoom ?? 1); }
-  // The list's row height: units where Herdr zooms lists (rowH, still a whole number
-  // of pixels once zoomed), screen pixels before.
-  listRow() { return listsZoom() ? this.rowH() : this.rowPx(); }
+  // render() reads the zoom once; outside a render, settings() stands in.
+  rowPx() { const z = this.zoom ?? settings().zoom ?? 1; return Math.max(1, Math.round(ROW * z)); }
+  rowH() { const z = this.zoom ?? settings().zoom ?? 1; return this.rowPx() / z; }
   // What the lines' coordinates are multiplied by: nothing where Herdr zooms them itself.
   pathScale() { return listsZoom() ? 1 : this.unit(); }
 
@@ -557,8 +555,8 @@ export class Graph {
 
   // ---- drawing
 
-  graphCell(row, commit, colors, t, width) {
-    const x = (lane) => PAD + lane * LANE + LANE / 2, y = (v) => v * this.rowH(), paths = new Map();
+  graphCell(row, commit, colors, t, width, rowH) {
+    const x = (lane) => PAD + lane * LANE + LANE / 2, y = (v) => v * rowH, paths = new Map();
     // Elements are scaled by the zoom; before Herdr 0.1.12 a list's paint_path wasn't, so the lines scale to match the dots.
     const z = this.pathScale(), px = (lane) => x(lane) * z, py = (v) => y(v) * z;
     // One stroked path per color: a row is a handful of paints, however many lanes cross it.
@@ -571,8 +569,8 @@ export class Graph {
       paths.set(key, { p, color });
     }
     const color = commit.uncommitted ? t.dim : colors[row.lane % colors.length];
-    const dot = div().absolute().left(x(row.lane) - 4).top(this.rowH() / 2 - 4).size(8).rounded(4);
-    return div().relative().flex_none().w(width).h(this.rowH()).overflow_hidden()
+    const dot = div().absolute().left(x(row.lane) - 4).top(rowH / 2 - 4).size(8).rounded(4);
+    return div().relative().flex_none().w(width).h(rowH).overflow_hidden()
       .children([...paths.values()].map(({ p, color }) => window.paint_path(p.build(), color).absolute().top(0).left(0).size_full()))
       // HEAD is a ring, as in Git Graph; uncommitted changes a gray one.
       .child(commit.head || commit.uncommitted ? dot.bg(t.background).border(2).border_color(color) : dot.bg(color));
@@ -593,13 +591,13 @@ export class Graph {
       }));
   }
 
-  row(i, t, colors, mono, width) {
+  row(i, t, colors, mono, width, rowH) {
     const commit = this.commits[i], row = this.rows[i], color = colors[row.lane % colors.length];
     // Merge commits are muted, as Git Graph does by default.
     const fg = commit.uncommitted ? t.muted : commit.parents.length > 1 ? t.dim : t.foreground;
-    return h_flex().id(`c-${commit.hash}`).w_full().h(this.rowH()).flex_none().pr(10).gap(LABEL.GAP).items_center().overflow_hidden()
+    return h_flex().id(`c-${commit.hash}`).w_full().h(rowH).flex_none().pr(10).gap(LABEL.GAP).items_center().overflow_hidden()
       .when(commit.head, (e) => e.bg(color + "14")).when(this.selected === commit.hash, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover))
-      .child(this.graphCell(row, commit, colors, t, width))
+      .child(this.graphCell(row, commit, colors, t, width, rowH))
       // Labels and description clip together, so many labels never push the fixed columns out.
       .child(h_flex().flex_1().min_w(0).h_full().gap(LABEL.GAP).items_center().overflow_hidden()
         .children(this.labels.get(commit.hash).map((l) => this.label(l, color, t, mono)))
@@ -663,7 +661,7 @@ export class Graph {
   // Manygit's repository pane: grouped by folder, each row its branch, uncommitted
   // changes and how it stands against its upstream. A click opens its graph.
   repoRows(t) {
-    const repos = this.workspace.repos, grouped = repos.some((r) => r.group);
+    const repos = this.workspace.repos, grouped = repos.some((r) => r.group), tags = tagsShown();
     const rows = [];
     let height = 8;
     repos.forEach((r, i) => {
@@ -671,7 +669,7 @@ export class Graph {
         rows.push(div().h(26).flex_none().px(14).pt(9).text_size(11).text_color(t.dim).truncate().child(r.group ? `${r.group}/` : "./"));
         height += 26;
       }
-      rows.push(this.repoRow(r, i, grouped, t));
+      rows.push(this.repoRow(r, i, grouped, t, tags));
       height += 34;
     });
     return { rows, height };
@@ -700,7 +698,7 @@ export class Graph {
 
   // The name with its status right after it, the branch on the right (as PR #2's
   // picker). Under a folder heading the row steps in, to read as inside it.
-  repoRow(r, i, indent, t) {
+  repoRow(r, i, indent, t, tags) {
     const st = this.statuses.get(r.path), fetchError = this.fetchErrors.get(r.path), sync = syncOf(st, fetchError), here = r.path === this.opened;
     // ↑ and ↓ as Herdr's Spaces list draws them (ansi2, ansi1); in sync shows nothing.
     const counts = ["ahead", "behind", "diverged"].includes(sync.kind) && !fetchError;
@@ -708,7 +706,7 @@ export class Graph {
     const label = counts || sync.kind === "ok" ? null : fetchError ? sync.text : { unpushed: "not pushed", error: "error" }[sync.kind] ?? sync.text;
     // A failure (reading it, or its last fetch) shows git's words where the branch goes.
     const problem = st?.error ?? fetchError;
-    const branch = st && !problem ? (st.detached ? "detached" : st.branch) : null, tag = !problem && tagsShown() && st?.tag;
+    const branch = st && !problem ? (st.detached ? "detached" : st.branch) : null, tag = !problem && tags && st?.tag;
     return h_flex().id(`graph-repo-${i}`).h(34).flex_none().pl(indent ? 28 : 14).pr(14).gap(10).items_center().cursor_pointer()
       .when(here, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover))
       .on_click((_e, cx) => { if (here) { this.picking = false; cx.notify(); } else this.open(r.path, cx); })
@@ -761,9 +759,10 @@ export class Graph {
 
   list(t, mono) {
     const colors = laneColors(t), width = this.graphWidth(), count = this.commits.length + (this.hasMore ? 1 : 0);
+    const rowH = this.rowH(), listH = listsZoom() ? rowH : rowH * (this.zoom ?? 1);
     return div().flex_1().min_h(0).relative()
       .on_mouse_down("left", (e) => { this.press = { x: (e.local_position?.x ?? 0) / this.unit(), count: e.click_count }; })
-      .child(v_virtual_list(this.listId, count, this.listRow(), (i) => this.commits[i]?.hash ?? "more",
+      .child(v_virtual_list(this.listId, count, listH, (i) => this.commits[i]?.hash ?? "more",
         (range, cx) => {
           // Scrolling to the end loads the next page, as Git Graph does; the row also takes a click.
           if (range.end > this.commits.length && this.hasMore && !this.loading && this.moreAsked !== this.limit) {
@@ -771,8 +770,8 @@ export class Graph {
             cx.spawn(async (cx) => this.loadMore(cx));
           }
           return Array.from({ length: range.end - range.start }, (_x, k) => range.start + k).map((i) => i < this.commits.length
-            ? this.row(i, t, colors, mono, width)
-            : div().id("graph-more").h(this.rowH()).flex_none().px(14).flex().items_center().text_color(t.accent).hover((s) => s.bg(t.hover))
+            ? this.row(i, t, colors, mono, width, rowH)
+            : div().id("graph-more").h(rowH).flex_none().px(14).flex().items_center().text_color(t.accent).hover((s) => s.bg(t.hover))
               .child(this.loading ? "Loading more commits…" : `Load ${PAGE} more commits`));
         })
         // Rows of a virtual list can't hold their own handlers: the list reports the row's key.
@@ -873,7 +872,8 @@ export class Graph {
     // New settings: a depth searches again, tags read every row again.
     const setting = `${depthSetting()} ${tagsShown()}`;
     if (setting !== this.seenSetting) { const first = this.seenSetting === undefined; this.seenSetting = setting; if (!first && !this.opened) this.refresh(cx); }
-    const t = theme(), mono = settings().font_family ?? "JetBrains Mono", ready = this.state === "ready";
+    const cfg = settings(); this.zoom = cfg.zoom ?? 1;
+    const t = theme(), mono = cfg.font_family ?? "JetBrains Mono", ready = this.state === "ready";
     return v_flex().id("git-graph").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border)
       .text_color(t.foreground).text_size(12.5).track_focus(this.handle)
       .on_mouse_move((e, cx) => this.moveDrag(e, cx))
