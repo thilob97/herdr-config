@@ -75,7 +75,7 @@ const normEvent = (e) => ({ at: sec(e?.at) ?? sec(e?.time) });
 const normLane = (l) => ({
   id: String(l?.id ?? l?.terminal ?? l?.label ?? ""),
   label: String(l?.label ?? l?.name ?? l?.id ?? "?"),
-  kind: ["orchestrator", "reviewer", "subagent"].includes(l?.kind) ? l.kind : "agent",
+  kind: ["orchestrator", "sub-orchestrator", "reviewer", "subagent"].includes(l?.kind) ? l.kind : "agent",
   parent: l?.parent ?? null,
   ticket: l?.ticket || null,
   terminal: l?.terminal || null,
@@ -287,8 +287,16 @@ export default class FactoryGraph extends View {
         .child(div().w_full().min_w(0).truncate().text_size(T_XS).text_color(t.dim).child(node.subtitle ?? ""));
     }
     // Eine Zeile, auch im schmalen Panel: Avatar, Name (gekürzt), Status-Chip.
+    // Ein Sub-Orchestrator trägt sein Badge statt der Krone: Kind des Orchestrators,
+    // eigene Fabrik hat er nicht.
     return el.px(node.narrow ? 6 : 7).flex().items_center().gap(node.narrow ? 3 : GAP_XS).min_w(0)
-      .child(avatar).child(title).child(status);
+      .child(avatar).child(title)
+      .when(node.kind === "sub-orchestrator", (card) => card.child(
+        div().flex_none().h(14).px(4).flex().items_center().rounded(4).bg(t.chrome)
+          .border_1().border_color(t.accent + "66").text_size(T_XS).font_medium()
+          .text_color(t.accent).tooltip("Sub-Orchestrator: arbeitet für den Orchestrator dieses Workspace")
+          .child("Sub-Orch.")))
+      .child(status);
   }
 
   /** Der Ticket-Chip ist eine eigene Zeile direkt unter der Karte: Kürzel und

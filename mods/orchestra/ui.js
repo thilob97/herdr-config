@@ -254,11 +254,23 @@ export function activeSpace() {
 
 // ---------- Fabrik (Orchestrator) ----------
 
+/** Ist dieses Terminal ein Sub-Orchestrator? Label `hub.role=sub-orchestrator`
+ *  (so setzt `hub orchestrator spawn` es), sonst der Name `sub-orchestrator-…` —
+ *  dieselbe Regel wie `hub` (`is_sub_orchestrator`). Er arbeitet für den
+ *  Orchestrator seines Space und ist nie dessen Orchestrator. */
+export function isSubOrchestrator(t) {
+  if (!t) return false;
+  if (t.labels?.["hub.role"] === "sub-orchestrator") return true;
+  return String(t.name ?? "").startsWith("sub-orchestrator-");
+}
+
 /** Ist dieses Terminal ein Orchestrator? Das Label `hub.role=orchestrator` (so setzt
  *  `hub orchestrator start` es), sonst der Name `orchestrator` oder
- *  `orchestrator-<space>` — dieselbe Regel wie `hub` (`is_orchestrator`) für `hc ls`. */
+ *  `orchestrator-<space>` — dieselbe Regel wie `hub` (`is_orchestrator`) für `hc ls`.
+ *  Ein Sub-Orchestrator ist es nie: er ist ein Kind, keine eigene Fabrik. */
 export function isOrchestrator(t) {
   if (!t) return false;
+  if (isSubOrchestrator(t)) return false;
   if (t.labels?.["hub.role"] === "orchestrator") return true;
   const name = String(t.name ?? "");
   return name === "orchestrator" || name.startsWith("orchestrator-");

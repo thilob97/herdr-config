@@ -55,6 +55,11 @@ const ORCH_TIP = "Orchestrator dieses Workspace";
 // mods/orchestra/ui.js (dieser Klon hat keine ui.js-Kopie).
 const isOrchestrator = (x) => x.labels?.["hub.role"] === "orchestrator"
   || x.name === "orchestrator" || String(x.name ?? "").startsWith("orchestrator-");
+// Sub-Orchestrator: label hub.role=sub-orchestrator, sonst der Name `sub-orchestrator-…`
+// (so nennt sie `hub orchestrator spawn`). Eine normale Agent-Karte mit Badge, nie der
+// Orchestrator-Chip des Team-Panels.
+const isSubOrchestrator = (x) => x.labels?.["hub.role"] === "sub-orchestrator"
+  || String(x.name ?? "").startsWith("sub-orchestrator-");
 function orchestration(all, paneList, spaceList) {
   const live = all.filter((x) => x.state === "live" && isOrchestrator(x));
   const tabOf = new Map(paneList.filter((p) => p.terminal).map((p) => [p.terminal, p.tab]));
@@ -527,8 +532,9 @@ export default class Agents extends View {
   }
 
   // Live sub-agents of `addr`, depth first, each with the tree lines in front of it.
+  // A sub-orchestrator is not a sub-agent row: it gets its own card with the badge.
   tree(all, addr, lead = []) {
-    const kids = all.filter((k) => k.parent === addr && k.state === "live");
+    const kids = all.filter((k) => k.parent === addr && k.state === "live" && !isSubOrchestrator(k));
     return kids.flatMap((k, i) => {
       const last = i === kids.length - 1;
       return [
@@ -760,6 +766,7 @@ export default class Agents extends View {
     const spaceList = spaces();
     const still = calm();
     const orch = orchestration(all, paneList, spaceList);
+    const subOrch = new Set(all.filter(isSubOrchestrator).map((x) => x.address));
     this.migratePins(all);
     const shown = focused()?.agent;
     const now = Date.now();
@@ -843,6 +850,7 @@ export default class Agents extends View {
     const row = (a, i, subs = [], inner = []) => {
       const name = this.avatars[a.address]?.name ?? (a.program?.name || label(a));
       const isOrch = orch.addresses.has(a.address);
+      const isSubOrch = subOrch.has(a.address);
       // On the rail an avatar carries the identity, the tooltip the words (docs/ui/review.md A4).
       if (collapsed) {
         const n = this.avatars[a.address]?.n ?? 0;
@@ -945,6 +953,9 @@ export default class Agents extends View {
             .when(kidWorking, (el) => el.child(div().flex_1().min_w(0).truncate().tooltip(tab).text_size(T_XS).text_color(t.muted).child("Sub-Agent arbeitet")))
             .when(!kidWorking, (el) => el.child(div().flex_1().min_w(0).truncate().tooltip(tab || WORD[a.status] || "")
               .text_size(T_S).text_color(t.muted).child(tab || WORD[a.status] || "")))
+            .when(isSubOrch, (el) => el.child(div().h(14).px(4).flex_none().flex().items_center().rounded(4).bg(t.chrome)
+              .border_1().border_color(t.border).text_size(T_XS).font_medium().text_color(t.accent)
+              .tooltip("Sub-Orchestrator: arbeitet für den Orchestrator dieses Workspace, ohne eigene Fabrik").child("Sub-Orchestrator")))
             .when(subs.length + inner.length > 0, (el) => el.child(fold(a, subs, inner)))
             .when(Boolean(when), (el) => el.child(div().flex_none().text_size(T_XS).text_color(t.dim).child(duration(now - when)))))
           .when(facts.length > 0, (el) => el.child(h_flex().id(`omp-${a.address}`).gap(GAP_S).items_center().tooltip(about)

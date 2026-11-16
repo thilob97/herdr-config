@@ -54,6 +54,13 @@ reports into it) and show in the Team-Panel under it.
                                             ~/.herdr/orchestrator, labels hub.role=orchestrator and
                                             hub.space=<id>); refuses while one runs there, --restart
                                             replaces it. hub orchestrator list [--json] shows all
+  hub orchestrator spawn [--count N] [--agent PROGRAMM] [--name SLUG]
+  hub orchestrator spawn --stop <terminal>
+                                            start N (1-3) sub-orchestrators as children of this
+                                            orchestrator terminal (labels hub.role=sub-orchestrator,
+                                            hub.space=<id>, at most 3 live per space); --stop ends
+                                            one of your own. Sub-orchestrators are never a space's
+                                            orchestrator and start no children themselves.
   hub wip [--json] [--all] [--space ID] [--mine]
                                             the WIP limits for In Arbeit and Prüfung (default 3/2,
                                             data/orchestra/wip.json); `hub wip arbeit=4 pruefung=2` sets
@@ -674,13 +681,31 @@ def my_space():
 
 
 ORCH_NAME = "orchestrator"
+SUB_ROLE = "sub-orchestrator"
+SUB_PREFIX = "sub-" + ORCH_NAME + "-"
+SUB_LIMIT = 3
+SUB_START = "sub:"
 _orch_terms, _orch_terms_read = None, False
+_sub_terms, _sub_terms_read = None, False
+
+
+def is_sub_orchestrator(info):
+    """Whether one terminal row is a sub-orchestrator: its label, or the name
+    `sub-orchestrator-…` (`hub orchestrator spawn` names them that way) — the same
+    cheap witness `is_orchestrator` uses for `hc ls` rows without labels."""
+    labels = (info or {}).get("labels") or {}
+    if labels.get("hub.role") == SUB_ROLE:
+        return True
+    return str((info or {}).get("name") or "").startswith(SUB_PREFIX)
 
 
 def is_orchestrator(info):
-    """Whether one terminal row is an orchestrator: its label or its name (`orchestrator`,
-    `orchestrator-<space>`). The name covers `hc ls`, whose rows carry no labels."""
+    """Whether one terminal row is a space's orchestrator: its label or its name
+    (`orchestrator`, `orchestrator-<space>`). A sub-orchestrator never is: it has its
+    own role, its own name prefix and no factory of its own."""
     labels = (info or {}).get("labels") or {}
+    if labels.get("hub.role") == SUB_ROLE:
+        return False
     if labels.get("hub.role") == "orchestrator":
         return True
     name = (info or {}).get("name") or ""
@@ -699,6 +724,27 @@ def orchestrator_terminals():
     _orch_terms = {addr: info for addr, info in terminals_all().items() if is_orchestrator(info)}
     _orch_terms_read = True
     return _orch_terms
+
+
+def sub_orchestrator_terminals():
+    """Every sub-orchestrator terminal (address → info), read once per command.
+
+    `hc ls` rows carry no labels, so the name (`sub-orchestrator-…`) is the cheap
+    witness; the space and the parent come from `hc_term` when a caller needs them."""
+    global _sub_terms, _sub_terms_read
+    if _sub_terms_read:
+        return _sub_terms
+    _sub_terms = {addr: info for addr, info in terminals_all().items()
+                  if is_sub_orchestrator(info)}
+    _sub_terms_read = True
+    return _sub_terms
+
+
+def sub_space_of(addr, info=None):
+    """The factory a sub-orchestrator works in: its labels, else `hc get`."""
+    info = info or hc_term(addr)
+    labels = (info or {}).get("labels") or {}
+    return labels.get("hub.space") or labels.get("herdr.space") or ""
 
 
 def orchestrator_of(space):
@@ -2198,11 +2244,12 @@ def claim_orchestrator_start(sp, restart):
         return replace
 
 
-def release_starting(sid):
+def release_starting(key):
+    """Drop a start marker (`<space>` for an orchestrator, `sub:<space>` for a spawn)."""
     with hub_lock():
         rows = read_starting()
-        if sid in rows:
-            del rows[sid]
+        if key in rows:
+            del rows[key]
             write_starting(rows)
 
 
@@ -2251,6 +2298,117 @@ def cmd_orchestrator_start(a):
         release_starting(sp["id"])
 
 
+def claim_sub_orchestrator_spawn(sp, count):
+    """Room and marker for one spawn, decided under the hub lock.
+
+    Two spawns at the same time would each see the same free slots; the marker makes
+    the second refuse, so a double click never starts 2×N children. The live count is
+    the WIP discipline: at most `SUB_LIMIT` sub-orchestrators per space."""
+    sid = sp["id"]
+    key = SUB_START + sid
+    with hub_lock():
+        rows = {k: v for k, v in read_starting().items() if start_in_flight(v, now_ms())}
+        if start_in_flight(rows.get(key), now_ms()):
+            die(f"Im Space {sp['name']} startet gerade schon ein Sub-Orchestrator; "
+                f"bitte gleich erneut versuchen")
+        live = [a for a, i in sub_orchestrator_terminals().items()
+                if i.get("state") == "live" and sub_space_of(a, i) == sid]
+        room = SUB_LIMIT - len(live)
+        if room <= 0:
+            die(f"Im Space {sp['name']} laufen schon {SUB_LIMIT} Sub-Orchestratoren; "
+                f"beende einen mit hub orchestrator spawn --stop <terminal>")
+        if count > room:
+            die(f"Im Space {sp['name']} ist nur noch Platz für {room} "
+                f"Sub-Orchestrator{'en' if room != 1 else ''} (Grenze {SUB_LIMIT})")
+        rows[key] = {"at": now_ms(), "pid": os.getpid()}
+        write_starting(rows)
+
+
+def sub_orchestrator_prompt(sp, parent_name):
+    """The short rules a spawned child gets: the parent's loop, not its own factory."""
+    ws = orchestrator_ws()
+    return (f"Du bist Sub-Orchestrator im Space {sp['name']} (ID {sp['id']}, "
+            f"Ordner {sp['folder'] or '—'}) für den Orchestrator @{parent_name}. "
+            f"Dein Arbeitsordner ist {ws}, dessen AGENTS.md gilt. "
+            "Du arbeitest NUR an den Tickets, die dir der Eltern-Orchestrator zuweist "
+            "(hub ticket next/assign, Kommentar mit @sub-orchestrator-…); fremde Tickets "
+            f"lässt du liegen. Melde Ergebnisse, Blocker und Übergaben als Ticket-Kommentar "
+            f"an @{parent_name}. Starte keine eigenen Sub-Orchestratoren, kein hub land und "
+            "keinen Push. Derselbe Space, dieselben WIP-Limits: keine eigene Fabrik, kein "
+            "zweiter Orchestrator.")
+
+
+def sub_orchestrator_name(slug_text, n, taken):
+    """`sub-orchestrator-<slug>-<n>` (≤ 32, hc's limit), unique among live terminals."""
+    base = re.sub(r"[^a-z0-9]+", "-", (slug_text or "").strip().lower()).strip("-")[:12]
+    base = base.strip("-") or "space"
+    name = f"{SUB_PREFIX}{base}-{n}"[:32].strip("-")
+    while name in taken:
+        name = f"{SUB_PREFIX}{base}-{n}-{secrets.token_hex(2)}"[:32]
+    return name
+
+
+def cmd_orchestrator_spawn(a):
+    me = (os.environ.get("HC_TERMINAL_ID") or "").strip()
+    mine = hc_term(me) if me else {}
+    if not me or not is_orchestrator(mine):
+        die("hub orchestrator spawn läuft nur aus dem Terminal eines Orchestrators; "
+            "ein Agent oder ein Sub-Orchestrator startet keine Kinder")
+    if a.stop:
+        info = hc_term(a.stop)
+        if not is_sub_orchestrator(info):
+            die(f"{a.stop} ist kein Sub-Orchestrator")
+        parent = (info.get("parent") or (info.get("labels") or {}).get("hub.parent") or "")
+        if parent != me:
+            die(f"{a.stop} ist kein Kind dieses Orchestrators (Eltern: {parent or '—'})")
+        end_orchestrator(a.stop)
+        event("orchestrator", "", "omp", a.stop, "Sub-Orchestrator beendet",
+              space=sub_space_of(a.stop, info))
+        print(json.dumps({"stopped": a.stop, "name": info.get("name") or ""}, ensure_ascii=False))
+        return
+    sp = my_space()
+    if not sp["id"]:
+        die("kein Space: hub orchestrator spawn braucht den Space des Orchestrator-Terminals "
+            "(Label hub.space)")
+    if sp.get("machine"):
+        die("Sub-Orchestratoren starten nur auf der Maschine ihres Eltern-Orchestrators")
+    count = int(a.count or 1)
+    if count < 1 or count > SUB_LIMIT:
+        die(f"--count erwartet 1 bis {SUB_LIMIT}")
+    claim_sub_orchestrator_spawn(sp, count)
+    try:
+        ws = orchestrator_ws()
+        write_orchestrator_rules(ws)
+        key = (a.agent or "omp").strip() or "omp"
+        argv_prog = list(AGENTS[key]) if key in AGENTS else (shlex.split(key) or [key])
+        parent_name = mine.get("name") or ORCH_NAME
+        prompt = sub_orchestrator_prompt(sp, parent_name)
+        sh = shell()
+        launch = [sh, "-lic", '"$@"; exec "$0" -li', sh, *argv_prog, prompt]
+        taken = orchestrator_names() | {x.get("name") or "" for x in terminals_all().values()}
+        labels = ["--label", f"hub.role={SUB_ROLE}", "--label", f"hub.space={sp['id']}",
+                  "--label", f"herdr.space={sp['id']}"]
+        children = []
+        for n in range(1, count + 1):
+            name = sub_orchestrator_name(a.name or sp["name"], n, taken)
+            taken.add(name)
+            cmd = ["hc", "run", "--bg", "--json", "--keep", "--parent", me,
+                   "--name", name, "--cwd", ws, *labels]
+            r = subprocess.run(cmd + ["--", *launch], capture_output=True, text=True)
+            if r.returncode != 0:
+                die(f"hc run: {(r.stderr or r.stdout).strip()}")
+            out = json.loads(r.stdout)
+            children.append({"terminal": out.get("address") or "", "name": name})
+        event("orchestrator", "", key, me,
+              f"{count} Sub-Orchestrator{'en' if count != 1 else ''} für {sp['name']} gestartet",
+              space=sp["id"])
+        print(json.dumps({"space": sp["id"], "space_name": sp["name"], "folder": sp["folder"],
+                          "parent": me, "parent_name": parent_name, "agent": key, "cwd": ws,
+                          "children": children}, ensure_ascii=False))
+    finally:
+        release_starting(SUB_START + sp["id"])
+
+
 def cmd_orchestrator_list(a):
     rows, seen = [], set()
     for s in (norm_space(x) for x in spaces_of_window()):
@@ -2261,7 +2419,7 @@ def cmd_orchestrator_list(a):
         rows.append({"space": s["id"], "space_name": s["name"], "folder": s["folder"],
                      "terminal": addr, "name": info.get("name") or "",
                      "agent": (info.get("foreground") or {}).get("name") or "",
-                     "live": info.get("state") == "live"})
+                     "live": info.get("state") == "live", "role": "orchestrator", "parent": ""})
     # Same snapshot as `hub spaces`: an orchestrator whose space the window no longer
     # lists still shows up (closed space, another window, a remote machine).
     for addr, info in orchestrator_terminals().items():
@@ -2274,14 +2432,37 @@ def cmd_orchestrator_list(a):
         rows.append({"space": sid, "space_name": space_name_of(sid) if sid else "", "folder": "",
                      "terminal": addr, "name": info.get("name") or "",
                      "agent": (info.get("foreground") or {}).get("name") or "",
-                     "live": info.get("state") == "live"})
+                     "live": info.get("state") == "live", "role": "orchestrator", "parent": ""})
+    # Sub-orchestrators are children, never a factory: one indented line under their
+    # parent, with the parent's terminal in `parent` (and `role` on every row).
+    subs = []
+    for addr, info in sub_orchestrator_terminals().items():
+        merged = {**info, **(hc_term(addr) or {})}
+        sid = sub_space_of(addr, merged)
+        subs.append({"space": sid, "space_name": space_name_of(sid) if sid else "", "folder": "",
+                     "terminal": addr, "name": merged.get("name") or "",
+                     "agent": (merged.get("foreground") or {}).get("name") or "",
+                     "live": merged.get("state") == "live", "role": SUB_ROLE,
+                     "parent": merged.get("parent") or ""})
+    by_parent, ordered = {}, []
+    for r in subs:
+        by_parent.setdefault(r["parent"], []).append(r)
+    for r in rows:
+        ordered.append(r)
+        ordered.extend(sorted(by_parent.pop(r["terminal"], []), key=lambda x: x["name"]))
+    for rest in by_parent.values():
+        ordered.extend(sorted(rest, key=lambda x: x["name"]))
     if a.json:
-        print(json.dumps({"orchestrators": rows}, ensure_ascii=False))
+        print(json.dumps({"orchestrators": ordered}, ensure_ascii=False))
         return
-    if not rows:
+    if not ordered:
         print("kein Orchestrator läuft")
         return
-    for r in rows:
+    for r in ordered:
+        if r["role"] == SUB_ROLE:
+            print(f"  └ {(r['name'] or '—'):<22} {r['terminal']:<12} "
+                  f"{SUB_ROLE:<16} {'läuft' if r['live'] else 'beendet'}")
+            continue
         print(f"{r['space'] or '—':<40} {(r['space_name'] or '—'):<24} {r['terminal']:<12} "
               f"{(r['name'] or '—'):<24} {'läuft' if r['live'] else 'beendet'}")
 
@@ -5006,6 +5187,31 @@ def build_timeline(ticket="", since="all", space=None, everyone=False):
         if addr:
             by_terminal[addr] = l
 
+    # Sub-orchestrators: children of one orchestrator (parent = its lane), never a
+    # factory root of their own. Their terminal lives in the same space as the parent.
+    if not ticket:
+        for addr, info in sub_orchestrator_terminals().items():
+            got = hc_term(addr) or {}
+            merged = {**info, **got}
+            sid = sub_space_of(addr, merged)
+            if everyone:
+                keep = True
+            elif space is not None:
+                keep = sid == mine_id
+            else:
+                keep = not mine_id or not sid or sid == mine_id
+            if not keep:
+                continue
+            state = merged.get("state") or ""
+            l = lane(merged.get("parent") or "", "", addr, SUB_ROLE,
+                     (ident.get(addr) or {}).get("name") or merged.get("name") or "Sub-Orchestrator",
+                     num_ms(merged.get("created_ms")) or num_ms(info.get("created_ms")) or first,
+                     now if state == "live" else
+                     (num_ms(merged.get("finished_ms")) or num_ms(info.get("finished_ms")) or now),
+                     lane_status(merged) or "", 0, sid, space_name_of(sid) if sid else "")
+            lanes.append(l)
+            by_terminal[addr] = l
+
     for t in tickets:
         marks = ticket_marks(t)
         first_mark = min((m["at"] for m in marks), default=None)
@@ -5327,6 +5533,12 @@ def main():
     os_.add_argument("--agent", default="omp", metavar="PROGRAMM")
     os_.add_argument("--restart", action="store_true", help="den laufenden Orchestrator des Space ersetzen")
     os_.set_defaults(fn=cmd_orchestrator_start)
+    osp = orc.add_parser("spawn", help="Sub-Orchestratoren als Kinder dieses Orchestrators starten")
+    osp.add_argument("--count", type=int, default=1, metavar="N", help="1 bis 3 (Standard 1)")
+    osp.add_argument("--agent", default="omp", metavar="PROGRAMM")
+    osp.add_argument("--name", default="", metavar="SLUG", help="Teil des Terminalsnamens")
+    osp.add_argument("--stop", default="", metavar="TERMINAL", help="eigenes Kind beenden")
+    osp.set_defaults(fn=cmd_orchestrator_spawn)
     ol = orc.add_parser("list", help="die Orchestratoren aller Spaces")
     ol.add_argument("--json", action="store_true")
     ol.set_defaults(fn=cmd_orchestrator_list)
