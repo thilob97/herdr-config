@@ -121,6 +121,7 @@ def _one(ticket, name, author, text, roster, no_wake, message_for):
             result = "unterdrückt: start fehlgeschlagen"
             return result, result, None
         result = started["result"]
+        line = result
         if result == "gestartet":
             ticket["sessions"].append(
                 {
@@ -130,7 +131,9 @@ def _one(ticket, name, author, text, roster, no_wake, message_for):
                     "started_at": store.now_ms(),
                 }
             )
-        return result, result, started["terminal"]
+            if started.get("warning"):
+                line = f"{result} ({started['warning']})"
+        return result, line, started["terminal"]
 
     notice = (
         f"Ticket {ticket['id']} „{ticket['title']}“: @{author} hat @{name} erwähnt, "

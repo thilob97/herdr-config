@@ -399,14 +399,19 @@ def cmd_dispatch(args):
                 "started_at": store.now_ms(),
             }
         )
-        events.append("dispatch", ticket["id"], actor, agent_name,
-                      f"{branch_name} · {folder}")
+        detail = f"{branch_name} · {folder}"
+        warning = started.get("warning")
+        if warning:
+            detail += f" · {warning}"
+        events.append("dispatch", ticket["id"], actor, agent_name, detail)
         store.save(ticket)
         index.rebuild()
     print(
         f"{ticket['id']} an {agent_name} verteilt: {branch_name} in {folder} "
         f"(Terminal {started['terminal']})"
     )
+    if warning:
+        print(f"{ticket['id']}: {warning}")
     return 0
 
 
@@ -724,21 +729,25 @@ def cmd_orchestrator(args):
         with store.locked():
             if agents.orchestrator_live() and not hc.kill(agents.ORCHESTRATOR):
                 raise FabError("Orchestrator ließ sich nicht beenden (hc kill)")
-            agents.start_orchestrator(roster)
+            started = agents.start_orchestrator(roster)
             events.append("orchestrator", "", actor, "", "neu gestartet")
             events.append("config", "", actor, "", "Orchestrator neu gestartet")
             index.rebuild()
         print("Orchestrator neu gestartet (fab-orchestrator)")
+        if started.get("warning"):
+            print(started["warning"])
         return 0
     roster = agents.load()
     with store.locked():
         if args.action == "start":
             if agents.orchestrator_live():
                 raise FabError("Orchestrator läuft schon (fab-orchestrator)")
-            agents.start_orchestrator(roster)
+            started = agents.start_orchestrator(roster)
             events.append("orchestrator", "", "fab", "", "gestartet")
             index.rebuild()
             print("Orchestrator gestartet (fab-orchestrator)")
+            if started.get("warning"):
+                print(started["warning"])
             return 0
         if args.action == "stop":
             if not agents.orchestrator_live():

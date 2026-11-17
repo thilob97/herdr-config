@@ -148,6 +148,23 @@ class CliTests(FabricCase):
         self.ok("orchestrator", "stop")
         self.assertTrue(self.hc_calls("kill"))
 
+    def test_orchestrator_start_haengt_ihn_in_den_fabric_space(self):
+        self.set_live({})
+        self.clear_log()
+        self.clear_herdr_log()
+        self.ok("orchestrator", "start")
+        args = self.hc_calls("run")[0]
+        labels = {
+            part.split("=", 1)[0]: part.split("=", 1)[1]
+            for part in args if part.startswith("herdr.")
+        }
+        self.assertEqual(labels["herdr.space"], "sp-fabric")
+        self.assertTrue(labels["herdr.tab"].startswith("tb"))
+        renames = [call for call in self.herdr_calls("do")]
+        self.assertEqual([call[1] for call in renames], ["tab.rename"])
+        self.assertEqual(renames[0][renames[0].index("--id") + 1], labels["herdr.tab"])
+        self.assertEqual(renames[0][renames[0].index("--name") + 1], "Orchestrator")
+
     def test_agents_json_und_text(self):
         tid = self.new("Team")
         self.set_live({"fab-zap-t-1": "t5"})
