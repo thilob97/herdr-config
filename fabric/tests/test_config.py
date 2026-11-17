@@ -718,3 +718,78 @@ class VersionTests(ConfigCase):
         result = self.ok("version")
         self.assertRegex(result.stdout.strip(),
                          r"^fab \d{4}-\d{2}-\d{2} · [0-9a-f]{7,}$")
+
+
+class AutoCommitTests(ConfigCase):
+    """Schreibbefehle committen nur ihre eigenen Dateien (Ticket T-9)."""
+
+    def git_roster_repo(self):
+        self.git_out(self.roster_dir, "init", "-q", "-b", "main")
+        self.git_out(self.roster_dir, "config", "user.email", "test@example.com")
+        self.git_out(self.roster_dir, "config", "user.name", "Test")
+        self.git_out(self.roster_dir, "add", "roster.json", "prompts")
+        self.git_out(self.roster_dir, "commit", "-qm", "start")
+
+    def head_files(self):
+        raw = self.git_out(
+            self.roster_dir, "show", "--name-only", "--format=", "HEAD"
+        )
+        return [line for line in raw.splitlines() if line.strip()]
+
+    def status(self):
+        return self.git_out(self.roster_dir, "status", "--porcelain")
+
+    def test_settings_committet_nur_den_roster(self):
+        self.git_roster_repo()
+        self.write_file(self.prompt_path("ada"), "lokal\n")
+        before = self.git_out(self.roster_dir, "rev-parse", "HEAD")
+        self.ok("settings", "set", "max_sessions", "5", "--from", "mensch")
+        after = self.git_out(self.roster_dir, "rev-parse", "HEAD")
+        self.assertNotEqual(before, after)
+        self.assertEqual(self.head_files(), ["roster.json"])
+        subject = self.git_out(self.roster_dir, "log", "-1", "--format=%s")
+        self.assertIn("chore(roster): max_sessions: 4 → 5", subject)
+        self.assertEqual(self.status(), "M prompts/ada.md")
+
+    def test_prompt_set_committet_nur_die_promptdatei(self):
+        self.git_roster_repo()
+        self.write_file(self.prompt_path("ada"), "lokal\n")
+        self.ok(
+            "prompt", "set", "zap", "--text", "Neuer Text\n", "--from", "mensch"
+        )
+        self.assertEqual(self.head_files(), ["prompts/zap.md"])
+        subject = self.git_out(self.roster_dir, "log", "-1", "--format=%s")
+        self.assertTrue(
+            subject.startswith("chore(prompt): prompts/zap.md gespeichert")
+        )
+        self.assertEqual(self.status(), "M prompts/ada.md")
+
+    def test_agent_add_committet_roster_und_prompt(self):
+        self.git_roster_repo()
+        self.write_file(self.prompt_path("ada"), "lokal\n")
+        self.ok(
+            "agent", "add", "mira", "--role", "recherche",
+            "--argv-json", '["true"]', "--from", "mensch",
+        )
+        self.assertEqual(
+            sorted(self.head_files()), ["prompts/mira.md", "roster.json"]
+        )
+        self.assertEqual(self.status(), "M prompts/ada.md")
+
+    def test_agent_edit_rename_committet_promptdatei(self):
+        self.git_roster_repo()
+        self.ok("agent", "edit", "ada", "--rename", "pruefer", "--from", "mensch")
+        files = self.head_files()
+        self.assertIn("roster.json", files)
+        self.assertIn("prompts/pruefer.md", files)
+        self.assertNotIn("prompts/ada.md", files)
+        self.assertEqual(self.status(), "")
+
+    def test_kein_commit_ausserhalb_des_basis_branches(self):
+        self.git_roster_repo()
+        self.git_out(self.roster_dir, "checkout", "-q", "-b", "arbeit")
+        before = self.git_out(self.roster_dir, "rev-parse", "HEAD")
+        self.ok("settings", "set", "max_sessions", "6", "--from", "mensch")
+        after = self.git_out(self.roster_dir, "rev-parse", "HEAD")
+        self.assertEqual(before, after)
+        self.assertIn("roster.json", self.status())
