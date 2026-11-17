@@ -222,6 +222,12 @@ export default class Fabric extends View {
         await this.loadRoster(cx);
         await this.loadOrchestrator(cx);
         await this.loadVersion(cx);
+        // Programme und bekannte Repos jetzt holen, nicht erst beim Öffnen von
+        // Team/Drawer/Neuem Ticket: knownAgents kostet ~160 ms (Login-Shell)
+        // und fab repos einen weiteren Lauf. Ohne Vorlauf fehlen dem Programm-
+        // bzw. Repo-Dropdown beim ersten Klick die Optionen.
+        this.ensurePrograms(cx);
+        this.ensureReposQuiet(cx);
         this.ensurePage(cx);
       }
       this.watchLoop(cx);
