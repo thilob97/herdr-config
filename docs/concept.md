@@ -4,13 +4,14 @@
 
 Die Mods sind der POC für diese These: keine Sammlung von Agent-Monitoren, sondern eine operierbare Fabrik auf `hub`/`hc`, in der das Ticket Oberfläche, Kanal und Protokoll zugleich ist.
 
-## Fünf Prinzipien
+## Sechs Prinzipien
 
 1. **Der Work Order ist das dauerhafte Objekt.** Tickets tragen Identität, Zustand, Verlauf, Abnahme und Nachweise. Agenten, Sessions und Modelle sind austauschbar; ein Ticket überlebt jeden Agenten.
 2. **Das Ticket ist der einzige Kanal — auch zwischen Agenten.** Arbeit, Frage, Blocker, Übergabe und Absprache stehen als Kommentar im Ticket (`hub ticket comment --from <rolle>`, `@name` taggt). Agenten reden nicht aneinander vorbei und nicht im Chat: sie reden im Ticket. Neue Arbeit ist ein neues Ticket mit `--blocked-by`, keine Nachricht.
-3. **Der Orchestrator formuliert und verteilt, der Mensch entscheidet.** Der Mensch gibt den Auftrag (ein Satz reicht); der Orchestrator macht daraus Ziel, Kontext, Abnahmekriterien, legt Abhängigkeiten und weist zu. Freigaben des Menschen nur an drei Stellen: Abnahme, Rückfrage, Landen. Alles davor ist maschinell belegt.
-4. **Sichtbarkeit ist keine Funktion, sondern Folge.** Weil jede Handlung ein Ticket-Ereignis ist, entsteht Monitoring beim Arbeiten: Wer hat was gesagt, wer wartet auf wen, welche Runde, welcher Blocker, welche Kosten. Graph, Timeline, Board, Inbox und Team-Panel lesen dieselbe Wahrheit — keine separate Telemetrie, keine Schattenkanäle.
-5. **Eine Zahl, eine Wahrheit.** Pipeline-Stufe, Inbox-Zähler, Identität und Kosten kommen aus einer Quelle (`shared("orchestra.tickets")`, `shared("agents.identity")`, `hub status`). Jede Oberfläche zeigt dieselbe Zahl — sonst ist sie wertlos.
+3. **Eine Erwähnung weckt.** `@name` in einem Ticket-Kommentar ist kein Etikett, sondern ein Auftrag: der genannte Agent wird angestoßen und arbeitet an diesem Ticket weiter — liest den Verlauf, antwortet im Ticket, macht seinen Teil. Läuft er nicht, übernimmt der Orchestrator den Anstoß (starten oder zuweisen). `@mensch` landet in der Inbox. Jeder Anstoß ist selbst ein sichtbares Ereignis; Schutz gegen Ping-Pong und Budget-Stopps gilt auch hier.
+4. **Der Orchestrator formuliert und verteilt, der Mensch entscheidet.** Der Mensch gibt den Auftrag (ein Satz reicht); der Orchestrator macht daraus Ziel, Kontext, Abnahmekriterien, legt Abhängigkeiten und weist zu. Freigaben des Menschen nur an drei Stellen: Abnahme, Rückfrage, Landen. Alles davor ist maschinell belegt.
+5. **Sichtbarkeit ist keine Funktion, sondern Folge.** Weil jede Handlung ein Ticket-Ereignis ist, entsteht Monitoring beim Arbeiten: Wer hat was gesagt, wer hat wen geweckt, wer wartet auf wen, welche Runde, welcher Blocker, welche Kosten. Graph, Timeline, Board, Inbox und Team-Panel lesen dieselbe Wahrheit — keine separate Telemetrie, keine Schattenkanäle.
+6. **Eine Zahl, eine Wahrheit.** Pipeline-Stufe, Inbox-Zähler, Identität und Kosten kommen aus einer Quelle (`shared("orchestra.tickets")`, `shared("agents.identity")`, `hub status`). Jede Oberfläche zeigt dieselbe Zahl — sonst ist sie wertlos.
 
 ## Der Fluss, den das Konzept meint
 
@@ -18,7 +19,7 @@ Die Mods sind der POC für diese These: keine Sammlung von Agent-Monitoren, sond
 Mensch: ein Satz
    → Orchestrator: Ticket mit Ziel, Abnahmekriterien, Abhängigkeiten
    → Zuweisung an Agent(en); Agent fragt/taggt im Ticket
-   → Agenten untereinander: @name im selben Ticket, Verlauf ist die Akte
+   → Agenten untereinander: @name im selben Ticket weckt den Genannten, Verlauf ist die Akte
    → Prüfstation + verify belegen maschinell
    → Mensch: Abnahme / Merge
 ```
