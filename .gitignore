@@ -11,6 +11,7 @@
 !/fabric/
 !/.fabric/
 !/.fabric/verify.sh
+/.fabric/evidence/
 /layouts/.state/
 
 # Von Herdr ausgeliefert, wird bei jedem Start ueberschrieben
