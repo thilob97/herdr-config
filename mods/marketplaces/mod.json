@@ -1,5 +1,0 @@
-{
-  "place": "none",
-  "title": "Marketplaces",
-  "overlay": { "kind": "window", "key": "marketplaces", "width": 860, "height": 600 }
-}

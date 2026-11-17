@@ -3,6 +3,7 @@
     "cmd-q": "app.quit",
     "cmd-h": "app.hide",
     "cmd-alt-h": "app.hide_others",
+    "cmd-m": "window.minimize",
     "cmd-t": "tab.new",
     "cmd-w": "tab.close",
     "ctrl-tab": "tab.next",
@@ -14,13 +15,9 @@
     "cmd-]": "agent.next",
     "cmd-[": "agent.prev",
     "cmd-shift-l": "layout.switch",
-    "cmd-shift-0": "layout.switch:dashboard",
     "cmd-n": "space.new",
     "cmd-p": "mod.open:picker",
     "cmd-shift-p": "app.palette",
-    "ctrl-shift-m": "mod.open:marketplaces",
-    "ctrl-shift-y": "mod.open:mcp-servers",
-    "ctrl-shift-q": "mod.open:quests",
     "cmd-,": "app.settings",
     "cmd-d": "pane.split:right",
     "cmd-shift-d": "pane.split:down",
@@ -36,9 +33,8 @@
     "cmd-alt-shift-down": "pane.swap:down",
     "f2": "tab.rename",
     "shift-f2": "space.rename",
-    "cmd-/": "mod.open:cheatsheet",
+    "cmd-/": "app.help",
     "cmd-shift-/": "app.help",
-    "cmd-shift-a": "tabs-graph.calm",
     "cmd-b": "layout.toggle:sidebar",
     "cmd-=": "app.zoom_in",
     "cmd-+": "app.zoom_in",
@@ -61,24 +57,11 @@
     "ctrl-6": "space.select:6",
     "ctrl-7": "space.select:7",
     "ctrl-8": "space.select:8",
-    "ctrl-9": "space.select:9",
-    "cmd-j": "status-bar.attention-next",
-    "cmd-shift-j": "mod.open:inbox",
-    "cmd-shift-r": "mod.open:review",
-    "cmd-shift-t": {
-      "command": "tab.new",
-      "args": {
-        "argv": [
-          "omp"
-        ]
-      }
-    },
-    "cmd-shift-n": "mod.open:launcher",
-    "control control": "hermes.toggle",
-    "cmd-shift-h": "hermes.toggle"
+    "ctrl-9": "space.select:9"
   },
   "terminal": {
     "cmd-f": "terminal.search",
+    "cmd-a": "terminal.select_all",
     "cmd-c": "terminal.copy",
     "cmd-v": "terminal.paste",
     "ctrl-v": "terminal.paste_image",
@@ -87,35 +70,6 @@
     "alt-backspace": "send:\u0017",
     "cmd-left": "send:\u0001",
     "cmd-right": "send:\u0005",
-    "cmd-backspace": "send:\u0015",
-    "control control": "hermes.toggle",
-    "cmd-shift-h": "hermes.toggle"
-  },
-  "layout:elric": {
-    "alt-down": "space-folders.next",
-    "alt-up": "space-folders.prev",
-    "cmd-alt-]": "space-folders.next",
-    "cmd-alt-[": "space-folders.prev",
-    "ctrl-shift-pagedown": "space-folders.next",
-    "ctrl-shift-pageup": "space-folders.prev",
-    "ctrl-space shift-n": "space-folders.next",
-    "ctrl-space shift-p": "space-folders.prev",
-    "cmd-shift-b": "tabs-graph.panel",
-    "cmd-alt-1": "tabs-graph.panel-changes",
-    "cmd-alt-2": "tabs-graph.panel-graph",
-    "cmd-alt-3": "tabs-graph.panel-filetree",
-    "cmd-alt-4": "tabs-graph.panel-blueprint",
-    "cmd-alt-5": "tabs-graph.panel-docker",
-    "cmd-alt-6": "mod.open:quests",
-    "cmd-alt-7": "tabs-graph.panel-factory",
-    "cmd-alt-shift-7": "tabs-graph.panel-team",
-    "cmd-alt-8": "mod.open:board",
-    "cmd-alt-9": "mod.open:teams",
-    "cmd-alt-0": "mod.open:timeline"
-  },
-  "layout:dashboard": {
-    "cmd-shift-0": "layout.switch:elric",
-    "cmd-alt-8": "mod.open:board",
-    "cmd-alt-0": "mod.open:timeline"
+    "cmd-backspace": "send:\u0015"
   }
 }

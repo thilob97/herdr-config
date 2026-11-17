@@ -1,3 +1,0 @@
-{ "programs": {
-    "omp": { "name": "Oh My Pi", "icon": "icons/pi.svg", "tint": true,
-             "tile": "#1c1d21", "color": "#ffffff", "run": ["omp"] } } }
