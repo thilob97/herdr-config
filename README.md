@@ -45,3 +45,7 @@ python3 -m unittest discover -s fabric/tests -t .
 node --test mods/fabric/test/
 herdr-app check mods/fabric
 ```
+
+## Regel für Arbeit an diesem Repo
+
+Arbeit, die an Agenten geht, läuft ausschließlich über `fab`-Tickets (`fab new` → Orchestrator → Agent im Worktree → `handover` → `accept`). Keine Nebenwege über interne Subagenten oder Chat.
