@@ -1,5 +1,5 @@
 {
-  "max_sessions": 4,
+  "max_sessions": 6,
   "reviewer": "ada",
   "orchestrator": {
     "argv": [
