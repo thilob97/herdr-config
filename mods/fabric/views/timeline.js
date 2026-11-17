@@ -1,4 +1,4 @@
-// Zeitverlauf: eine Spur pro Akteur, Punkte nach Zeit, Wecken als Pfeil zur Zielspur.
+// Zeitverlauf: eine Spalte pro Akteur, Zeit von neu (oben) nach alt (unten), Wecken als Pfeil.
 
 import { div } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
@@ -7,67 +7,110 @@ import * as ui from "../ui.js";
 
 const T = ui.FONT;
 const S = ui.SPACE;
-const LANE = ui.SIZE.lane;
-const LABEL = 96;
 const LEGEND = ["comment", "wake", "status", "verdict"];
 
 function legend(app, t) {
   const kinds = LEGEND.filter((kind) => app.events.some((event) => event?.kind === kind));
   if (!kinds.length) return null;
   return h_flex().gap(S.m).items_center().flex_wrap()
-    .children(kinds.map((kind) => h_flex().gap(4).items_center()
+    .children(kinds.map((kind) => h_flex().gap(S.xs).items_center()
       .child(ui.dot(t, ui.kindColor(t, kind)))
       .child(div().text_size(T.xs).text_color(t.dim).child(model.eventWord(kind)))));
 }
 
-function laneLabel(t, lane) {
+function columnHead(t, lane, colorOf) {
   const strong = lane.name === "orchestrator" || lane.name === "mensch";
-  return v_flex().flex_none().w(LABEL).h(LANE).justify_center().gap(0).pr(S.s)
-    .child(div().truncate().text_size(T.s).text_color(strong ? t.foreground : t.muted).font_medium().child(lane.label))
-    .when(Boolean(lane.role), (el) => el.child(div().truncate().text_size(T.xs).text_color(t.dim).child(lane.role)));
+  return v_flex().flex_1().min_w(0).items_center().justify_center().gap(S.xs)
+    .child(ui.avatar(t, lane.name, colorOf(lane.name), ui.SIZE.avatar))
+    .child(div().font_medium().text_size(T.xs).text_center().truncate().w_full()
+      .text_color(strong ? t.foreground : t.muted).child(lane.label))
+    .when(Boolean(lane.role), (el) => el.child(div().text_size(T.xs).text_center().truncate().w_full()
+      .text_color(t.dim).child(lane.role)));
 }
 
-function laneRow(app, cx, t, lane, points) {
-  const dots = points.map((point, offset) => {
-    const id = `fabric-point-${lane.index}-${point.at}-${point.kind}-${offset}`;
-    return div()
-      .id(id)
-      .absolute()
-      .left(`${ui.plotX(point.x)}%`)
-      .top(11 + ((offset % 3) - 1) * 3)
-      .ml(-(ui.SIZE.dot / 2))
-      .size(ui.SIZE.dot)
-      .rounded(ui.SIZE.dot / 2)
-      .bg(ui.kindColor(t, point.kind))
-      .cursor_pointer()
-      .tooltip(`${point.ticket} · ${model.eventWord(point.kind)} · ${point.actor} · ${model.relativeTime(point.at)}`)
-      .on_hover((hovered, cx) => {
-        app.hoverPoint = hovered ? point : app.hoverPoint === point ? null : app.hoverPoint;
-        cx.notify();
-      })
-      .when(Boolean(point.ticket), (el) => el.on_click((_event, cx) => {
-        cx.stop_propagation();
-        app.select(point.ticket, cx);
-        app.openInWindow({ page: "ticket", id: point.ticket }, cx);
-      }));
-  });
-  return v_flex().id(`fabric-lane-${lane.index}`).relative().w_full().h(LANE)
-    .border_b(1).border_color(t.border).children(dots);
+function headerRow(t, lanes, colorOf) {
+  return h_flex().w_full().items_center().h(ui.SIZE.timelineHead).py(S.xs).px(S.m)
+    .border_b(1).border_color(t.border)
+    .child(div().flex_none().w(ui.SIZE.timelineRail))
+    .children(lanes.map((lane) => columnHead(t, lane, colorOf)));
 }
 
-function plot(app, cx, t, geometry) {
+function timeRail(t, geometry, graphHeight) {
+  const rows = geometry.rows;
+  const step = Math.max(1, Math.ceil(rows / 10));
+  const picks = [];
+  for (let index = 0; index < geometry.times.length; index += step) picks.push(index);
+  if (picks[picks.length - 1] !== geometry.times.length - 1) picks.push(geometry.times.length - 1);
+  const fraction = (index) => (rows === 1 ? 0.5 : index / (rows - 1));
+  return div().flex_none().relative().w(ui.SIZE.timelineRail).h(graphHeight)
+    .children(picks.map((index) => div().absolute().top(`${ui.plotY(fraction(index))}%`)
+      .left_0().right_0().pr(S.xs).mt(-6).text_size(T.xs).text_color(t.dim)
+      .child(model.clockTime(geometry.times[index]))));
+}
+
+function separators(t, lanes) {
+  return div().absolute().inset_0()
+    .child(h_flex().size_full()
+      .children(lanes.map((_lane, index) => index === 0
+        ? div().flex_1()
+        : div().flex_1().border_l(1).border_color(t.border))));
+}
+
+function dot(app, t, point, slot, shift) {
+  const offset = ui.SIZE.dot / 2;
+  return div()
+    .id(`fabric-point-${point.lane}-${point.at}-${point.kind}-${slot}`)
+    .absolute()
+    .left(`${ui.columnX(point.x)}%`)
+    .top(`${ui.plotY(point.y)}%`)
+    .ml(-offset + shift)
+    .mt(-offset)
+    .size(ui.SIZE.dot)
+    .rounded(ui.SIZE.dot / 2)
+    .bg(ui.kindColor(t, point.kind))
+    .cursor_pointer()
+    .tooltip(`${point.ticket} · ${model.eventWord(point.kind)} · ${point.actor} · ${model.relativeTime(point.at)}`)
+    .on_hover((hovered, cx) => {
+      app.hoverPoint = hovered ? point : app.hoverPoint === point ? null : app.hoverPoint;
+      cx.notify();
+    })
+    .when(Boolean(point.ticket), (el) => el.on_click((_event, cx) => {
+      cx.stop_propagation();
+      app.select(point.ticket, cx);
+      app.openInWindow({ page: "ticket", id: point.ticket }, cx);
+    }));
+}
+
+function dotShifts(points) {
+  const groups = new Map();
+  for (const point of points) {
+    const key = `${point.lane}:${point.at}`;
+    const group = groups.get(key);
+    if (group) group.push(point);
+    else groups.set(key, [point]);
+  }
+  const shiftOf = new Map();
+  const slotOf = new Map();
+  for (const group of groups.values()) {
+    const width = ui.SIZE.dot + S.xs;
+    const count = group.length;
+    group.forEach((point, index) => {
+      shiftOf.set(point, (index - (count - 1) / 2) * width);
+      slotOf.set(point, index);
+    });
+  }
+  return { shiftOf, slotOf };
+}
+
+function graph(app, t, geometry, graphHeight) {
   const { lanes, points, arrows } = geometry;
-  const lanePoints = lanes.map(() => []);
-  for (const point of points) lanePoints[point.lane]?.push(point);
-  const arrowLayer = ui.wakeArrows(t, arrows, lanes.length);
-  return h_flex().w_full().items_start()
-    .child(v_flex().flex_none().children(lanes.map((lane) => laneLabel(t, lane))))
-    .child(
-      v_flex().flex_1().min_w(0).relative().h(lanes.length * LANE).children([
-        ...(arrowLayer ? [arrowLayer] : []),
-        ...lanes.map((lane) => laneRow(app, cx, t, lane, lanePoints[lane.index])),
-      ]),
-    );
+  const { shiftOf, slotOf } = dotShifts(points);
+  const arrowLayer = ui.wakeArrows(t, arrows, graphHeight);
+  return div().relative().flex_1().min_w(0).h(graphHeight).children([
+    separators(t, lanes),
+    ...(arrowLayer ? [arrowLayer] : []),
+    ...points.map((point) => dot(app, t, point, slotOf.get(point) ?? 0, shiftOf.get(point) ?? 0)),
+  ]);
 }
 
 function hoverLine(app, t) {
@@ -80,6 +123,7 @@ function hoverLine(app, t) {
 }
 
 export function renderTimelinePanel(app, cx, t) {
+  const colorOf = (name) => app.agentColor(name);
   const geometry = model.timeline(app.events, app.index?.roster ?? []);
   const rows = [
     ui.header(t, "Zeitverlauf", [
@@ -103,17 +147,16 @@ export function renderTimelinePanel(app, cx, t) {
     return ui.page(t, rows);
   }
   const keys = legend(app, t);
+  const graphHeight = Math.max(ui.SIZE.timelineMin, geometry.rows * ui.SIZE.timelineRow);
   rows.push(
-    v_flex().flex_1().min_h(0).overflow_y_scrollbar().p(S.m).gap(S.m)
-      .child(h_flex().w_full().items_center()
-        .child(div().w(LABEL).flex_none().text_size(T.xs).text_color(t.dim).child("Akteur"))
-        .child(div().flex_1())
-        .child(div().text_size(T.xs).text_color(t.dim).child("älter → neuer")))
-      .child(plot(app, cx, t, geometry))
-      .child(h_flex().w_full()
-        .child(div().w(LABEL).flex_none())
-        .child(div().flex_1().text_size(T.xs).text_color(t.dim).child(model.clockTime(geometry.start)))
-        .child(div().text_size(T.xs).text_color(t.dim).child(model.clockTime(geometry.end))))
+    h_flex().flex_none().w_full().px(S.m).pt(S.m).justify_end()
+      .child(div().text_size(T.xs).text_color(t.dim).child("neuer ↑ / älter ↓")),
+    headerRow(t, geometry.lanes, colorOf),
+    v_flex().flex_1().min_h(0).overflow_y_scrollbar().px(S.m).py(S.m)
+      .child(h_flex().w_full().items_stretch()
+        .child(timeRail(t, geometry, graphHeight))
+        .child(graph(app, t, geometry, graphHeight))),
+    v_flex().flex_none().px(S.m).pb(S.m).gap(S.s)
       .when(Boolean(keys), (el) => el.child(keys))
       .child(hoverLine(app, t)),
   );
