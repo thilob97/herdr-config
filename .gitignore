@@ -2,16 +2,14 @@
 /*
 !/README.md
 !/.gitignore
-!/programs.json
 !/settings.json
 !/keys.json
 !/themes/
 !/layouts/
-!/agents/
-/layouts/.state/
 !/mods/
 !/docs/
-!/.herdr/
+!/fabric/
+/layouts/.state/
 
 # Von Herdr ausgeliefert, wird bei jedem Start ueberschrieben
 /layouts/main.json

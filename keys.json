@@ -71,5 +71,10 @@
     "cmd-left": "send:\u0001",
     "cmd-right": "send:\u0005",
     "cmd-backspace": "send:\u0015"
+  },
+  "layout:fabric": {
+    "cmd-shift-1": "fabric.tickets",
+    "cmd-shift-2": "fabric.timeline",
+    "cmd-shift-n": "fabric.new"
   }
 }
