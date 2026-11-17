@@ -1,6 +1,8 @@
 # Nur eigene Config tracken; alles von Herdr Geschriebene ignorieren.
 /*
 !/README.md
+!/AGENTS.md
+!/.github/
 !/.gitignore
 !/programs.json
 !/settings.json

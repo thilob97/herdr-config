@@ -170,6 +170,8 @@ Ein Ticket ist erst fertig, wenn die Checks seines Pull Requests grün sind. Das
 
 **In der Oberfläche** steht im Review-Fenster (Ticket-Modus) unter den Gates die CI-Zeile: Zustand, Zeitpunkt, **PR öffnen** und **Erneut prüfen** (`hub ci`); rote Checks klappen Namen und Log-Auszug auf. `hub status` hat die Spalte `CI` (`✓`, `…`, `✗`, `?`).
 
+**Dieses Repo selbst.** `.github/workflows/verify.yml` fährt bei jedem Push und jedem PR beide Stufen von `.herdr/verify.sh`: erst die schnellen Prüfungen, dann `--full` mit den Hub-Suiten. Damit hängt die Prüfung nicht mehr davon ab, dass jemand sie von Hand startet — ein kaputter `hub` erreicht `main` nicht mehr ungeprüft. Lokal ist es dasselbe Kommando: `bash .herdr/verify.sh --full`. Die Suiten sind hermetisch: sie bringen ihre git-Identität selbst mit, damit ein Rechner ohne `user.email` nicht als Merge-Konflikt gelesen wird.
+
 ## Lehren
 
 Was beim Review und bei der Abnahme gelernt wurde, landet automatisch im nächsten Auftrag — pro Repo, in `<repo>/.herdr/lessons.md` (eine Zeile je Lehre, höchstens 40; die älteste fällt raus):
@@ -208,10 +210,11 @@ Die Fabrik misst sich pro Station, nicht nur in Dollar. `hub stats [--json] [--d
 - **Nacharbeit**: Rückwege nach **In Arbeit**, nachdem das Ticket schon in **Prüfung** war (Review-Feedback, CI-Fehler) — gezählt aus `review → doing` im `status_log` oder, weil ein `fail`-Urteil das Ticket zurück auf `doing` setzt ohne Statuswechsel, aus `review_rounds > 1` (jede Runde nach der ersten ist eine Nacharbeit).
 - **Kosten** je Ticket aus `costs.json`, summiert je Station, je Repo und für heute.
 - **Alter** je Ticket in `hub status`: Zeit seit der letzten Statusänderung (`status_at`; bei alten Tickets `updated`).
+- **Überfahren**: wie oft ein Gate mit `--force --reason` umgangen wurde, gesamt, je Ort (`start`, `station`, `review`, `ci`) und je Repo. Ein Gate, das still umgangen wird, ist Dekoration — diese Zahl sagt, ob die Gates halten.
 
-**Woher die Zeiten kommen.** Jeder Statuswechsel schreibt `status_at` und hängt `state@JJJJ-MM-TT HH:MM` an das Frontmatter-Feld `status_log` (`todo@…|doing@…|review@…|done@…`) — in `hub` (`set_status`). Daraus rechnet `hub stats` Summen, Mediane, Prüfrunden und Nacharbeit. `created`/`updated` allein reichen nicht, weil jeder Schreibvorgang `updated` überschreibt. Tickets von vor diesem Stand haben kein Protokoll: sie stehen mit `—` in der Tabelle, zählen nicht in den Median, und ihr nächster Statuswechsel beginnt das Protokoll.
+**Woher die Zeiten kommen.** Jeder Statuswechsel schreibt `status_at` und hängt `state@JJJJ-MM-TT HH:MM` an das Frontmatter-Feld `status_log` (`todo@…|doing@…|review@…|done@…`) — in `hub` (`set_status`). Daraus rechnet `hub stats` Summen, Mediane, Prüfrunden und Nacharbeit. Die Überfahrungen kommen aus `data/orchestra/events.jsonl` (Ereignis `force`, der Ort steht als Präfix vor dem Grund). `created`/`updated` allein reichen nicht, weil jeder Schreibvorgang `updated` überschreibt. Tickets von vor diesem Stand haben kein Protokoll: sie stehen mit `—` in der Tabelle, zählen nicht in den Median, und ihr nächster Statuswechsel beginnt das Protokoll.
 
-**Ausgabe.** Tabelle mit je Ticket (Durchlauf, Prüfrunden, Nacharbeit, Kosten), je Station (Anzahl, Summe, Median), je Repo dieselben Zahlen, dazu `Heute: …` und die letzten sieben Tage. `--json` liefert dasselbe maschinenlesbar (`today`, `history`, `summary`, `stations`, `repos`, `tickets`).
+**Ausgabe.** Tabelle mit je Ticket (Durchlauf, Prüfrunden, Nacharbeit, Kosten), je Station (Anzahl, Summe, Median), je Repo dieselben Zahlen, dazu `Heute: …` und die letzten sieben Tage. `--json` liefert dasselbe maschinenlesbar (`today`, `history`, `summary`, `stations`, `repos`, `tickets`, `force`).
 
 **Im UI.** Das Team-Panel trägt unter der Pipeline die Kopf-Zeile „Heute: 3 erledigt · Median 42 min · 1 Nacharbeit · $12" (`shared("orchestra.stats")`, alle 30 s aus `hub stats --json`); ein Klick klappt Stationen und Repos in derselben Fläche auf. Das Dashboard hat die Karte **Fabrik heute** mit denselben vier Werten und den letzten sieben Tagen als Textbalken (kein Chart-Framework); ein Klick öffnet das Team-Panel. Beide lesen denselben Lauf derselben Funktion, deshalb sind die Zahlen gleich.
 

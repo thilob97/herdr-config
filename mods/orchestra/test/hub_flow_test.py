@@ -92,8 +92,9 @@ class HubFlowTest(unittest.TestCase):
         self.kill_log = os.path.join(self.base, "hc-kill.log")
         self.write_json(self.get_file, {})
         self.write_json(self.ls_file, {"terminals": []})
-        self.git_env = {**os.environ, "GIT_AUTHOR_NAME": "Test", "GIT_AUTHOR_EMAIL": "test@example.test",
-                        "GIT_COMMITTER_NAME": "Test", "GIT_COMMITTER_EMAIL": "test@example.test"}
+        self.git_identity = {"GIT_AUTHOR_NAME": "Test", "GIT_AUTHOR_EMAIL": "test@example.test",
+                             "GIT_COMMITTER_NAME": "Test", "GIT_COMMITTER_EMAIL": "test@example.test"}
+        self.git_env = {**os.environ, **self.git_identity}
 
     # ---- helpers
 
@@ -131,7 +132,10 @@ class HubFlowTest(unittest.TestCase):
         e.update(HOME=self.home, HERDR_APP_HOME=self.app,
                  PATH=self.bin + os.pathsep + e.get("PATH", ""),
                  HC_GET_FILE=self.get_file, HC_LS_FILE=self.ls_file,
-                 HC_RUN_LOG=self.run_log, HC_KILL_LOG=self.kill_log)
+                 HC_RUN_LOG=self.run_log, HC_KILL_LOG=self.kill_log,
+                 # `hub done` committet uncommittete Nachweise selbst; ohne Identität
+                 # scheitert das und der Worktree bleibt mit "would be overwritten" stehen.
+                 **self.git_identity)
         e.pop("HC_TERMINAL_ID", None)
         e.update(env or {})
         return subprocess.run([sys.executable, HUB, *args], capture_output=True, text=True, env=e)

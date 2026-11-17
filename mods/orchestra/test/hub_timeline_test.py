@@ -76,8 +76,9 @@ class HubTimelineTest(unittest.TestCase):
         self.get_file = os.path.join(self.base, "hc-get.json")
         self.ls_file = os.path.join(self.base, "hc-ls.json")
         self.run_log = os.path.join(self.base, "hc-run.log")
-        self.git_env = {**os.environ, "GIT_AUTHOR_NAME": "Test", "GIT_AUTHOR_EMAIL": "test@example.test",
-                        "GIT_COMMITTER_NAME": "Test", "GIT_COMMITTER_EMAIL": "test@example.test"}
+        self.git_identity = {"GIT_AUTHOR_NAME": "Test", "GIT_AUTHOR_EMAIL": "test@example.test",
+                             "GIT_COMMITTER_NAME": "Test", "GIT_COMMITTER_EMAIL": "test@example.test"}
+        self.git_env = {**os.environ, **self.git_identity}
         self.write_json(self.get_file, {})
         self.write_json(self.ls_file, {"terminals": []})
 
@@ -116,7 +117,7 @@ class HubTimelineTest(unittest.TestCase):
         e.update(HOME=self.home, HERDR_APP_HOME=self.app,
                  PATH=self.bin + os.pathsep + e.get("PATH", ""),
                  HC_GET_FILE=self.get_file, HC_LS_FILE=self.ls_file, HC_RUN_LOG=self.run_log,
-                 HUB_NIGHT_STEP="0")
+                 HUB_NIGHT_STEP="0", **self.git_identity)
         e.update(env or {})
         return subprocess.run([sys.executable, HUB, *args], capture_output=True, text=True, env=e)
 
