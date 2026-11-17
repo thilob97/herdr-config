@@ -6,7 +6,7 @@ import re
 import sys
 import unicodedata
 
-from . import agents, events, git, hc, index, render, store, wake
+from . import agents, config, events, git, hc, index, prompts, render, repos, store, wake
 from .errors import FabError, HcError
 
 
@@ -122,7 +122,7 @@ def cmd_new(args):
     author = _actor(args) or "mensch"
     repo = _abs_repo(args.repo) if args.repo else git.toplevel(os.getcwd())
     roster = agents.load(required=False)
-    if roster is None:
+    if roster is None and not args.no_wake:
         print(f"Warnung: Roster fehlt ({agents.roster_path()}); @orchestrator wird nicht geweckt",
               file=sys.stderr)
     title = sentence[:80]
@@ -132,10 +132,11 @@ def cmd_new(args):
         ticket = store.blank_ticket(tid, title=title, body=body, repo=repo, created_by=author)
         store.save(ticket)
         events.append("created", tid, author, "", sentence)
-        text = "@orchestrator bitte ausformulieren und verteilen"
-        _add_comment(ticket, author, text)
-        if roster is not None:
-            wake.process(ticket, ["orchestrator"], author, text, roster)
+        if not args.no_wake:
+            text = "@orchestrator bitte ausformulieren und verteilen"
+            _add_comment(ticket, author, text)
+            if roster is not None:
+                wake.process(ticket, ["orchestrator"], author, text, roster)
         store.save(ticket)
         index.rebuild()
     print(tid)
@@ -242,6 +243,30 @@ def cmd_link(args):
     actor = _require_actor(args)
     with store.locked():
         ticket = store.load(args.id)
+        if args.remove:
+            removals = [store.normalize_id(raw) for raw in args.remove]
+            remaining = [
+                item for item in ticket["blocked_by"] if item not in removals
+            ]
+            if remaining == ticket["blocked_by"]:
+                raise FabError(
+                    f"{ticket['id']}: nichts zu entfernen; blockiert durch "
+                    f"{', '.join(ticket['blocked_by']) or 'nichts'}"
+                )
+            ticket["blocked_by"] = remaining
+            events.append(
+                "config",
+                ticket["id"],
+                actor,
+                "",
+                f"nicht mehr blockiert durch {', '.join(removals)}",
+            )
+            store.save(ticket)
+            index.rebuild()
+            print(
+                f"{ticket['id']}: blockiert durch {', '.join(remaining) or 'nichts'}"
+            )
+            return 0
         additions = [store.normalize_id(raw) for raw in args.blocked_by]
         if ticket["id"] in additions:
             raise FabError("Ein Ticket kann nicht auf sich selbst warten")
@@ -652,7 +677,59 @@ def cmd_wake(args):
     return 0
 
 
+def _orchestrator_state():
+    """Zustand des Orchestrators; funktioniert auch ohne laufendes Terminal."""
+    row = None
+    try:
+        rows = hc.ls()
+    except HcError:
+        rows = []
+    for item in rows:
+        if item.get("name") == agents.ORCHESTRATOR and item.get("state") == "live":
+            row = item
+    started = None
+    if row is not None:
+        for event in reversed(events.read_all()):
+            if event.get("kind") == "orchestrator" and event.get("text") in (
+                "gestartet",
+                "neu gestartet",
+            ):
+                started = event.get("at")
+                break
+    return {
+        "live": row is not None,
+        "name": agents.ORCHESTRATOR,
+        "terminal": (row or {}).get("address"),
+        "status": (row or {}).get("status"),
+        "started_at": started,
+    }
+
+
 def cmd_orchestrator(args):
+    if args.action == "status":
+        state = _orchestrator_state()
+        if args.json:
+            print(json.dumps(state, ensure_ascii=False, indent=2))
+        elif state["live"]:
+            print(
+                f"Orchestrator läuft ({state['terminal']}) · "
+                f"{state['status'] or 'ohne Status'}"
+            )
+        else:
+            print("Orchestrator läuft nicht")
+        return 0
+    if args.action == "restart":
+        actor = _require_actor(args)
+        roster = agents.load()
+        with store.locked():
+            if agents.orchestrator_live() and not hc.kill(agents.ORCHESTRATOR):
+                raise FabError("Orchestrator ließ sich nicht beenden (hc kill)")
+            agents.start_orchestrator(roster)
+            events.append("orchestrator", "", actor, "", "neu gestartet")
+            events.append("config", "", actor, "", "Orchestrator neu gestartet")
+            index.rebuild()
+        print("Orchestrator neu gestartet (fab-orchestrator)")
+        return 0
     roster = agents.load()
     with store.locked():
         if args.action == "start":
@@ -672,12 +749,6 @@ def cmd_orchestrator(args):
             index.rebuild()
             print("Orchestrator beendet")
             return 0
-    live = hc.live()
-    row = live.get(agents.ORCHESTRATOR)
-    if row:
-        print(f"Orchestrator läuft ({row.get('address') or agents.ORCHESTRATOR})")
-    else:
-        print("Orchestrator läuft nicht")
     return 0
 
 
@@ -784,6 +855,171 @@ def cmd_index(args):
     return 0
 
 
+# ---------------------------------------------------------------- Pflege (3b)
+
+def cmd_roster(args):
+    payload = config.payload()
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+    print(
+        f"Roster: {payload['path']} · höchstens {payload['max_sessions']} Sessions · "
+        f"Prüfer {payload['reviewer'] or '—'}"
+    )
+    for item in payload["agents"]:
+        sessions = ", ".join(
+            f"{row['name']} ({row['terminal']}, {row['status'] or 'ohne Status'})"
+            for row in item["sessions"]
+        ) or "läuft nicht"
+        program = item["program"] or "—"
+        if item["model"]:
+            program = f"{program} ({item['model']})"
+        print(
+            f"{item['name']:<10} {item['role']:<10} {item['color']:<4} "
+            f"{program:<28} offen {item['open_tickets']} · {sessions}"
+        )
+    argv = payload["orchestrator"]["argv"]
+    print("Orchestrator: " + (" ".join(argv) if argv else "kein Programm"))
+    return 0
+
+
+def cmd_agent(args):
+    actor = _require_actor(args)
+    with store.locked():
+        if args.action == "add":
+            entry = config.add(
+                args.name,
+                args.role,
+                args.color,
+                args.argv_json,
+                args.prompt_text,
+                actor,
+            )
+            print(
+                f"Agent „{entry['name']}“ angelegt: Rolle {entry['role']}, "
+                f"Farbe {entry['color']}, Prompt {entry['prompt']}"
+            )
+            return 0
+        if args.action == "edit":
+            print(
+                config.edit(
+                    args.name,
+                    rename=args.rename,
+                    role=args.role,
+                    color=args.color,
+                    argv_json=args.argv_json,
+                    prompt_text=args.prompt_text,
+                    actor=actor,
+                )
+            )
+            return 0
+        rel = config.remove(args.name, actor)
+    print(f"Agent „{args.name}“ entfernt; Prompt {rel} bleibt erhalten")
+    return 0
+
+
+def cmd_settings(args):
+    actor = _require_actor(args)
+    with store.locked():
+        text = config.set_setting(args.key, args.value, actor)
+    print(text)
+    return 0
+
+
+def cmd_prompt(args):
+    roster = agents.load()
+    if args.action == "list":
+        rows = prompts.entries(roster)
+        if args.json:
+            print(json.dumps(rows, ensure_ascii=False, indent=2))
+            return 0
+        for row in rows:
+            marks = ", ".join("{" + name + "}" for name in row["placeholders"]) or "—"
+            print(f"{row['kind']:<12} {row['name']:<12} {row['bytes']:>7} B  {row['path']}")
+            print(f"    Platzhalter: {marks}")
+        return 0
+    if args.action == "show":
+        sys.stdout.write(prompts.show(roster, args.name))
+        return 0
+    actor = _require_actor(args)
+    with store.locked():
+        path, size, unknown = prompts.save(roster, args.name, args.text, actor)
+    if unknown:
+        known = ", ".join("{" + name + "}" for name in prompts.KNOWN)
+        print(
+            f"Warnung: unbekannte Platzhalter in „{args.name}“: "
+            + ", ".join("{" + name + "}" for name in unknown)
+            + f"; bekannt sind: {known}",
+            file=sys.stderr,
+        )
+    print(f"Prompt „{args.name}“ gespeichert ({size} Bytes): {path}")
+    return 0
+
+
+def cmd_repos(args):
+    rows = repos.known(args.add or ())
+    if args.json:
+        print(json.dumps(rows, ensure_ascii=False, indent=2))
+        return 0
+    if not rows:
+        print("Keine bekannten Repos")
+        return 0
+    for row in rows:
+        marks = []
+        if row["verify_exists"]:
+            marks.append("Prüfskript")
+        if row["lessons_exists"]:
+            marks.append("Lernnotizen")
+        print(
+            f"{row['path']} · {row['branch'] or '—'} · "
+            f"offen {row['open_tickets']} · "
+            f"{', '.join(marks) if marks else 'keine .fabric-Dateien'}"
+        )
+    return 0
+
+
+def cmd_repo(args):
+    if args.action == "show":
+        data = repos.show(args.path)
+        if args.json:
+            print(json.dumps(data, ensure_ascii=False, indent=2))
+            return 0
+        print(f"{data['path']} · {data['branch'] or '—'}")
+        for key, label in (("verify", "Prüfskript"), ("lessons", "Lernnotizen")):
+            state = "vorhanden" if data[key]["exists"] else "fehlt"
+            print(f"{label}: {state}")
+        return 0
+    if args.action == "test":
+        result = repos.test(args.path)
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 0
+        print(f"Prüfskript: Exit {result['exit']}")
+        if result["tail"]:
+            print(result["tail"])
+        return 0
+    actor = _require_actor(args)
+    with store.locked():
+        target = repos.set_file(args.path, args.kind, args.text, actor)
+    print(f"{target} gespeichert")
+    return 0
+
+
+def _git_value(*args):
+    result = git.git(list(args), agents.FABRIC_DIR)
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def cmd_version(args):
+    try:
+        head = _git_value("rev-parse", "--short", "HEAD")
+        date = _git_value("log", "-1", "--format=%cs")
+    except FabError:
+        head, date = "", ""
+    print(f"fab {date or 'unbekannt'} · {head or 'ohne Git'}")
+    return 0
+
+
 # ---------------------------------------------------------------- Parser
 
 _TRANSLATIONS = (
@@ -822,6 +1058,8 @@ def build_parser():
     item.add_argument("sentence", metavar="SATZ", help="der Auftrag in einem Satz")
     item.add_argument("--repo", metavar="PFAD", help="Checkout, Standard: Git-Wurzel des aktuellen Ordners")
     item.add_argument("--from", dest="from_", metavar="NAME", default="mensch", help="Autor (Standard: mensch)")
+    item.add_argument("--no-wake", action="store_true",
+                      help="nur den Entwurf anlegen, ohne @orchestrator-Kommentar")
 
     item = command("list", "Tickets auflisten", cmd_list)
     item.add_argument("--status", metavar="S", help="nur dieser Status")
@@ -851,10 +1089,13 @@ def build_parser():
     item.add_argument("name", metavar="NAME", help="Roster-Name")
     item.add_argument("--from", dest="from_", metavar="NAME", required=True)
 
-    item = command("link", "Abhängigkeiten eintragen (ohne Zyklen)", cmd_link)
+    item = command("link", "Abhängigkeiten eintragen oder entfernen", cmd_link)
     item.add_argument("id", metavar="ID")
-    item.add_argument("--blocked-by", nargs="+", metavar="ID", required=True,
-                      help="ein oder mehrere Tickets")
+    direction = item.add_mutually_exclusive_group(required=True)
+    direction.add_argument("--blocked-by", nargs="+", metavar="ID",
+                           help="ein oder mehrere Tickets")
+    direction.add_argument("--remove", nargs="+", metavar="ID",
+                           help="Abhängigkeiten entfernen")
     item.add_argument("--from", dest="from_", metavar="NAME", required=True)
 
     item = command("comment", "Kommentar schreiben; @name weckt", cmd_comment)
@@ -903,7 +1144,10 @@ def build_parser():
     item.add_argument("text", metavar="TEXT", nargs="?", default=None)
 
     item = command("orchestrator", "Orchestrator-Terminal starten, beenden, prüfen", cmd_orchestrator)
-    item.add_argument("action", metavar="AKTION", choices=("start", "stop", "status"))
+    item.add_argument("action", metavar="AKTION", choices=("start", "stop", "status", "restart"))
+    item.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe bei status")
+    item.add_argument("--from", dest="from_", metavar="NAME",
+                      help="wer neu startet (Pflicht bei restart)")
 
     item = command("agents", "Roster und laufende Sessions zeigen", cmd_agents)
     item.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe")
@@ -911,20 +1155,105 @@ def build_parser():
     item = command("inbox", "Was auf den Menschen wartet", cmd_inbox)
     item.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe")
 
+    item = command("roster", "Kompletten Roster mit abgeleiteten Feldern zeigen", cmd_roster)
+    item.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe")
+
+    item = command("agent", "Agenten anlegen, ändern und entfernen", cmd_agent)
+    agent_sub = item.add_subparsers(dest="action", metavar="AKTION", required=True)
+    add = agent_sub.add_parser("add", help="Agent anlegen", description="Agent anlegen")
+    add.add_argument("name", metavar="NAME")
+    add.add_argument("--role", metavar="R", required=True, help="Rolle, z. B. recherche")
+    add.add_argument("--color", metavar="cN", help="c1–c6, sonst die nächste freie")
+    add.add_argument("--argv-json", metavar="JSON", required=True,
+                     help='Startbefehl als JSON-Liste, z. B. ["omp"]')
+    add.add_argument("--prompt-text", metavar="T", help="Rollenprompt; sonst kurze Vorlage")
+    add.add_argument("--from", dest="from_", metavar="NAME", required=True)
+
+    edit = agent_sub.add_parser("edit", help="Agent ändern", description="Agent ändern")
+    edit.add_argument("name", metavar="NAME")
+    edit.add_argument("--rename", metavar="NEU", help="neuer Name (nur wenn frei)")
+    edit.add_argument("--role", metavar="R")
+    edit.add_argument("--color", metavar="cN")
+    edit.add_argument("--argv-json", metavar="JSON")
+    edit.add_argument("--prompt-text", metavar="T")
+    edit.add_argument("--from", dest="from_", metavar="NAME", required=True)
+
+    remove = agent_sub.add_parser("rm", help="Agent entfernen", description="Agent entfernen")
+    remove.add_argument("name", metavar="NAME")
+    remove.add_argument("--from", dest="from_", metavar="NAME", required=True)
+
+    item = command("settings", "Einstellungen des Rosters setzen", cmd_settings)
+    settings_sub = item.add_subparsers(dest="action", metavar="AKTION", required=True)
+    set_item = settings_sub.add_parser("set", help="Einstellung setzen",
+                                       description="Einstellung setzen")
+    set_item.add_argument("key", metavar="SCHLÜSSEL",
+                          help="max_sessions, reviewer oder orchestrator_argv")
+    set_item.add_argument("value", metavar="WERT")
+    set_item.add_argument("--from", dest="from_", metavar="NAME", required=True)
+
+    item = command("prompt", "Prompts auflisten, zeigen und speichern", cmd_prompt)
+    prompt_sub = item.add_subparsers(dest="action", metavar="AKTION", required=True)
+    listing = prompt_sub.add_parser("list", help="Prompts auflisten",
+                                    description="Prompts auflisten")
+    listing.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe")
+    show_item = prompt_sub.add_parser("show", help="Prompt roh ausgeben",
+                                      description="Prompt roh ausgeben")
+    show_item.add_argument("name", metavar="NAME",
+                           help="orchestrator, preamble oder Agentenname")
+    set_prompt = prompt_sub.add_parser("set", help="Prompt speichern",
+                                       description="Prompt speichern")
+    set_prompt.add_argument("name", metavar="NAME")
+    set_prompt.add_argument("--text", metavar="T", required=True)
+    set_prompt.add_argument("--from", dest="from_", metavar="NAME", required=True)
+
+    item = command("repos", "Bekannte Repos zeigen", cmd_repos)
+    item.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe")
+    item.add_argument("--add", nargs="+", metavar="PFAD",
+                      help="weitere Ordner, die Git-Wurzeln sind")
+
+    item = command("repo", "Repo-Dateien zeigen, schreiben und testen", cmd_repo)
+    repo_sub = item.add_subparsers(dest="action", metavar="AKTION", required=True)
+    show_repo = repo_sub.add_parser("show", help="Repo-Dateien zeigen",
+                                    description="Repo-Dateien zeigen")
+    show_repo.add_argument("path", metavar="PFAD")
+    show_repo.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe")
+    set_repo = repo_sub.add_parser("set", help="Repo-Datei schreiben",
+                                   description="Repo-Datei schreiben")
+    set_repo.add_argument("path", metavar="PFAD")
+    set_repo.add_argument("kind", metavar="DATEI", choices=("verify", "lessons"))
+    set_repo.add_argument("--text", metavar="T", required=True)
+    set_repo.add_argument("--from", dest="from_", metavar="NAME", required=True)
+    test_repo = repo_sub.add_parser("test", help="Prüfskript ausführen",
+                                    description="Prüfskript ausführen")
+    test_repo.add_argument("path", metavar="PFAD")
+    test_repo.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe")
+
+    command("version", "Version und Git-HEAD des Fabric-Codes", cmd_version)
     command("index", "index.json neu erzeugen", cmd_index)
     return parser
 
 
 def _normalize_argv(argv):
     """`fab wake ID NAME --from X "<text>"`: der optionale Text steht hinter Optionen,
-    die argparse sonst nicht mehr mit dem optionalen Positional verbindet."""
+    die argparse sonst nicht mehr mit dem optionalen Positional verbindet.
+
+    Optionen kommen nach vorn, die Positionals danach, ein `--` mit allem
+    Folgenden bleibt am Ende stehen. Nur so nimmt argparse einen Text mit
+    führendem `-` (`-- "-wichtig"`, `-- "---"`) als Positional an: stünde der
+    Text vor `--from`, verbrauchte ihn `nargs="?"` schon vor dem `--` und der
+    Rest landete in „unbekannte Argumente“.
+    """
     if not argv or argv[0] != "wake":
         return argv
-    positionals, options, index = [argv[0]], [], 1
-    while index < len(argv):
-        token = argv[index]
+    body, tail = list(argv[1:]), []
+    if "--" in body:
+        cut = body.index("--")
+        body, tail = body[:cut], body[cut:]
+    positionals, options, index = [], [], 0
+    while index < len(body):
+        token = body[index]
         if token == "--from":
-            options.extend(argv[index:index + 2])
+            options.extend(body[index:index + 2])
             index += 2
             continue
         if token.startswith("--from=") or token in ("-h", "--help"):
@@ -933,7 +1262,7 @@ def _normalize_argv(argv):
             continue
         positionals.append(token)
         index += 1
-    return [*positionals, *options]
+    return ["wake", *options, *positionals, *tail]
 
 
 def main(argv=None):

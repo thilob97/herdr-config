@@ -131,6 +131,32 @@ Alle Befehle schreiben unter Lock, hängen Ereignisse an und erzeugen danach `in
 
 `--from` ist bei allen schreibenden Befehlen außer `new`, `accept`, `reject` und `verify` Pflicht. `verify` nimmt `--from NAME` optional; Standard ist der `assignee`. `accept` und `reject` schreiben als `mensch`.
 
+## 3b. Konfiguration und Pflege (für das UI)
+
+Das UI pflegt alles über diese Befehle. Alle schreiben atomar (tmp + `os.replace`), lassen unbekannte Felder stehen, schreiben ein Ereignis `config` (`text` = was geändert wurde), erzeugen `index.json` neu und verlangen `--from` (das UI übergibt `mensch`). Fehler: deutsche Meldung auf stderr, Exit ≠ 0.
+
+| Befehl | Wirkung |
+|---|---|
+| `fab roster --json` | Kompletter Roster: `max_sessions`, `reviewer`, `orchestrator {argv, prompt}`, `agents[] {name, role, color, argv, prompt}` und je Agent die abgeleiteten Felder `program` (= `argv[0]`), `model` (Wert von `--model=`/`--model`), `flags` (übrige argv), `open_tickets`, `sessions` (laufende Terminals mit `name`, `terminal`, `status`) |
+| `fab agent add NAME --role R [--color cN] --argv-json JSON [--prompt-text T] --from N` | Neuer Agent. Name `^[a-z][a-z0-9_-]{0,15}$`, eindeutig, nicht `orchestrator`/`mensch`/`fab`; Farbe `c1`–`c6`, sonst die nächste freie; `argv` nicht leer. Legt `prompts/<name>.md` an (Text oder kurze Vorlage). |
+| `fab agent edit NAME [--rename NEU] [--role R] [--color cN] [--argv-json JSON] [--prompt-text T] --from N` | Ändern. `--rename` nur, wenn kein offenes Ticket den Agenten nennt (`assignee`) und keine Session läuft; benennt die Promptdatei mit um und passt `reviewer` an. |
+| `fab agent rm NAME --from N` | Entfernen. Verweigert bei offenen Tickets, laufender Session oder wenn er `reviewer` ist (Gründe in der Meldung). Die Promptdatei bleibt erhalten. |
+| `fab settings set KEY VALUE --from N` | `max_sessions` (1–16), `reviewer` (Roster-Name), `orchestrator_argv` (JSON-Liste, nicht leer) |
+| `fab prompt list --json` | `[{name, kind: orchestrator\|preamble\|agent, path, bytes, placeholders: [...]}]` |
+| `fab prompt show NAME` | Rohtext (`orchestrator`, `preamble` oder Agentname) |
+| `fab prompt set NAME --text T --from N` | Speichern. Bei unbekannten Platzhaltern (nicht in Abschnitt 5) Warnung auf stderr, gespeichert wird trotzdem. |
+| `fab orchestrator status --json` | `{live, name, terminal, status, started_at}`. `status` = herdr-Status aus `hc ls --json`, sonst `null` |
+| `fab orchestrator restart --from N` | stop + start |
+| `fab repos --json` | Bekannte Repos aus Tickets und `--add PFAD…` (das UI gibt die Space-Ordner mit): `[{path, branch, open_tickets, verify_exists, lessons_exists}]`, nur Git-Wurzeln, ohne Doppelte |
+| `fab repo show PFAD --json` | `{path, branch, verify: {exists, text}, lessons: {exists, text}}` |
+| `fab repo set PFAD verify\|lessons --text T --from N` | Schreibt `.fabric/verify.sh` (ausführbar) bzw. `.fabric/lessons.md` im Haupt-Checkout. Verweigert außerhalb einer Git-Wurzel. |
+| `fab repo test PFAD [--json]` | Führt `.fabric/verify.sh` im Haupt-Checkout aus (Timeout 600 s): `{exit, tail}` |
+| `fab link ID --remove ID… --from N` | Abhängigkeiten entfernen |
+| `fab new "<satz>" [--repo PFAD] [--from NAME] [--no-wake]` | wie oben; `--no-wake` legt nur den Entwurf an, ohne `@orchestrator`-Kommentar |
+| `fab version` | Version (Datum + Git-HEAD des Fabric-Codes) |
+
+`index.json.roster` enthält je Agent `{name, role, color, program, model}`. Das UI liest den vollständigen Roster bei Bedarf über `fab roster --json`.
+
 ## 4. Wecken durch Erwähnung
 
 Erwähnung = `@name`, Muster `@([a-z][a-z0-9_-]*)`, ohne Beachtung der Groß-/Kleinschreibung. Pro Kommentar wird jeder Name höchstens einmal geweckt. Für jeden genannten Namen gilt in dieser Reihenfolge:

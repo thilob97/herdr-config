@@ -101,15 +101,37 @@
       "resizable": false,
       "children": [
         {
-          "id": "tabs",
-          "type": "block",
+          "id": "topbar",
+          "type": "row",
           "size": {
             "px": 42
           },
-          "window_drag": true,
-          "content": {
-            "mod": "tabs"
-          }
+          "children": [
+            {
+              "id": "tabs",
+              "type": "block",
+              "size": {
+                "weight": 1
+              },
+              "window_drag": true,
+              "content": {
+                "mod": "tabs"
+              }
+            },
+            {
+              "id": "fabric-switcher",
+              "type": "block",
+              "size": {
+                "px": 104
+              },
+              "content": {
+                "mod": "fabric",
+                "props": {
+                  "view": "switcher"
+                }
+              }
+            }
+          ]
         },
         {
           "id": "work-body",

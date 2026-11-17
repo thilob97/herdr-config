@@ -72,10 +72,45 @@ def agent(name, roster=None):
 
 
 def roster_rows(roster):
-    return [
-        {"name": entry["name"], "role": entry["role"], "color": entry["color"]}
-        for entry in roster["agents"]
-    ]
+    rows = []
+    for entry in roster["agents"]:
+        program, model, _flags = split_argv(entry["argv"])
+        rows.append(
+            {
+                "name": entry["name"],
+                "role": entry["role"],
+                "color": entry["color"],
+                "program": program,
+                "model": model,
+            }
+        )
+    return rows
+
+
+def split_argv(argv):
+    """Programm, Modell und übrige Flags aus einem argv.
+
+    Modell ist der Wert von `--model=<x>` oder `--model <x>`; Flags sind alle
+    übrigen Argumente hinter dem Programm, in ihrer Reihenfolge.
+    """
+    parts = [str(part) for part in (argv or [])]
+    program = parts[0] if parts else ""
+    model = ""
+    flags = []
+    index = 1
+    while index < len(parts):
+        token = parts[index]
+        if token == "--model" and index + 1 < len(parts):
+            model = parts[index + 1]
+            index += 2
+            continue
+        if token.startswith("--model="):
+            model = token.split("=", 1)[1]
+            index += 1
+            continue
+        flags.append(token)
+        index += 1
+    return program, model, flags
 
 
 def prompt_text(roster, rel):

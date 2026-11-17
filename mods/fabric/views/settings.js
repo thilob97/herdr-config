@@ -1,0 +1,122 @@
+// Einstellungen: Datenordner, Zähler, Version, Rosterpfad und Tasten.
+
+import { div } from "gpui-kit";
+import { h_flex, v_flex } from "gpui-base";
+import { notify } from "herdr";
+import * as model from "../model.js";
+import * as ui from "../ui.js";
+
+const T = ui.FONT;
+const S = ui.SPACE;
+
+const KEYS = [
+  ["⌘⇧F", "Fabric-Fenster öffnen und schließen"],
+  ["⌘⇧N", "Neues Ticket (Panel und Layout)"],
+  ["⌘⇧1", "Panel Tickets zeigen oder verbergen"],
+  ["⌘⇧2", "Panel Zeitverlauf zeigen oder verbergen"],
+  ["⌘N", "Neues Ticket im Fenster"],
+  ["⌘S", "Aktiven Editor speichern"],
+  ["⌘⏎", "Kommentar senden"],
+  ["/", "Suche fokussieren"],
+  ["↑ ↓", "In Listen wandern"],
+  ["⏎", "Gewähltes Ticket öffnen"],
+  ["Esc", "Zurück, Dialog schließen, Fenster schließen"],
+];
+
+function infoRow(t, label, value, { copy = null, mono = false } = {}) {
+  return h_flex()
+    .w_full()
+    .min_h(28)
+    .gap(S.s)
+    .items_center()
+    .border_b(1)
+    .border_color(t.border)
+    .child(div().w(150).flex_none().text_size(T.xs).text_color(t.dim).child(label))
+    .child(div().flex_1().min_w(0).truncate().text_size(T.s).text_color(t.foreground)
+      .when(mono, (el) => el.font_family("monospace")).child(value ?? "—").tooltip(String(value ?? "")))
+    .when(Boolean(copy), (el) => el.child(ui.iconButton(t, {
+      id: `fabric-info-copy-${label}`,
+      icon: "copy",
+      tooltip: `${label} kopieren`,
+      size: 24,
+      iconSize: 12,
+      onClick: (cx) => app.copyText(cx, copy, `${label} kopiert.`),
+    })));
+}
+
+function dataCard(app, cx, t) {
+  const counts = model.groupByStage(app.tickets).map((stage) => `${stage.tickets.length} ${stage.label}`);
+  return ui.card(t, [
+    ui.sectionTitle(t, "Daten", [
+      ui.button(t, {
+        id: "fabric-settings-index",
+        label: "Index neu erzeugen",
+        icon: "restart",
+        small: true,
+        busy: app.busy === "index",
+        disabled: Boolean(app.busy),
+        tooltip: "fab index",
+        onClick: (cx) => app.rebuildIndex(cx),
+      }),
+    ]),
+    infoRow(t, "Datenordner", app.dir, { copy: app.dir, mono: true }),
+    infoRow(t, "Tickets", String(app.tickets.length)),
+    infoRow(t, "Ereignisse", String(app.events.length)),
+    infoRow(t, "Stand der Index-Datei", model.absoluteTime(app.index?.generated_at) || "—"),
+    div().text_size(T.xs).text_color(t.dim).whitespace_normal()
+      .child(`Stufen: ${counts.join(" · ")}`),
+  ], { id: "fabric-settings-data", padding: S.m, gap: S.xs });
+}
+
+function versionCard(app, cx, t) {
+  return ui.card(t, [
+    ui.sectionTitle(t, "Fabric"),
+    infoRow(t, "Version", app.version || (app.versionError ? `nicht lesbar: ${app.versionError}` : "wird gelesen …"), { mono: true }),
+    infoRow(t, "Roster", `${app.dir.replace(/\/data\/fabric$/, "")}/fabric/roster.json`, {
+      copy: `${app.dir.replace(/\/data\/fabric$/, "")}/fabric/roster.json`, mono: true,
+    }),
+    infoRow(t, "CLI", `${app.dir.replace(/\/data\/fabric$/, "")}/fabric/fab`, {
+      copy: `${app.dir.replace(/\/data\/fabric$/, "")}/fabric/fab`, mono: true,
+    }),
+    infoRow(t, "Agenten", `${app.agents.length} im Roster · Prüfer ${app.roster?.reviewer ?? "—"}`),
+  ], { id: "fabric-settings-version", padding: S.m, gap: S.xs });
+}
+
+function keysCard(app, cx, t) {
+  return ui.card(t, [
+    ui.sectionTitle(t, "Tasten", [], "Alle Aktionen haben auch einen sichtbaren Knopf."),
+    ...KEYS.map(([key, action]) => h_flex()
+      .w_full()
+      .min_h(26)
+      .gap(S.s)
+      .items_center()
+      .border_b(1)
+      .border_color(t.border)
+      .child(div().w(70).flex_none().child(ui.keyHint(t, key)))
+      .child(div().flex_1().text_size(T.s).text_color(t.muted).child(action))),
+  ], { id: "fabric-settings-keys", padding: S.m, gap: S.xs });
+}
+
+export function renderSettings(app, cx, t) {
+  return v_flex()
+    .size_full()
+    .min_h(0)
+    .child(ui.header(t, "Einstellungen", [
+      ui.iconButton(t, {
+        id: "fabric-settings-refresh",
+        icon: "restart",
+        tooltip: "Version und Zähler neu lesen",
+        onClick: (cx) => { app.loadVersion(cx); app.refresh(cx); },
+      }),
+    ], { iconName: "settings", subtitle: "Daten, Version und Tastenbelegung" }))
+    .when(Boolean(app.loadError), (el) => el.child(ui.notice(t, app.loadError)))
+    .when(Boolean(app.errorFor("index")), (el) => el.child(ui.notice(t, app.errorFor("index").text, app.errorFor("index").level)))
+    .when(Boolean(app.flash?.text), (el) => el.child(ui.notice(t, app.flash.text, app.flash.level)))
+    .child(
+      v_flex().flex_1().min_h(0).overflow_y_scrollbar().p(S.l).gap(S.m)
+        .child(h_flex().w_full().gap(S.m).items_start().flex_wrap()
+          .child(div().w(440).child(dataCard(app, cx, t)))
+          .child(div().w(440).child(versionCard(app, cx, t))))
+        .child(div().w_full().max_w(900).child(keysCard(app, cx, t))),
+    );
+}

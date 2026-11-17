@@ -73,6 +73,7 @@
     "cmd-backspace": "send:\u0015"
   },
   "layout:fabric": {
+    "cmd-shift-f": "fabric.window",
     "cmd-shift-1": "fabric.tickets",
     "cmd-shift-2": "fabric.timeline",
     "cmd-shift-n": "fabric.new"

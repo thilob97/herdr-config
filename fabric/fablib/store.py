@@ -69,8 +69,11 @@ def locked():
         handle.close()
 
 
-def atomic_write(path, text):
-    """Erst in eine temporäre Datei, dann mit os.replace an ihren Platz."""
+def atomic_write(path, text, mode=None):
+    """Erst in eine temporäre Datei, dann mit os.replace an ihren Platz.
+
+    `mode` setzt die Dateirechte der neuen Datei (sonst 0600 aus mkstemp).
+    """
     folder = os.path.dirname(path) or "."
     os.makedirs(folder, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=folder, prefix=".fab-", suffix=".tmp")
@@ -79,6 +82,8 @@ def atomic_write(path, text):
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
+        if mode is not None:
+            os.chmod(tmp, mode)
         os.replace(tmp, path)
     except BaseException:
         try:

@@ -1,12 +1,12 @@
-// Tickets-Ansicht: ein Satz, die Liste nach Stufe und das Detail eines Tickets.
+// Panel Tickets: Schnellzugriff mit Liste, kompaktem Detail und Abnahme.
 
 import { div } from "gpui-kit";
 import { h_flex, v_flex, TextView } from "gpui-base";
-import { agents, run, terminals } from "herdr";
+import { run, terminals, agents } from "herdr";
 import * as model from "../model.js";
 import * as ui from "../ui.js";
+import { renderDialogs } from "./dialogs.js";
 
-const EMPTY_HINT = model.EMPTY_HINT;
 const T = ui.FONT;
 const S = ui.SPACE;
 
@@ -15,301 +15,244 @@ function newTicketRow(app, cx, t) {
   return v_flex()
     .flex_none()
     .w_full()
-    .px(S.l)
-    .py(S.m)
-    .gap(S.s)
+    .px(S.m)
+    .py(S.s)
+    .gap(S.xs)
     .border_b(1)
     .border_color(t.border)
     .child(
-      h_flex()
-        .gap(S.s)
-        .items_center()
-        .child(div().flex_1().min_w(0).child(ui.input(t, app.newInput, { focused: app.newInputFocused })))
-        .child(ui.button(t, {
-          id: "fabric-new",
-          label: busy ? "legt an …" : "Anlegen",
-          primary: true,
+      h_flex().gap(S.xs).items_center()
+        .child(div().flex_1().min_w(0).child(ui.input(t, app.newInput, { focused: app.fieldFocused })))
+        .child(ui.iconButton(t, {
+          id: "fabric-panel-new-submit",
+          icon: "plus",
+          tooltip: "Entwurf anlegen",
           disabled: Boolean(app.busy),
-          onClick: (cx) => app.create(cx),
+          onClick: (cx) => app.createFromPanel(cx),
         })),
     )
-    .child(ui.hint(t, "Ein Satz genügt. Repo ist die Git-Wurzel des fokussierten Terminals."));
+    .child(ui.hint(t, busy ? "Legt an …" : "Ein Satz genügt – als Entwurf ohne Wecken."))
+    .when(Boolean(app.errorFor("new")), (el) =>
+      el.child(ui.notice(t, app.errorFor("new").text, app.errorFor("new").level)));
 }
 
 function ticketRow(app, cx, t, ticket) {
-  const color = ui.statusColor(t, ticket.status);
   const comments = ticket.comment_count ?? 0;
   return h_flex()
-    .id(`fabric-ticket-${ticket.id}`)
+    .id(`fabric-panel-ticket-${ticket.id}`)
     .w_full()
-    .px(S.l)
+    .px(S.m)
     .py(6)
-    .gap(S.m)
+    .gap(S.s)
     .items_center()
     .cursor_pointer()
     .hover((style) => style.bg(t.hover))
-    .on_click((_event, cx) => app.select(ticket.id, cx))
-    .child(div().flex_none().size(7).rounded(4).bg(color))
-    .child(div().flex_none().w(34).text_size(T.xs).text_color(t.dim).child(ticket.id))
+    .when(app.openId === ticket.id, (el) => el.bg(t.selected))
+    .on_click((_event, cx) => { cx.stop_propagation(); app.select(ticket.id, cx); })
+    .child(ui.dot(t, ui.statusColor(t, ticket.status)))
+    .child(div().w(34).flex_none().text_size(T.xs).text_color(t.dim).child(ticket.id))
     .child(
-      v_flex()
-        .flex_1()
-        .min_w(0)
-        .gap(1)
-        .child(div().truncate().text_size(T.m).font_medium().text_color(t.foreground).child(ticket.title || "Ohne Titel"))
-        .child(
-          h_flex()
-            .gap(5)
-            .text_size(T.xs)
-            .text_color(t.dim)
-            .when(Boolean(ticket.assignee), (el) => el.child(div().child(ticket.assignee)).child(div().child("·")))
-            .when(comments > 0, (el) => el
-              .child(div().child(`${comments} Kommentar${comments === 1 ? "" : "e"}`))
-              .child(div().child("·")))
-            .child(div().child(model.relativeTime(ticket.updated_at))),
-        ),
+      v_flex().flex_1().min_w(0).gap(1)
+        .child(div().truncate().text_size(T.s).font_medium()
+          .text_color(t.foreground).child(ticket.title || "Ohne Titel"))
+        .child(h_flex().gap(5).text_size(T.xs).text_color(t.dim)
+          .when(Boolean(ticket.assignee), (el) => el.child(div().child(ticket.assignee)).child(div().child("·")))
+          .when(comments > 0, (el) => el.child(div().child(`${comments}`)).child(div().child("·")))
+          .child(div().child(model.relativeTime(ticket.updated_at)))),
     )
     .child(div().flex_none().text_size(T.l).text_color(t.dim).child("›"));
 }
 
 function ticketList(app, cx, t) {
-  if (!app.index) {
-    return ui.emptyState(t, app.loadError ?? EMPTY_HINT);
-  }
-  if (!app.tickets.length) return ui.emptyState(t, EMPTY_HINT);
-
+  if (!app.index) return ui.emptyState(t, { title: "Tickets", text: app.loadError ?? model.EMPTY_HINT });
+  if (!app.tickets.length) return ui.emptyState(t, { title: "Noch keine Tickets", text: model.EMPTY_HINT });
   const rows = [];
   for (const stage of model.groupByStage(app.tickets)) {
-    const folded = stage.key === "done" && !app.doneOpen;
+    const open = !(stage.key === "done" && !app.doneOpen);
     rows.push(ui.stageRow(t, {
-      id: `fabric-stage-${stage.key}`,
+      id: `fabric-panel-stage-${stage.key}`,
       label: stage.label,
       count: stage.tickets.length,
-      open: !folded,
+      open,
       onClick: stage.key === "done"
         ? (cx) => { app.doneOpen = !app.doneOpen; cx.notify(); }
         : null,
     }));
-    if (!folded) for (const ticket of stage.tickets) rows.push(ticketRow(app, cx, t, ticket));
+    if (open) for (const ticket of stage.tickets) rows.push(ticketRow(app, cx, t, ticket));
   }
-  return v_flex()
-    .flex_1()
-    .min_h(0)
-    .overflow_y_scrollbar()
-    .py(S.s)
-    .children(rows);
+  return v_flex().flex_1().min_h(0).overflow_y_scrollbar().py(S.xs).children(rows);
 }
 
-function sessionChip(t, ticket, session, index) {
-  const label = session.agent || session.name || "Agent";
-  const id = `fabric-session-${ticket.id}-${session.terminal || session.name || index}`;
-  return ui.chip(t, `${label} · ${session.word}`, ui.sessionColor(t, session.color), id, {
-    tooltip: session.tooltip,
-    onClick: session.ended ? null : () => run("terminal.peek", { terminal: session.terminal }),
-  });
-}
-
-function headChips(t, ticket) {
-  const chips = [];
-  chips.push(ui.chip(t, model.statusWord(ticket.status), ui.statusColor(t, ticket.status)));
-  if (ticket.assignee) chips.push(ui.chip(t, `→ ${ticket.assignee}`, t.muted));
-  for (const [index, session] of model
-    .sessionChips(ticket.sessions, terminals(), agents(), ticket.id)
-    .entries()) {
-    chips.push(sessionChip(t, ticket, session, index));
+function headChips(app, t, ticket) {
+  const chips = [
+    ui.chip(t, model.statusWord(ticket.status), ui.statusColor(t, ticket.status)),
+  ];
+  if (ticket.assignee) chips.push(ui.avatar(t, ticket.assignee, app.agentColor(ticket.assignee), 18));
+  for (const [index, session] of model.sessionChips(ticket.sessions, terminals(), agents(), ticket.id).entries()) {
+    chips.push(ui.chip(t, `${session.agent} · ${session.word}`, ui.sessionColor(t, session.color),
+      `fabric-panel-session-${ticket.id}-${index}`, {
+        tooltip: session.tooltip,
+        onClick: session.ended ? null : () => run("terminal.peek", { terminal: session.terminal }),
+      }));
   }
   if (ticket.checks?.state) {
-    chips.push(ui.chip(t, `Checks ${model.CHECK_WORDS[ticket.checks.state] ?? ticket.checks.state}`, ticket.checks.state === "pass" ? t.done : t.blocked));
+    chips.push(ui.chip(t, `Checks ${model.CHECK_WORDS[ticket.checks.state] ?? ticket.checks.state}`,
+      ticket.checks.state === "pass" ? t.done : t.blocked));
   }
   if (ticket.verdict?.state) {
-    chips.push(ui.chip(t, `Urteil ${model.VERDICT_WORDS[ticket.verdict.state] ?? ticket.verdict.state}`, ticket.verdict.state === "pass" ? t.done : t.blocked));
+    chips.push(ui.chip(t, `Urteil ${model.VERDICT_WORDS[ticket.verdict.state] ?? ticket.verdict.state}`,
+      ticket.verdict.state === "pass" ? t.done : t.blocked));
   }
   if (ticket.waiting?.includes("mensch")) chips.push(ui.chip(t, "wartet auf dich", t.accent));
-  return h_flex().gap(5).flex_wrap().children(chips);
-}
-
-function commentText(t, ticket, comment, index) {
-  const markdown = model.mentionSegments(comment.text ?? "")
-    .map((part) => (part.mention ? `**${part.text}**` : part.text))
-    .join("")
-    .replace(/\n/g, "  \n");
-  return TextView.markdown(`fabric-comment-${ticket.id}-${comment.n ?? index}`, markdown)
-    .flex_1()
-    .text_size(T.s)
-    .text_color(t.foreground)
-    .selectable(true);
-}
-
-function historyRows(app, t, ticket) {
-  const rows = [];
-  for (const [index, row] of model.history(ticket, app.events).entries()) {
-    if (row.kind === "wake") {
-      rows.push(
-        div()
-          .id(`fabric-wake-${ticket.id}-${index}`)
-          .w_full()
-          .px(S.l)
-          .py(2)
-          .text_size(T.xs)
-          .text_color(t.dim)
-          .child(model.wakeLine(row.event)),
-      );
-      continue;
-    }
-    const comment = row.comment;
-    rows.push(
-      v_flex()
-        .id(`fabric-entry-${ticket.id}-${comment.n ?? index}`)
-        .w_full()
-        .px(S.l)
-        .py(5)
-        .gap(3)
-        .child(
-          h_flex()
-            .gap(S.s)
-            .text_size(T.xs)
-            .child(div().font_semibold().text_color(t.muted).child(comment.author || "unbekannt"))
-            .child(div().text_color(t.dim).child(model.relativeTime(comment.at))),
-        )
-        .child(commentText(t, ticket, comment, index)),
-    );
-  }
-  return rows;
+  return h_flex().gap(4).flex_wrap().items_center().children(chips);
 }
 
 function detail(app, cx, t) {
   if (!app.ticket) {
-    return v_flex()
-      .flex_1()
-      .min_h(0)
+    return v_flex().flex_1().min_h(0)
       .child(
-        h_flex()
-          .flex_none()
-          .px(S.l)
-          .py(6)
+        h_flex().flex_none().px(S.s).py(S.xs)
           .child(ui.button(t, {
-            id: "fabric-back",
-            label: "‹ Alle Tickets",
+            id: "fabric-panel-back",
+            label: "Alle Tickets",
+            icon: "chevron-left",
+            small: true,
+            tooltip: "Zurück zur Liste",
             onClick: (cx) => app.back(cx),
           })),
       )
-      .child(ui.emptyState(t, app.ticketError ?? "Das Ticket wird geladen …"));
+      .child(ui.emptyState(t, { title: app.ticketError ? "Nicht lesbar" : "Ticket", text: app.ticketError ?? "Das Ticket wird geladen …" }));
   }
-
   const ticket = app.ticket;
   const review = ticket.status === "review";
-  const busy = Boolean(app.busy);
-
+  const text = app.commentInput.value();
   return v_flex()
     .flex_1()
     .min_h(0)
     .child(
-      h_flex()
-        .flex_none()
-        .w_full()
-        .px(S.m)
-        .py(5)
-        .items_center()
-        .border_b(1)
-        .border_color(t.border)
+      h_flex().flex_none().w_full().px(S.s).py(S.xs).gap(S.xs).items_center()
         .child(ui.button(t, {
-          id: "fabric-back",
-          label: "‹ Alle Tickets",
+          id: "fabric-panel-back",
+          label: "Alle Tickets",
+          icon: "chevron-left",
+          small: true,
+          tooltip: "Zurück zur Liste",
           onClick: (cx) => app.back(cx),
+        }))
+        .child(div().flex_1())
+        .child(ui.iconButton(t, {
+          id: "fabric-panel-open-window",
+          icon: "external",
+          tooltip: "Im Fenster öffnen",
+          onClick: (cx) => app.openInWindow({ page: "ticket", id: ticket.id }, cx),
         })),
     )
     .child(
-      v_flex()
-        .flex_1()
-        .min_h(0)
-        .overflow_y_scrollbar()
+      v_flex().flex_1().min_h(0).overflow_y_scrollbar()
         .child(
-          v_flex()
-            .w_full()
-            .p(S.l)
-            .gap(6)
-            .border_b(1)
-            .border_color(t.border)
-            .child(
-              h_flex()
-                .gap(S.s)
-                .items_center()
-                .child(div().flex_none().text_size(T.xs).text_color(t.dim).child(ticket.id))
-                .child(div().flex_1().min_w(0).text_size(T.l).font_semibold().child(ticket.title || "Ohne Titel")),
-            )
-            .child(headChips(t, ticket))
-            .when(Boolean(ticket.branch), (el) =>
-              el.child(div().text_size(T.xs).text_color(t.dim).child(`Zweig ${ticket.branch}`)))
-            .when(Boolean(ticket.repo), (el) =>
-              el.child(div().text_size(T.xs).text_color(t.dim).truncate().child(ticket.repo))),
+          v_flex().w_full().p(S.m).gap(6).border_b(1).border_color(t.border)
+            .child(h_flex().gap(S.s).items_center()
+              .child(div().text_size(T.xs).text_color(t.dim).child(ticket.id))
+              .child(div().flex_1().min_w(0).truncate().text_size(T.m).font_semibold().child(ticket.title || "Ohne Titel")))
+            .child(headChips(app, t, ticket))
+            .when(Boolean(ticket.branch), (el) => el.child(ui.hint(t, ticket.branch))),
         )
-        .when(Boolean(ticket.body), (el) =>
-          el.child(
-            div()
-              .w_full()
-              .p(S.l)
-              .border_b(1)
-              .border_color(t.border)
-              .child(
-                TextView.markdown(`fabric-body-${ticket.id}`, ticket.body)
-                  .text_size(T.s)
-                  .text_color(t.foreground)
-                  .selectable(true),
-              ),
-          ))
+        .when(Boolean(ticket.body), (el) => el.child(
+          div().w_full().p(S.m).border_b(1).border_color(t.border)
+            .child(TextView.markdown(`fabric-panel-body-${ticket.id}`, ticket.body)
+              .w_full().text_size(T.s).text_color(t.foreground).whitespace_normal().selectable(true)),
+        ))
         .child(
-          v_flex()
-            .w_full()
-            .py(S.s)
-            .child(div().px(S.l).py(3).text_size(T.xs).text_color(t.dim).child("Verlauf"))
-            .children(historyRows(app, t, ticket)),
+          v_flex().w_full().py(S.s).gap(2)
+            .child(div().px(S.m).text_size(T.xs).text_color(t.dim).child("Verlauf"))
+            .children(model.history(ticket, app.events).slice(-6).map((row, index) => {
+              if (row.kind === "wake") {
+                return div().px(S.m).py(1).text_size(T.xs).text_color(t.dim).child(model.wakeLine(row.event));
+              }
+              const comment = row.comment;
+              return v_flex().w_full().px(S.m).py(4).gap(2)
+                .child(h_flex().gap(S.s).items_center()
+                  .child(ui.avatar(t, comment.author, app.agentColor(comment.author), 18))
+                  .child(div().text_size(T.xs).font_semibold().text_color(t.muted).child(comment.author))
+                  .child(div().text_size(T.xs).text_color(t.dim).child(model.relativeTime(comment.at))
+                    .tooltip(model.absoluteTime(comment.at))))
+                .child(div().pl(26).child(TextView.markdown(
+                  `fabric-panel-comment-${comment.n ?? index}`,
+                  ui.mentionMarkdown(comment.text),
+                ).w_full().text_size(T.s).text_color(t.foreground).whitespace_normal().selectable(true)));
+            })),
         ),
     )
     .child(
-      v_flex()
-        .flex_none()
-        .w_full()
-        .p(S.m)
-        .gap(S.s)
-        .border_t(1)
-        .border_color(t.border)
-        .child(ui.input(t, app.commentInput, { focused: app.commentFocused }))
+      v_flex().flex_none().w_full().p(S.m).gap(S.s).border_t(1).border_color(t.border)
+        .child(ui.textarea(t, app.commentInput, { focused: app.fieldFocused, height: 64 }))
+        .child(ui.hint(t, model.wakeSummary(text, app.agentNames(), "mensch")))
+        .when(Boolean(app.errorFor("comment") || app.errorFor("reject") || app.errorFor("accept")), (el) => {
+          const problem = app.errorFor("comment") || app.errorFor("reject") || app.errorFor("accept");
+          return el.child(ui.notice(t, problem.text, problem.level));
+        })
         .child(
-          h_flex()
-            .gap(S.s)
-            .items_center()
+          h_flex().w_full().gap(S.xs).items_center()
             .child(ui.button(t, {
-              id: "fabric-comment",
-              label: app.busy === `comment:${ticket.id}` ? "schreibt …" : "Kommentieren",
-              disabled: busy,
+              id: "fabric-panel-comment-send",
+              label: "Senden",
+              icon: "send",
+              small: true,
+              primary: true,
+              busy: app.busy === "comment",
+              disabled: Boolean(app.busy) || !text.trim(),
+              tooltip: "Kommentar senden (⌘⏎)",
               onClick: (cx) => app.comment(cx),
             }))
+            .child(div().flex_1())
             .when(review, (el) => el
               .child(ui.button(t, {
-                id: "fabric-accept",
-                label: app.busy === `accept:${ticket.id}` ? "nimmt ab …" : "Abnehmen",
+                id: "fabric-panel-accept",
+                label: "Abnehmen",
+                icon: "check",
+                small: true,
                 primary: true,
-                disabled: busy,
-                onClick: (cx) => app.accept(cx),
+                busy: app.busy === "accept",
+                disabled: Boolean(app.busy),
+                tooltip: "Abnehmen – fragt vor dem Merge nach",
+                onClick: (cx) => app.openAcceptModal(cx),
               }))
               .child(ui.button(t, {
-                id: "fabric-reject",
-                label: app.busy === `reject:${ticket.id}` ? "gibt zurück …" : "Zurück mit Feedback",
-                disabled: busy,
+                id: "fabric-panel-reject",
+                label: "Zurück",
+                icon: "undo",
+                small: true,
+                busy: app.busy === "reject",
+                disabled: Boolean(app.busy) || !text.trim(),
+                tooltip: "Mit dem Kommentar als Feedback zurückgeben",
                 onClick: (cx) => app.reject(cx),
-              })))
-            .child(div().flex_1())
-            .child(ui.hint(t, review ? "" : "@name weckt")),
-        )
-        .when(review, (el) =>
-          el.child(ui.hint(t, "„Zurück mit Feedback“ schickt den Text aus dem Kommentarfeld als Feedback."))),
+              }))),
+        ),
     );
 }
 
-export function renderTickets(app, cx, t) {
-  const rows = [ui.header(t, "Tickets"), newTicketRow(app, cx, t)];
+export function renderTicketsPanel(app, cx, t) {
+  const rows = [
+    ui.header(t, "Tickets", [
+      ui.badge(t, app.tickets.length, t.muted),
+      ui.iconButton(t, {
+        id: "fabric-panel-new",
+        icon: "plus",
+        tooltip: "Neues Ticket (⌘⇧N)",
+        onClick: (cx) => app.requestNewTicket(cx),
+      }),
+      ui.iconButton(t, {
+        id: "fabric-panel-open-tickets",
+        icon: "external",
+        tooltip: "Im Fenster öffnen (⌘⇧F)",
+        onClick: (cx) => app.openInWindow({ page: app.openId ? "ticket" : "tickets", id: app.openId ?? undefined }, cx),
+      }),
+    ], { iconName: "tickets" }),
+  ];
   const note = ui.notice(t, app.flash?.text, app.flash?.level);
   if (note) rows.push(note);
-  rows.push(app.index && app.openId ? detail(app, cx, t) : ticketList(app, cx, t));
-  return ui.page(t, rows);
+  if (!app.openId) rows.push(newTicketRow(app, cx, t));
+  rows.push(app.openId ? detail(app, cx, t) : ticketList(app, cx, t));
+  const page = ui.page(t, rows).relative();
+  return app.modal ? page.child(renderDialogs(app, cx, t)) : page;
 }

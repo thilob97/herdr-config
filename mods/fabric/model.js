@@ -1,6 +1,6 @@
 // Reine Logik des Fabric-Mods: keine herdr-, keine gpui-Importe.
-// Stufen, Statuswörter, Gruppierung, Zeitformat, Erwähnungen, Inbox-Reihenfolge
-// und Timeline-Geometrie stehen genau hier.
+// Wörter, Übergänge, Board, Filter, Flags, Erwähnungen, Zeitformat,
+// Timeline-Geometrie und der Schutz vor ungespeicherten Änderungen stehen hier.
 
 // ---------- Stufen und Statuswörter ----------
 
@@ -13,7 +13,9 @@ const STATUS_WORDS = {
   dropped: "Verworfen",
 };
 
-// Die Stufen der Liste, in dieser Reihenfolge; `dropped` hat keine Stufe.
+export const STATUS_KEYS = ["draft", "todo", "doing", "review", "done", "dropped"];
+
+// Die Stufen des Boards und der Liste, in dieser Reihenfolge.
 export const STAGES = ["draft", "todo", "doing", "review", "done"].map((key) => ({
   key,
   label: STATUS_WORDS[key],
@@ -36,6 +38,7 @@ export const EVENT_WORDS = {
   reject: "zurückgewiesen",
   drop: "verworfen",
   orchestrator: "Orchestrator",
+  config: "Konfiguration",
 };
 
 export const eventWord = (kind) => EVENT_WORDS[kind] ?? kind ?? "";
@@ -49,14 +52,499 @@ export const INBOX_WORDS = {
   attention: "Aufmerksamkeit",
 };
 
+// Erlaubte Wechsel. `done` gibt es nur über `fab accept`; `dropped` lässt sich
+// wieder öffnen. Die Oberfläche bietet nur diese Wege an.
+const TRANSITIONS = {
+  draft: ["todo", "dropped"],
+  todo: ["draft", "doing", "dropped"],
+  doing: ["todo", "review", "dropped"],
+  review: ["doing", "dropped"],
+  done: [],
+  dropped: ["draft"],
+};
+
+/** Status, die das Select im Detail anbietet, mit `disabled` und Grund. */
+export function statusOptions(current) {
+  const allowed = TRANSITIONS[current] ?? [];
+  const options = [{ key: current, label: statusWord(current), disabled: false, reason: "" }];
+  for (const key of allowed) {
+    options.push({ key, label: statusWord(key), disabled: false, reason: "" });
+  }
+  if (current === "done") {
+    return [{ key: "done", label: statusWord("done"), disabled: true, reason: "Fertig ist abgeschlossen." }];
+  }
+  return options;
+}
+
+/** Ist der Wechsel erlaubt? */
+export function canTransition(from, to) {
+  return (TRANSITIONS[from] ?? []).includes(to);
+}
+
+// ---------- Aktionsleiste ----------
+
+export const FORMULATE_COMMENT = "@orchestrator bitte ausformulieren und verteilen";
+
+const hasCriteriaSection = (body) => /^##\s+Abnahmekriterien\s*$/m.test(String(body ?? ""));
+
+/** Offene Abhängigkeiten eines Tickets (nicht done/dropped). */
+export function openBlockers(ticket, tickets) {
+  const byId = new Map((tickets ?? []).map((row) => [row?.id, row]));
+  return (ticket?.blocked_by ?? []).filter((id) => {
+    const blocker = byId.get(id);
+    return !blocker || (blocker.status !== "done" && blocker.status !== "dropped");
+  });
+}
+
+/** Was fehlt für `fab dispatch`? Leer heißt: bereit. */
+export function dispatchBlockers(ticket, tickets = []) {
+  const missing = [];
+  if (!ticket?.repo) missing.push("Repo fehlt");
+  if (!hasCriteriaSection(ticket?.body)) missing.push("Abschnitt „Abnahmekriterien“ fehlt");
+  if (!ticket?.assignee) missing.push("Kein Zuständiger");
+  const blockers = openBlockers(ticket, tickets);
+  if (blockers.length) missing.push(`Blockiert durch ${blockers.join(", ")}`);
+  return missing;
+}
+
+/** Aktionen je Status. `kind` steuert die Darstellung: primary, normal, danger.
+ *  Jede deaktivierte Aktion trägt ihren Grund im `reason` (Tooltip). */
+export function actionBar(ticket, tickets = []) {
+  const status = ticket?.status;
+  const actions = [];
+  const add = (action) => actions.push({
+    disabled: false,
+    reason: "",
+    kind: "normal",
+    ...action,
+  });
+
+  if (status === "draft") {
+    add({
+      id: "formulate",
+      label: "Ausformulieren lassen",
+      kind: "primary",
+      icon: "sparkle",
+      command: "fab comment",
+      hint: FORMULATE_COMMENT,
+    });
+  }
+  if (status === "todo") {
+    const missing = dispatchBlockers(ticket, tickets);
+    add({
+      id: "dispatch",
+      label: "Verteilen",
+      kind: "primary",
+      icon: "send",
+      command: "fab dispatch",
+      disabled: missing.length > 0,
+      reason: missing.join(" · "),
+    });
+  }
+  if (status === "doing") {
+    add({
+      id: "verify",
+      label: "Prüfen",
+      icon: "check",
+      command: "fab verify",
+      disabled: !ticket?.worktree,
+      reason: ticket?.worktree ? "" : "Kein Worktree – erst verteilen",
+    });
+    add({
+      id: "wake",
+      label: "Agent wecken…",
+      icon: "bell",
+      command: "fab wake",
+      disabled: !ticket?.assignee,
+      reason: ticket?.assignee ? "" : "Kein Zuständiger",
+    });
+  }
+  if (status === "review") {
+    add({
+      id: "accept",
+      label: "Abnehmen",
+      kind: "primary",
+      icon: "check",
+      command: "fab accept",
+      confirm: "accept",
+    });
+    add({
+      id: "reject",
+      label: "Zurück mit Feedback",
+      icon: "undo",
+      command: "fab reject",
+      hint: "Der Text aus dem Kommentarfeld wird das Feedback.",
+    });
+  }
+  if (status !== "done" && status !== "dropped") {
+    add({
+      id: "drop",
+      label: "Verwerfen…",
+      kind: "danger",
+      icon: "trash",
+      command: "fab drop",
+      confirm: "drop",
+    });
+  }
+  if (status === "dropped") {
+    add({
+      id: "reopen",
+      label: "Wieder öffnen",
+      icon: "undo",
+      command: "fab status",
+    });
+  }
+  return actions;
+}
+
+// ---------- Board und Filter ----------
+
+const text = (value) => String(value ?? "").toLowerCase();
+
+function matchesQuery(ticket, query) {
+  const needle = text(query).trim();
+  if (!needle) return true;
+  const haystack = [
+    ticket?.id,
+    ticket?.title,
+    ticket?.assignee,
+    ticket?.repo,
+    ticket?.branch,
+    ticket?.last_comment?.text,
+    ticket?.last_comment?.author,
+  ].map(text).join(" ");
+  return needle.split(/\s+/).every((part) => haystack.includes(part));
+}
+
+/** Filter für Board und Tabelle. `assignee`/`repo` sind exakte Werte oder "all". */
+export function filterTickets(tickets, filters = {}) {
+  const { query = "", assignee = "all", repo = "all", includeDropped = false } = filters;
+  return [...(tickets ?? [])].filter((ticket) => {
+    if (!ticket) return false;
+    if (!includeDropped && ticket.status === "dropped") return false;
+    if (assignee !== "all" && (ticket.assignee ?? "") !== assignee) return false;
+    if (repo !== "all" && (ticket.repo ?? "") !== repo) return false;
+    return matchesQuery(ticket, query);
+  });
+}
+
+const byUpdated = (a, b) => (b?.updated_at ?? 0) - (a?.updated_at ?? 0);
+
+/** Spalten des Boards; „Fertig“ höchstens `doneLimit`, „Prüfung“ meldet,
+ *  wenn dort etwas auf den Menschen wartet. Mit `includeDropped` kommt die
+ *  Spalte „Verworfen“ hinzu – sie ist ein Filter, keine feste Stufe. */
+export function boardColumns(tickets, filters = {}) {
+  const { doneLimit = 20, includeDropped = false } = filters;
+  const filtered = filterTickets(tickets, filters);
+  const stages = [...STAGES];
+  if (includeDropped) stages.push({ key: "dropped", label: STATUS_WORDS.dropped });
+  return stages.map((stage) => {
+    let rows = filtered.filter((ticket) => ticket.status === stage.key).sort(byUpdated);
+    if (stage.key === "done") rows = rows.slice(0, doneLimit);
+    return {
+      key: stage.key,
+      label: stage.label,
+      tickets: rows,
+      count: rows.length,
+      attention: stage.key === "review" && rows.length > 0,
+    };
+  });
+}
+
+/** Alle Zuständigen und Repos für die Filterleiste. */
+export function filterOptions(tickets) {
+  const assignees = new Set();
+  const repos = new Set();
+  for (const ticket of tickets ?? []) {
+    if (ticket?.assignee) assignees.add(ticket.assignee);
+    if (ticket?.repo) repos.add(ticket.repo);
+  }
+  return {
+    assignees: ["all", ...assignees].map((name) => ({ value: name, label: name === "all" ? "Alle" : name })),
+    repos: ["all", ...repos].map((path) => ({ value: path, label: path === "all" ? "Alle" : repoName(path) })),
+  };
+}
+
+/** Tabellenspalten; `key` ist ein Feld des Index-Eintrags. */
+export const TABLE_COLUMNS = [
+  { key: "id", label: "ID", width: 64 },
+  { key: "title", label: "Titel", width: 300 },
+  { key: "status", label: "Status", width: 96 },
+  { key: "assignee", label: "Zuständig", width: 92 },
+  { key: "repo", label: "Repo", width: 132 },
+  { key: "updated_at", label: "Aktualisiert", width: 108 },
+  { key: "comment_count", label: "Kommentare", width: 92, numeric: true },
+];
+
+/** Sortiert die Tabelle; fehlende Werte ans Ende. */
+export function sortTickets(tickets, sort = { key: "updated_at", dir: "desc" }) {
+  const { key = "updated_at", dir = "desc" } = sort;
+  const sign = dir === "asc" ? 1 : -1;
+  const value = (ticket) => {
+    if (key === "status") return STATUS_KEYS.indexOf(ticket?.status);
+    if (key === "repo") return repoName(ticket?.repo);
+    if (key === "updated_at" || key === "comment_count") return ticket?.[key] ?? 0;
+    return ticket?.[key] ?? "";
+  };
+  return [...(tickets ?? [])].sort((a, b) => {
+    const left = value(a);
+    const right = value(b);
+    if (left === right) return byUpdated(a, b);
+    if (left === null || left === "") return 1;
+    if (right === null || right === "") return -1;
+    return (left > right ? 1 : -1) * sign;
+  });
+}
+
+/** Ein Klick auf einen Spaltenkopf: gleiche Spalte dreht die Richtung. */
+export function nextSort(sort, key) {
+  if (sort?.key !== key) return { key, dir: key === "updated_at" ? "desc" : "asc" };
+  return { key, dir: sort.dir === "asc" ? "desc" : "asc" };
+}
+
+// ---------- Flags und Kommandozeilen ----------
+
+/** Zerlegt Text nach Shell-Regeln: Leerraum trennt, '…' ist wörtlich,
+ *  "…" erlaubt \\" und \\\\, außerhalb maskiert \\ das nächste Zeichen. */
+export function splitShell(source) {
+  const input = String(source ?? "");
+  const words = [];
+  let word = "";
+  let joined = false;
+  let quote = null;
+  for (let index = 0; index < input.length; index += 1) {
+    const char = input[index];
+    if (quote === "'") {
+      if (char === "'") quote = null;
+      else { word += char; joined = true; }
+      continue;
+    }
+    if (quote === '"') {
+      if (char === "\\" && index + 1 < input.length && '"\\'.includes(input[index + 1])) {
+        word += input[index + 1];
+        index += 1;
+        joined = true;
+      } else if (char === '"') {
+        quote = null;
+      } else {
+        word += char;
+        joined = true;
+      }
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      joined = true;
+      continue;
+    }
+    if (char === "\\" && index + 1 < input.length) {
+      word += input[index + 1];
+      index += 1;
+      joined = true;
+      continue;
+    }
+    if (/\s/.test(char)) {
+      if (joined || word) words.push(word);
+      word = "";
+      joined = false;
+      continue;
+    }
+    word += char;
+    joined = true;
+  }
+  if (joined || word) words.push(word);
+  return words;
+}
+
+/** Setzt Wörter so zusammen, dass `splitShell` sie wiederfindet. */
+export function joinShell(words) {
+  const list = (words ?? []).map((word) => String(word ?? ""));
+  return list.map((word) => {
+    if (word === "") return "''";
+    if (!/[\s'"\\$`]/.test(word)) return word;
+    return `'${word.replace(/'/g, `'\\''`)}'`;
+  }).join(" ");
+}
+
+/** Zerlegt argv in Programm, Modell und übrige Flags.
+ *  Erkennt `--model=Wert` und `--model Wert`; das Modell wird dabei entfernt. */
+export function argvParts(argv) {
+  const list = [...(argv ?? [])].map((part) => String(part ?? "")).filter(Boolean);
+  const program = list.shift() ?? "";
+  let model = "";
+  const flags = [];
+  for (let index = 0; index < list.length; index += 1) {
+    const part = list[index];
+    if (part.startsWith("--model=")) {
+      model = part.slice("--model=".length);
+      continue;
+    }
+    if (part === "--model" && index + 1 < list.length) {
+      model = list[index + 1];
+      index += 1;
+      continue;
+    }
+    flags.push(part);
+  }
+  return { program, model, flags };
+}
+
+/** Programm, Modell und Flags zurück zu argv. */
+export function argvFromParts(parts = {}) {
+  const program = String(parts.program ?? "").trim();
+  if (!program) return [];
+  const argv = [program];
+  const model = String(parts.model ?? "").trim();
+  if (model) argv.push(`--model=${model}`);
+  for (const flag of splitShell(parts.flags ?? "")) argv.push(flag);
+  return argv;
+}
+
+/** Flags als Text für das Eingabefeld. */
+export function flagsText(flags) {
+  return joinShell(flags ?? []);
+}
+
+/** Kurzform für Listen: erster Programmname, Modell, Flag-Anzahl. */
+export function argvSummary(program, model, flags) {
+  const pieces = [program || "—"];
+  if (model) pieces.push(model);
+  const count = (flags ?? []).length;
+  if (count) pieces.push(`${count} Flag${count === 1 ? "" : "s"}`);
+  return pieces.join(" · ");
+}
+
+// ---------- Erwähnungen ----------
+
+// Eine Erwähnung ist `@name` mit `[a-z][a-z0-9_-]*`, ohne Groß-/Kleinschreibung.
+// Steht direkt davor ein Zeichen einer E-Mail-Adresse (Buchstabe, Ziffer, . _ % + -),
+// ist es keine Erwähnung: `thilo@example.com` bleibt Text.
+const MENTION = /(^|[^A-Za-z0-9._%+-])@([A-Za-z][A-Za-z0-9_-]*)/g;
+
+/** Zerlegt Text in Segmente: { text, mention, name? }. Namen sind kleingeschrieben. */
+export function mentionSegments(text) {
+  const source = String(text ?? "");
+  const segments = [];
+  let last = 0;
+  for (const match of source.matchAll(MENTION)) {
+    const at = match.index + match[1].length;
+    if (at > last) segments.push({ text: source.slice(last, at), mention: false });
+    const raw = `@${match[2]}`;
+    segments.push({ text: raw, mention: true, name: match[2].toLowerCase() });
+    last = at + raw.length;
+  }
+  if (last < source.length) segments.push({ text: source.slice(last), mention: false });
+  return segments;
+}
+
+// Zeichen, die Markdown auswerten würde. Kommentare und Inbox-Texte sind
+// reiner Text; nur die Erwähnungen darin werden hervorgehoben.
+const MARKDOWN_SPECIAL = /[\\`*_{}\[\]()#+\-.!|>~=&<>]/g;
+
+/** Maskiert Markdown-Sonderzeichen, damit der Text wörtlich erscheint. */
+export function escapeMarkdown(text) {
+  return String(text ?? "").replace(MARKDOWN_SPECIAL, "\\$&");
+}
+
+/** Führenden Leerraum als geschützte Leerzeichen erhalten: sichtbar eingerückt,
+ *  aber kein Markdown-Codeblock (der vier ASCII-Leerzeichen verlangt). */
+function protectIndent(text) {
+  return text.replace(/^[ \t]+/gm, (indent) => indent
+    .replace(/ /g, "\u00a0")
+    .replace(/\t/g, "\u00a0\u00a0\u00a0\u00a0"));
+}
+
+/** Kommentartext als reiner Text, Zeilenumbrüche erhalten, `@name` fett. */
+export function plainMentionMarkdown(text) {
+  return mentionSegments(protectIndent(String(text ?? "")))
+    .map((part) => (part.mention ? `**${escapeMarkdown(part.text)}**` : escapeMarkdown(part.text)))
+    .join("")
+    .replace(/\n/g, "  \n");
+}
+
+/** Alle genannten Namen, in Reihenfolge, ohne Doppelte. */
+export function mentionedNames(text) {
+  const seen = new Set();
+  const names = [];
+  for (const part of mentionSegments(text)) {
+    if (part.mention && !seen.has(part.name)) {
+      seen.add(part.name);
+      names.push(part.name);
+    }
+  }
+  return names;
+}
+
+/** Die `@`-Eingabe am Cursor: { start, end, query } oder null. */
+export function mentionQuery(text, caret = String(text ?? "").length) {
+  const source = String(text ?? "");
+  const at = Math.max(0, Math.min(caret, source.length));
+  const before = source.slice(0, at);
+  const match = /@([A-Za-z][A-Za-z0-9_-]*)$/.exec(before);
+  if (!match) return null;
+  const start = at - match[0].length;
+  const previous = start > 0 ? source[start - 1] : "";
+  if (previous && /[A-Za-z0-9._%+-]/.test(previous)) return null;
+  return { start, end: at, query: match[1].toLowerCase() };
+}
+
+/** Vorschläge für `@…`; Namen, die mit der Eingabe beginnen, zuerst exakte Treffer. */
+export function mentionSuggestions(text, caret, names = []) {
+  const query = mentionQuery(text, caret);
+  if (!query) return [];
+  const unique = [...new Set((names ?? []).map((name) => String(name ?? "").toLowerCase()).filter(Boolean))];
+  const matches = unique.filter((name) => name.startsWith(query.query));
+  matches.sort((a, b) => (a === query.query ? -1 : b === query.query ? 1 : a.localeCompare(b)));
+  return matches.slice(0, 6).map((name) => ({ name, query: query.query }));
+}
+
+/** Ersetzt die `@`-Eingabe durch `@name ` und liefert Text und neue Cursorposition. */
+export function insertMention(text, caret, name) {
+  const source = String(text ?? "");
+  const query = mentionQuery(source, caret);
+  if (!query) return { text: source, caret };
+  const insert = `@${name} `;
+  return {
+    text: source.slice(0, query.start) + insert + source.slice(query.end),
+    caret: query.start + insert.length,
+  };
+}
+
+/** Wen ein Kommentar erreicht. `author` ist der schreibende Name (hier `mensch`).
+ *  mensch → Inbox, Agent/Orchestrator → wecken, Unbekanntes → nichts. */
+export function wakeTargets(text, names = [], author = "") {
+  const known = new Set((names ?? []).map((name) => String(name ?? "").toLowerCase()));
+  return mentionedNames(text).map((name) => {
+    if (name === String(author ?? "").toLowerCase()) return { name, kind: "self" };
+    if (name === "mensch") return { name, kind: "inbox" };
+    if (name === "orchestrator") return { name, kind: "wake" };
+    if (known.has(name)) return { name, kind: "wake" };
+    return { name, kind: "unknown" };
+  });
+}
+
+/** Eine Zeile unter dem Kommentarfeld: „Weckt ada · Inbox: mensch“. */
+export function wakeSummary(text, names = [], author = "") {
+  const targets = wakeTargets(text, names, author);
+  if (!targets.length) return "Weckt niemanden.";
+  const wake = targets.filter((target) => target.kind === "wake").map((target) => target.name);
+  const inbox = targets.filter((target) => target.kind === "inbox").map((target) => target.name);
+  const unknown = targets.filter((target) => target.kind === "unknown").map((target) => target.name);
+  const parts = [];
+  if (wake.length) parts.push(`Weckt ${wake.join(", ")}`);
+  if (inbox.length) parts.push(`Inbox: ${inbox.join(", ")}`);
+  if (unknown.length) parts.push(`Unbekannt: ${unknown.join(", ")}`);
+  return `${parts.join(" · ")}.`;
+}
+
 // ---------- Sitzungen ----------
 
-// Herdr-Status eines Agenten → deutsches Wort und Farbschlüssel für `ui.sessionColor`.
 const SESSION_STATUS = {
   working: { word: "arbeitet", color: "working" },
   blocked: { word: "wartet auf dich", color: "blocked" },
   done: { word: "fertig", color: "done" },
   idle: { word: "bereit", color: "muted" },
+  live: { word: "läuft", color: "working" },
   exited: { word: "beendet", color: "dim" },
 };
 
@@ -141,6 +629,14 @@ export function relativeTime(at, now = Date.now()) {
   return `${two(date.getDate())}.${two(date.getMonth() + 1)}.${date.getFullYear()}`;
 }
 
+/** Absolute Zeit für Tooltips: DD.MM.YYYY HH:MM. */
+export function absoluteTime(at) {
+  if (!Number.isFinite(at)) return "";
+  const date = new Date(at);
+  const two = (n) => String(n).padStart(2, "0");
+  return `${two(date.getDate())}.${two(date.getMonth() + 1)}.${date.getFullYear()} ${two(date.getHours())}:${two(date.getMinutes())}`;
+}
+
 /** Uhrzeit HH:MM der Zeitzone des Rechners. */
 export function clockTime(at) {
   if (!Number.isFinite(at)) return "";
@@ -155,27 +651,25 @@ export function oneLine(text, max = 140) {
   return flat.length > max ? `${flat.slice(0, Math.max(0, max - 1)).trimEnd()}…` : flat;
 }
 
-// ---------- Erwähnungen ----------
+/** Initialen für Avatare: „ada“ → „A“, „zap zwei“ → „ZZ“. */
+export function initials(name) {
+  const words = String(name ?? "").trim().split(/[\s_-]+/).filter(Boolean);
+  if (!words.length) return "?";
+  if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
+  return `${words[0][0]}${words[1][0]}`.toUpperCase();
+}
 
-// Eine Erwähnung ist `@name` mit `[a-z][a-z0-9_-]*`, ohne Groß-/Kleinschreibung.
-// Steht direkt davor ein Zeichen einer E-Mail-Adresse (Buchstabe, Ziffer, . _ % + -),
-// ist es keine Erwähnung: `thilo@example.com` bleibt Text.
-const MENTION = /(^|[^A-Za-z0-9._%+-])@([A-Za-z][A-Za-z0-9_-]*)/g;
+/** Repo-Pfad ohne Home-Präfix, für Listen. */
+export function repoName(path) {
+  const value = String(path ?? "").replace(/\/+$/, "");
+  if (!value) return "";
+  return value.split("/").pop() || value;
+}
 
-/** Zerlegt Text in Segmente: { text, mention, name? }. Namen sind kleingeschrieben. */
-export function mentionSegments(text) {
-  const source = String(text ?? "");
-  const segments = [];
-  let last = 0;
-  for (const match of source.matchAll(MENTION)) {
-    const at = match.index + match[1].length;
-    if (at > last) segments.push({ text: source.slice(last, at), mention: false });
-    const raw = `@${match[2]}`;
-    segments.push({ text: raw, mention: true, name: match[2].toLowerCase() });
-    last = at + raw.length;
-  }
-  if (last < source.length) segments.push({ text: source.slice(last), mention: false });
-  return segments;
+/** Kopfzeile eines Repos: Name und Elternordner. */
+export function repoTitle(path) {
+  const value = String(path ?? "");
+  return { name: repoName(value), parent: value.slice(0, Math.max(0, value.length - repoName(value).length - 1)) };
 }
 
 // ---------- Inbox ----------
@@ -285,5 +779,203 @@ export function timeline(events, roster = []) {
   return { lanes, points, arrows, start, end, span: end - start };
 }
 
+// ---------- Prompts, Repos, Einstellungen ----------
+
+export const PLACEHOLDERS = {
+  id: "Ticket-ID",
+  title: "Ticket-Titel",
+  agent: "Name des Agenten",
+  role: "Rolle aus dem Roster",
+  worktree: "Pfad des Worktrees",
+  branch: "Branch des Tickets",
+  base: "Basis-Branch",
+  reviewer: "Prüferin oder Prüfer",
+};
+
+/** Unbekannte Platzhalter im Text, ohne Doppelte. */
+export function unknownPlaceholders(text, allowed = Object.keys(PLACEHOLDERS)) {
+  const known = new Set(allowed);
+  const found = new Set();
+  for (const match of String(text ?? "").matchAll(/\{([a-z][a-z0-9_-]*)\}/g)) {
+    if (!known.has(match[1])) found.add(match[1]);
+  }
+  return [...found];
+}
+
+/** Reihenfolge der Prompt-Liste: Orchestrator, Präambel, dann Agenten. */
+export function sortPrompts(prompts) {
+  const rank = (prompt) => (prompt?.kind === "orchestrator" ? 0 : prompt?.kind === "preamble" ? 1 : 2);
+  return [...(prompts ?? [])].sort((a, b) => rank(a) - rank(b) || String(a?.name).localeCompare(String(b?.name)));
+}
+
+/** Vorlage für ein fehlendes `.fabric/verify.sh`. */
+export function verifyTemplate() {
+  return [
+    "#!/bin/sh",
+    "set -eu",
+    "",
+    "# Prüfungen dieses Repos. Exit 0 heißt grün.",
+    "# Beispiel:",
+    "# python3 -m unittest",
+    "",
+  ].join("\n");
+}
+
+/** Orchestrator-Zustand in einem Wort. */
+export function orchestratorWord(state) {
+  if (!state?.live) return "gestoppt";
+  if (state.status === "blocked") return "wartet auf dich";
+  if (state.status === "working") return "arbeitet";
+  return "läuft";
+}
+
+/** Farbschlüssel für `ui.sessionColor`: blocked, working, done oder dim. */
+export function orchestratorColorKey(state) {
+  if (!state?.live) return "dim";
+  if (state.status === "blocked") return "blocked";
+  if (state.status === "working") return "working";
+  if (state.status === "done") return "done";
+  return "muted";
+}
+
+/** Der Orchestrator aus dem live-Terminal, mit dem gespeicherten Stand als Rücken. */
+export function liveOrchestrator(state, terminals = []) {
+  const row = (terminals ?? []).find((entry) => entry?.name === "fab-orchestrator");
+  if (!row) return { ...(state ?? {}), live: false, terminal: state?.terminal ?? null, status: null };
+  return {
+    ...(state ?? {}),
+    live: row.state === "live",
+    terminal: row.address ?? state?.terminal ?? null,
+    status: row.state === "live" ? (row.status ?? state?.status ?? null) : null,
+    started_at: state?.started_at ?? null,
+  };
+}
+
+/** Laufende Sessions eines Agenten aus `terminals()` (Labels `fab.agent` oder Name). */
+export function liveAgentSessions(name, terminals = []) {
+  return (terminals ?? [])
+    .filter((row) => row?.labels?.["fab.agent"] === name
+      || (row?.name && row.name.startsWith(`fab-${name}-`)))
+    .map((row) => ({
+      name: row.name ?? "",
+      terminal: row.address ?? "",
+      status: row.state === "live" ? (row.status ?? "idle") : "exited",
+    }));
+}
+
+// ---------- Ticketwahl je Instanz ----------
+
+/** Das Ticket, das diese Instanz zeigen soll. Außerhalb des Fensters zählt
+ *  nur die geteilte Auswahl; die Route gehört dem Fenster. */
+export function ticketIdFor(isApp, route, selected) {
+  if (!isApp) return selected ?? null;
+  if (route?.page === "ticket" && route.id) return route.id;
+  return selected ?? null;
+}
+
+/** Folgt das Fenster einer neuen Auswahl? Nur wenn die Route kein Ticket nennt. */
+export function followsSelection(isApp, route) {
+  return Boolean(isApp) && route?.page !== "ticket";
+}
+
+// ---------- Argumente ----------
+
+/** Freitexte stehen hinter `--` und Optionen tragen `=`, damit argparse
+ *  auch `-wichtig` und `---` als Text annimmt. */
+export function editArgs(id, fields = {}, from = "mensch") {
+  const args = ["edit", id];
+  if (fields.title != null) args.push(`--title=${fields.title}`);
+  if (fields.body != null) args.push(`--body=${fields.body}`);
+  if (fields.repo != null) args.push(`--repo=${fields.repo}`);
+  if (fields.base != null) args.push(`--base=${fields.base}`);
+  args.push(`--from=${from}`);
+  return args;
+}
+
+export function newArgs(sentence, { repo = null, wake = true, from = "mensch" } = {}) {
+  const args = ["new"];
+  if (repo) args.push(`--repo=${repo}`);
+  if (!wake) args.push("--no-wake");
+  args.push(`--from=${from}`, "--", sentence);
+  return args;
+}
+
+export function commentArgs(id, text, from = "mensch", { noWake = false } = {}) {
+  const args = ["comment", id, `--from=${from}`];
+  if (noWake) args.push("--no-wake");
+  args.push("--", text);
+  return args;
+}
+
+export function rejectArgs(id, feedback) {
+  // `fab reject` schreibt immer als `mensch` und kennt kein `--from`.
+  return ["reject", id, "--", feedback];
+}
+
+export function dropArgs(id, reason, from = "mensch") {
+  return ["drop", id, `--from=${from}`, "--", reason];
+}
+
+export function wakeArgs(id, name, from = "mensch", text = "") {
+  const args = ["wake", id, name, `--from=${from}`];
+  if (text) args.push("--", text);
+  return args;
+}
+
+export function promptSetArgs(name, text, from = "mensch") {
+  return ["prompt", "set", name, `--text=${text}`, `--from=${from}`];
+}
+
+export function repoSetArgs(path, key, text, from = "mensch") {
+  return ["repo", "set", path, key, `--text=${text}`, `--from=${from}`];
+}
+
+// ---------- Layout-Helfer ----------
+
+export function findNode(node, id) {
+  if (node?.id === id) return node;
+  for (const child of node?.children ?? []) {
+    const found = findNode(child, id);
+    if (found) return found;
+  }
+  return null;
+}
+
+export function panelState(layout) {
+  const panel = findNode(layout, "panel");
+  const stack = findNode(layout, "panel-body");
+  return { shown: Boolean(panel && !panel.hidden), active: stack?.active ?? null };
+}
+
+/** Nächste Layout-Befehle für einen Panel-Knopf: hide oder show+select. */
+export function panelToggle(layout, child) {
+  const current = panelState(layout);
+  if (current.shown && current.active === child) return [{ name: "layout.hide", args: { id: "panel" } }];
+  return [
+    { name: "layout.show", args: { id: "panel" } },
+    { name: "layout.select", args: { stack: "panel-body", child } },
+  ];
+}
+
+/** Spalten des Boards als Filterwerte. */
+export function stageOptions() {
+  return [{ value: "all", label: "Alle Stufen" }, ...STAGES.map((stage) => ({ value: stage.key, label: stage.label }))];
+}
+
+// ---------- Ungespeicherte Änderungen ----------
+
+/** Textvergleich für Editoren: Zeilenenden und ein letzter Zeilenumbruch zählen nicht. */
+export function isDirty(current, saved) {
+  const normalize = (value) => String(value ?? "").replace(/\r\n/g, "\n").replace(/\s+$/, "");
+  return normalize(current) !== normalize(saved);
+}
+
+/** Alle ungespeicherten Bereiche aus { key, value, saved, label }. */
+export function dirtyEntries(entries) {
+  return (entries ?? [])
+    .filter((entry) => entry && isDirty(entry.value, entry.saved))
+    .map((entry) => ({ key: entry.key, label: entry.label }));
+}
+
 /** Hinweis, wenn noch keine Daten da sind. */
-export const EMPTY_HINT = "Noch keine Tickets – oben einen Satz eingeben.";
+export const EMPTY_HINT = "Noch keine Tickets – ein Satz im Kopf des Fensters legt das erste an.";

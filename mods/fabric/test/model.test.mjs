@@ -165,3 +165,305 @@ test("Sitzungen finden ihr Terminal über Adresse, sonst über fab-<agent>-<id>"
   assert.match(chips[3].tooltip, /arbeitet · klicken zum Öffnen/);
   assert.deepEqual(sessionChips(null), []);
 });
+
+// ---------- Statusübergänge und Aktionsleiste ----------
+
+test("Statusübergänge: done nur über Abnehmen, dropped lässt sich wieder öffnen", async () => {
+  const { statusOptions, canTransition } = await import("../model.js");
+  assert.deepEqual(
+    statusOptions("draft").map((option) => option.key),
+    ["draft", "todo", "dropped"],
+  );
+  assert.deepEqual(
+    statusOptions("doing").map((option) => option.key),
+    ["doing", "todo", "review", "dropped"],
+  );
+  assert.deepEqual(
+    statusOptions("review").map((option) => option.key),
+    ["review", "doing", "dropped"],
+  );
+  assert.deepEqual(
+    statusOptions("done").map((option) => [option.key, option.disabled]),
+    [["done", true]],
+  );
+  assert.deepEqual(statusOptions("dropped").map((option) => option.key), ["dropped", "draft"]);
+
+  assert.equal(canTransition("draft", "todo"), true);
+  assert.equal(canTransition("draft", "done"), false);
+  assert.equal(canTransition("review", "done"), false);
+  assert.equal(canTransition("dropped", "draft"), true);
+  assert.equal(canTransition("done", "doing"), false);
+});
+
+test("Aktionsleiste je Status nennt den Grund, wenn eine Aktion deaktiviert ist", async () => {
+  const { actionBar, FORMULATE_COMMENT } = await import("../model.js");
+  const tickets = [
+    { id: "T-1", status: "draft" },
+    { id: "T-2", status: "doing" },
+    { id: "T-3", status: "done" },
+  ];
+
+  const draft = actionBar({ status: "draft" }, tickets);
+  assert.deepEqual(draft.map((action) => action.id), ["formulate", "drop"]);
+  assert.equal(draft[0].hint, FORMULATE_COMMENT);
+
+  const todo = actionBar({ status: "todo", repo: "", body: "## Auftrag\nx", blocked_by: [] }, tickets);
+  assert.equal(todo[0].id, "dispatch");
+  assert.equal(todo[0].disabled, true);
+  assert.match(todo[0].reason, /Repo fehlt/);
+  assert.match(todo[0].reason, /Abnahmekriterien/);
+  assert.match(todo[0].reason, /Kein Zuständiger/);
+
+  const blocked = actionBar({
+    status: "todo", repo: "/r", assignee: "zap", body: "## Abnahmekriterien\n- [ ] x", blocked_by: ["T-2"],
+  }, tickets);
+  assert.equal(blocked[0].disabled, true);
+  assert.equal(blocked[0].reason, "Blockiert durch T-2");
+
+  const ready = actionBar({
+    status: "todo", repo: "/r", assignee: "zap", body: "## Abnahmekriterien\n- [ ] x", blocked_by: ["T-3"],
+  }, tickets);
+  assert.equal(ready[0].disabled, false, "erledigte Blocker zählen nicht");
+
+  const doing = actionBar({ status: "doing", worktree: "", assignee: "" }, tickets);
+  assert.deepEqual(doing.map((action) => [action.id, action.disabled]), [
+    ["verify", true], ["wake", true], ["drop", false],
+  ]);
+  assert.match(doing[0].reason, /Kein Worktree/);
+  assert.match(doing[1].reason, /Kein Zuständiger/);
+
+  const review = actionBar({ status: "review" }, tickets);
+  assert.deepEqual(review.map((action) => action.id), ["accept", "reject", "drop"]);
+  assert.equal(review[0].kind, "primary");
+  assert.equal(review[0].confirm, "accept");
+
+  assert.deepEqual(actionBar({ status: "done" }, tickets).map((action) => action.id), [],
+    "im Fenster gibt es keinen „Im Fenster öffnen“-Knopf");
+  assert.deepEqual(actionBar({ status: "dropped" }, tickets).map((action) => action.id), ["reopen"]);
+});
+
+// ---------- Board und Tabelle ----------
+
+test("Board-Spalten: fünf Stufen, Fertig begrenzt, Prüfung hervorgehoben", async () => {
+  const { boardColumns } = await import("../model.js");
+  const tickets = [];
+  for (let index = 1; index <= 24; index += 1) {
+    tickets.push({ id: `T-${index}`, status: "done", title: `fertig ${index}`, updated_at: index });
+  }
+  tickets.push(
+    { id: "T-30", status: "review", title: "prüfen", updated_at: 5 },
+    { id: "T-31", status: "doing", title: "arbeiten", updated_at: 7, repo: "/r/a" },
+    { id: "T-32", status: "dropped", title: "verworfen", updated_at: 9 },
+  );
+
+  const columns = boardColumns(tickets);
+  assert.deepEqual(columns.map((column) => column.key), ["draft", "todo", "doing", "review", "done"]);
+  assert.equal(columns[4].count, 20);
+  assert.equal(columns[4].tickets[0].id, "T-24");
+  assert.equal(columns[3].attention, true);
+  assert.equal(columns[2].attention, false);
+
+  const filtered = boardColumns(tickets, { query: "arbeiten", repo: "/r/a" });
+  assert.deepEqual(filtered[2].tickets.map((ticket) => ticket.id), ["T-31"]);
+  assert.equal(filtered[2].tickets.length, 1);
+
+  const dropped = boardColumns(tickets, { includeDropped: true });
+  assert.deepEqual(dropped.map((column) => column.key), ["draft", "todo", "doing", "review", "done", "dropped"]);
+  assert.deepEqual(dropped[5].tickets.map((ticket) => ticket.id), ["T-32"], "Verworfen ist ein Filter, der eine Spalte zeigt");
+  assert.equal(boardColumns(tickets).some((column) => column.key === "dropped"), false);
+
+  const byAssignee = boardColumns(tickets, { assignee: "zap" });
+  assert.equal(byAssignee.flatMap((column) => column.tickets).length, 0);
+});
+
+test("Tabellensortierung: Kopf dreht die Richtung, leere Werte ans Ende", async () => {
+  const { sortTickets, nextSort } = await import("../model.js");
+  const tickets = [
+    { id: "T-2", title: "b", updated_at: 20, comment_count: 4 },
+    { id: "T-1", title: "a", updated_at: 10, comment_count: 0 },
+    { id: "T-3", title: "c", updated_at: 30, comment_count: 2 },
+  ];
+  assert.deepEqual(sortTickets(tickets).map((ticket) => ticket.id), ["T-3", "T-2", "T-1"]);
+  assert.deepEqual(sortTickets(tickets, { key: "title", dir: "asc" }).map((ticket) => ticket.id), ["T-1", "T-2", "T-3"]);
+  assert.deepEqual(sortTickets(tickets, { key: "comment_count", dir: "desc" }).map((ticket) => ticket.id), ["T-2", "T-3", "T-1"]);
+  assert.deepEqual(nextSort({ key: "title", dir: "asc" }, "title"), { key: "title", dir: "desc" });
+  assert.deepEqual(nextSort({ key: "title", dir: "asc" }, "updated_at"), { key: "updated_at", dir: "desc" });
+});
+
+// ---------- Erwähnungen und Vorschau ----------
+
+test("@-Vorschläge: erkennt die Eingabe am Cursor und ersetzt sie", async () => {
+  const { mentionQuery, mentionSuggestions, insertMention } = await import("../model.js");
+  assert.deepEqual(mentionQuery("Hallo @ad", 9), { start: 6, end: 9, query: "ad" });
+  assert.equal(mentionQuery("thilo@example.com", 17), null);
+  assert.equal(mentionQuery("Hallo @ada", 6), null, "der Cursor steht vor dem @");
+
+  const suggestions = mentionSuggestions("Bitte @a", 8, ["ada", "zap", "ada", "anton", "mensch"]);
+  assert.deepEqual(suggestions.map((entry) => entry.name), ["ada", "anton"]);
+
+  const inserted = insertMention("Bitte @a prüfen", 8, "ada");
+  assert.equal(inserted.text, "Bitte @ada  prüfen");
+  assert.equal(inserted.caret, 11);
+  assert.deepEqual(insertMention("ohne", 4, "ada"), { text: "ohne", caret: 4 });
+});
+
+test("„weckt“-Vorschau: Agenten wecken, mensch landet in der Inbox, Unbekanntes nicht", async () => {
+  const { wakeTargets, wakeSummary } = await import("../model.js");
+  const names = ["ada", "zap"];
+  assert.deepEqual(wakeTargets("@Ada @mensch @fremd @ada", names), [
+    { name: "ada", kind: "wake" },
+    { name: "mensch", kind: "inbox" },
+    { name: "fremd", kind: "unknown" },
+  ]);
+  assert.deepEqual(wakeTargets("@mensch", names, "mensch"), [{ name: "mensch", kind: "self" }]);
+  assert.equal(wakeSummary("@ada und @mensch", names), "Weckt ada · Inbox: mensch.");
+  assert.equal(wakeSummary("@zap @fremd", names), "Weckt zap · Unbekannt: fremd.");
+  assert.equal(wakeSummary("nur Text", names), "Weckt niemanden.");
+});
+
+test("Kommentare bleiben reiner Text, nur Erwähnungen werden hervorgehoben", async () => {
+  const { plainMentionMarkdown } = await import("../model.js");
+  assert.equal(plainMentionMarkdown("__pycache__"), "\\_\\_pycache\\_\\_");
+  assert.equal(plainMentionMarkdown("4*5=20"), "4\\*5\\=20");
+  assert.equal(plainMentionMarkdown("`code`"), "\\`code\\`");
+  assert.equal(plainMentionMarkdown("Hallo @ada, __pycache__ und 4*5=20"),
+    "Hallo **@ada**, \\_\\_pycache\\_\\_ und 4\\*5\\=20");
+  assert.equal(plainMentionMarkdown("Zeile 1\nZeile 2"), "Zeile 1  \nZeile 2");
+  assert.equal(plainMentionMarkdown("# kein Titel [x](y)"), "\\# kein Titel \\[x\\]\\(y\\)");
+  assert.equal(plainMentionMarkdown("Titel\n==="), "Titel  \n\\=\\=\\=");
+  assert.equal(plainMentionMarkdown("&amp;"), "\\&amp;");
+  assert.equal(plainMentionMarkdown("<b>x</b>"), "\\<b\\>x\\</b\\>");
+  const indented = plainMentionMarkdown("    eingerückt");
+  assert.equal(indented, "\u00a0\u00a0\u00a0\u00a0eingerückt");
+  assert.equal(indented.includes("    "), false, "kein ASCII-Codeblock");
+});
+
+// ---------- Flags ----------
+
+test("Flags werden nach Shell-Regeln zerlegt und wieder zusammengesetzt", async () => {
+  const { splitShell, joinShell } = await import("../model.js");
+  const words = ["--max-cost=5", "--name", "a b", "--x", "c d", "'"];
+  const text = joinShell(words);
+  assert.deepEqual(splitShell(text), words);
+  assert.deepEqual(splitShell(`--a "b c" --d 'e f' --g h\\ i`), ["--a", "b c", "--d", "e f", "--g", "h i"]);
+  assert.deepEqual(splitShell(""), []);
+});
+
+test("argv ↔ Programm, Modell und Flags in beide Richtungen", async () => {
+  const { argvParts, argvFromParts, flagsText } = await import("../model.js");
+  assert.deepEqual(argvParts(["omp", "--model=opencode-go/x", "--max-cost=5", "--fast"]), {
+    program: "omp", model: "opencode-go/x", flags: ["--max-cost=5", "--fast"],
+  });
+  assert.deepEqual(argvParts(["claude", "--model", "opus", "--fast"]), {
+    program: "claude", model: "opus", flags: ["--fast"],
+  });
+  assert.deepEqual(argvParts(["--model=x"]), { program: "--model=x", model: "", flags: [] });
+
+  const parts = { program: "omp", model: "opencode-go/x", flags: `--max-cost=5 --name "a b"` };
+  const argv = argvFromParts(parts);
+  assert.deepEqual(argv, ["omp", "--model=opencode-go/x", "--max-cost=5", "--name", "a b"]);
+  assert.deepEqual(argvParts(argv), { program: "omp", model: "opencode-go/x", flags: ["--max-cost=5", "--name", "a b"] });
+  assert.equal(flagsText(argvParts(argv).flags), `--max-cost=5 --name 'a b'`);
+  assert.deepEqual(argvFromParts({ program: "" }), []);
+});
+
+// ---------- Ungespeicherte Änderungen ----------
+
+test("Ungespeicherte Änderungen werden erkannt, Zeilenenden zählen nicht", async () => {
+  const { isDirty, dirtyEntries } = await import("../model.js");
+  assert.equal(isDirty("a\nb", "a\nb"), false);
+  assert.equal(isDirty("a\r\nb\r\n", "a\nb"), false);
+  assert.equal(isDirty("a\nb ", "a\nb"), false);
+  assert.equal(isDirty("a\nc", "a\nb"), true);
+  assert.equal(isDirty("", ""), false);
+  assert.equal(isDirty(null, ""), false);
+
+  assert.deepEqual(dirtyEntries([
+    { key: "body", label: "Beschreibung", value: "neu", saved: "alt" },
+    { key: "prompt", label: "Prompt", value: "gleich", saved: "gleich" },
+  ]), [{ key: "body", label: "Beschreibung" }]);
+});
+
+test("Platzhalter, Prompt-Reihenfolge und Vorlagen", async () => {
+  const { unknownPlaceholders, sortPrompts, verifyTemplate, PLACEHOLDERS } = await import("../model.js");
+  assert.deepEqual(unknownPlaceholders("Hallo {id} {fremd} {id}"), ["fremd"]);
+  assert.deepEqual(unknownPlaceholders("Hallo {id}", Object.keys(PLACEHOLDERS)), []);
+  assert.deepEqual(
+    sortPrompts([
+      { name: "zap", kind: "agent" },
+      { name: "preamble", kind: "preamble" },
+      { name: "orchestrator", kind: "orchestrator" },
+      { name: "ada", kind: "agent" },
+    ]).map((prompt) => prompt.name),
+    ["orchestrator", "preamble", "ada", "zap"],
+  );
+  assert.match(verifyTemplate(), /^#!\/bin\/sh/);
+  assert.match(verifyTemplate(), /set -eu/);
+});
+
+
+// ---------- Ticketwahl und Live-Status ----------
+
+test("Ticketwahl: nur das Fenster folgt der Route, Panels der Auswahl", async () => {
+  const { ticketIdFor, followsSelection } = await import("../model.js");
+  const windowRoute = { page: "ticket", id: "T-3" };
+  assert.equal(ticketIdFor(true, windowRoute, "T-5"), "T-3");
+  assert.equal(ticketIdFor(false, windowRoute, "T-5"), "T-5");
+  assert.equal(ticketIdFor(true, { page: "board" }, "T-5"), "T-5");
+  assert.equal(followsSelection(true, { page: "board" }), true);
+  assert.equal(followsSelection(true, windowRoute), false);
+  assert.equal(followsSelection(false, { page: "board" }), false);
+});
+
+test("Orchestrator: arbeitet ist nicht wartet; Live-Terminal hat Vorrang", async () => {
+  const { orchestratorWord, orchestratorColorKey, liveOrchestrator } = await import("../model.js");
+  assert.equal(orchestratorWord({ live: true, status: "working" }), "arbeitet");
+  assert.equal(orchestratorWord({ live: true, status: "blocked" }), "wartet auf dich");
+  assert.equal(orchestratorWord({ live: false }), "gestoppt");
+  assert.equal(orchestratorColorKey({ live: true, status: "working" }), "working");
+  assert.equal(orchestratorColorKey({ live: true, status: "blocked" }), "blocked");
+  const live = liveOrchestrator({ started_at: 1 }, [
+    { address: "t90", name: "fab-orchestrator", state: "live", status: "blocked" },
+  ]);
+  assert.deepEqual([live.live, live.terminal, live.status, live.started_at], [true, "t90", "blocked", 1]);
+});
+
+test("Live-Sessions eines Agenten kommen aus den Terminals", async () => {
+  const { liveAgentSessions } = await import("../model.js");
+  const rows = liveAgentSessions("zap", [
+    { address: "t80", name: "fab-zap-t-4", state: "live", status: "working", labels: { "fab.agent": "zap" } },
+    { address: "t81", name: "fab-ada-t-5", state: "live", status: "idle", labels: { "fab.agent": "ada" } },
+    { address: "t82", name: "fab-zap-t-9", state: "exited", status: "done", labels: {} },
+  ]);
+  assert.deepEqual(rows, [
+    { name: "fab-zap-t-4", terminal: "t80", status: "working" },
+    { name: "fab-zap-t-9", terminal: "t82", status: "exited" },
+  ]);
+});
+
+// ---------- Argumente mit führenden Bindestrichen ----------
+
+test("Freitexte stehen hinter --, Optionen tragen =", async () => {
+  const {
+    editArgs, newArgs, commentArgs, rejectArgs, dropArgs, wakeArgs, promptSetArgs, repoSetArgs,
+  } = await import("../model.js");
+
+  assert.deepEqual(editArgs("T-1", { title: "---", body: "-wichtig" }), [
+    "edit", "T-1", "--title=---", "--body=-wichtig", "--from=mensch",
+  ]);
+  assert.deepEqual(newArgs("-wichtig", { repo: "/r", wake: false }), [
+    "new", "--repo=/r", "--no-wake", "--from=mensch", "--", "-wichtig",
+  ]);
+  assert.deepEqual(commentArgs("T-1", "-wichtig"), [
+    "comment", "T-1", "--from=mensch", "--", "-wichtig",
+  ]);
+  assert.deepEqual(rejectArgs("T-1", "---"), ["reject", "T-1", "--", "---"], "reject kennt kein --from");
+  assert.deepEqual(dropArgs("T-1", "-grund"), ["drop", "T-1", "--from=mensch", "--", "-grund"]);
+  assert.deepEqual(wakeArgs("T-1", "zap", "mensch", "-los"), [
+    "wake", "T-1", "zap", "--from=mensch", "--", "-los",
+  ]);
+  assert.deepEqual(promptSetArgs("zap", "-text"), ["prompt", "set", "zap", "--text=-text", "--from=mensch"]);
+  assert.deepEqual(repoSetArgs("/r", "verify", "#!/bin/sh\n"), [
+    "repo", "set", "/r", "verify", "--text=#!/bin/sh\n", "--from=mensch",
+  ]);
+});
