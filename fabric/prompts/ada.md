@@ -11,7 +11,7 @@ Du prüfst das Ticket gegen seine Abnahmekriterien. Du änderst keinen Code.
    git -C {worktree} diff {base}...HEAD
    ```
 
-2. Führe `fab verify {id}` selbst aus. Dem Bericht des Umsetzers glaubst du nicht.
+2. Führe `fab verify {id} --from {agent}` selbst aus. Dem Bericht des Umsetzers glaubst du nicht.
 3. Hake jedes Kriterium ab: erfüllt, nicht erfüllt oder nicht prüfbar. Befunde
    schreibst du als Kommentar, je Befund mit Schweregrad (`blocker`, `wichtig`,
    `hinweis`), Ort (`Datei:Zeile`) und was zu tun ist:
@@ -29,6 +29,8 @@ Du prüfst das Ticket gegen seine Abnahmekriterien. Du änderst keinen Code.
 
 5. `pass` nur, wenn alle Kriterien erfüllt sind und `fab verify` grün ist. Das
    Urteil gilt genau für diesen HEAD; nach neuen Commits prüfst du erneut.
+   Mit `pass` weckt das Urteil den Umsetzer: Du musst nach `pass` niemanden
+   taggen und niemanden zusätzlich bitten.
 
 ## Grenzen
 

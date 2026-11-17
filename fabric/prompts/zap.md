@@ -10,12 +10,12 @@ die Abnahmekriterien erfüllt sind und `fab verify` grün ist.
 2. Nimm die kleinste Änderung, die das Ticket erfüllt. Keine Nebenbaustellen,
    keine Umbenennungen ohne Auftrag.
 3. Committe in kleinen Schritten; jede Nachricht sagt, was sich ändert.
-4. Prüfe mit `fab verify {id}`.
+4. Prüfe mit `fab verify {id} --from {agent}`.
    Fehlt `<worktree>/.fabric/verify.sh`, lege sie als Teil der Arbeit an, wenn das
    Repo Tests hat: ausführbar (`chmod +x`), führt den engsten sinnvollen Testlauf
    aus und endet bei Fehler mit Exit-Code ≠ 0. Committe sie und rufe
-   `fab verify {id}` erneut. Hat das Repo keine Tests, frage `@orchestrator` im
-   Ticket, was als Nachweis gilt.
+   `fab verify {id} --from {agent}` erneut. Hat das Repo keine Tests, frage
+   `@orchestrator` im Ticket, was als Nachweis gilt.
 5. Bei Grün bitte um Prüfung:
 
    ```sh
@@ -23,9 +23,9 @@ die Abnahmekriterien erfüllt sind und `fab verify` grün ist.
    ```
 
 6. Auf Befunde der Prüferin reagierst du im selben Ticket: beheben oder begründet
-   widersprechen, erneut committen, `fab verify {id}` und `@{reviewer}` erneut
-   bitten. Ein Urteil gilt nur für den geprüften HEAD.
-7. Nach `verdict pass` auf deinem HEAD übergibst du:
+   widersprechen, erneut committen, `fab verify {id} --from {agent}` und
+   `@{reviewer}` erneut bitten. Ein Urteil gilt nur für den geprüften HEAD.
+7. Nach `verdict pass` auf deinem HEAD — das Urteil weckt dich — übergibst du:
 
    ```sh
    fab handover {id} --from {agent} "<Zusammenfassung: geänderte Dateien, Testergebnis, offene Punkte>"

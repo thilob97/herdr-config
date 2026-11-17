@@ -45,6 +45,43 @@ class GitflowTests(FabricCase):
         self.assertEqual(checks["state"], "fail")
         self.assertIn("test rot", checks["tail"])
 
+    def test_verify_schreibt_den_aufrufer_als_akteur(self):
+        repo, tid, worktree = self.ready_ticket()
+        self.passing_verify(worktree)
+        self.ok("verify", tid, "--from", "ada")
+        rows = [row for row in self.events() if row["kind"] == "verify"]
+        self.assertEqual(rows[-1]["actor"], "ada")
+        self.ok("verify", tid)
+        rows = [row for row in self.events() if row["kind"] == "verify"]
+        self.assertEqual(rows[-1]["actor"], "zap")
+
+    def test_verdict_pass_weckt_den_zustaendigen(self):
+        repo, tid, worktree = self.ready_ticket()
+        head = self.git_out(worktree, "rev-parse", "HEAD")
+        self.set_live({"fab-zap-t-1": "t7"})
+        self.clear_log()
+        result = self.ok("verdict", tid, "pass", "--from", "ada", "Alles geprüft")
+        ticket = self.ticket(tid)
+        self.assertEqual(ticket["verdict"]["state"], "pass")
+        self.assertEqual(ticket["verdict"]["head"], head)
+        sends = self.hc_calls("send")
+        self.assertEqual(len(sends), 1)
+        self.assertEqual(sends[0][1], "t7")
+        self.assertIn(f"Urteil pass auf HEAD {head[:7]}", sends[0][2])
+        self.assertIn(f"fab handover {tid} --from zap", sends[0][2])
+        self.assertEqual(self.wake_events(tid)[-1]["text"], "geweckt")
+
+    def test_urteil_weckt_nicht_wenn_pruefer_zustaendiger_ist(self):
+        repo, tid, worktree = self.ready_ticket()
+        self.ok("assign", tid, "ada", "--from", "mensch")
+        self.set_live({"fab-ada-t-1": "t1"})
+        self.clear_log()
+        mark = self.mark()
+        self.ok("verdict", tid, "pass", "--from", "ada", "gut")
+        self.ok("verdict", tid, "fail", "--from", "ada", "doch nicht")
+        self.assertEqual(self.hc_calls("send"), [])
+        self.assertEqual(self.wake_since(mark, tid), [])
+
     def test_verdict_fail_weckt_den_zustaendigen(self):
         repo, tid, worktree = self.ready_ticket()
         head = self.git_out(worktree, "rev-parse", "HEAD")

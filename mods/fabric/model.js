@@ -49,6 +49,62 @@ export const INBOX_WORDS = {
   attention: "Aufmerksamkeit",
 };
 
+// ---------- Sitzungen ----------
+
+// Herdr-Status eines Agenten → deutsches Wort und Farbschlüssel für `ui.sessionColor`.
+const SESSION_STATUS = {
+  working: { word: "arbeitet", color: "working" },
+  blocked: { word: "wartet auf dich", color: "blocked" },
+  done: { word: "fertig", color: "done" },
+  idle: { word: "bereit", color: "muted" },
+  exited: { word: "beendet", color: "dim" },
+};
+
+/** Herdr-Status → { word, color }; unbekannte Stati bleiben als Wort stehen. */
+export function sessionStatus(status) {
+  return SESSION_STATUS[status] ?? { word: status ? String(status) : "unbekannt", color: "dim" };
+}
+
+/** Chips für `ticket.sessions`: das Terminal wird über seine Adresse gesucht, sonst
+ *  über den Namen `fab-<agent>-<id>`. `terminals()` und `agents()` kommen von herdr.
+ *  `ended` heißt: es gibt kein laufendes Terminal; solche Chips sind nicht klickbar. */
+export function sessionChips(sessions, terminals = [], agents = [], ticketId = "") {
+  const byAddress = new Map();
+  const byName = new Map();
+  for (const row of terminals ?? []) {
+    if (row?.address) byAddress.set(row.address, row);
+    if (row?.name) byName.set(row.name, row);
+  }
+  const agentAt = new Map();
+  for (const row of agents ?? []) if (row?.address) agentAt.set(row.address, row);
+
+  return (sessions ?? []).filter(Boolean).map((session) => {
+    const name = session.name
+      || (session.agent ? `fab-${session.agent}-${String(ticketId).toLowerCase()}` : "");
+    const terminal = (session.terminal && byAddress.get(session.terminal))
+      || (name && byName.get(name))
+      || null;
+    const address = terminal?.address ?? session.terminal ?? "";
+    const ended = !terminal || terminal.state !== "live";
+    const status = ended ? "exited" : (agentAt.get(address)?.status ?? terminal.status ?? "idle");
+    const look = sessionStatus(status);
+    return {
+      agent: session.agent ?? "",
+      name,
+      terminal: address,
+      ended,
+      status,
+      word: look.word,
+      color: look.color,
+      tooltip: ended
+        ? `Terminal ${name || address || "ist"} ist beendet`
+        : status === "blocked"
+          ? "wartet auf Freigabe – klicken zum Öffnen"
+          : `Terminal ${name || address} – ${look.word} · klicken zum Öffnen`,
+    };
+  });
+}
+
 // ---------- Gruppieren ----------
 
 const newestFirst = (a, b) => (b?.updated_at ?? 0) - (a?.updated_at ?? 0);

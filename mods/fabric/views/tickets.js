@@ -2,6 +2,7 @@
 
 import { div } from "gpui-kit";
 import { h_flex, v_flex, TextView } from "gpui-base";
+import { agents, run, terminals } from "herdr";
 import * as model from "../model.js";
 import * as ui from "../ui.js";
 
@@ -99,10 +100,24 @@ function ticketList(app, cx, t) {
     .children(rows);
 }
 
+function sessionChip(t, ticket, session, index) {
+  const label = session.agent || session.name || "Agent";
+  const id = `fabric-session-${ticket.id}-${session.terminal || session.name || index}`;
+  return ui.chip(t, `${label} · ${session.word}`, ui.sessionColor(t, session.color), id, {
+    tooltip: session.tooltip,
+    onClick: session.ended ? null : () => run("terminal.peek", { terminal: session.terminal }),
+  });
+}
+
 function headChips(t, ticket) {
   const chips = [];
   chips.push(ui.chip(t, model.statusWord(ticket.status), ui.statusColor(t, ticket.status)));
   if (ticket.assignee) chips.push(ui.chip(t, `→ ${ticket.assignee}`, t.muted));
+  for (const [index, session] of model
+    .sessionChips(ticket.sessions, terminals(), agents(), ticket.id)
+    .entries()) {
+    chips.push(sessionChip(t, ticket, session, index));
+  }
   if (ticket.checks?.state) {
     chips.push(ui.chip(t, `Checks ${model.CHECK_WORDS[ticket.checks.state] ?? ticket.checks.state}`, ticket.checks.state === "pass" ? t.done : t.blocked));
   }

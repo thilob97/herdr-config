@@ -392,6 +392,7 @@ def cmd_verify(args):
         raise FabError(
             f"{ticket['id']}: Worktree fehlt ({worktree or 'kein Pfad'}); fab dispatch legt ihn an"
         )
+    actor = _actor(args) or ticket.get("assignee") or ""
     result = git.run_verify(worktree)
     with store.locked():
         fresh = store.load(args.id)
@@ -401,7 +402,7 @@ def cmd_verify(args):
             "at": result["at"],
             "tail": result["tail"],
         }
-        events.append("verify", fresh["id"], fresh.get("assignee") or "", "", result["state"])
+        events.append("verify", fresh["id"], actor, "", result["state"])
         store.save(fresh)
         index.rebuild()
     print(
@@ -436,15 +437,15 @@ def cmd_verdict(args):
         }
         events.append("verdict", ticket["id"], actor, "", f"{args.state}: {summary}")
         results = []
+        assignee = ticket.get("assignee")
         if args.state == "fail":
             ticket["status"] = "doing"
             _add_comment(ticket, actor, summary)
-            assignee = ticket.get("assignee")
             if assignee:
                 reviewer = roster.get("reviewer") or ""
                 tail = (
                     f"Lies `fab show {ticket['id']}`, behebe die Befunde, dann "
-                    f"`fab verify {ticket['id']}`"
+                    f"`fab verify {ticket['id']} --from {assignee}`"
                     + (f" und @{reviewer} erneut erwähnen." if reviewer else ".")
                 )
                 results = wake.process(
@@ -458,6 +459,20 @@ def cmd_verdict(args):
                         f"{actor}: „{summary[:300]}“. {tail}"
                     ),
                 )
+        elif assignee:
+            results = wake.process(
+                ticket,
+                [assignee],
+                actor,
+                summary,
+                roster,
+                message_for=lambda name: (
+                    f"Ticket {ticket['id']} „{ticket['title']}“: Urteil pass auf "
+                    f"HEAD {_short(head)} (von {actor}). Wenn deine Checks auf diesem "
+                    f"HEAD grün sind, übergib mit "
+                    f"`fab handover {ticket['id']} --from {name} \"…\"`."
+                ),
+            )
         store.save(ticket)
         index.rebuild()
     _print_wake_results(results)
@@ -855,6 +870,8 @@ def build_parser():
 
     item = command("verify", "Prüfskript im Worktree ausführen und checks setzen", cmd_verify)
     item.add_argument("id", metavar="ID")
+    item.add_argument("--from", dest="from_", metavar="NAME",
+                      help="Akteur des Ereignisses, Standard: Zuständiger")
 
     item = command("verdict", "Urteil des Prüfers auf den HEAD schreiben", cmd_verdict)
     item.add_argument("id", metavar="ID")

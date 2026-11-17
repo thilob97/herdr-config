@@ -47,6 +47,18 @@ class IndexTests(FabricCase):
         self.assertEqual(len(reviews), 1)
         self.assertEqual(reviews[0]["ticket"], tid)
 
+    def test_review_hat_genau_einen_inbox_eintrag(self):
+        repo, tid, worktree = self.ready_ticket()
+        self.commit_in(worktree)
+        self.passing_verify(worktree)
+        self.ok("verify", tid)
+        self.set_live({"fab-zap-t-1": "t7"})
+        self.ok("verdict", tid, "pass", "--from", "ada", "gut")
+        self.ok("handover", tid, "--from", "zap", "fertig")
+        self.assertIn("mensch", self.ticket(tid)["waiting"])
+        rows = [row for row in self.index()["inbox"] if row["ticket"] == tid]
+        self.assertEqual([row["kind"] for row in rows], ["review"])
+
     def test_inbox_attention_pingpong_und_erloeschen(self):
         tid = self.new("Ping")
         now = int(time.time() * 1000)

@@ -49,9 +49,12 @@ def entry(ticket):
 def _inbox(tickets, rows):
     entries = []
     for ticket in tickets:
-        closed = ticket.get("status") in ("done", "dropped")
+        status = ticket.get("status")
+        closed = status in ("done", "dropped")
+        review = status == "review"
         last = ticket["comments"][-1] if ticket["comments"] else None
-        if not closed and "mensch" in ticket.get("waiting", []):
+        # Pro Ticket höchstens ein Eintrag aus question/review: `review` hat Vorrang.
+        if not closed and not review and "mensch" in ticket.get("waiting", []):
             entries.append(
                 {
                     "kind": "question",
@@ -61,7 +64,7 @@ def _inbox(tickets, rows):
                     "text": ((last.get("text") if last else ticket.get("title")) or "")[:300],
                 }
             )
-        if ticket.get("status") == "review":
+        if review:
             entries.append(
                 {
                     "kind": "review",

@@ -60,6 +60,17 @@ export function levelColor(t, level) {
   return t.accent;
 }
 
+/** Farbschlüssel aus `model.sessionStatus`/`model.sessionChips` → Theme-Farbe. */
+export function sessionColor(t, key) {
+  switch (key) {
+    case "working": return t.working;
+    case "blocked": return t.blocked;
+    case "done": return t.done;
+    case "muted": return t.muted;
+    default: return t.dim;
+  }
+}
+
 // ---------- Rahmen und Text ----------
 
 /** Ganzes Panel: Fläche, Schrift, Innenabstand. */
@@ -104,8 +115,8 @@ export function badge(t, count, color = null) {
     .child(String(count));
 }
 
-export function chip(t, text, color = null, id = null) {
-  const el = div()
+export function chip(t, text, color = null, id = null, { tooltip = null, onClick = null } = {}) {
+  let el = div()
     .flex_none()
     .px(6)
     .h(SIZE.chip)
@@ -116,6 +127,16 @@ export function chip(t, text, color = null, id = null) {
     .text_size(FONT.xs)
     .text_color(color ?? t.muted)
     .child(text);
+  if (tooltip) el = el.tooltip(tooltip);
+  if (onClick) {
+    el = el
+      .cursor_pointer()
+      .hover((s) => s.opacity(0.8))
+      .on_click((_event, cx) => {
+        cx.stop_propagation();
+        onClick(cx);
+      });
+  }
   return id ? el.id(id) : el;
 }
 

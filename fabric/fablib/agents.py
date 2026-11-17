@@ -3,7 +3,7 @@ import json
 import os
 import re
 
-from . import hc, render
+from . import claude, hc, render
 from .errors import FabError, HcError
 
 ORCHESTRATOR = hc.ORCHESTRATOR
@@ -163,6 +163,8 @@ def start_agent(roster, ticket, agent_name):
             "name": name,
             "error": f"Agent {agent_name} hat kein argv im Roster",
         }
+    if claude.is_claude(entry["argv"]):
+        claude.ensure_trust(worktree)
     try:
         answer = hc.run(
             name=name,
@@ -193,6 +195,8 @@ def start_orchestrator(roster):
         handle.write(text)
     if not roster["orchestrator"]["argv"]:
         raise FabError("Orchestrator hat kein argv im Roster")
+    if claude.is_claude(roster["orchestrator"]["argv"]):
+        claude.ensure_trust(folder)
     hc.run(
         name=ORCHESTRATOR,
         cwd=folder,

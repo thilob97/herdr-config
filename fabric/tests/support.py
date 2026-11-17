@@ -82,6 +82,7 @@ class FabricCase(unittest.TestCase):
         self.write_roster()
         self.hc_log = os.path.join(self.tmp, "hc.log")
         self.ls_json = os.path.join(self.tmp, "ls.json")
+        self.claude_json = os.path.join(self.tmp, "claude.json")
         self._write(self.hc_log, "")
         self.set_live({})
         stub = os.path.join(self.bin, "hc")
@@ -92,6 +93,7 @@ class FabricCase(unittest.TestCase):
             HOME=self.fake_home,
             FAB_HOME=self.home,
             FAB_ROSTER=self.roster,
+            FAB_CLAUDE_JSON=self.claude_json,
             HC_LOG=self.hc_log,
             HC_LS=self.ls_json,
             PATH=self.bin + os.pathsep + os.environ.get("PATH", ""),

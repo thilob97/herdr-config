@@ -13,9 +13,11 @@ nur dorthin:
 fab comment {id} --from {agent} "…"
 ```
 
-`@name` weckt den Genannten. Tagge nur, wen du wirklich brauchst; `@mensch` nur
-für echte Entscheidungen (Produktrichtung, Geld, Zugangsdaten, Löschen). Wirst du
-geweckt, lies zuerst `fab show {id}` und arbeite dann an diesem Ticket weiter.
+`@name` weckt den Genannten und kostet ihn einen Arbeitsgang. Tagge nur, wenn der
+Genannte danach etwas tun muss; nie für Dank, Bestätigung oder Statusmeldungen.
+`@mensch` nur für echte Entscheidungen (Produktrichtung, Geld, Zugangsdaten,
+Löschen). Wirst du geweckt, lies zuerst `fab show {id}` und arbeite dann an diesem
+Ticket weiter. Ist nichts für dich zu tun, antworte nicht.
 
 ## Verboten
 

@@ -99,6 +99,7 @@ Bei `wake` steht in `text` genau eines von: `geweckt`, `gestartet`, `an orchestr
 ```
 
 - `inbox` wird **nur** in `fab` berechnet: `question` = Ticket nicht done, `mensch` in `waiting`; `review` = Status `review`; `attention` = Wecken unterdrückt durch Ping-Pong-Bremse oder Start fehlgeschlagen, solange danach nichts Neues im Ticket passiert ist.
+- Pro Ticket höchstens **ein** Eintrag aus `question` und `review`: Steht das Ticket auf `review`, gilt nur `review`, `question` entfällt (auch wenn `mensch` in `waiting` steht). `attention` darf daneben stehen.
 - Der Mod zählt nichts selbst: Inbox-Zahl = `inbox.length`, Stufen = Tickets nach `status`.
 - `index.json` bleibt unter 1 MiB: Ticket-Einträge ohne `body` und ohne `comments`, höchstens 300 Ereignisse.
 
@@ -116,8 +117,8 @@ Alle Befehle schreiben unter Lock, hängen Ereignisse an und erzeugen danach `in
 | `fab link ID --blocked-by ID… --from NAME` | Abhängigkeiten, ohne Zyklen |
 | `fab comment ID --from NAME [--no-wake] "<text>"` | Kommentar; jede `@erwähnung` weckt (Abschnitt 4). Gibt pro genanntem Namen eine Zeile mit dem Ergebnis aus. |
 | `fab dispatch ID [--agent NAME] --from NAME` | Verlangt `repo`, einen Abschnitt `## Abnahmekriterien` und keine offenen `blocked_by`. Legt Branch `fab/<ID>-<slug>` vom aktuellen HEAD des Repos und den Worktree an, startet den Agenten (Abschnitt 5), Status `doing`. Läuft er schon für das Ticket: wecken statt starten. |
-| `fab verify ID` | Führt `<worktree>/.fabric/verify.sh` aus (fehlt sie: Fehler mit Pfad), `sh` im Worktree, Timeout 10 min. Schreibt `checks` auf den HEAD. |
-| `fab verdict ID pass\|fail --from NAME "<zusammenfassung>"` | Urteil des Prüfers auf den HEAD. `fail`: Kommentar mit Zusammenfassung, Status `doing`, weckt `assignee`. |
+| `fab verify ID [--from NAME]` | Führt `<worktree>/.fabric/verify.sh` aus (fehlt sie: Fehler mit Pfad), `sh` im Worktree, Timeout 10 min. Schreibt `checks` auf den HEAD. Akteur des `verify`-Ereignisses ist `--from`, Standard: `assignee`. |
+| `fab verdict ID pass\|fail --from NAME "<zusammenfassung>"` | Urteil des Prüfers auf den HEAD. `fail`: Kommentar mit Zusammenfassung, Status `doing`, weckt `assignee`. `pass`: weckt `assignee` mit dem Hinweis, auf grünen Checks mit `fab handover` zu übergeben. Ist der Prüfer selbst der `assignee`, wird weder bei `pass` noch bei `fail` jemand geweckt. |
 | `fab handover ID --from NAME "<zusammenfassung>"` | Übergabe an den Menschen. Gate: `checks.state == pass` und `verdict.state == pass`, beide auf dem aktuellen HEAD. Sonst Abbruch mit den Gründen. Erfolg: Status `review`, `mensch` in `waiting`, Kommentar. |
 | `fab accept ID` | Nur der Mensch. Merge `--no-ff` des Branch in `base` im Haupt-Checkout (der muss sauber sein und auf `base` stehen), beendet alle Sessions des Tickets, entfernt Worktree und Branch, Status `done`. |
 | `fab reject ID "<feedback>"` | Nur der Mensch. Kommentar von `mensch`, Status `doing`, weckt `assignee`. |
@@ -128,7 +129,7 @@ Alle Befehle schreiben unter Lock, hängen Ereignisse an und erzeugen danach `in
 | `fab inbox [--json]` | wie `index.json.inbox` |
 | `fab index` | `index.json` neu erzeugen |
 
-`--from` ist bei allen schreibenden Befehlen außer `new`, `accept`, `reject` Pflicht. `accept` und `reject` schreiben als `mensch`.
+`--from` ist bei allen schreibenden Befehlen außer `new`, `accept`, `reject` und `verify` Pflicht. `verify` nimmt `--from NAME` optional; Standard ist der `assignee`. `accept` und `reject` schreiben als `mensch`.
 
 ## 4. Wecken durch Erwähnung
 
@@ -170,6 +171,7 @@ Roster `fabric/roster.json`:
 - Start eines Agenten auf einem Ticket:
   `hc run --bg --json --name fab-<agent>-<id klein> --cwd <worktree> --label fab.agent=<agent> --label fab.ticket=<ID> --no-parent --outlive-parent <argv…> "<startprompt>"`.
   Der Startprompt ist `prompts/preamble.md`, gefolgt vom Rollenprompt `prompts/<agent>.md` und dem Ticket (`fab show`-Text). Platzhalter in `preamble.md`: `{id} {title} {agent} {role} {worktree} {branch} {base} {reviewer}`.
+- Ist `argv[0]` des Agenten (oder des Orchestrators) `claude`, markiert `fab` vorher das Startverzeichnis (Worktree bzw. Orchestrator-Ordner) als vertraut: `projects["<realpath>"].hasTrustDialogAccepted = true` in `~/.claude.json`. Es wird nur dieser eine Schlüssel geändert; alle anderen Felder bleiben unverändert. Geschrieben wird atomar (tmp im selben Ordner, gleiche Dateirechte, `os.replace`); hat sich die Datei seit dem Lesen geändert, wird bis zu 3-mal neu gelesen. Fehlt die Datei oder ist sie kein gültiges JSON: Warnung auf stderr, Start läuft trotzdem. Pfad über `$FAB_CLAUDE_JSON`, Standard `~/.claude.json`; Tests setzen immer eine Temp-Datei.
 - Ist `max_sessions` erreicht (laufende `fab-*`-Terminals ohne Orchestrator), wird nicht gestartet. Ergebnis: `unterdrückt: voll`, dazu ein `attention`-Eintrag.
 - Laufend heißt: `hc ls --json` führt ein Terminal mit diesem Namen und `state == "live"`.
 - `fab orchestrator start`: Kopiert `prompts/orchestrator.md` nach `~/.herdr/fabric-orchestrator/AGENTS.md` und startet `hc run --bg --name fab-orchestrator --cwd ~/.herdr/fabric-orchestrator --label fab.role=orchestrator --no-parent --outlive-parent <argv…> "Du bist der Fabric-Orchestrator. Lies AGENTS.md und dann fab inbox und fab list."`.
@@ -180,7 +182,7 @@ Roster `fabric/roster.json`:
 1. Der Mensch: `fab new "<satz>"`. Das weckt `@orchestrator`.
 2. Der Orchestrator formuliert aus (`fab edit`: Ziel, Kontext, Abnahmekriterien, Grenzen), setzt `repo`, weist zu (`fab assign`), stellt auf `todo`, verteilt (`fab dispatch`). Entscheidungen, die beim Menschen liegen, stellt er als Kommentar mit `@mensch`.
 3. Der Umsetzer arbeitet im Worktree, committet, führt `fab verify` aus und schreibt bei Grün `@<reviewer> bitte prüfen`.
-4. Der Prüfer liest `git diff <base>...HEAD` und die Abnahmekriterien, kommentiert Befunde und gibt `fab verdict` ab. Bei `fail` wird der Umsetzer automatisch geweckt.
+4. Der Prüfer liest `git diff <base>...HEAD` und die Abnahmekriterien, kommentiert Befunde und gibt `fab verdict` ab. Bei `fail` wird der Umsetzer automatisch geweckt, bei `pass` ebenfalls (mit dem Hinweis auf `fab handover`). Ist der Prüfer selbst der Zuständige, wird niemand geweckt.
 5. Bei `pass` übergibt der Umsetzer mit `fab handover`. Der Mensch entscheidet im Mod (`accept` oder `reject`).
 6. Fragen und Absprachen laufen nur im Ticket, mit `@name`. Kein `hc send` zwischen Agenten, keine Seitenkanäle.
 

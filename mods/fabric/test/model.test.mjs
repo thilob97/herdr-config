@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 
 import {
   groupByStage, mentionSegments, sortInbox, timeline, relativeTime, wakeLine,
+  sessionChips, sessionStatus,
 } from "../model.js";
 
 test("Tickets werden nach Stufe gruppiert, in Stufenreihenfolge", () => {
@@ -110,4 +111,57 @@ test("Zeit und Weckzeilen auf Deutsch", () => {
   assert.equal(wakeLine({ target: "ada", text: "geweckt" }), "→ ada geweckt");
   assert.equal(wakeLine({ target: "zap", text: "unterdrückt: ping-pong" }), "→ zap: unterdrückt: ping-pong");
   assert.equal(wakeLine({ target: "", text: "an orchestrator" }), "→ an den Orchestrator");
+});
+
+test("Sitzungsstatus: herdr-Status wird zu deutschem Wort und Farbschlüssel", () => {
+  assert.deepEqual(sessionStatus("working"), { word: "arbeitet", color: "working" });
+  assert.deepEqual(sessionStatus("blocked"), { word: "wartet auf dich", color: "blocked" });
+  assert.deepEqual(sessionStatus("done"), { word: "fertig", color: "done" });
+  assert.deepEqual(sessionStatus("idle"), { word: "bereit", color: "muted" });
+  assert.deepEqual(sessionStatus("exited"), { word: "beendet", color: "dim" });
+  assert.deepEqual(sessionStatus(null), { word: "unbekannt", color: "dim" });
+  assert.deepEqual(sessionStatus("fremd"), { word: "fremd", color: "dim" });
+});
+
+test("Sitzungen finden ihr Terminal über Adresse, sonst über fab-<agent>-<id>", () => {
+  const sessions = [
+    { agent: "zap", terminal: "t80", name: "fab-zap-t-1" },
+    { agent: "ada", terminal: "weg", name: "fab-ada-t-1" },
+    { agent: "bo", name: "fab-bo-t-1" },
+    { agent: "cy", terminal: "t88" },
+    { agent: "di" },
+    { agent: "ed" },
+  ];
+  const terminals = [
+    { address: "t80", name: "fab-zap-t-1", state: "live", status: "working" },
+    { address: "t81", name: "fab-ada-t-1", state: "live", status: "done" },
+    { address: "t82", name: "fab-bo-t-1", state: "exited", status: "done" },
+    { address: "t88", name: "fremd", state: "live", status: "working" },
+    { address: "t83", name: "fab-di-t-1", state: "live" },
+  ];
+  const agentRows = [
+    { address: "t80", status: "blocked" },
+    { address: "t81", status: "done" },
+  ];
+
+  const chips = sessionChips(sessions, terminals, agentRows, "T-1");
+
+  assert.deepEqual(
+    chips.map((chip) => [chip.agent, chip.terminal, chip.word, chip.color, chip.ended]),
+    [
+      ["zap", "t80", "wartet auf dich", "blocked", false],
+      ["ada", "t81", "fertig", "done", false],
+      ["bo", "t82", "beendet", "dim", true],
+      ["cy", "t88", "arbeitet", "working", false],
+      ["di", "t83", "bereit", "muted", false],
+      ["ed", "", "beendet", "dim", true],
+    ],
+  );
+
+  // `agents()` hat Vorrang vor dem Status aus `terminals()`.
+  assert.equal(chips[0].status, "blocked");
+  assert.equal(chips[0].tooltip, "wartet auf Freigabe – klicken zum Öffnen");
+  assert.match(chips[2].tooltip, /fab-bo-t-1 ist beendet/);
+  assert.match(chips[3].tooltip, /arbeitet · klicken zum Öffnen/);
+  assert.deepEqual(sessionChips(null), []);
 });
