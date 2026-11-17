@@ -9,6 +9,8 @@
 !/mods/
 !/docs/
 !/fabric/
+!/.fabric/
+!/.fabric/verify.sh
 /layouts/.state/
 
 # Von Herdr ausgeliefert, wird bei jedem Start ueberschrieben
