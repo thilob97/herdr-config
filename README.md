@@ -41,7 +41,7 @@ Die `.gitignore` ist eine Whitelist (`/*`, dann gezielt `!`). Ausgeschlossen sin
 
 ## Mods
 
-Worum es geht: `docs/concept.md` — das Kernkonzept der POC-Mods (Work Order als dauerhaftes Objekt, Mensch an drei Gates, eine Wahrheit pro Zahl).
+Worum es geht: `docs/concept.md` — ein Ticket schreiben, der Orchestrator formuliert und verteilt, die Agenten verhandeln im Ticket und taggen sich, alles ist sichtbar.
 
 Aktiv ist das Layout `elric` (Klon von `main`), daneben `dashboard`. Eigene Mods:
 
