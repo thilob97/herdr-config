@@ -60,8 +60,9 @@ class HubCleanupTest(unittest.TestCase):
             with open(p, "w", encoding="utf-8") as f:
                 f.write(body)
             os.chmod(p, 0o755)
-        self.git_env = {**os.environ, "GIT_AUTHOR_NAME": "Test", "GIT_AUTHOR_EMAIL": "test@example.test",
-                        "GIT_COMMITTER_NAME": "Test", "GIT_COMMITTER_EMAIL": "test@example.test"}
+        self.git_identity = {"GIT_AUTHOR_NAME": "Test", "GIT_AUTHOR_EMAIL": "test@example.test",
+                             "GIT_COMMITTER_NAME": "Test", "GIT_COMMITTER_EMAIL": "test@example.test"}
+        self.git_env = {**os.environ, **self.git_identity}
 
     # ---- helpers
 
@@ -87,8 +88,15 @@ class HubCleanupTest(unittest.TestCase):
         env = dict(os.environ)
         env.update(HOME=self.home, HERDR_APP_HOME=app or self.app,
                    PATH=self.bin + os.pathsep + env.get("PATH", ""),
-                   HUB_CI_POLL="0", HUB_CI_TIMEOUT="0")
-        env.update(env_extra or {})
+                   HUB_CI_POLL="0", HUB_CI_TIMEOUT="0",
+                   # `hub land --merge` committet selbst; ohne Identität bricht git mit 128 ab
+                   # und der Abbruch sähe wie ein Merge-Konflikt aus.
+                   **self.git_identity)
+        for k, v in (env_extra or {}).items():
+            if v is None:  # None heißt: Variable entfernen, nicht auf leer setzen
+                env.pop(k, None)
+            else:
+                env[k] = v
         return subprocess.run([sys.executable, HUB, *args], capture_output=True, text=True, env=env, cwd=cwd)
 
     def ticket(self, title, repo, branch="", status="done", app=None, **fields):
@@ -244,6 +252,20 @@ class HubCleanupTest(unittest.TestCase):
         self.assertIn("merged", r.stdout)
         self.assertNotEqual(start, self.git("rev-parse", "HEAD", cwd=repo).stdout.strip())
         self.assertFalse(os.path.exists(wt), "land entfernt nur den eigenen Worktree")
+
+    def test_land_merge_names_missing_git_identity(self):
+        """Ohne git-Identität bricht `git merge` mit 128 ab. Das darf nicht als
+        Merge-Konflikt gelesen werden — sonst rebased ein Agent endlos gegen nichts."""
+        repo = self.repo("repo-ident")
+        wt = self.worktree(repo, self.own_path(repo, "feat/ident"), "feat/ident")
+        with open(os.path.join(wt, "f.txt"), "a", encoding="utf-8") as f:
+            f.write("work\n")
+        self.git("commit", "-q", "-am", "work", cwd=wt)
+        tid = self.ticket("Ident", repo, branch="feat/ident", status="review", worktree=wt)
+        r = self.hub("land", tid, "--merge", env_extra={k: None for k in self.git_identity})
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("Identität", r.stderr)
+        self.assertNotIn("merge conflict", r.stderr)
 
     def test_land_merge_force_needs_reason_and_lands(self):
         repo = self.repo("repo-force")

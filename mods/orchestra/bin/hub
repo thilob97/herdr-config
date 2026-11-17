@@ -4756,6 +4756,13 @@ def cmd_land(a):
         r = run(["git", "merge", "--no-ff", "-m", f"Merge {branch}: {t['title']}", branch], on, main, check=False)
         if r.returncode != 0:
             run(["git", "merge", "--abort"], on, main, check=False)
+            why = (r.stderr or "") + (r.stdout or "")
+            if ("Committer identity unknown" in why or "unable to auto-detect email" in why
+                    or "empty ident name" in why):
+                die(f"{a.id}: git kennt auf {main} keine Identität zum Committen — "
+                    f"`git config --global user.name \"…\"` und `user.email \"…\"` setzen "
+                    f"(oder GIT_AUTHOR_NAME/GIT_AUTHOR_EMAIL exportieren) und erneut landen. "
+                    f"Das ist kein Merge-Konflikt.")
             die(f"merge conflict between {branch} and {base}; have the agent rebase {branch} onto {base}")
         t["merged"] = f"{base}@{run(['git', 'rev-parse', '--short', 'HEAD'], on, main).stdout.strip()}"
         result["merged"] = t["merged"]

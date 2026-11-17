@@ -170,6 +170,8 @@ Ein Ticket ist erst fertig, wenn die Checks seines Pull Requests grün sind. Das
 
 **In der Oberfläche** steht im Review-Fenster (Ticket-Modus) unter den Gates die CI-Zeile: Zustand, Zeitpunkt, **PR öffnen** und **Erneut prüfen** (`hub ci`); rote Checks klappen Namen und Log-Auszug auf. `hub status` hat die Spalte `CI` (`✓`, `…`, `✗`, `?`).
 
+**Dieses Repo selbst.** `.github/workflows/verify.yml` fährt bei jedem Push und jedem PR beide Stufen von `.herdr/verify.sh`: erst die schnellen Prüfungen, dann `--full` mit den Hub-Suiten. Damit hängt die Prüfung nicht mehr davon ab, dass jemand sie von Hand startet — ein kaputter `hub` erreicht `main` nicht mehr ungeprüft. Lokal ist es dasselbe Kommando: `bash .herdr/verify.sh --full`. Die Suiten sind hermetisch: sie bringen ihre git-Identität selbst mit, damit ein Rechner ohne `user.email` nicht als Merge-Konflikt gelesen wird.
+
 ## Lehren
 
 Was beim Review und bei der Abnahme gelernt wurde, landet automatisch im nächsten Auftrag — pro Repo, in `<repo>/.herdr/lessons.md` (eine Zeile je Lehre, höchstens 40; die älteste fällt raus):

@@ -1,0 +1,34 @@
+name: verify
+
+# Die schnellen Prüfungen dieses Repos laufen bei jedem Push und jedem PR.
+# Ohne diesen Workflow hängt es davon ab, dass ein Agent `.herdr/verify.sh`
+# von Hand startet — bei 5.900 Zeilen `hub` ist das zu wenig.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Schnelle Prüfungen (ui.js-Kopien, hub py_compile, Node-Tests)
+        run: bash .herdr/verify.sh
+
+      - name: Hub-Suiten (--full)
+        run: bash .herdr/verify.sh --full
