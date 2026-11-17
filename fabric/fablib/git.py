@@ -53,6 +53,86 @@ def branch_exists(repo, name):
     )
 
 
+def pending_paths(path):
+    """Uncommittete Dateien inklusive Umbenennungs- und Kopierquellen."""
+    result = git(["status", "--porcelain", "-z", "--untracked-files=no"], path)
+    if result.returncode != 0:
+        return []
+    fields = result.stdout.split("\0")
+    paths = []
+    index = 0
+    while index < len(fields):
+        entry = fields[index]
+        index += 1
+        if not entry:
+            continue
+        paths.append(entry[3:])
+        if "R" in entry[:2] or "C" in entry[:2]:
+            if index < len(fields) and fields[index]:
+                paths.append(fields[index])
+            index += 1
+    return paths
+
+
+def diff_paths(repo, base, branch_name):
+    """Dateien, die der Branch gegenüber der Merge-Basis mit base ändert."""
+    merged = git(["merge-base", base, branch_name], repo)
+    basis = merged.stdout.strip()
+    if merged.returncode != 0 or not basis:
+        detail = (merged.stderr or merged.stdout).strip() or "unbekannter Fehler"
+        raise FabError(
+            f"Merge-Basis von {base} und {branch_name} ist nicht bestimmbar: {detail}"
+        )
+    result = git(["diff", "--name-only", "-z", basis, branch_name], repo)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip() or "unbekannter Fehler"
+        raise FabError(f"Dateien von {branch_name} sind nicht lesbar: {detail}")
+    return [name for name in result.stdout.split("\0") if name]
+
+
+def base_branch(path):
+    """Standard-Basisbranch des Repos: origin/HEAD, sonst main, sonst master."""
+    top = toplevel(path)
+    if not top:
+        return ""
+    result = git(["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"], top)
+    name = result.stdout.strip()
+    if name:
+        name = name.split("/", 1)[-1]
+        if name and branch_exists(top, name):
+            return name
+    if branch_exists(top, "main"):
+        return "main"
+    if branch_exists(top, "master"):
+        return "master"
+    return ""
+
+
+def commit_paths(path, files, message):
+    """Nur die genannten Dateien committen, wenn der Basisbranch ausgecheckt ist."""
+    try:
+        folder = path if os.path.isdir(path) else os.path.dirname(os.path.abspath(path))
+        top = toplevel(folder)
+        if not top:
+            return False
+        base = base_branch(top)
+        if not base or branch(top) != base:
+            return False
+        rels = []
+        root = os.path.realpath(top)
+        for name in files:
+            rel = os.path.relpath(os.path.realpath(name), root)
+            if rel == ".." or rel.startswith(".." + os.sep):
+                return False
+            if rel not in rels:
+                rels.append(rel)
+        if git(["add", "--", *rels], top).returncode != 0:
+            return False
+        return git(["commit", "-m", message, "--", *rels], top).returncode == 0
+    except (FabError, OSError):
+        return False
+
+
 def create_worktree(repo_top, folder, branch_name, start):
     """Worktree anlegen; ein schon passender Worktree wird weiterverwendet."""
     folder = os.path.abspath(os.path.expanduser(folder))

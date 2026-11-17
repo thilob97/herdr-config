@@ -579,9 +579,16 @@ def cmd_accept(args):
                 f"Haupt-Checkout {top} steht auf {here}, nicht auf {ticket['base']}; "
                 f"bitte auf {ticket['base']} wechseln"
             )
-        changes = git.dirty(top)
-        if changes:
-            raise FabError(f"Haupt-Checkout {top} ist nicht sauber:\n{changes}")
+        if git.dirty(top):
+            overlap = sorted(
+                set(git.pending_paths(top))
+                & set(git.diff_paths(top, ticket["base"], branch_name))
+            )
+            if overlap:
+                raise FabError(
+                    f"Haupt-Checkout {top} ist nicht sauber: uncommittete Änderungen "
+                    f"an Dateien, die {branch_name} ändert:\n- " + "\n- ".join(overlap)
+                )
         merged = git.merge_no_ff(
             top, branch_name, f"Merge {branch_name}: {ticket['title']}"
         )

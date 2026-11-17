@@ -158,19 +158,40 @@ class GitflowTests(FabricCase):
         self.assertTrue(any("t900" in call for call in kills), kills)
         self.assertEqual([row["kind"] for row in self.events()][-1], "accept")
 
-    def test_accept_verweigert_falschen_branch_und_schmutz(self):
+    def test_accept_mergt_trotz_fremder_lokaler_aenderung(self):
+        repo, tid, worktree = self.review_ticket()
+        self.write_file(os.path.join(repo, "README.md"), "lokal\n")
+        result = self.ok("accept", tid)
+        self.assertIn("angenommen", result.stdout)
+        with open(os.path.join(repo, "README.md")) as handle:
+            self.assertEqual(handle.read(), "lokal\n")
+        self.assertIn("README.md", self.git_out(repo, "status", "--porcelain"))
+        self.assertEqual(self.ticket(tid)["status"], "done")
+        self.assertTrue(os.path.isfile(os.path.join(repo, "aenderung.txt")))
+
+    def test_accept_bricht_bei_ueberschneidung_ab(self):
+        repo, tid, worktree = self.ready_ticket()
+        self.commit_in(worktree, "README.md", "vom branch\n")
+        self.passing_verify(worktree)
+        self.ok("verify", tid)
+        self.ok("verdict", tid, "pass", "--from", "ada", "gut")
+        self.ok("handover", tid, "--from", "zap", "fertig")
+        self.write_file(os.path.join(repo, "README.md"), "lokal\n")
+        result = self.cli("accept", tid)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("README.md", result.stderr)
+        self.assertIn("nicht sauber", result.stderr)
+        self.assertTrue(os.path.isdir(worktree))
+        self.assertEqual(self.ticket(tid)["status"], "review")
+        with open(os.path.join(repo, "README.md")) as handle:
+            self.assertEqual(handle.read(), "lokal\n")
+
+    def test_accept_verweigert_falschen_branch(self):
         repo, tid, worktree = self.review_ticket()
         self.git(repo, "checkout", "-q", "-b", "andere")
         result = self.cli("accept", tid)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("steht auf andere", result.stderr)
-        self.git(repo, "checkout", "-q", "main")
-        self.write_file(os.path.join(repo, "README.md"), "geändert\n")
-        result = self.cli("accept", tid)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("nicht sauber", result.stderr)
-        self.assertTrue(os.path.isdir(worktree))
-        self.assertEqual(self.ticket(tid)["status"], "review")
 
     def test_accept_nur_im_status_review(self):
         repo, tid, worktree = self.ready_ticket()
