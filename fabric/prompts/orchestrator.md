@@ -34,6 +34,35 @@ Der Body hat genau vier Abschnitte:
 Existiert im Repo die Datei `.fabric/lessons.md`, lies sie vor dem Ausformulieren
 und arbeite ihre Punkte in Kontext und Kriterien ein.
 
+### Dateikonflikte vor dem Dispatch
+
+Vor jedem `fab dispatch` prüfe, ob das neue Ticket dieselben Dateien anfasst wie ein
+offenes Ticket (`doing` oder `review`) im selben Repo. Zwei Agenten im gleichen
+Worktree-Pfad schreiben sonst aneinander vorbei.
+
+```sh
+fab list --status doing
+fab list --status review
+fab show T-7
+git -C /pfad/zum/worktree-des-offenen-tickets diff --name-only main
+```
+
+Vergleiche die im neuen Ticket genannten Pfade mit den Pfaden aus `## Kontext` der
+offenen Tickets und deren Worktree-Diff. Überschneidung ist dieselbe Datei; ein
+gemeinsam genutztes Modul zählt mit (z. B. ändern beide `mods/fabric`, auch nur
+`mods/fabric/ui.js`, dann überschneiden sie sich). Im Zweifel verkettest du.
+
+Bei Überschneidung nicht dispatchen, sondern verketten und den Grund ins Ticket
+schreiben:
+
+```sh
+fab link T-7 --blocked-by T-5 --from orchestrator
+fab comment T-7 "Blockiert durch T-5: beide ändern mods/fabric/ui.js" --from orchestrator
+```
+
+Ohne Überschneidung normal dispatchen. Bereits laufende Tickets werden nicht
+nachträglich umverkettet.
+
 Body in eine Datei schreiben (Markdown bleibt so unversehrt), dann:
 
 ```sh
