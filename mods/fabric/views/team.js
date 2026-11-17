@@ -179,6 +179,7 @@ function settingsCard(app, cx, t) {
           })),
           open: app.menu === "team-reviewer",
           width: 220,
+          scrollHandle: app.dropdownScroll,
           onToggle: () => { app.menu = app.menu === "team-reviewer" ? null : "team-reviewer"; cx.notify(); },
           onPick: (value) => { app.menu = null; app.reviewerDraft = value; cx.notify(); },
         })))

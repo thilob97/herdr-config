@@ -384,6 +384,27 @@ test("Ungespeicherte Änderungen werden erkannt, Zeilenenden zählen nicht", asy
   ]), [{ key: "body", label: "Beschreibung" }]);
 });
 
+test("Programm-Auswahl: nur installierte, aktueller Wert bleibt als Ausnahme", async () => {
+  const { programOptions } = await import("../model.js");
+  const programs = [
+    { name: "omp", run: ["omp"], installed: true },
+    { name: "pi", run: ["pi"], installed: false },
+    { name: "claude", run: ["claude"], installed: true },
+    { name: "claude", run: ["claude"], installed: true },
+  ];
+  assert.deepEqual(programOptions(programs, "omp").map((row) => row.value), ["omp", "claude"]);
+  assert.deepEqual(programOptions(programs, "pi").map((row) => row.value), ["pi", "omp", "claude"]);
+  assert.equal(programOptions(programs, "pi")[0].detail, "nicht installiert");
+  assert.equal(programOptions(programs, "pi")[0].warn, true);
+  assert.equal(programOptions(programs, "pi")[0].selected, true);
+
+  const empty = programOptions([], "claude");
+  assert.deepEqual(empty.map((row) => row.value), ["claude"]);
+  assert.equal(empty[0].warn, true);
+  assert.deepEqual(programOptions([], ""), []);
+  assert.deepEqual(programOptions(undefined, ""), []);
+});
+
 test("Platzhalter, Prompt-Reihenfolge und Vorlagen", async () => {
   const { unknownPlaceholders, sortPrompts, verifyTemplate, PLACEHOLDERS } = await import("../model.js");
   assert.deepEqual(unknownPlaceholders("Hallo {id} {fremd} {id}"), ["fremd"]);

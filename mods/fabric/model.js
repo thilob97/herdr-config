@@ -802,6 +802,39 @@ export function unknownPlaceholders(text, allowed = Object.keys(PLACEHOLDERS)) {
   return [...found];
 }
 
+/** Programm-Auswahl für den Agent-Drawer: nur installierte Programme.
+ *  Das aktuell eingetragene Programm bleibt als einzige Ausnahme sichtbar,
+ *  auch wenn es nicht installiert ist – markiert mit `warn`.
+ *  Ohne Programme (leer oder nicht lesbar) bleibt nur der aktuelle Wert. */
+export function programOptions(programs, current = "") {
+  const rows = [];
+  const seen = new Set();
+  for (const program of programs ?? []) {
+    const value = program?.run?.[0] ?? program?.name;
+    if (!value || seen.has(value) || !program?.installed) continue;
+    seen.add(value);
+    rows.push({
+      value,
+      label: program.name ?? value,
+      detail: "",
+      installed: true,
+      warn: false,
+      selected: value === current,
+    });
+  }
+  if (current && !seen.has(current)) {
+    rows.unshift({
+      value: current,
+      label: current,
+      detail: "nicht installiert",
+      installed: false,
+      warn: true,
+      selected: true,
+    });
+  }
+  return rows;
+}
+
 /** Reihenfolge der Prompt-Liste: Orchestrator, Präambel, dann Agenten. */
 export function sortPrompts(prompts) {
   const rank = (prompt) => (prompt?.kind === "orchestrator" ? 0 : prompt?.kind === "preamble" ? 1 : 2);

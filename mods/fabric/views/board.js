@@ -36,6 +36,7 @@ function cardMenu(app, cx, t, ticket) {
     value: "",
     width: 200,
     align: "bottom_right",
+    scrollHandle: app.dropdownScroll,
     options,
     open: app.menu === id,
     onToggle: () => { app.menu = app.menu === id ? null : id; cx.notify(); },

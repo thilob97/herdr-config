@@ -275,6 +275,7 @@ function statusField(app, cx, t, ticket) {
     options,
     open: app.menu === "detail-status",
     width: 190,
+    scrollHandle: app.dropdownScroll,
     onToggle: () => { app.menu = app.menu === "detail-status" ? null : "detail-status"; cx.notify(); },
     onPick: (value) => { app.menu = null; app.setStatus(value, cx); },
   }));
@@ -294,6 +295,7 @@ function assigneeField(app, cx, t, ticket) {
     options,
     open: app.menu === "detail-assignee",
     width: 210,
+    scrollHandle: app.dropdownScroll,
     empty: "Roster ist leer",
     onToggle: () => { app.menu = app.menu === "detail-assignee" ? null : "detail-assignee"; cx.notify(); },
     onPick: (value) => { app.menu = null; app.setAssignee(value, cx); },
@@ -320,6 +322,7 @@ function repoField(app, cx, t, ticket) {
     options,
     open: app.menu === "detail-repo",
     width: 280,
+    scrollHandle: app.dropdownScroll,
     onToggle: () => { app.menu = app.menu === "detail-repo" ? null : "detail-repo"; cx.notify(); },
     onPick: (value) => {
       app.menu = null;
@@ -361,6 +364,7 @@ function blockerField(app, cx, t, ticket) {
       options: candidates.map((row) => ({ value: row.id, label: `${row.id} · ${row.title}`, selected: false })),
       open: app.menu === "detail-blocker",
       width: 300,
+      scrollHandle: app.dropdownScroll,
       disabled: candidates.length === 0,
       empty: "Kein offenes Ticket",
       onToggle: () => { app.menu = app.menu === "detail-blocker" ? null : "detail-blocker"; cx.notify(); },
@@ -460,6 +464,7 @@ function sessionsField(app, cx, t, ticket) {
           })),
           open: app.menu === "wake-name",
           width: 220,
+          scrollHandle: app.dropdownScroll,
           onToggle: () => { app.menu = app.menu === "wake-name" ? null : "wake-name"; cx.notify(); },
           onPick: (value) => { app.menu = null; app.wakeName = value; cx.notify(); },
         }))

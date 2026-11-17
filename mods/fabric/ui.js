@@ -4,7 +4,7 @@
 import { div, PathBuilder, Background, svg } from "gpui-kit";
 import {
   h_flex, v_flex, Input, NumberInput, Textarea, Editor, TextView, Checkbox, Switch,
-  Table, TableHeader, TableBody, TableRow, TableHead, TableCell, Popup,
+  Table, TableHeader, TableBody, TableRow, TableHead, TableCell, Popup, Scrollbar,
 } from "gpui-base";
 import { theme } from "herdr";
 import * as model from "./model.js";
@@ -512,7 +512,7 @@ export function card(t, children, { padding = SPACE.m, gap = SPACE.s, hover = fa
 export function filterBar(t, {
   assignees = [], repos = [], assignee = "all", repo = "all", dropped = false,
   menu = null, onMenu, onAssignee, onRepo, onDropped, onReset,
-  active = false, droppedLabel = "Verworfen", iconName = "filter",
+  active = false, droppedLabel = "Verworfen", iconName = "filter", scrollHandle = null,
 }) {
   const select = (id, value, options, onPick, width) => {
     const prefix = id.includes("assignee") ? "Zuständig" : "Repo";
@@ -524,6 +524,7 @@ export function filterBar(t, {
       options: labelled.map((option) => ({ ...option, selected: option.value === value })),
       open: menu === id,
       width,
+      scrollHandle,
       onToggle: () => onMenu(id),
       onPick: (next) => { onMenu(null); onPick(next); },
     });
@@ -568,6 +569,7 @@ export function fabricFilters(t, { app, cx, droppedKey = "showDropped" }) {
     repo: app.repoFilter,
     dropped: Boolean(app[droppedKey]),
     menu: app.menu,
+    scrollHandle: app.dropdownScroll,
     onMenu: (id) => { app.menu = id; cx.notify(); },
     onAssignee: (value) => { app.assigneeFilter = value; cx.notify(); },
     onRepo: (value) => { app.repoFilter = value; cx.notify(); },
@@ -601,7 +603,7 @@ export function orchestratorStatus(t, state) {
 export function dropdown(t, {
   id, value, placeholder = "Auswählen…", options = [], open = false, disabled = false,
   width = 190, onToggle, onPick, empty = "Keine Auswahl", align = "bottom_left",
-  iconOnly = false, iconName = "dots", tooltip = null,
+  iconOnly = false, iconName = "dots", tooltip = null, scrollHandle = null,
 }) {
   const trigger = iconOnly
     ? h_flex()
@@ -634,41 +636,58 @@ export function dropdown(t, {
       .child(div().flex_none().text_color(t.dim).child(icon("chevron-down", 11)));
   const withClick = still(trigger).on_click((_event, cx) => {
     cx.stop_propagation();
-    if (!disabled) onToggle();
+    if (disabled) return;
+    if (!open && scrollHandle) {
+      const selected = options.findIndex((option) => option.selected);
+      if (selected >= 0) scrollHandle.scroll_to_item(selected);
+    }
+    onToggle();
   });
 
+  const listId = `${id}-list`;
   const menu = v_flex()
+    .relative()
     .w(width)
-    .max_h(280)
-    .overflow_y_scrollbar()
-    .p(SPACE.xs)
-    .gap(1)
+    .max_h(320)
     .rounded(RADIUS.m)
     .border_1()
     .border_color(t.border)
     .bg(t.popover)
-    .children(options.length ? options.map((option) =>
-      h_flex()
-        .id(`${id}-option-${option.value}`)
+    .child(
+      v_flex()
+        .id(listId)
         .w_full()
-        .min_h(28)
-        .px(7)
-        .gap(SPACE.s)
-        .items_center()
-        .rounded(RADIUS.s)
-        .bg(option.selected ? t.selected : t.surface + "00")
-        .text_size(FONT.s)
-        .text_color(option.disabled ? t.dim : t.foreground)
-        .when(!option.disabled, (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)))
-        .when(Boolean(option.detail), (el) => el.child(div().flex_none().text_size(FONT.xs).text_color(t.dim).child(option.detail)))
-        .child(div().flex_1().min_w(0).truncate().child(option.label))
-        .when(option.selected, (el) => el.child(div().flex_none().text_color(t.accent).child(icon("check", 12))))
-        .when(!option.disabled, (el) => still(el).on_click((_event, cx) => {
-          cx.stop_propagation();
-          onPick(option.value);
-        }))) : [
-      div().px(8).py(6).text_size(FONT.s).text_color(t.dim).child(empty),
-    ]);
+        .max_h(320)
+        .overflow_y_scroll()
+        .p(SPACE.xs)
+        .gap(1)
+        .when(Boolean(scrollHandle), (el) => el.track_scroll(scrollHandle))
+        .children(options.length ? options.map((option) =>
+          h_flex()
+            .id(`${id}-option-${option.value}`)
+            .w_full()
+            .min_h(28)
+            .px(7)
+            .gap(SPACE.s)
+            .items_center()
+            .rounded(RADIUS.s)
+            .bg(option.selected ? t.selected : t.surface + "00")
+            .text_size(FONT.s)
+            .text_color(option.warn ? t.blocked : option.disabled ? t.dim : t.foreground)
+            .when(!option.disabled, (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)))
+            .when(Boolean(option.detail), (el) => el.child(div()
+              .flex_none().text_size(FONT.xs)
+              .text_color(option.warn ? t.blocked : t.dim).child(option.detail)))
+            .child(div().flex_1().min_w(0).truncate().child(option.label))
+            .when(option.selected, (el) => el.child(div().flex_none().text_color(t.accent).child(icon("check", 12))))
+            .when(!option.disabled, (el) => still(el).on_click((_event, cx) => {
+              cx.stop_propagation();
+              onPick(option.value);
+            }))) : [
+          div().px(8).py(6).text_size(FONT.s).text_color(t.dim).child(empty),
+        ]),
+    )
+    .child(Scrollbar.vertical(listId).absolute().inset_0());
 
   return Popup.new(id, withClick).anchor(align).when(open, (el) => el.content(menu));
 }

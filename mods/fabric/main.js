@@ -104,6 +104,8 @@ export default class Fabric extends View {
     this.wakeText = null;
     this.checksOpen = false;
     this.historyScroll = ScrollHandle.new();
+    // Ein Dropdown ist zugleich offen; ein gemeinsamer Handle reicht.
+    this.dropdownScroll = ScrollHandle.new();
     this.needsHistoryScroll = false;
     this.baseInput = InputState.new({ placeholder: "Basis-Branch, z. B. main" });
     this.baseInput.on("change", (_event, cx) => cx.notify());

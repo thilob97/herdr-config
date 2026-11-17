@@ -60,6 +60,7 @@ function newTicketDialog(app, cx, t) {
         options,
         open: app.menu === "new-repo",
         width: 360,
+        scrollHandle: app.dropdownScroll,
         onToggle: () => { app.menu = app.menu === "new-repo" ? null : "new-repo"; cx.notify(); },
         onPick: (value) => {
           app.menu = null;
@@ -228,17 +229,7 @@ export function renderDialogs(app, cx, t) {
 }
 
 function programOptions(app, current) {
-  const rows = (app.programs ?? []).map((program) => ({
-    value: program.run?.[0] ?? program.name,
-    label: program.name,
-    detail: program.installed ? "" : "nicht installiert",
-    disabled: !program.installed,
-    selected: (program.run?.[0] ?? program.name) === current,
-  }));
-  if (current && !rows.some((row) => row.value === current)) {
-    rows.unshift({ value: current, label: current, detail: "aus dem Roster", selected: true });
-  }
-  return rows;
+  return model.programOptions(app.programs, current);
 }
 
 function colorRow(app, cx, t) {
@@ -269,6 +260,8 @@ export function renderAgentDrawer(app, cx, t) {
     model: app.agentModel?.value() ?? "",
     flags: app.agentFlags?.value() ?? "",
   }));
+  const programRows = programOptions(app, app.agentProgram);
+  const programLabel = programRows.find((row) => row.value === app.agentProgram)?.label ?? app.agentProgram;
   return ui.drawer(t, {
     title: mode === "new" ? "Neuer Agent" : `Agent ${original}`,
     subtitle: mode === "new" ? "Roster und Rollenprompt" : `${agent?.open_tickets ?? 0} offene Tickets`,
@@ -311,14 +304,20 @@ export function renderAgentDrawer(app, cx, t) {
     ui.field(t, "Farbe", colorRow(app, cx, t)),
     ui.field(t, "Programm", ui.dropdown(t, {
       id: "fabric-agent-program",
-      value: app.agentProgram,
+      value: programLabel,
       placeholder: app.programs ? "Programm wählen…" : "Programme werden geladen …",
-      options: programOptions(app, app.agentProgram),
+      options: programRows,
       open: app.menu === "agent-program",
       width: 300,
+      scrollHandle: app.dropdownScroll,
       onToggle: () => { app.menu = app.menu === "agent-program" ? null : "agent-program"; cx.notify(); },
       onPick: (value) => { app.menu = null; app.agentProgram = value; app.teamDirty = true; cx.notify(); },
-    })),
+    }), {
+      hint: app.errorFor("programs")?.text
+        ?? (Array.isArray(app.programs) && app.programs.length === 0
+          ? "Keine installierten Programme gefunden; der bisherige Wert bleibt."
+          : null),
+    }),
     ui.field(t, "Modell", app.agentModel ? ui.input(t, app.agentModel) : div(), {
       hint: "Wird als --model=<Wert> gesetzt",
     }),
