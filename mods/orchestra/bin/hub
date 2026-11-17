@@ -1023,7 +1023,7 @@ def invalid_tickets():
 EVENTS = os.path.join(APP, "data", "orchestra", "events.jsonl")
 EVENT_MAX, EVENT_KEEP = 5000, 2000
 EVENT_KINDS = ["dispatch", "nudge", "review", "verdict", "land", "done", "verify", "ci", "night",
-               "comment", "orchestrator"]
+               "comment", "orchestrator", "force"]
 
 
 def now_ms():
@@ -3411,6 +3411,7 @@ def cmd_dispatch(a):
             die("--force verlangt --reason \"…\": der Grund gehört in den Verlauf")
         note = f"Start-Gate überfahren ({' · '.join(gaps)}): {a.reason.strip()}"
         update_ticket(a.id, lambda fresh: add_comment(fresh, "hub", note))
+        event("force", ticket=a.id, agent="hub", text="start: " + note)
     # A roster name selects a named agent: its program, model, repo and branch prefix.
     # Anything else is a program (`omp`, `claude`, …) or a full command line. The ticket
     # keeps the display name in `agent` and the exact start command in `agent_cmd`, so
@@ -3593,6 +3594,7 @@ def cmd_review_start(a):
             die("--force verlangt --reason \"…\": der Grund gehört in den Verlauf")
         note = f"Prüfstation vom Umsetzer selbst gestartet ({me}): {a.reason.strip()}"
         update_ticket(a.id, lambda fresh: add_comment(fresh, "hub", note))
+        event("force", ticket=a.id, agent="hub", text="station: " + note)
     g = gate(t)
     if not g["ok"]:
         die(f"{a.id}: {g['reason']}. Prüfstation erst nach grünem hub verify.")
@@ -3897,7 +3899,9 @@ def cmd_review(a):
         if not a.reason.strip():
             die("--force verlangt --reason \"…\": der Grund gehört in den Verlauf")
         gaps = [f"{label}: {cmd}" for label, cmd in points]
-        add_comment(t, "hub", f"Gate überfahren ({' · '.join(gaps) or 'frei'}): {a.reason.strip()}")
+        note = f"Gate überfahren ({' · '.join(gaps) or 'frei'}): {a.reason.strip()}"
+        add_comment(t, "hub", note)
+        event("force", ticket=t["id"], agent="hub", text="review: " + note)
     elif points:
         refuse_review(t, points)
     body, verlauf = split_verlauf(t["body"])
@@ -4740,6 +4744,7 @@ def cmd_land(a):
                     die("--force verlangt --reason \"…\": der Grund gehört in den Verlauf")
                 note = f"CI-Gate überfahren ({why}): {a.reason.strip()}"
                 update_ticket(a.id, lambda fresh: add_comment(fresh, "hub", note))
+                event("force", ticket=a.id, agent="hub", text="ci: " + note)
             else:
                 die(f"{a.id}: {why}. Landen verweigert: hub ci {a.id} erneut ausführen "
                     f"oder --force --reason \"…\".")
@@ -5036,6 +5041,30 @@ def day_of(ts):
     return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
 
 
+FORCE_SITES = ("start", "station", "review", "ci")
+
+
+def force_counts(repo_of, since):
+    """Gate-Überfahrungen im Fenster: gesamt, je Ort und je Repo.
+
+    Ein Gate, das still umgangen wird, ist Dekoration. Diese Zahl sagt, ob die Gates
+    halten oder ob `--force --reason` der Normalweg geworden ist. Quelle sind die
+    `force`-Zeilen in events.jsonl; der Ort steht als Präfix vor dem Grund."""
+    total = {site: 0 for site in FORCE_SITES}
+    per_repo = {}
+    for ev in read_events():
+        if ev.get("kind") != "force" or ev["at"] < since:
+            continue
+        site = (ev.get("text") or "").split(":", 1)[0].strip()
+        if site not in total:
+            site = "other"
+            total.setdefault("other", 0)
+        total[site] += 1
+        repo = repo_of.get(ev.get("ticket") or "", "")
+        per_repo[repo] = per_repo.get(repo, 0) + 1
+    return {"total": sum(total.values()), "sites": total, "repos": per_repo}
+
+
 def cmd_stats(a):
     days = max(1, a.days)
     now = time.time()
@@ -5058,6 +5087,8 @@ def cmd_stats(a):
                  for r, t in zip(rows, tickets)}
     active = [r for r in rows if last_seen[r["id"]] >= start]
     agg = aggregate(active)
+    forc = force_counts({t["id"]: (t.get("repo") or "ohne Repo") for t in tickets},
+                        int(start * 1000))
     done_today = [r for r in rows if r["done_at"] and day_of(r["done_at"]) == today_s]
     today_row = {"date": today_s, "done": len(done_today),
                  "median_min": round(median([r["lead_min"] for r in done_today]), 1) if done_today else None,
@@ -5073,12 +5104,14 @@ def cmd_stats(a):
                         "cost": round(sum(r["cost"] for r in rows if d in touched[r["id"]]), 2)})
     repos = []
     for repo in sorted({r["repo"] or "ohne Repo" for r in active}):
-        repos.append({"repo": repo, **aggregate([r for r in active if (r["repo"] or "ohne Repo") == repo])})
+        repos.append({"repo": repo, **aggregate([r for r in active if (r["repo"] or "ohne Repo") == repo]),
+                      "force": forc["repos"].get(repo, 0)})
     sid = mine["id"] if selected is None else selected
     out = {"days": days, "at": int(now * 1000), "space": sid,
            "space_name": space_name_of(sid),
            "today": today_row, "history": history,
            "summary": {k: agg[k] for k in ("tickets", "done", "median_min", "rounds", "rework", "cost")},
+           "force": forc,
            "stations": agg["stations"], "repos": repos, "agents": agent_rows(tickets, per_ticket),
            "tickets": active}
     if a.json:
@@ -5109,7 +5142,9 @@ def cmd_stats(a):
         print(f"  {r['name']}{role} · {uses} ({r['open']} offen) · ${r['cost']:.2f}")
     if not out["agents"]:
         print("  keine")
-    print(f"\nHeute: {today_row['done']} erledigt · Median {dur(today_row['median_min'])} · "
+    sites = " · ".join(f"{name} {n}" for name, n in forc["sites"].items() if n)
+    print(f"\nÜberfahren: {forc['total']}" + (f" ({sites})" if sites else " — kein Gate umgangen"))
+    print(f"Heute: {today_row['done']} erledigt · Median {dur(today_row['median_min'])} · "
           f"{today_row['rework']} Nacharbeit · ${today_row['cost']:.2f}")
     print("Letzte 7 Tage: " + " · ".join(f"{h['date'][5:]} {h['done']}/{h['rework']}" for h in history)
           + " (erledigt/Nacharbeit)")
