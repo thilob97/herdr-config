@@ -695,9 +695,10 @@ def _orchestrator_state():
     started = None
     if row is not None:
         for event in reversed(events.read_all()):
-            if event.get("kind") == "orchestrator" and event.get("text") in (
-                "gestartet",
-                "neu gestartet",
+            text = event.get("text") or ""
+            if event.get("kind") == "orchestrator" and (
+                text in ("gestartet", "neu gestartet")
+                or text.startswith(("gestartet (", "neu gestartet ("))
             ):
                 started = event.get("at")
                 break
@@ -730,12 +731,16 @@ def cmd_orchestrator(args):
             if agents.orchestrator_live() and not hc.kill(agents.ORCHESTRATOR):
                 raise FabError("Orchestrator ließ sich nicht beenden (hc kill)")
             started = agents.start_orchestrator(roster)
-            events.append("orchestrator", "", actor, "", "neu gestartet")
+            warning = started.get("warning")
+            text = "neu gestartet"
+            if warning:
+                text += f" ({warning})"
+            events.append("orchestrator", "", actor, "", text)
             events.append("config", "", actor, "", "Orchestrator neu gestartet")
             index.rebuild()
         print("Orchestrator neu gestartet (fab-orchestrator)")
-        if started.get("warning"):
-            print(started["warning"])
+        if warning:
+            print(warning)
         return 0
     roster = agents.load()
     with store.locked():
@@ -743,11 +748,15 @@ def cmd_orchestrator(args):
             if agents.orchestrator_live():
                 raise FabError("Orchestrator läuft schon (fab-orchestrator)")
             started = agents.start_orchestrator(roster)
-            events.append("orchestrator", "", "fab", "", "gestartet")
+            warning = started.get("warning")
+            text = "gestartet"
+            if warning:
+                text += f" ({warning})"
+            events.append("orchestrator", "", "fab", "", text)
             index.rebuild()
             print("Orchestrator gestartet (fab-orchestrator)")
-            if started.get("warning"):
-                print(started["warning"])
+            if warning:
+                print(warning)
             return 0
         if args.action == "stop":
             if not agents.orchestrator_live():

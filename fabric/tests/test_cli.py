@@ -165,6 +165,17 @@ class CliTests(FabricCase):
         self.assertEqual(renames[0][renames[0].index("--id") + 1], labels["herdr.tab"])
         self.assertEqual(renames[0][renames[0].index("--name") + 1], "Orchestrator")
 
+    def test_orchestrator_start_meldet_seitenleiste_im_ereignis(self):
+        self.set_live({})
+        self.clear_log()
+        result = self.ok(
+            "orchestrator", "start", env={"HERDR_APP_FAIL": "1"}
+        )
+        self.assertIn("Herdr-Seitenleiste", result.stdout)
+        starts = [row for row in self.events() if row["kind"] == "orchestrator"]
+        self.assertEqual(starts[-1]["text"].split(" (")[0], "gestartet")
+        self.assertIn("Herdr-Seitenleiste", starts[-1]["text"])
+
     def test_agents_json_und_text(self):
         tid = self.new("Team")
         self.set_live({"fab-zap-t-1": "t5"})
