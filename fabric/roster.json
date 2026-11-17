@@ -1,11 +1,37 @@
 {
   "max_sessions": 4,
   "reviewer": "ada",
-  "orchestrator": {"argv": ["omp", "--approval-mode=always-ask-cached"], "prompt": "prompts/orchestrator.md"},
+  "orchestrator": {
+    "argv": [
+      "omp",
+      "--approval-mode=yolo"
+    ],
+    "prompt": "prompts/orchestrator.md"
+  },
   "agents": [
-    {"name": "zap", "role": "umsetzer", "color": "c1", "prompt": "prompts/zap.md",
-     "argv": ["omp", "--model=opencode-go/deepseek-v4.1-flash", "--approval-mode=always-ask-cached", "--max-cost=5"]},
-    {"name": "ada", "role": "pruefer", "color": "c2", "prompt": "prompts/ada.md",
-     "argv": ["claude", "--model", "opus"]}
+    {
+      "name": "zap",
+      "role": "umsetzer",
+      "color": "c1",
+      "prompt": "prompts/zap.md",
+      "argv": [
+        "omp",
+        "--model=opencode-go/deepseek-v4.1-flash",
+        "--approval-mode=yolo",
+        "--max-cost=5"
+      ]
+    },
+    {
+      "name": "ada",
+      "role": "pruefer",
+      "color": "c2",
+      "prompt": "prompts/ada.md",
+      "argv": [
+        "claude",
+        "--model",
+        "opus",
+        "--dangerously-skip-permissions"
+      ]
+    }
   ]
 }
