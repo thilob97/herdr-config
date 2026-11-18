@@ -414,6 +414,65 @@ export function argvSummary(program, model, flags) {
   return pieces.join(" · ");
 }
 
+// ---------- Agenten-Drawer ----------
+
+/** Formularwerte des Agenten-Drawers, ausschließlich aus diesem Agenten. */
+export function agentDraft(agent) {
+  const parts = argvParts(agent?.argv ?? []);
+  return {
+    original: agent?.name ?? "",
+    color: agent?.color ?? "",
+    name: agent?.name ?? "",
+    role: agent?.role ?? "umsetzer",
+    program: parts.program,
+    model: parts.model,
+    flags: flagsText(parts.flags),
+  };
+}
+
+/** Zeigt der Drawer denselben Agenten im selben Modus? */
+export function sameAgentDraft(left, right) {
+  return Boolean(left && right)
+    && left.mode === right.mode
+    && left.original === (right.original ?? "");
+}
+
+/** Ein offener, geänderter Drawer wird beim Wechsel nicht still überschrieben. */
+export function agentSwitchNeedsConfirm(current, next, dirty) {
+  if (!current || sameAgentDraft(current, next)) return false;
+  return Boolean(dirty);
+}
+
+/** Speicherargumente: Ziel und Werte stammen aus demselben Drawer-Zustand.
+ *  `draft` = { mode, original, color } des angezeigten Agenten,
+ *  `form` = { name, role, model, flags, prompt } aus den Formularfeldern. */
+export function agentSaveArgs(draft, form) {
+  const name = String(form?.name ?? "").trim();
+  const program = String(form?.program ?? draft?.program ?? "").trim();
+  if (!name) return { error: "Bitte einen Namen angeben." };
+  if (!program) return { error: "Bitte ein Programm wählen." };
+  const argv = argvFromParts({ program, model: form?.model ?? "", flags: form?.flags ?? "" });
+  const args = [
+    "agent",
+    draft.mode === "new" ? "add" : "edit",
+    draft.mode === "new" ? name : draft.original,
+  ];
+  if (draft.mode === "edit" && name !== draft.original) args.push(`--rename=${name}`);
+  args.push(`--role=${String(form?.role ?? "").trim() || "umsetzer"}`, `--color=${draft.color}`);
+  args.push(`--argv-json=${JSON.stringify(argv)}`);
+  if (String(form?.prompt ?? "").trim()) args.push(`--prompt-text=${form.prompt}`);
+  args.push("--from=mensch");
+  return { args, name, argv };
+}
+
+/** Ein später `prompt show`-Lauf darf nur das Formular füllen, das ihn startete. */
+export function promptLoadApplies(load, current) {
+  return Boolean(load && current)
+    && load.draft === current.draft
+    && load.editor === current.editor
+    && load.name === current.name;
+}
+
 // ---------- Erwähnungen ----------
 
 // Eine Erwähnung ist `@name` mit `[a-z][a-z0-9_-]*`, ohne Groß-/Kleinschreibung.
