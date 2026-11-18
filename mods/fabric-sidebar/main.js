@@ -98,10 +98,10 @@ function metaLine(t, row) {
     .text_size(10.5)
     .when(Boolean(row.role), (el) => el.child(div().text_color(t.dim).child(row.role)))
     .when(Boolean(row.role), (el) => el.child(div().text_color(t.dim).child("·")))
-    .child(div().text_color(statusColor(t, row.status)).child(model.statusWord(row.status)))
-    .when(Boolean(row.runtime), (el) => el.child(div().text_color(t.dim).child("·")))
+    .when(Boolean(row.statusWord), (el) => el.child(div().text_color(statusColor(t, row.status)).child(row.statusWord)))
+    .when(Boolean(row.statusWord), (el) => el.child(div().text_color(t.dim).child("·")))
     .when(Boolean(row.runtime), (el) => el.child(div().text_color(t.dim).child(row.runtime)))
-    .when(Boolean(row.costText), (el) => el.child(div().text_color(t.dim).child("·")))
+    .when(Boolean(row.runtime) && Boolean(row.costText), (el) => el.child(div().text_color(t.dim).child("·")))
     .when(Boolean(row.costText), (el) => el.child(div().text_color(t.dim).child(row.costText)));
 }
 

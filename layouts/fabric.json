@@ -58,6 +58,7 @@
               "type": "block",
               "size": {
                 "weight": 5
+                "weight": 8
               },
               "min": 120,
               "content": {

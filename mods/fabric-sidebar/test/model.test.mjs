@@ -45,21 +45,22 @@ test("Ticket fällt ohne Label aus dem Terminalnamen", () => {
   assert.equal(fabricEntry(term("t3", "fab-zap-t-4", { "fab.agent": "zap" })).ticket, "T-4");
 });
 
-test("Orchestrator steht oben, Agenten eingerückt darunter, echte Subagenten tiefer", () => {
-  const sub = term("t8z", "fab-ada-t-9-sub", {
-    "fab.agent": "ada", "fab.ticket": "T-9",
-  }, { parent: "t8y", status: "working" });
+test("echte Subagenten ohne fab-Labels stehen unter ihrem Elternagenten", () => {
+  // `hc run` ohne --no-parent: nur parent, keine fab.*-Labels.
+  const sub = term("t8z", "t4-sub", {}, { parent: "t8y", status: "working" });
+  const grand = term("t8g", "t4-grand", {}, { parent: "t8z", status: "idle" });
+  const helper = term("t8h", "helper", {}, { parent: "t8k", status: "idle" });
+  const stray = term("t9q", "stray", {}, { status: "idle" });
   const stranger = term("t8w", "fab-zap-t-7", {
     "fab.agent": "zap", "fab.ticket": "T-7",
   }, { parent: "t-unknown" });
 
   const { orchestrator: top, rows } = fabricRows(
-    [orchestrator, zap, ada, sub, stranger, other],
-    [],
+    [orchestrator, zap, ada, sub, grand, helper, stray, stranger, other],
+    [{ address: "t8z", status: "blocked" }],
     [
       { id: "T-12", title: "Eigener Fabric-Abschnitt" },
       { id: "T-3", title: "Zeitverlauf" },
-      { id: "T-9", title: "Unteraufgabe" },
       { id: "T-7", title: "Ohne bekannten Elternagenten" },
     ],
     [{ name: "zap", role: "umsetzer" }, { name: "ada", role: "pruefer" }],
@@ -71,16 +72,22 @@ test("Orchestrator steht oben, Agenten eingerückt darunter, echte Subagenten ti
     ["t8k", 0],
     ["t8y", 1],
     ["t8z", 2],
+    ["t8g", 3],
     ["t8w", 1],
     ["t8x", 1],
+    ["t8h", 1],
   ]);
   assert.deepEqual(rows.map((row) => row.title), [
     "Orchestrator",
     "ada · T-3 Zeitverlauf",
-    "ada · T-9 Unteraufgabe",
+    "t4-sub · T-3 Zeitverlauf",
+    "t4-grand · T-3 Zeitverlauf",
     "zap · T-7 Ohne bekannten Elternagenten",
     "zap · T-12 Eigener Fabric-Abschnitt",
+    "helper",
   ]);
+  assert.equal(rows.find((row) => row.address === "t8z").status, "blocked");
+  assert.equal(rows.some((row) => row.address === "t9q"), false);
 });
 
 test("ohne Orchestrator stehen Agenten als Wurzeln", () => {

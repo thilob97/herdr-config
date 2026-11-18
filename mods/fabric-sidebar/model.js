@@ -68,12 +68,28 @@ function ticketNumber(ticket) {
   return match ? Number(match[1]) : Number.MAX_SAFE_INTEGER;
 }
 
+/** Kind eines Fabric-Terminals ohne eigene Labels: `hc run`-Subagenten tragen nur
+    `parent`. Name und Ticket erben vom Elternagenten, der Name des Terminals
+    bleibt sichtbar. */
+function inheritedEntry(terminal, parent, address) {
+  const name = String(terminal.name ?? "");
+  return {
+    address,
+    name,
+    agent: name || `${parent.agent}+`,
+    ticket: parent.ticket,
+    orchestrator: false,
+    inherited: true,
+  };
+}
+
 /** Zeilen für die Seitenleiste: Orchestrator zuerst, Agenten darunter eingerückt.
 
     Eltern sind, in dieser Reihenfolge: ein Fabric-Terminal aus `parent` (echte
     Subagenten, `hc run` ohne `--no-parent`), sonst der Orchestrator. Fabric
     startet Agenten mit `--no-parent`; sie stehen deshalb als Kinder des
-    Orchestrators, nicht als dessen Geschwister. */
+    Orchestrators, nicht als dessen Geschwister. Subagenten tragen keine
+    `fab.*`-Labels und werden über ihre `parent`-Kette aufgenommen. */
 export function fabricRows(terminals = [], listed = [], tickets = [], roster = [], now = Date.now()) {
   const statuses = new Map(
     (listed ?? []).filter(Boolean).map((agent) => [agent.address, agent.status]),
@@ -85,20 +101,35 @@ export function fabricRows(terminals = [], listed = [], tickets = [], roster = [
     (roster ?? []).filter((row) => row?.name).map((row) => [row.name, row.role ?? ""]),
   );
 
-  const nodes = (terminals ?? [])
-    .filter((terminal) => terminal && (terminal.state === undefined || terminal.state === "live"))
-    .map((terminal) => {
-      const entry = fabricEntry(terminal);
-      if (!entry) return null;
-      return {
-        ...entry,
-        parent: typeof terminal.parent === "string" && terminal.parent ? terminal.parent : null,
-        status: statuses.get(entry.address) ?? terminal.status ?? null,
-        created: Number.isFinite(terminal.created_ms) ? terminal.created_ms : null,
-        cost: costOf(terminal),
-      };
-    })
-    .filter(Boolean);
+  const live = (terminals ?? [])
+    .filter((terminal) => terminal && (terminal.state === undefined || terminal.state === "live"));
+  const included = new Map();
+  for (const terminal of live) {
+    const entry = fabricEntry(terminal);
+    if (entry) included.set(entry.address, { terminal, entry });
+  }
+  // Bis alle Nachfahren bekannter Fabric-Terminals eingesammelt sind; ein
+  // Subagent kann wiederum Subagenten haben.
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const terminal of live) {
+      const address = String(terminal.address ?? terminal.name);
+      if (included.has(address)) continue;
+      const parentAddress = typeof terminal.parent === "string" ? terminal.parent : "";
+      const parent = parentAddress ? included.get(parentAddress) : null;
+      if (!parent) continue;
+      included.set(address, { terminal, entry: inheritedEntry(terminal, parent.entry, address) });
+      changed = true;
+    }
+  }
+
+  const nodes = [...included.values()].map(({ terminal, entry }) => ({
+    ...entry,
+    parent: typeof terminal.parent === "string" && terminal.parent ? terminal.parent : null,
+    status: statuses.get(entry.address) ?? terminal.status ?? null,
+    created: Number.isFinite(terminal.created_ms) ? terminal.created_ms : null,
+    cost: costOf(terminal),
+  }));
 
   const orchestrator = nodes.find((node) => node.orchestrator) ?? null;
   const agents = nodes.filter((node) => !node.orchestrator);
@@ -122,6 +153,7 @@ export function fabricRows(terminals = [], listed = [], tickets = [], roster = [
   const push = (node, depth) => {
     const runtime = runtimeText(node.created, now);
     const cost = costText(node.cost);
+    const status = node.status ? statusWord(node.status) : "";
     const title = node.orchestrator
       ? "Orchestrator"
       : node.ticket
@@ -129,7 +161,7 @@ export function fabricRows(terminals = [], listed = [], tickets = [], roster = [
         : node.agent;
     const meta = [
       node.orchestrator ? "" : roles.get(node.agent) || "",
-      statusWord(node.status),
+      status,
       runtime,
       cost,
     ].filter(Boolean).join(" · ");
@@ -139,6 +171,7 @@ export function fabricRows(terminals = [], listed = [], tickets = [], roster = [
       role: node.orchestrator ? "" : roles.get(node.agent) || "",
       title,
       meta,
+      statusWord: status,
       runtime,
       costText: cost,
     });
