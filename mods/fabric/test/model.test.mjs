@@ -487,3 +487,97 @@ test("Freitexte stehen hinter --, Optionen tragen =", async () => {
     "repo", "set", "/r", "verify", "--text=#!/bin/sh\n", "--from=mensch",
   ]);
 });
+
+// ---------- Agenten-Drawer: Wechsel zwischen Agenten ----------
+
+const ZAP = {
+  name: "zap", role: "umsetzer", color: "c1",
+  argv: ["omp", "--model=opencode-go/deepseek-v4.1-flash", "--approval-mode=yolo", "--max-cost=5"],
+};
+const ADA = {
+  name: "ada", role: "pruefer", color: "c2",
+  argv: ["claude", "--model", "opus", "--dangerously-skip-permissions"],
+};
+// Das Formular schreibt das Modell immer als --model=<Wert>; inhaltlich gleich.
+const ADA_SAVED = ["claude", "--model=opus", "--dangerously-skip-permissions"];
+
+function argvOf(args) {
+  const flag = args.find((arg) => arg.startsWith("--argv-json="));
+  return JSON.parse(flag.slice("--argv-json=".length));
+}
+
+test("Drawer-Wechsel zeigt und speichert nur die Werte des gewählten Agenten", async () => {
+  const { agentDraft, sameAgentDraft, agentSwitchNeedsConfirm, agentSaveArgs } =
+    await import("../model.js");
+
+  assert.deepEqual(agentDraft(ADA), {
+    original: "ada",
+    color: "c2",
+    name: "ada",
+    role: "pruefer",
+    program: "claude",
+    model: "opus",
+    flags: "--dangerously-skip-permissions",
+  });
+
+  const zapDraft = { mode: "edit", ...agentDraft(ZAP) };
+  const adaDraft = { mode: "edit", ...agentDraft(ADA) };
+  assert.equal(sameAgentDraft(zapDraft, adaDraft), false);
+  assert.equal(sameAgentDraft(zapDraft, { mode: "edit", original: "zap" }), true);
+
+  // Geänderter zap-Drawer: Wechsel fragt nach, statt still zu überschreiben.
+  assert.equal(agentSwitchNeedsConfirm(zapDraft, adaDraft, true), true);
+  assert.equal(agentSwitchNeedsConfirm(null, adaDraft, true), false, "erster Aufbau fragt nicht");
+  assert.equal(agentSwitchNeedsConfirm(zapDraft, adaDraft, false), false, "ohne Änderung wechselt es direkt");
+
+  // Nach dem Wechsel steht ausschließlich adas Formular im Drawer.
+  const form = {
+    name: adaDraft.name,
+    role: adaDraft.role,
+    model: adaDraft.model,
+    flags: adaDraft.flags,
+    program: adaDraft.program,
+    prompt: "adas prompt",
+  };
+  const plan = agentSaveArgs({ mode: "edit", original: "ada", color: "c2" }, form);
+  assert.equal(plan.error, undefined);
+  assert.equal(plan.args[2], "ada");
+  assert.deepEqual(argvOf(plan.args), ADA_SAVED);
+  assert.equal(plan.args.includes("--prompt-text=adas prompt"), true);
+  assert.equal(plan.args.some((arg) => arg.includes("deepseek") || arg.includes("yolo")), false,
+    "keine Werte aus zaps Drawer");
+
+  // Umbenennen zielt weiterhin auf den angezeigten Agenten (ada), nicht auf zap.
+  const renamed = agentSaveArgs({ mode: "edit", original: "ada", color: "c2" }, { ...form, name: "ada-2" });
+  assert.equal(renamed.args[2], "ada");
+  assert.equal(renamed.args.includes("--rename=ada-2"), true);
+  assert.deepEqual(argvOf(renamed.args), ADA_SAVED);
+});
+
+test("Schneller Wechsel: spätes Prompt-Laden des alten Agenten landet nicht im neuen Formular", async () => {
+  const { promptLoadApplies } = await import("../model.js");
+  const zapEditor = { value: "" };
+  const adaEditor = { value: "" };
+  const zapLoad = { draft: 1, editor: zapEditor, name: "zap" };
+
+  // Drawer inzwischen auf ada (neuer Lauf, neuer Editor) → zaps Antwort verwerfen.
+  assert.equal(promptLoadApplies(zapLoad, { draft: 2, editor: adaEditor, name: "ada" }), false);
+  // Gleicher Lauf, aber Drawer geschlossen → verwerfen.
+  assert.equal(promptLoadApplies(zapLoad, { draft: 2, editor: null, name: "" }), false);
+  // Eigener Lauf darf schreiben.
+  assert.equal(promptLoadApplies(zapLoad, { draft: 1, editor: zapEditor, name: "zap" }), true);
+  // adas Lauf schreibt nur in adas Editor.
+  const adaLoad = { draft: 2, editor: adaEditor, name: "ada" };
+  assert.equal(promptLoadApplies(adaLoad, { draft: 2, editor: adaEditor, name: "ada" }), true);
+  assert.equal(promptLoadApplies(adaLoad, { draft: 2, editor: zapEditor, name: "zap" }), false);
+});
+
+test("Speichern ohne Namen oder Programm meldet den Fehler statt zu schreiben", async () => {
+  const { agentSaveArgs } = await import("../model.js");
+  assert.deepEqual(agentSaveArgs({ mode: "edit", original: "ada", color: "c2" }, {
+    name: "  ", role: "pruefer", model: "opus", flags: "", program: "claude", prompt: "",
+  }), { error: "Bitte einen Namen angeben." });
+  assert.deepEqual(agentSaveArgs({ mode: "edit", original: "ada", color: "c2" }, {
+    name: "ada", role: "pruefer", model: "opus", flags: "", program: "", prompt: "",
+  }), { error: "Bitte ein Programm wählen." });
+});

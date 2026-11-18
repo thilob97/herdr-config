@@ -151,6 +151,8 @@ export default class Fabric extends View {
     this.agentProgram = "";
     this.agentColorKey = "c1";
     this.agentOriginal = "";
+    this.agentDraftId = 0;
+    this.agentPromptLoading = false;
     this.teamDirty = false;
     this.teamSaving = false;
     this.maxSessions = null;
@@ -589,10 +591,7 @@ export default class Fabric extends View {
       this.menu = null;
       this.inboxOpen = false;
       this.modal = null;
-      if (page !== "team") {
-        this.teamDrawer = null;
-        this.teamDirty = false;
-      }
+      if (page !== "team") this.clearAgentDrawer();
       if (page !== "ticket" || target.id !== this.openId) this.resetTicketEditing();
       if (target.id) setShared("fabric.selected", target.id);
       setShared("fabric.route", target);
@@ -1539,38 +1538,69 @@ export default class Fabric extends View {
   // ---------- Team ----------
 
   openAgentDrawer(mode, agent, cx) {
+    const next = { mode, original: agent?.name ?? "" };
+    if (model.sameAgentDraft(this.teamDrawer, next)) {
+      this.notifyNow();
+      return;
+    }
+    if (model.agentSwitchNeedsConfirm(this.teamDrawer, next, this.teamDirty)) {
+      // Der offene Drawer gehört einem anderen Agenten; erst speichern oder verwerfen.
+      this.guard(() => this.showAgentDrawer(mode, agent, cx), cx);
+      return;
+    }
+    this.showAgentDrawer(mode, agent, cx);
+  }
+
+  showAgentDrawer(mode, agent, cx) {
+    // Ein offenes Dropdown darf nicht in den neuen Agenten hineinwählen.
+    this.menu = null;
+    this.agentDraftId += 1;
+    const draftId = this.agentDraftId;
+    const draft = model.agentDraft(agent);
     this.teamDirty = false;
-    this.teamDrawer = { mode, original: agent?.name ?? "" };
-    this.agentOriginal = agent?.name ?? "";
+    this.teamDrawer = { mode, original: draft.original };
+    this.agentOriginal = draft.original;
     this.agentColorKey = agent?.color ?? this.nextColor();
-    const parts = model.argvParts(agent?.argv ?? []);
-    this.agentProgram = parts.program;
-    this.agentName = InputState.new({ value: agent?.name ?? "" });
-    this.agentRole = InputState.new({ value: agent?.role ?? "umsetzer" });
-    this.agentModel = InputState.new({ value: parts.model });
-    this.agentFlags = InputState.new({ value: model.flagsText(parts.flags) });
+    this.agentProgram = draft.program;
+    this.agentName = InputState.new({ value: draft.name });
+    this.agentRole = InputState.new({ value: draft.role });
+    this.agentModel = InputState.new({ value: draft.model });
+    this.agentFlags = InputState.new({ value: draft.flags });
     this.agentPrompt = this.newEditor("markdown", "");
-    for (const [state, key] of [
-      [this.agentName, "name"], [this.agentRole, "role"], [this.agentModel, "model"], [this.agentFlags, "flags"],
-    ]) {
+    for (const state of [this.agentName, this.agentRole, this.agentModel, this.agentFlags]) {
       state.on("change", (_event, cx) => { this.teamDirty = true; this.notifyNow(); });
       this.track(state);
     }
-    this.agentPrompt.on("change", (_event, cx) => { this.teamDirty = true; this.notifyNow(); });
+    this.agentPrompt.on("change", (_event, cx) => {
+      if (this.agentPromptLoading) return;
+      this.teamDirty = true;
+      this.notifyNow();
+    });
+    const editor = this.agentPrompt;
     this.ensurePrograms(cx);
     this.notifyNow();
     if (agent?.name) {
       cx.spawn(async (cx) => {
+        let text = null;
         try {
           const result = await this.execFab(["prompt", "show", agent.name], { timeout: 20000 });
-          if (result.code === 0 && this.agentPrompt) {
-            this.agentPrompt.set_value(result.stdout ?? "");
-            this.teamDirty = false;
-            this.notifyNow();
-          }
+          if (result.code === 0) text = result.stdout ?? "";
         } catch {
           // Ohne Promptdatei bleibt der Editor leer; fab legt sie beim Speichern an.
         }
+        if (text === null) return;
+        // Nur der Drawer, der diesen Lauf gestartet hat, darf ihn übernehmen.
+        if (!model.promptLoadApplies(
+          { draft: draftId, editor, name: agent.name },
+          { draft: this.agentDraftId, editor: this.agentPrompt, name: this.agentOriginal },
+        )) return;
+        if (editor.value() !== "") return; // Nutzer tippt bereits im Feld
+        const dirty = this.teamDirty;
+        this.agentPromptLoading = true;
+        editor.set_value(text);
+        this.agentPromptLoading = false;
+        this.teamDirty = dirty;
+        this.notifyNow();
       });
     }
   }
@@ -1581,63 +1611,64 @@ export default class Fabric extends View {
     return "c1";
   }
 
+  clearAgentDrawer(cx) {
+    this.agentDraftId += 1;
+    this.teamDrawer = null;
+    this.teamDirty = false;
+    this.agentName = null;
+    this.agentRole = null;
+    this.agentModel = null;
+    this.agentFlags = null;
+    this.agentPrompt = null;
+    cx?.notify();
+  }
+
   closeDrawer(cx) {
     if (!this.teamDrawer) return;
-    const go = () => {
-      this.teamDrawer = null;
-      this.teamDirty = false;
-      this.agentName = null;
-      this.agentRole = null;
-      this.agentModel = null;
-      this.agentFlags = null;
-      this.agentPrompt = null;
-      cx?.notify();
-    };
     if (this.teamDirty) {
-      this.modal = { kind: "unsaved", dirty: this.dirtySections(), then: go };
+      this.modal = {
+        kind: "unsaved",
+        dirty: this.dirtySections(),
+        then: () => this.clearAgentDrawer(cx),
+      };
       cx?.notify();
     } else {
-      go();
+      this.clearAgentDrawer(cx);
     }
   }
 
   async saveAgent(cx, silent = false) {
     if (!this.teamDrawer || this.teamSaving) return false;
-    const name = this.agentName.value().trim();
-    const role = this.agentRole.value().trim();
-    const modelValue = this.agentModel.value().trim();
-    const flags = this.agentFlags.value();
-    const program = this.agentProgram;
-    const promptText = this.agentPrompt.value();
-    if (!name) {
-      this.setError("agent", "Bitte einen Namen angeben.");
+    const draftId = this.agentDraftId;
+    const draft = {
+      mode: this.teamDrawer.mode,
+      original: this.agentOriginal,
+      color: this.agentColorKey,
+    };
+    const plan = model.agentSaveArgs(draft, {
+      name: this.agentName.value(),
+      role: this.agentRole.value(),
+      model: this.agentModel.value(),
+      flags: this.agentFlags.value(),
+      program: this.agentProgram,
+      prompt: this.agentPrompt.value(),
+    });
+    if (plan.error) {
+      this.setError("agent", plan.error);
       this.notifyNow();
       return false;
     }
-    if (!program) {
-      this.setError("agent", "Bitte ein Programm wählen.");
-      this.notifyNow();
-      return false;
-    }
-    const argv = model.argvFromParts({ program, model: modelValue, flags });
-    const mode = this.teamDrawer.mode;
-    const args = ["agent", mode === "new" ? "add" : "edit", mode === "new" ? name : this.agentOriginal];
-    if (mode === "edit" && name !== this.agentOriginal) args.push(`--rename=${name}`);
-    args.push(`--role=${role || "umsetzer"}`, `--color=${this.agentColorKey}`);
-    args.push(`--argv-json=${JSON.stringify(argv)}`);
-    if (promptText.trim()) args.push(`--prompt-text=${promptText}`);
-    args.push("--from=mensch");
 
     this.teamSaving = true;
-    const result = await this.action("agent", args, {
-      success: mode === "new" ? `Agent ${name} angelegt.` : `Agent ${name} gespeichert.`,
-      after: async () => {
-        this.teamDrawer = null;
-        this.teamDirty = false;
-        await this.loadRoster(cx);
-      },
+    const result = await this.action("agent", plan.args, {
+      success: draft.mode === "new" ? `Agent ${plan.name} angelegt.` : `Agent ${plan.name} gespeichert.`,
     });
     this.teamSaving = false;
+    if (result.ok) {
+      await this.loadRoster(cx);
+      // Ein zwischenzeitlich geöffneter anderer Drawer bleibt stehen.
+      if (this.agentDraftId === draftId) this.clearAgentDrawer();
+    }
     if (!silent) this.notifyNow();
     return result.ok;
   }
@@ -1654,8 +1685,7 @@ export default class Fabric extends View {
     await this.action("agent-rm", ["agent", "rm", agent.name, "--from=mensch"], {
       success: `Agent ${agent.name} entfernt.`,
       after: (result) => {
-        this.teamDrawer = null;
-        this.teamDirty = false;
+        this.clearAgentDrawer();
         this.loadRoster(cx);
       },
     });
