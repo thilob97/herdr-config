@@ -233,6 +233,9 @@ function programOptions(app, current) {
 }
 
 function colorRow(app, cx, t) {
+  // Klicks aus dem Elementbaum eines älteren Drawers dürfen nicht in den
+  // inzwischen sichtbaren Agenten schreiben.
+  const draftId = app.agentDraftId;
   return h_flex().w_full().gap(6).items_center().children(COLORS.map((key) => {
     const active = app.agentColorKey === key;
     const color = ui.roleColor(t, key);
@@ -246,13 +249,20 @@ function colorRow(app, cx, t) {
       .when(active, (el) => el.border_2().border_color(t.foreground).text_color(t.background).child(ui.icon("check", 11)))
       .cursor_pointer()
       .tooltip(key)
-      .on_click((_event, cx) => { cx.stop_propagation(); app.agentColorKey = key; app.teamDirty = true; cx.notify(); });
+      .on_click((_event, cx) => {
+        cx.stop_propagation();
+        if (app.agentDraftId !== draftId || !app.teamDrawer) return;
+        app.agentColorKey = key;
+        app.teamDirty = true;
+        cx.notify();
+      });
   }));
 }
 
 export function renderAgentDrawer(app, cx, t) {
   if (!app.teamDrawer) return null;
   const mode = app.teamDrawer.mode;
+  const draftId = app.agentDraftId;
   const original = app.agentOriginal;
   const agent = app.agentFor(original);
   const parsed = model.argvParts(model.argvFromParts({
@@ -311,7 +321,14 @@ export function renderAgentDrawer(app, cx, t) {
       width: 300,
       scrollHandle: app.dropdownScroll,
       onToggle: () => { app.menu = app.menu === "agent-program" ? null : "agent-program"; cx.notify(); },
-      onPick: (value) => { app.menu = null; app.agentProgram = value; app.teamDirty = true; cx.notify(); },
+      onPick: (value) => {
+        app.menu = null;
+        // Eine Auswahl aus zaps offenem Menü darf nicht adas Programm setzen.
+        if (app.agentDraftId !== draftId || !app.teamDrawer) { cx.notify(); return; }
+        app.agentProgram = value;
+        app.teamDirty = true;
+        cx.notify();
+      },
     }), {
       hint: app.errorFor("programs")?.text
         ?? (Array.isArray(app.programs) && app.programs.length === 0
