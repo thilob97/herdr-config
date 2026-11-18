@@ -649,7 +649,10 @@ export function dropdown(t, {
   });
 
   const listId = `${id}-list`;
-  const menu = v_flex()
+  // Nur das offene Menü bauen: geschlossene Dropdowns erzeugen keine
+  // Optionszeilen. Sonst entstehen bei jedem Render alle Menüs aller
+  // Dropdowns (Board: eine pro Karte) und werden sofort verworfen.
+  const menu = () => v_flex()
     .relative()
     .w(width)
     .max_h(320)
@@ -693,7 +696,7 @@ export function dropdown(t, {
     )
     .child(Scrollbar.vertical(listId).absolute().inset_0());
 
-  return Popup.new(id, withClick).anchor(align).when(open, (el) => el.content(menu));
+  return Popup.new(id, withClick).anchor(align).when(open, (el) => el.content(menu()));
 }
 
 const moduleDropdown = dropdown;
