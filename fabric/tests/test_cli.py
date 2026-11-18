@@ -229,10 +229,7 @@ class CliTests(FabricCase):
             "comment", tid, "--from", "zap", "@ada @unbekannt @zap selbst"
         )
         lines = [line for line in result.stdout.splitlines() if line.startswith("@")]
-        self.assertEqual(len(lines), 3)
-        self.assertIn("@ada: geweckt", lines)
-        self.assertIn("@unbekannt: unterdrückt: unbekannt", lines)
-        self.assertIn("@zap: kein Wecken: du bist der Autor", lines)
+        self.assertEqual(lines, ["@ada: geweckt", "@zap: kein Wecken: du bist der Autor"])
 
     def test_wake_von_hand_nutzt_die_regeln(self):
         tid = self.new("Hand")
