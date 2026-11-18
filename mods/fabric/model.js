@@ -480,7 +480,7 @@ export function mentionQuery(text, caret = String(text ?? "").length) {
   const source = String(text ?? "");
   const at = Math.max(0, Math.min(caret, source.length));
   const before = source.slice(0, at);
-  const match = /@([A-Za-z][A-Za-z0-9_-]*)$/.exec(before);
+  const match = /@([A-Za-z0-9_-]*)$/.exec(before);
   if (!match) return null;
   const start = at - match[0].length;
   const previous = start > 0 ? source[start - 1] : "";
@@ -495,7 +495,51 @@ export function mentionSuggestions(text, caret, names = []) {
   const unique = [...new Set((names ?? []).map((name) => String(name ?? "").toLowerCase()).filter(Boolean))];
   const matches = unique.filter((name) => name.startsWith(query.query));
   matches.sort((a, b) => (a === query.query ? -1 : b === query.query ? 1 : a.localeCompare(b)));
-  return matches.slice(0, 6).map((name) => ({ name, query: query.query }));
+  return matches.map((name) => ({ name, query: query.query }));
+}
+
+/** Alle vorschlagbaren Namen: Roster, dann `orchestrator` und `mensch`.
+ *  Einträge dürfen `{name}` oder Zeichenketten sein; Doppelte fallen weg. */
+export function mentionNames(agents = []) {
+  const seen = new Set();
+  const names = [];
+  const add = (value) => {
+    const name = String(value ?? "").trim();
+    if (!name) return;
+    const key = name.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    names.push(name);
+  };
+  for (const agent of agents ?? []) add(typeof agent === "string" ? agent : agent?.name);
+  add("orchestrator");
+  add("mensch");
+  return names;
+}
+
+/** Nächster Vorschlag in der Liste; läuft am Ende wieder zum Anfang. */
+export function moveMentionIndex(index, length, delta) {
+  if (!(length > 0)) return 0;
+  const step = Number(delta) || 0;
+  return (((Number(index) || 0) + step) % length + length) % length;
+}
+
+/** Ersetzt genau `range` durch `@name ` und liefert Text und Cursor dahinter.
+ *  Ein ungültiger oder leerer Bereich lässt den Text unverändert. */
+export function replaceMention(text, range, name) {
+  const source = String(text ?? "");
+  const start = Number(range?.start);
+  const end = Number(range?.end);
+  const invalid = !Number.isInteger(start) || !Number.isInteger(end)
+    || start < 0 || end > source.length || end <= start;
+  if (invalid) {
+    return { text: source, caret: Number.isInteger(end) ? Math.max(0, Math.min(end, source.length)) : source.length };
+  }
+  const insert = `@${name} `;
+  return {
+    text: source.slice(0, start) + insert + source.slice(end),
+    caret: start + insert.length,
+  };
 }
 
 /** Ersetzt die `@`-Eingabe durch `@name ` und liefert Text und neue Cursorposition. */
@@ -503,11 +547,7 @@ export function insertMention(text, caret, name) {
   const source = String(text ?? "");
   const query = mentionQuery(source, caret);
   if (!query) return { text: source, caret };
-  const insert = `@${name} `;
-  return {
-    text: source.slice(0, query.start) + insert + source.slice(query.end),
-    caret: query.start + insert.length,
-  };
+  return replaceMention(source, query, name);
 }
 
 /** Wen ein Kommentar erreicht. `author` ist der schreibende Name (hier `mensch`).

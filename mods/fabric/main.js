@@ -32,6 +32,10 @@ const NAV = [
   { page: "settings", icon: "settings", label: "Einstellungen" },
 ];
 
+// Die Tasten der Erwähnungsliste gehören der Anwendung, nicht dem Fenster:
+// einmal binden, beide Wurzeln hängen ihre on_action-Handler daran.
+let mentionKeysBound = false;
+
 function message(error) {
   return error instanceof Error ? error.message : String(error ?? "");
 }
@@ -97,8 +101,9 @@ export default class Fabric extends View {
     this.bodySaved = "";
     this.titleEdit = null;
     this.titleSaved = "";
-    this.commentCaret = 0;
-    this.commentSuggestions = [];
+    this.mentions = { field: null, suggestions: [], index: 0, start: 0, end: 0 };
+    this.focusedField = null;
+    this.mentionClock = null;
     this.wakeOpen = false;
     this.wakeName = "";
     this.wakeText = null;
@@ -170,35 +175,39 @@ export default class Fabric extends View {
     this.search.on("blur", (_event, cx) => { this.searchFocused = false; this.fieldFocused = false; this.notifyNow(); });
 
     this.newInput = InputState.new({ placeholder: "Neues Ticket in einem Satz…" });
-    this.newInput.on("change", (_event, cx) => cx.notify());
-    this.newInput.on("submit", (_event, cx) => this.createFromPanel(cx));
+    this.newInput.on("submit", (_event, cx) => {
+      if (this.consumeMentionSubmit("quick", cx)) return;
+      this.createFromPanel(cx);
+    });
     this.track(this.newInput);
+    this.wireMentions("quick", this.newInput);
 
     this.commentInput = TextareaState.new({ placeholder: "Kommentar … @name weckt", rows: 3 });
-    this.commentInput.on("change", (_event, cx) => {
-      this.commentCaret = this.commentInput.selected_range().end;
-      this.commentSuggestions = model.mentionSuggestions(
-        this.commentInput.value(), this.commentCaret, this.agentNames(),
-      );
-      this.notifyNow();
+    this.commentInput.on("submit", (_event, cx) => {
+      if (this.consumeMentionSubmit("comment", cx)) return;
+      this.comment(cx);
     });
-    this.commentInput.on("focus", (_event, cx) => {
-      this.fieldFocused = true;
-      this.notifyNow();
-    });
-    this.commentInput.on("blur", (_event, cx) => {
-      this.fieldFocused = false;
-      this.commentSuggestions = [];
-      this.notifyNow();
-    });
-    this.commentInput.on("submit", (_event, cx) => this.comment(cx));
     this.track(this.commentInput);
+    this.wireMentions("comment", this.commentInput);
     this.search.on("focus", (_event, cx) => { this.fieldFocused = true; this.notifyNow(); });
     this.search.on("blur", (_event, cx) => { this.fieldFocused = false; this.notifyNow(); });
-    this.newInput.on("focus", (_event, cx) => { this.fieldFocused = true; this.notifyNow(); });
-    this.newInput.on("blur", (_event, cx) => { this.fieldFocused = false; this.notifyNow(); });
 
     this.appFocus = cx.focus_handle();
+    this.mentionClock = cx;
+    if (!mentionKeysBound) {
+      mentionKeysBound = true;
+      try {
+        cx.bind_keys([
+          { keystroke: "up", action: "fabric-mention-up" },
+          { keystroke: "down", action: "fabric-mention-down" },
+          { keystroke: "enter", action: "fabric-mention-accept" },
+          { keystroke: "tab", action: "fabric-mention-accept" },
+          { keystroke: "escape", action: "fabric-mention-close" },
+        ]);
+      } catch {
+        // Die Keymap ist dann unverändert; die Liste bleibt ohne Tastatur bedienbar.
+      }
+    }
 
     if (this.view === "switcher") {
       this.ready = true;
@@ -329,13 +338,166 @@ export default class Fabric extends View {
     this.bodyEditing = false;
     this.wakeOpen = false;
     this.checksOpen = false;
-    this.commentSuggestions = [];
+    this.clearMentions();
     this.bodyFor = null;
     this.bodyEditor = null;
   }
 
   agentNames() {
-    return [...this.agents.map((agent) => agent.name), "orchestrator", "mensch"];
+    return model.mentionNames(this.agents);
+  }
+
+  // ---------- Namensvorschläge hinter `@` ----------
+
+  mentionInput(field) {
+    switch (field) {
+      case "comment": return this.commentInput;
+      case "new": return this.newSentence;
+      case "quick": return this.newInput;
+      case "title": return this.titleEdit;
+      case "wake": return this.wakeText;
+      default: return null;
+    }
+  }
+
+  mentionOpen(field) {
+    return Boolean(field) && this.mentions.field === field && this.mentions.suggestions.length > 0;
+  }
+
+  clearMentions(cx) {
+    this.mentions = { field: null, suggestions: [], index: 0, start: 0, end: 0 };
+    this.focusedField = null;
+    if (cx) cx.notify();
+  }
+
+  /** Ein Timer aus dem Besitz des Fensters; der `cx` eines Handlers trägt keinen. */
+  mentionLater(ms, body) {
+    const clock = this.asyncCx ?? this.mentionClock;
+    if (clock?.timer?.after) {
+      try {
+        clock.timer.after(ms, () => { if (!this.closed) body(); });
+        return;
+      } catch {
+        // Ein ersetzter Build hat keinen gültigen Timer mehr; dann sofort leeren.
+      }
+    }
+    body();
+  }
+
+  wireMentions(field, state) {
+    if (!state?.on) return;
+    state.on("change", (_event, cx) => {
+      this.focusedField = field;
+      this.refreshMentions(field, cx);
+    });
+    state.on("focus", (_event, cx) => {
+      this.focusedField = field;
+      this.refreshMentions(field, cx);
+    });
+    state.on("blur", (_event, _cx) => {
+      if (this.focusedField === field) this.focusedField = null;
+      // Der Klick auf eine Vorschlagszeile kommt nach dem Blur; erst danach leeren.
+      this.mentionLater(120, () => {
+        if (this.focusedField === field || this.mentions.field !== field) return;
+        this.mentions = { field: null, suggestions: [], index: 0, start: 0, end: 0 };
+        this.notifyNow();
+      });
+    });
+  }
+
+  refreshMentions(field, cx) {
+    const input = this.mentionInput(field);
+    if (!input) {
+      this.mentions = { field: null, suggestions: [], index: 0, start: 0, end: 0 };
+      return;
+    }
+    const value = input.value();
+    const range = input.selected_range();
+    const caret = range?.end ?? String(value).length;
+    // Ein Textarea fügt bei Enter zuerst den Zeilenumbruch ein und meldet
+    // danach submit. Die Liste muss diesen Umbruch überleben, damit Enter
+    // den Vorschlag übernimmt statt den Kommentar zu senden.
+    const at = caret > 0 && value[caret - 1] === "\n" ? caret - 1 : caret;
+    const query = model.mentionQuery(value, at);
+    const suggestions = query ? model.mentionSuggestions(value, at, this.agentNames()) : [];
+    const same = this.mentions.field === field && this.mentions.start === (query?.start ?? 0);
+    const index = suggestions.length
+      ? (same ? Math.min(this.mentions.index, suggestions.length - 1) : 0)
+      : 0;
+    this.mentions = {
+      field: suggestions.length ? field : null,
+      suggestions,
+      index,
+      start: query?.start ?? 0,
+      end: query?.end ?? 0,
+    };
+    cx?.notify?.();
+  }
+
+  moveMention(delta, cx) {
+    if (!this.mentionOpen(this.focusedField)) return;
+    this.mentions.index = model.moveMentionIndex(
+      this.mentions.index, this.mentions.suggestions.length, delta,
+    );
+    this.notifyNow();
+  }
+
+  acceptMention(field, name, cx) {
+    const input = this.mentionInput(field);
+    if (!input || !name || this.mentions.field !== field) return false;
+    const value = input.value();
+    let end = this.mentions.end;
+    // Enter im Textfeld steht als Zeilenumbruch direkt hinter `end`.
+    if (value[end] === "\n") end += 1;
+    const next = model.replaceMention(value, { start: this.mentions.start, end }, name);
+    this.mentions = { field: null, suggestions: [], index: 0, start: 0, end: 0 };
+    this.focusedField = field;
+    input.set_value(next.text);
+    input.set_selected_range({ start: next.caret, end: next.caret });
+    input.focus();
+    this.notifyNow();
+    return true;
+  }
+
+  consumeMentionSubmit(field, cx) {
+    if (!this.mentionOpen(field)) return false;
+    const suggestion = this.mentions.suggestions[this.mentions.index]
+      ?? this.mentions.suggestions[0];
+    if (!suggestion) return false;
+    return this.acceptMention(field, suggestion.name, cx);
+  }
+
+  mentionAction(kind, cx) {
+    const field = this.focusedField;
+    const open = field && this.mentions.field === field && this.mentions.suggestions.length > 0;
+    if (!open) {
+      cx.propagate();
+      return;
+    }
+    if (kind === "up" || kind === "down") {
+      this.moveMention(kind === "up" ? -1 : 1, cx);
+      return;
+    }
+    if (kind === "accept") {
+      this.consumeMentionSubmit(field, cx);
+      return;
+    }
+    this.mentions = { field: null, suggestions: [], index: 0, start: 0, end: 0 };
+    this.notifyNow();
+  }
+
+  mentionActions(el) {
+    return el
+      .on_action("fabric-mention-up", (_event, cx) => this.mentionAction("up", cx))
+      .on_action("fabric-mention-down", (_event, cx) => this.mentionAction("down", cx))
+      .on_action("fabric-mention-accept", (_event, cx) => this.mentionAction("accept", cx))
+      .on_action("fabric-mention-close", (_event, cx) => this.mentionAction("close", cx));
+  }
+
+  mentionView(field, t) {
+    if (!this.mentionOpen(field)) return null;
+    return ui.mentionList(t, field, this.mentions.suggestions, this.mentions.index,
+      (name, cx) => this.acceptMention(field, name, cx));
   }
 
   agentColor(name) {
@@ -750,6 +912,11 @@ export default class Fabric extends View {
 
   keys(event, cx) {
     const keystroke = event.keystroke;
+    if (keystroke === "escape" && this.mentions.field && this.mentions.suggestions.length) {
+      cx.stop_propagation();
+      this.clearMentions(cx);
+      return;
+    }
     if (this.modal) {
       if (keystroke === "escape") {
         cx.stop_propagation();
@@ -776,7 +943,7 @@ export default class Fabric extends View {
       cx.stop_propagation();
       if (this.menu) { this.menu = null; this.notifyNow(); return; }
       if (this.inboxOpen) { this.inboxOpen = false; this.notifyNow(); return; }
-      if (this.newOpen) { this.newOpen = false; this.notifyNow(); return; }
+      if (this.newOpen) { this.newOpen = false; this.clearMentions(this.lastCx); this.notifyNow(); return; }
       if (this.teamDrawer) { this.closeDrawer(cx); return; }
       const route = this.currentRoute();
       if (route.page === "ticket") { this.navigate("tickets", {}, cx); return; }
@@ -923,6 +1090,7 @@ export default class Fabric extends View {
     if (this.maxSessions) this.maxSessions.set_value(String(this.roster?.max_sessions ?? 4));
     this.titleEdit = null;
     this.bodyEditing = false;
+    this.clearMentions();
     cx?.notify();
   }
 
@@ -1188,7 +1356,10 @@ export default class Fabric extends View {
         if (match) this.select(match[0], cx);
       },
     });
-    if (result.ok) this.newInput.set_value("");
+    if (result.ok) {
+      this.newInput.set_value("");
+      this.clearMentions();
+    }
   }
 
   openNewTicket(cx) {
@@ -1203,9 +1374,12 @@ export default class Fabric extends View {
     this.newRepo = null;
     if (this.newSentence) this.newSentence.release?.();
     this.newSentence = InputState.new({ placeholder: "Ein Satz genügt, z. B. „Login-Fehler beheben“" });
-    this.newSentence.on("change", (_event, cx) => cx.notify());
-    this.newSentence.on("submit", (_event, cx) => this.createTicket(cx));
+    this.newSentence.on("submit", (_event, cx) => {
+      if (this.consumeMentionSubmit("new", cx)) return;
+      this.createTicket(cx);
+    });
     this.track(this.newSentence);
+    this.wireMentions("new", this.newSentence);
     this.ensurePrograms(cx);
     this.ensureReposQuiet(cx);
     cx.spawn(async (cx) => {
@@ -1249,6 +1423,7 @@ export default class Fabric extends View {
       const match = /T-\d+/.exec(result.result?.stdout ?? "");
       this.newOpen = false;
       this.newError = null;
+      this.clearMentions();
       if (match) {
         if (this.isApp) this.navigate("ticket", { id: match[0] }, cx);
         else this.select(match[0], cx);
@@ -1282,21 +1457,9 @@ export default class Fabric extends View {
     });
     if (result.ok) {
       this.commentInput.set_value("");
-      this.commentCaret = 0;
-      this.commentSuggestions = [];
+      this.clearMentions();
       await this.loadTicket();
     }
-    this.notifyNow();
-  }
-
-  insertSuggestion(name, cx) {
-    const value = this.commentInput.value();
-    const next = model.insertMention(value, this.commentCaret, name);
-    this.commentInput.set_value(next.text);
-    this.commentInput.set_selected_range({ start: next.caret, end: next.caret });
-    this.commentCaret = next.caret;
-    this.commentSuggestions = [];
-    this.commentInput.focus();
     this.notifyNow();
   }
 
@@ -1403,6 +1566,7 @@ export default class Fabric extends View {
       this.titleSaved = title;
       this.titleEdit = null;
       this.titleEditFocused = false;
+      this.clearMentions();
       await this.loadTicket();
     }
     if (!silent) this.notifyNow();
@@ -1414,15 +1578,19 @@ export default class Fabric extends View {
     if (this.titleEdit) this.titleEdit.release?.();
     this.titleSaved = this.ticket.title ?? "";
     this.titleEdit = InputState.new({ value: this.titleSaved });
-    this.titleEdit.on("change", (_event, cx) => cx.notify());
-    this.titleEdit.on("submit", (_event, cx) => this.saveTitle(cx));
+    this.titleEdit.on("submit", (_event, cx) => {
+      if (this.consumeMentionSubmit("title", cx)) return;
+      this.saveTitle(cx);
+    });
     this.track(this.titleEdit);
+    this.wireMentions("title", this.titleEdit);
     this.notifyNow();
     cx.timer.after(60, () => this.titleEdit?.focus());
   }
 
   cancelTitleEdit(cx) {
     this.titleEdit = null;
+    this.clearMentions();
     this.setError("title", null);
     this.notifyNow();
   }
@@ -1471,7 +1639,10 @@ export default class Fabric extends View {
     const result = await this.action("reject", model.rejectArgs(id, text), {
       success: `${id} mit Feedback zurückgegeben.`,
     });
-    if (result.ok) this.commentInput.set_value("");
+    if (result.ok) {
+      this.commentInput.set_value("");
+      this.clearMentions();
+    }
     this.notifyNow();
   }
 
@@ -1499,10 +1670,22 @@ export default class Fabric extends View {
     this.wakeOpen = true;
     this.wakeName = this.ticket.assignee || this.agents[0]?.name || "";
     this.wakeText = InputState.new({ placeholder: "Was soll der Agent tun?" });
-    this.wakeText.on("submit", (_event, cx) => this.sendWake(cx));
+    this.wakeText.on("submit", (_event, cx) => {
+      if (this.consumeMentionSubmit("wake", cx)) return;
+      this.sendWake(cx);
+    });
     this.track(this.wakeText);
+    this.wireMentions("wake", this.wakeText);
+    this.clearMentions();
     this.notifyNow();
     cx.timer.after(60, () => this.wakeText?.focus());
+  }
+
+  closeWake(cx) {
+    this.wakeOpen = false;
+    this.wakeText = null;
+    this.clearMentions();
+    cx?.notify();
   }
 
   async sendWake(cx) {
@@ -1514,6 +1697,7 @@ export default class Fabric extends View {
     if (result.ok) {
       this.wakeOpen = false;
       this.wakeText = null;
+      this.clearMentions();
     }
     this.notifyNow();
   }
@@ -1960,7 +2144,7 @@ export default class Fabric extends View {
     }
     if (this.newOpen || this.modal) overlay.push(renderDialogs(this, cx, t));
 
-    return div()
+    const root = div()
       .relative()
       .size_full()
       .min_h(0)
@@ -1985,6 +2169,7 @@ export default class Fabric extends View {
           .child(body),
       )
       .children(overlay);
+    return this.mentionActions(root);
   }
 
   inboxButton(t, cx) {

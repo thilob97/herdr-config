@@ -31,6 +31,7 @@ function newTicketRow(app, cx, t) {
           onClick: (cx) => app.createFromPanel(cx),
         })),
     )
+    .when(app.mentionOpen("quick"), (el) => el.child(app.mentionView("quick", t)))
     .child(ui.hint(t, busy ? "Legt an …" : "Ein Satz genügt – als Entwurf ohne Wecken."))
     .when(Boolean(app.errorFor("new")), (el) =>
       el.child(ui.notice(t, app.errorFor("new").text, app.errorFor("new").level)));
@@ -186,6 +187,7 @@ function detail(app, cx, t) {
     .child(
       v_flex().flex_none().w_full().p(S.m).gap(S.s).border_t(1).border_color(t.border)
         .child(ui.textarea(t, app.commentInput, { focused: app.fieldFocused, height: 64 }))
+        .when(app.mentionOpen("comment"), (el) => el.child(app.mentionView("comment", t)))
         .child(ui.hint(t, model.wakeSummary(text, app.agentNames(), "mensch")))
         .when(Boolean(app.errorFor("comment") || app.errorFor("reject") || app.errorFor("accept")), (el) => {
           const problem = app.errorFor("comment") || app.errorFor("reject") || app.errorFor("accept");
@@ -253,6 +255,7 @@ export function renderTicketsPanel(app, cx, t) {
   if (note) rows.push(note);
   if (!app.openId) rows.push(newTicketRow(app, cx, t));
   rows.push(app.openId ? detail(app, cx, t) : ticketList(app, cx, t));
-  const page = ui.page(t, rows).relative();
-  return app.modal ? page.child(renderDialogs(app, cx, t)) : page;
+  let page = app.mentionActions(ui.page(t, rows).relative());
+  if (app.modal) page = page.child(renderDialogs(app, cx, t));
+  return page;
 }

@@ -35,7 +35,7 @@ function newTicketDialog(app, cx, t) {
       ui.button(t, {
         id: "fabric-new-cancel",
         label: "Abbrechen",
-        onClick: (cx) => { app.newOpen = false; cx.notify(); },
+        onClick: (cx) => { app.newOpen = false; app.clearMentions(cx); cx.notify(); },
       }),
       ui.button(t, {
         id: "fabric-new-create",
@@ -52,6 +52,7 @@ function newTicketDialog(app, cx, t) {
     v_flex().w_full().gap(S.s)
       .child(div().text_size(T.xs).text_color(t.dim).child("Auftrag"))
       .child(app.newSentence ? ui.input(t, app.newSentence, { focused: true }) : div())
+      .when(app.mentionOpen("new"), (el) => el.child(app.mentionView("new", t)))
       .when(Boolean(app.newError), (el) => el.child(ui.notice(t, app.newError)))
       .child(div().pt(S.xs).text_size(T.xs).text_color(t.dim).child("Repo"))
       .child(ui.dropdown(t, {
