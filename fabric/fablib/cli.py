@@ -48,9 +48,11 @@ def _worktree_for(repo_top, branch_name):
     return os.path.join(root, os.path.basename(repo_top), branch_name.replace("/", "-"))
 
 
-def _add_comment(ticket, author, text):
+def _add_comment(ticket, author, text, roster=None):
     at = store.now_ms()
-    found = wake.mentions(text)
+    if roster is None:
+        roster = agents.load(required=False)
+    found = wake.mentions(text, wake.known_names(roster))
     ticket["comments"].append(
         {
             "n": len(ticket["comments"]) + 1,

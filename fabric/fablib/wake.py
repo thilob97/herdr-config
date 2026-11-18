@@ -4,16 +4,30 @@ import re
 from . import agents, events, hc, store
 from .errors import FabError, HcError
 
-MENTION_RE = re.compile(r"@([a-z][a-z0-9_-]*)", re.IGNORECASE)
+# Kein `@` direkt hinter einem E-Mail-Zeichen: `a@b.de` ist keine Erwähnung.
+MENTION_RE = re.compile(r"(?<![A-Za-z0-9._%+-])@([a-z][a-z0-9_-]*)", re.IGNORECASE)
+RESERVED = ("orchestrator", "mensch")
 PING_WINDOW_MS = 10 * 60 * 1000
 PING_LIMIT = 8
 
 
-def mentions(text):
-    """Jeder Name höchstens einmal, in der Reihenfolge des Textes."""
+def known_names(roster=None):
+    """Alle Namen, die eine Erwähnung wecken oder in die Inbox legen können."""
+    names = set(RESERVED)
+    for entry in (roster or {}).get("agents") or []:
+        name = str(entry.get("name") or "").lower()
+        if name:
+            names.add(name)
+    return names
+
+
+def mentions(text, known=None):
+    """Jeder bekannte Name höchstens einmal, in der Reihenfolge des Textes."""
     found = []
     for match in MENTION_RE.finditer(text or ""):
         name = match.group(1).lower()
+        if known is not None and name not in known:
+            continue
         if name not in found:
             found.append(name)
     return found
@@ -152,7 +166,10 @@ def process(ticket, names, author, text, roster, no_wake=False, message_for=None
     Rückgabe: Liste von (Name, Ergebniszeile).
     """
     printed = []
+    known = known_names(roster)
     for name in names:
+        if name not in known:
+            continue
         try:
             event_text, line, _address = _one(
                 ticket, name, author, text, roster, no_wake, message_for

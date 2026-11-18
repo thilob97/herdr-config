@@ -179,13 +179,63 @@ class WakeTests(FabricCase):
         self.assertIn("keinen Worktree", sends[0][2])
         self.assertEqual(self.wake_events(tid)[-1]["text"], "an orchestrator")
 
-    def test_unbekannter_name(self):
+    def test_unbekannter_name_wird_still_ignoriert(self):
         tid = self.new("Unbekannt")
         self.clear_log()
+        mark = self.mark()
         result = self.ok("comment", tid, "--from", "zap", "@niemand hallo")
-        self.assertIn("unterdrückt: unbekannt", result.stdout)
+        self.assertEqual(result.stdout, "")
         self.assertEqual(self.hc_calls(), [])
-        self.assertEqual(self.wake_events(tid)[-1]["text"], "unterdrückt: unbekannt")
+        self.assertEqual(self.wake_since(mark), [])
+        self.assertEqual(self.ticket(tid)["comments"][-1]["mentions"], [])
+
+    def test_erklaertext_weckt_nicht(self):
+        tid = self.new("Tipp")
+        self.clear_log()
+        mark = self.mark()
+        result = self.ok(
+            "comment", tid, "--from", "orchestrator",
+            "Tipp: @name weckt, @a filtert",
+        )
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(self.hc_calls(), [])
+        self.assertEqual(self.wake_since(mark), [])
+        self.assertEqual(self.ticket(tid)["comments"][-1]["mentions"], [])
+
+    def test_bekannte_namen_auch_gross_klein(self):
+        tid = self.new("Namen")
+        self.set_live(
+            {"fab-ada-t-1": "t1", "fab-zap-t-1": "t5", "fab-orchestrator": "t0"}
+        )
+        self.clear_log()
+        result = self.ok(
+            "comment", tid, "--from", "mensch", "@ZAP @Ada @Orchestrator"
+        )
+        self.assertIn("@zap: geweckt", result.stdout)
+        self.assertIn("@ada: geweckt", result.stdout)
+        self.assertIn("@orchestrator: geweckt", result.stdout)
+        self.assertEqual(len(self.hc_calls("send")), 3)
+        self.assertEqual(
+            self.ticket(tid)["comments"][-1]["mentions"],
+            ["zap", "ada", "orchestrator"],
+        )
+        result = self.ok("comment", tid, "--from", "zap", "@MENSCH bitte")
+        self.assertIn("@mensch: unterdrückt: mensch", result.stdout)
+        self.assertIn("mensch", self.ticket(tid)["waiting"])
+
+    def test_email_ist_keine_erwaehnung(self):
+        tid = self.new("Mail")
+        self.set_live({"fab-zap-t-1": "t5", "fab-ada-t-1": "t1"})
+        self.clear_log()
+        mark = self.mark()
+        result = self.ok(
+            "comment", tid, "--from", "mensch",
+            "Mail an a@b.de, thilo@zap.de und a@ada.de",
+        )
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(self.hc_calls(), [])
+        self.assertEqual(self.wake_since(mark), [])
+        self.assertEqual(self.ticket(tid)["comments"][-1]["mentions"], [])
 
     def test_doppelte_erwaehnung_weckt_einmal(self):
         tid = self.new("Doppelt")
