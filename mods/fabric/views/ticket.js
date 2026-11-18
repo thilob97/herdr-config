@@ -71,6 +71,7 @@ function head(app, cx, t, ticket) {
             onClick: (cx) => app.startTitleEdit(cx),
           })),
     )
+    .when(app.titleEdit && app.mentionOpen("title"), (el) => el.child(app.mentionView("title", t)))
     .when(Boolean(app.errorFor("title")), (el) =>
       el.child(ui.notice(t, app.errorFor("title").text, app.errorFor("title").level)));
 }
@@ -199,28 +200,12 @@ function history(app, cx, t, ticket) {
 function commentBox(app, cx, t, ticket) {
   const text = app.commentInput.value();
   const preview = model.wakeSummary(text, app.agentNames(), "mensch");
-  const suggestions = app.commentSuggestions.map((suggestion) => h_flex()
-    .id(`fabric-suggest-${suggestion.name}`)
-    .w_full()
-    .h(26)
-    .px(7)
-    .gap(6)
-    .items_center()
-    .rounded(ui.RADIUS.s)
-    .cursor_pointer()
-    .hover((style) => style.bg(t.hover))
-    .on_click((_event, cx) => { cx.stop_propagation(); app.insertSuggestion(suggestion.name, cx); })
-    .child(div().text_size(T.s).text_color(t.accent).child(`@${suggestion.name}`))
-    .child(div().flex_1()));
 
   const inputBox = v_flex()
     .w_full()
     .gap(4)
     .child(ui.textarea(t, app.commentInput, { focused: app.fieldFocused, height: 84 }))
-    .when(app.commentSuggestions.length > 0, (el) => el.child(
-      v_flex().w_full().p(S.xs).gap(1).rounded(ui.RADIUS.m)
-        .border_1().border_color(t.border).bg(t.popover).children(suggestions),
-    ))
+    .when(app.mentionOpen("comment"), (el) => el.child(app.mentionView("comment", t)))
     .child(ui.hint(t, preview));
 
   return v_flex()
@@ -469,8 +454,9 @@ function sessionsField(app, cx, t, ticket) {
           onPick: (value) => { app.menu = null; app.wakeName = value; cx.notify(); },
         }))
         .child(app.wakeText ? ui.input(t, app.wakeText, { focused: true }) : div())
+        .when(app.mentionOpen("wake"), (el) => el.child(app.mentionView("wake", t)))
         .child(h_flex().w_full().gap(S.s).justify_end()
-          .child(ui.button(t, { id: "fabric-wake-cancel", label: "Abbrechen", small: true, onClick: (cx) => { app.wakeOpen = false; cx.notify(); } }))
+          .child(ui.button(t, { id: "fabric-wake-cancel", label: "Abbrechen", small: true, onClick: (cx) => app.closeWake(cx) }))
           .child(ui.button(t, {
             id: "fabric-wake-send",
             label: "Wecken",

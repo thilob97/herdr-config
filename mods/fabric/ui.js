@@ -697,6 +697,50 @@ export function dropdown(t, {
 
 const moduleDropdown = dropdown;
 
+/** Vorschlagsliste der `@`-Erwähnungen. Übernommen wird per Mausdruck,
+ *  damit der Klick nicht mit dem Blur des Textfelds verloren geht. */
+export function mentionList(t, field, suggestions, index, onPick) {
+  const listId = `fabric-mentions-${field}`;
+  const rows = (suggestions ?? []).map((suggestion, position) => {
+    const name = typeof suggestion === "string" ? suggestion : suggestion?.name ?? "";
+    const selected = position === (index ?? 0);
+    return h_flex()
+      .id(`${listId}-option-${name}`)
+      .role("list_box_option")
+      .aria_selected(selected)
+      .when(selected, (el) => el.aria_active_descendant().bg(t.hover))
+      .w_full()
+      .h(26)
+      .px(7)
+      .gap(SPACE.s)
+      .items_center()
+      .rounded(RADIUS.s)
+      .text_size(FONT.s)
+      .text_color(t.foreground)
+      .cursor_pointer()
+      .hover((style) => style.bg(t.hover))
+      .child(div().flex_none().text_color(t.accent).child(`@${name}`))
+      .child(div().flex_1())
+      .on_mouse_down("left", (_event, cx) => {
+        cx.stop_propagation();
+        onPick?.(name, cx);
+      });
+  });
+  return v_flex()
+    .id(listId)
+    .role("list_box")
+    .w_full()
+    .max_h(190)
+    .overflow_y_scrollbar()
+    .p(SPACE.xs)
+    .gap(1)
+    .rounded(RADIUS.m)
+    .border_1()
+    .border_color(t.border)
+    .bg(t.popover)
+    .children(rows);
+}
+
 // ---------- Flächen ----------
 
 export function backdrop(t, { onClick = null, dim = true } = {}) {
