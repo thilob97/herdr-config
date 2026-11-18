@@ -479,7 +479,31 @@ export default class Fabric extends View {
       .on_action("fabric-mention-up", (_event, cx) => this.mentionAction("up", cx))
       .on_action("fabric-mention-down", (_event, cx) => this.mentionAction("down", cx))
       .on_action("fabric-mention-accept", (_event, cx) => this.mentionAction("accept", cx))
-      .on_action("fabric-mention-close", (_event, cx) => this.mentionAction("close", cx));
+      .on_action("fabric-mention-close", (_event, cx) => this.mentionAction("close", cx))
+      // Auch ohne eigene Keymap-Bindung: die Textfelder dispatchten ihre
+      // eigenen Aktionen. In der Capture-Phase an der Fabric-Wurzel fangen wir
+      // sie ab, bevor das Feld Cursor/Zeilenumbruch/Einzug ausführt.
+      .on_action("input::MoveUp", (_event, cx) => this.inputMentionAction("up", cx))
+      .on_action("input::MoveDown", (_event, cx) => this.inputMentionAction("down", cx))
+      .on_action("input::Enter", (_event, cx) => this.inputMentionAction("accept", cx))
+      .on_action("input::IndentInline", (_event, cx) => this.inputMentionAction("accept", cx))
+      .on_action("input::Indent", (_event, cx) => this.inputMentionAction("accept", cx))
+      .on_action("input::Escape", (_event, cx) => this.inputMentionAction("close", cx));
+  }
+
+  inputMentionAction(kind, cx) {
+    const field = this.focusedField;
+    if (!field || this.mentions.field !== field || !this.mentions.suggestions.length) return;
+    cx.stop_propagation();
+    if (kind === "up" || kind === "down") {
+      this.moveMention(kind === "up" ? -1 : 1, cx);
+      return;
+    }
+    if (kind === "accept") {
+      this.consumeMentionSubmit(field, cx);
+      return;
+    }
+    this.clearMentions(cx);
   }
 
   /** Bindet die Tasten erst beim ersten Vorschlag – nach den Bindungen der
