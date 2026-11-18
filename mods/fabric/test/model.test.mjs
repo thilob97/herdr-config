@@ -348,7 +348,7 @@ test("Pfade und Sonderzeichen bleiben in Kommentaren wörtlich", async () => {
   const { plainMentionMarkdown } = await import("../model.js");
   assert.equal(
     plainMentionMarkdown("C:\\pfad\\datei /usr/*/bin a*b*c $x_1$ __init__.py"),
-    "C:\\\\pfad\\\\datei /usr/\\*/bin a\\*b\\*c $x\\_1$ \\_\\_init\\_\\_.py",
+    "C:\\\\pfad\\\\datei /usr/\\*/bin a\\*b\\*c $x\\_1$ \\_\\_init\\_\\_\\.py",
   );
 });
 
@@ -356,7 +356,7 @@ test("Nackte URLs werden zu Links, Satzzeichen bleiben Text", async () => {
   const { plainMentionMarkdown } = await import("../model.js");
   assert.equal(
     plainMentionMarkdown("Siehe https://example.com/a_b?x=1, dann."),
-    "Siehe <https://example.com/a_b?x=1>, dann.",
+    "Siehe <https://example.com/a_b?x=1>, dann\\.",
   );
   assert.equal(
     plainMentionMarkdown("https://example.com/pfad_(x)"),
@@ -378,9 +378,15 @@ test("Erwähnungen wirken auch neben Links und Bildverweisen", async () => {
   );
   assert.equal(
     plainMentionMarkdown("thilo@example.com schreibt"),
-    "thilo@example.com schreibt",
+    "thilo@example\\.com schreibt",
     "E-Mail-Adressen bleiben Text",
   );
+  assert.equal(
+    plainMentionMarkdown("1. erst\n1. dann"),
+    "1\\. erst  \n1\\. dann",
+    "keine geordnete Liste aus Kommentartext",
+  );
+  assert.equal(plainMentionMarkdown("3. Punkt"), "3\\. Punkt");
   const text = "@ada siehe https://example.com/x und ![Plan](data/fabric/attachments/T-1/plan.png)";
   assert.deepEqual(mentionedNames(text), ["ada"]);
   assert.deepEqual(wakeTargets(text, ["ada", "zap"], "zap"), [{ name: "ada", kind: "wake" }]);
