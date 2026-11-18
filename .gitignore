@@ -11,7 +11,6 @@
 !/fabric/
 !/.fabric/
 !/.fabric/verify.sh
-/.fabric/evidence/
 /layouts/.state/
 
 # Von Herdr ausgeliefert, wird bei jedem Start ueberschrieben
@@ -48,3 +47,4 @@
 /mods/**/herdr.d.ts
 /mods/*/jsconfig.json
 /**/__pycache__/
+/.fabric/evidence/

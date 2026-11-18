@@ -64,7 +64,7 @@ test("Inbox: neueste oben, gleiche Zeit bleibt in ihrer Reihenfolge", () => {
   assert.equal(inbox[0].ticket, "T-1", "die Eingabe wird nicht verändert");
 });
 
-test("Timeline: Spuren Orchestrator, Roster, Mensch; Punkte nach Zeit; Wecken als Pfeil", () => {
+test("Timeline: Akteure sind Spalten, Zeit läuft von neu (oben) nach alt (unten)", () => {
   const roster = [
     { name: "zap", role: "umsetzer" },
     { name: "ada", role: "pruefer" },
@@ -83,14 +83,20 @@ test("Timeline: Spuren Orchestrator, Roster, Mensch; Punkte nach Zeit; Wecken al
   assert.deepEqual(result.lanes.map((lane) => lane.label), ["Orchestrator", "zap", "ada", "Mensch"]);
   assert.deepEqual(result.points.map((point) => point.at), [1000, 2000, 3000, 4000, 5000]);
   assert.deepEqual(result.points.map((point) => point.lane), [3, 1, 1, 0, 3]);
-  assert.deepEqual(result.points.map((point) => point.x), [0, 0.25, 0.5, 0.75, 1]);
+  assert.deepEqual(result.points.map((point) => point.x), [0.875, 0.375, 0.375, 0.125, 0.875]);
+  assert.deepEqual(result.points.map((point) => point.y), [1, 0.75, 0.5, 0.25, 0]);
+  assert.deepEqual(result.times, [5000, 4000, 3000, 2000, 1000]);
+  assert.equal(result.rows, 5);
 
   assert.equal(result.arrows.length, 2);
   assert.deepEqual(
     result.arrows.map((arrow) => [arrow.actor, arrow.from, arrow.target, arrow.to]),
     [["zap", 1, "ada", 2], ["mensch", 3, "zap", 1]],
   );
-  assert.deepEqual(result.arrows.map((arrow) => arrow.x), [0.5, 1]);
+  assert.deepEqual(
+    result.arrows.map((arrow) => [arrow.x1, arrow.x2, arrow.y]),
+    [[0.375, 0.625, 0.5], [0.875, 0.375, 0]],
+  );
 });
 
 test("Timeline ohne Ereignisse hat nur die Spuren", () => {

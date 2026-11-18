@@ -708,8 +708,10 @@ export function history(ticket, events) {
 // ---------- Timeline ----------
 
 /** Spuren und Punkte für `index.events`.
- *  Spuren: Orchestrator, Roster-Agenten in Roster-Reihenfolge, Mensch.
- *  `x` und `y` sind Anteile von 0 bis 1; `wake` wird zum Pfeil von Spur zu Spur. */
+ *  Spuren: Orchestrator, Roster-Agenten in Roster-Reihenfolge, Mensch; jede Spur ist eine Spalte.
+ *  `x` ist die Mitte der Spalte (0 bis 1). `y` ist der Zeitrang: 0 ist die neueste
+ *  Uhrzeit, 1 die älteste; gleiche Zeitpunkte teilen sich eine Zeile. `rows` ist die
+ *  Anzahl dieser Zeitzeilen. `wake` wird zum waagerechten Pfeil von Spalte zu Spalte. */
 export function timeline(events, roster = []) {
   const list = [...(events ?? [])]
     .filter((event) => event && Number.isFinite(event.at))
@@ -744,7 +746,10 @@ export function timeline(events, roster = []) {
   const laneCount = Math.max(1, lanes.length);
   const start = list.length ? list[0].at : 0;
   const end = list.length ? list[list.length - 1].at : 0;
-  const position = (at) => (end === start ? 0.5 : (at - start) / (end - start));
+  const times = [...new Set(list.map((event) => event.at))].sort((a, b) => b - a);
+  const rowOf = new Map(times.map((at, index) => [at, index]));
+  const rows = Math.max(1, times.length);
+  const timeFraction = (at) => (rows === 1 ? 0.5 : rowOf.get(at) / (rows - 1));
 
   const points = list.map((event) => {
     const lane = laneOf.get(event.actor) ?? 0;
@@ -755,8 +760,8 @@ export function timeline(events, roster = []) {
       kind: event.kind ?? "",
       ticket: event.ticket ?? "",
       lane,
-      x: position(event.at),
-      y: (lane + 0.5) / laneCount,
+      x: (lane + 0.5) / laneCount,
+      y: timeFraction(event.at),
     };
   });
 
@@ -764,19 +769,19 @@ export function timeline(events, roster = []) {
     .filter((point) => point.kind === "wake" && laneOf.has(point.event.target))
     .map((point) => ({
       at: point.at,
-      x: point.x,
-      actor: point.actor,
-      target: point.event.target,
       from: point.lane,
       to: laneOf.get(point.event.target),
-      y1: point.y,
-      y2: (laneOf.get(point.event.target) + 0.5) / laneCount,
+      x1: point.x,
+      x2: (laneOf.get(point.event.target) + 0.5) / laneCount,
+      y: point.y,
+      actor: point.actor,
+      target: point.event.target,
       ticket: point.ticket,
       text: point.event.text ?? "",
     }))
     .filter((arrow) => arrow.from !== arrow.to);
 
-  return { lanes, points, arrows, start, end, span: end - start };
+  return { lanes, points, arrows, times, rows, start, end, span: end - start };
 }
 
 // ---------- Prompts, Repos, Einstellungen ----------
