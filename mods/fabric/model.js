@@ -496,9 +496,7 @@ export function mentionSegments(text) {
 
 // Zeichen, die Markdown auswerten würde. Kommentare und Inbox-Texte sind
 // reiner Text; betont werden nur Erwähnungen, verlinkt nur nackte URLs.
-// Pfade werden maskiert, der Schrägstrich in einem schließenden Tag (`</b>`)
-// bleibt lesbar.
-const MARKDOWN_SPECIAL = /(?<!<)\/|[\\`*_{}\[\]()#+\-!|>~=&<>]/g;
+const MARKDOWN_SPECIAL = /[\\`*_{}\[\]()#+\-!|>~=&<>]/g;
 
 /** Maskiert Markdown-Sonderzeichen, damit der Text wörtlich erscheint. */
 export function escapeMarkdown(text) {

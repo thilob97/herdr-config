@@ -348,7 +348,7 @@ test("Pfade und Sonderzeichen bleiben in Kommentaren wörtlich", async () => {
   const { plainMentionMarkdown } = await import("../model.js");
   assert.equal(
     plainMentionMarkdown("C:\\pfad\\datei /usr/*/bin a*b*c $x_1$ __init__.py"),
-    "C:\\\\pfad\\\\datei \\/usr\\/\\*\\/bin a\\*b\\*c $x\\_1$ \\_\\_init\\_\\_.py",
+    "C:\\\\pfad\\\\datei /usr/\\*/bin a\\*b\\*c $x\\_1$ \\_\\_init\\_\\_.py",
   );
 });
 
