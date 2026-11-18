@@ -3,8 +3,8 @@ import json
 import os
 import re
 
-from . import claude, hc, render
-from .errors import FabError, HcError
+from . import claude, hc, herdr, render
+from .errors import FabError, HcError, HerdrError
 
 ORCHESTRATOR = hc.ORCHESTRATOR
 FABRIC_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
@@ -163,6 +163,30 @@ def running(live_terminals):
     }
 
 
+def _start_visible(name, cwd, argv, prompt, labels, tab_name):
+    """Startet per `hc run` und hängt das Terminal in Herdrs Space „Fabric“.
+
+    Fehlt das Fenster oder die Tab-Vergabe, läuft der Start trotzdem; der
+    Fehler steht im zurückgegebenen `warning`.
+    """
+    warning = None
+    place = None
+    try:
+        place = herdr.placement()
+    except HerdrError as exc:
+        warning = f"Herdr-Seitenleiste: {exc}"
+    if place:
+        labels = dict(labels)
+        labels.update(herdr.labels(place))
+    answer = hc.run(name=name, cwd=cwd, argv=argv, prompt=prompt, labels=labels)
+    if place:
+        try:
+            herdr.finish(place, tab_name)
+        except HerdrError as exc:
+            warning = f"Herdr-Seitenleiste: {exc}"
+    return answer, warning
+
+
 def start_agent(roster, ticket, agent_name):
     """Startet einen Agenten im Worktree des Tickets.
 
@@ -201,12 +225,13 @@ def start_agent(roster, ticket, agent_name):
     if claude.is_claude(entry["argv"]):
         claude.ensure_trust(worktree)
     try:
-        answer = hc.run(
+        answer, warning = _start_visible(
             name=name,
             cwd=worktree,
             argv=entry["argv"],
             prompt=start_prompt(roster, ticket, entry),
             labels={"fab.agent": agent_name, "fab.ticket": ticket["id"]},
+            tab_name=ticket["id"],
         )
     except (HcError, FabError) as exc:
         return {
@@ -215,7 +240,12 @@ def start_agent(roster, ticket, agent_name):
             "name": name,
             "error": str(exc),
         }
-    return {"result": "gestartet", "terminal": answer.get("address"), "name": name}
+    return {
+        "result": "gestartet",
+        "terminal": answer.get("address"),
+        "name": name,
+        "warning": warning,
+    }
 
 
 def orchestrator_dir():
@@ -232,14 +262,15 @@ def start_orchestrator(roster):
         raise FabError("Orchestrator hat kein argv im Roster")
     if claude.is_claude(roster["orchestrator"]["argv"]):
         claude.ensure_trust(folder)
-    hc.run(
+    answer, warning = _start_visible(
         name=ORCHESTRATOR,
         cwd=folder,
         argv=roster["orchestrator"]["argv"],
         prompt="Du bist der Fabric-Orchestrator. Lies AGENTS.md und dann fab inbox und fab list.",
         labels={"fab.role": "orchestrator"},
-        want_json=False,
+        tab_name="Orchestrator",
     )
+    return {"terminal": answer.get("address"), "name": ORCHESTRATOR, "warning": warning}
 
 
 def orchestrator_live():

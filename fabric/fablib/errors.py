@@ -7,3 +7,7 @@ class FabError(Exception):
 
 class HcError(FabError):
     """herdr-core (`hc`) antwortet nicht oder mit einem Fehler."""
+
+
+class HerdrError(FabError):
+    """Herdrs Fenster (`herdr-app`) ist nicht erreichbar oder lehnt ab."""

@@ -153,6 +153,20 @@ class WakeTests(FabricCase):
         self.assertEqual(sessions[0]["terminal"], "t900")
         self.assertEqual(self.wake_events(tid)[-1]["text"], "gestartet")
 
+    def test_agent_start_ohne_fenster_meldet_seitenleiste(self):
+        tid, _worktree = self.worktree_ticket("Start")
+        self.set_live({})
+        self.clear_log()
+        result = self.ok(
+            "comment", tid, "--from", "mensch", "@zap los",
+            env={"HERDR_APP_FAIL": "1"},
+        )
+        self.assertIn("gestartet", result.stdout)
+        self.assertIn("Herdr-Seitenleiste", result.stdout)
+        self.assertIn("kein Fenster", result.stdout)
+        self.assertEqual(self.wake_events(tid)[-1]["text"], "gestartet")
+        self.assertEqual(self.ticket(tid)["sessions"][0]["terminal"], "t900")
+
     def test_ohne_worktree_geht_an_den_orchestrator(self):
         tid = self.new("Ohne")
         self.set_live({"fab-orchestrator": "t0"})

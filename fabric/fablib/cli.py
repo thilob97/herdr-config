@@ -399,14 +399,19 @@ def cmd_dispatch(args):
                 "started_at": store.now_ms(),
             }
         )
-        events.append("dispatch", ticket["id"], actor, agent_name,
-                      f"{branch_name} · {folder}")
+        detail = f"{branch_name} · {folder}"
+        warning = started.get("warning")
+        if warning:
+            detail += f" · {warning}"
+        events.append("dispatch", ticket["id"], actor, agent_name, detail)
         store.save(ticket)
         index.rebuild()
     print(
         f"{ticket['id']} an {agent_name} verteilt: {branch_name} in {folder} "
         f"(Terminal {started['terminal']})"
     )
+    if warning:
+        print(f"{ticket['id']}: {warning}")
     return 0
 
 
@@ -690,9 +695,10 @@ def _orchestrator_state():
     started = None
     if row is not None:
         for event in reversed(events.read_all()):
-            if event.get("kind") == "orchestrator" and event.get("text") in (
-                "gestartet",
-                "neu gestartet",
+            text = event.get("text") or ""
+            if event.get("kind") == "orchestrator" and (
+                text in ("gestartet", "neu gestartet")
+                or text.startswith(("gestartet (", "neu gestartet ("))
             ):
                 started = event.get("at")
                 break
@@ -724,21 +730,33 @@ def cmd_orchestrator(args):
         with store.locked():
             if agents.orchestrator_live() and not hc.kill(agents.ORCHESTRATOR):
                 raise FabError("Orchestrator ließ sich nicht beenden (hc kill)")
-            agents.start_orchestrator(roster)
-            events.append("orchestrator", "", actor, "", "neu gestartet")
+            started = agents.start_orchestrator(roster)
+            warning = started.get("warning")
+            text = "neu gestartet"
+            if warning:
+                text += f" ({warning})"
+            events.append("orchestrator", "", actor, "", text)
             events.append("config", "", actor, "", "Orchestrator neu gestartet")
             index.rebuild()
         print("Orchestrator neu gestartet (fab-orchestrator)")
+        if warning:
+            print(warning)
         return 0
     roster = agents.load()
     with store.locked():
         if args.action == "start":
             if agents.orchestrator_live():
                 raise FabError("Orchestrator läuft schon (fab-orchestrator)")
-            agents.start_orchestrator(roster)
-            events.append("orchestrator", "", "fab", "", "gestartet")
+            started = agents.start_orchestrator(roster)
+            warning = started.get("warning")
+            text = "gestartet"
+            if warning:
+                text += f" ({warning})"
+            events.append("orchestrator", "", "fab", "", text)
             index.rebuild()
             print("Orchestrator gestartet (fab-orchestrator)")
+            if warning:
+                print(warning)
             return 0
         if args.action == "stop":
             if not agents.orchestrator_live():

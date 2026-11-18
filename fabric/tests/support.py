@@ -48,6 +48,35 @@ if command == "send":
 sys.exit(0)
 '''
 
+STUB_HERDR = '''#!/usr/bin/env python3
+"""herdr-app-Stub: protokolliert Aufrufe, beantwortet `ls` aus einer Fixture."""
+import json
+import os
+import sys
+
+args = sys.argv[1:]
+log = os.environ.get("HERDR_LOG")
+if log:
+    with open(log, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(args) + "\\n")
+
+if os.environ.get("HERDR_APP_FAIL"):
+    print("herdr-app: kein Fenster", file=sys.stderr)
+    sys.exit(1)
+if args[:1] == ["ls"]:
+    fixture = os.environ.get("HERDR_LS")
+    if fixture and os.path.isfile(fixture):
+        with open(fixture, encoding="utf-8") as handle:
+            sys.stdout.write(handle.read())
+    else:
+        sys.stdout.write('{"spaces": []}')
+    sys.exit(0)
+if args[:1] == ["do"]:
+    print(json.dumps({"ok": True}))
+    sys.exit(0)
+sys.exit(0)
+'''
+
 PREAMBLE = (
     "# Ticket {id}: {title}\n\n"
     "Du bist {agent} ({role}) im Worktree {worktree} auf {branch} (Basis {base}). "
@@ -83,10 +112,17 @@ class FabricCase(unittest.TestCase):
         self.hc_log = os.path.join(self.tmp, "hc.log")
         self.ls_json = os.path.join(self.tmp, "ls.json")
         self.claude_json = os.path.join(self.tmp, "claude.json")
+        self.herdr_log = os.path.join(self.tmp, "herdr.log")
+        self.herdr_ls = os.path.join(self.tmp, "herdr-ls.json")
         self._write(self.hc_log, "")
+        self._write(self.herdr_log, "")
         self.set_live({})
+        self.set_spaces([{"id": "sp-fabric", "name": "Fabric"}])
         stub = os.path.join(self.bin, "hc")
         self._write(stub, STUB_HC)
+        os.chmod(stub, 0o755)
+        stub = os.path.join(self.bin, "herdr-app")
+        self._write(stub, STUB_HERDR)
         os.chmod(stub, 0o755)
         self.env = dict(os.environ)
         self.env.update(
@@ -96,6 +132,8 @@ class FabricCase(unittest.TestCase):
             FAB_CLAUDE_JSON=self.claude_json,
             HC_LOG=self.hc_log,
             HC_LS=self.ls_json,
+            HERDR_LOG=self.herdr_log,
+            HERDR_LS=self.herdr_ls,
             PATH=self.bin + os.pathsep + os.environ.get("PATH", ""),
             GIT_CONFIG_NOSYSTEM="1",
         )
@@ -167,6 +205,22 @@ class FabricCase(unittest.TestCase):
 
     def clear_log(self):
         self._write(self.hc_log, "")
+
+    def set_spaces(self, rows):
+        self._write(self.herdr_ls, json.dumps({"spaces": rows}))
+
+    def herdr_calls(self, command=None):
+        rows = [
+            json.loads(line)
+            for line in self._read(self.herdr_log).splitlines()
+            if line.strip()
+        ]
+        if command:
+            rows = [row for row in rows if row and row[:1] == [command]]
+        return rows
+
+    def clear_herdr_log(self):
+        self._write(self.herdr_log, "")
 
     def events(self):
         path = os.path.join(self.home, "events.jsonl")

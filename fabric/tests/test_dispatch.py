@@ -1,4 +1,5 @@
 """Dispatch: Vorbedingungen, Branch und Worktree, Start statt Wecken."""
+import json
 import os
 
 from fabric.tests.support import FabricCase
@@ -7,6 +8,10 @@ BODY = "## Ziel\nEtwas.\n\n## Abnahmekriterien\n- [ ] es läuft\n"
 
 
 class DispatchTests(FabricCase):
+    def label(self, args, key):
+        prefix = key + "="
+        return next(part[len(prefix):] for part in args if part.startswith(prefix))
+
     def prepared_ticket(self, repo, title="Kurzer Titel"):
         tid = self.new(title)
         self.ok("assign", tid, "zap", "--from", "mensch")
@@ -85,15 +90,88 @@ class DispatchTests(FabricCase):
         self.assertEqual(len(dispatched), 1)
         self.assertEqual(dispatched[0]["target"], "zap")
 
+    def test_dispatch_gibt_dem_agenten_einen_tab_im_fabric_space(self):
+        repo = self.make_repo()
+        tid = self.prepared_ticket(repo)
+        self.set_live({})
+        self.clear_log()
+        self.clear_herdr_log()
+        result = self.ok("dispatch", tid, "--from", "mensch")
+        self.assertNotIn("Seitenleiste", result.stdout)
+        args = self.hc_calls("run")[0]
+        self.assertEqual(self.label(args, "herdr.space"), "sp-fabric")
+        tab = self.label(args, "herdr.tab")
+        self.assertTrue(tab.startswith("tb"))
+        renames = [
+            call for call in self.herdr_calls("do")
+            if call[1:2] == ["tab.rename"]
+        ]
+        self.assertEqual(len(renames), 1)
+        self.assertEqual(renames[0][renames[0].index("--id") + 1], tab)
+        self.assertEqual(renames[0][renames[0].index("--name") + 1], tid)
+        # Kein Fokuswechsel: nur lesen und benennen, nichts anlegen oder zeigen.
+        self.assertEqual(
+            {call[1] for call in self.herdr_calls("do")},
+            {"tab.rename"},
+        )
+        self.assertFalse(any("--focus" in call for call in self.herdr_calls()))
+
+    def test_erster_agent_legt_den_fabric_space_an(self):
+        repo = self.make_repo()
+        tid = self.prepared_ticket(repo)
+        self.set_live({})
+        self.set_spaces([])
+        self.clear_log()
+        self.clear_herdr_log()
+        self.ok("dispatch", tid, "--from", "mensch")
+        args = self.hc_calls("run")[0]
+        space = self.label(args, "herdr.space")
+        self.assertTrue(space.startswith("sp"))
+        tab = self.label(args, "herdr.tab")
+        renames = {
+            call[1]: call for call in self.herdr_calls("do")
+        }
+        self.assertEqual(renames["space.rename"][-1], "Fabric")
+        self.assertEqual(
+            renames["space.rename"][renames["space.rename"].index("--id") + 1],
+            space,
+        )
+        self.assertEqual(renames["tab.rename"][-1], tid)
+        self.assertEqual(
+            renames["tab.rename"][renames["tab.rename"].index("--id") + 1], tab
+        )
+        with open(os.path.join(self.home, "herdr.json"), encoding="utf-8") as handle:
+            self.assertEqual(json.load(handle)["space"], space)
+
+    def test_dispatch_ohne_herdr_fenster_startet_agenten_trotzdem(self):
+        repo = self.make_repo()
+        tid = self.prepared_ticket(repo)
+        self.set_live({})
+        self.clear_log()
+        result = self.ok(
+            "dispatch", tid, "--from", "mensch", env={"HERDR_APP_FAIL": "1"}
+        )
+        self.assertIn("verteilt", result.stdout)
+        self.assertIn("Herdr-Seitenleiste", result.stdout)
+        self.assertIn("kein Fenster", result.stdout)
+        args = self.hc_calls("run")[0]
+        self.assertIn("fab.agent=zap", args)
+        self.assertFalse(any(part.startswith("herdr.") for part in args))
+        self.assertEqual(self.ticket(tid)["sessions"][0]["terminal"], "t900")
+        dispatched = [row for row in self.events() if row["kind"] == "dispatch"]
+        self.assertIn("Herdr-Seitenleiste", dispatched[-1]["text"])
+
     def test_laufender_agent_wird_geweckt_statt_gestartet(self):
         repo = self.make_repo()
         tid = self.prepared_ticket(repo)
         self.ok("dispatch", tid, "--from", "mensch")
         self.set_live({"fab-zap-t-1": "t7"})
         self.clear_log()
+        self.clear_herdr_log()
         result = self.ok("dispatch", tid, "--from", "mensch")
         self.assertIn("läuft schon", result.stdout)
         self.assertEqual(self.hc_calls("run"), [])
+        self.assertEqual(self.herdr_calls(), [])
         sends = self.hc_calls("send")
         self.assertEqual(len(sends), 1)
         self.assertEqual(sends[0][1], "t7")
