@@ -192,6 +192,64 @@ class DispatchTests(FabricCase):
         self.assertIn("Maximale Zahl", result.stderr)
         self.assertIsNone(self.ticket(tid)["worktree"])
 
+    def test_max_sessions_ignoriert_untätige_sessions(self):
+        repo = self.make_repo()
+        tid = self.prepared_ticket(repo)
+        self.write_roster(max_sessions=2)
+        self.set_terminals(
+            [
+                {"address": "t1", "name": "fab-ada-t-1", "state": "live",
+                 "status": "working"},
+                {"address": "t2", "name": "fab-ada-t-2", "state": "live",
+                 "status": "idle"},
+            ]
+        )
+        self.clear_log()
+        self.ok("dispatch", tid, "--from", "mensch")
+        self.assertEqual(len(self.hc_calls("run")), 1)
+        self.assertEqual(self.ticket(tid)["status"], "doing")
+
+    def test_max_sessions_ignoriert_sessions_abgeschlossener_tickets(self):
+        repo = self.make_repo()
+        old = self.new("Alt")
+        self.patch_ticket(
+            old,
+            status="done",
+            sessions=[
+                {"agent": "ada", "name": "fab-ada-t-1", "terminal": "t1",
+                 "started_at": 1}
+            ],
+        )
+        tid = self.prepared_ticket(repo)
+        self.write_roster(max_sessions=1)
+        self.set_terminals(
+            [
+                {"address": "t1", "name": "fab-ada-t-1", "state": "live",
+                 "status": "working"},
+            ]
+        )
+        self.clear_log()
+        self.ok("dispatch", tid, "--from", "mensch")
+        self.assertEqual(len(self.hc_calls("run")), 1)
+        self.assertEqual(self.ticket(tid)["status"], "doing")
+
+    def test_max_sessions_wartende_sessions_sind_aktiv(self):
+        repo = self.make_repo()
+        tid = self.prepared_ticket(repo)
+        self.write_roster(max_sessions=2)
+        self.set_terminals(
+            [
+                {"address": "t1", "name": "fab-ada-t-1", "state": "live",
+                 "status": "working"},
+                {"address": "t2", "name": "fab-ada-t-2", "state": "live",
+                 "status": "blocked"},
+            ]
+        )
+        result = self.cli("dispatch", tid, "--from", "mensch")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Maximale Zahl", result.stderr)
+        self.assertIsNone(self.ticket(tid)["worktree"])
+
     def test_dispatch_meldet_startfehler_und_behaelt_worktree(self):
         repo = self.make_repo()
         tid = self.prepared_ticket(repo)

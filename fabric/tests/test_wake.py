@@ -202,7 +202,12 @@ class WakeTests(FabricCase):
     def test_voll_verhindert_start(self):
         self.write_roster(max_sessions=1)
         tid, _worktree = self.worktree_ticket("Voll")
-        self.set_live({"fab-ada-t-9": "t9"})
+        self.set_terminals(
+            [
+                {"address": "t9", "name": "fab-ada-t-9", "state": "live",
+                 "status": "working"},
+            ]
+        )
         self.clear_log()
         result = self.ok("comment", tid, "--from", "mensch", "@zap los")
         self.assertIn("unterdrückt: voll", result.stdout)
@@ -210,7 +215,48 @@ class WakeTests(FabricCase):
         self.assertEqual(self.ticket(tid)["sessions"], [])
         attention = [row for row in self.index()["inbox"] if row["kind"] == "attention"]
         self.assertEqual(len(attention), 1)
+        self.assertEqual(attention[0]["ticket"], tid)
         self.assertIn("voll", attention[0]["text"])
+        self.assertIn("zap", attention[0]["text"])
+
+    def test_untätige_session_blockiert_wecken_nicht(self):
+        self.write_roster(max_sessions=1)
+        tid, _worktree = self.worktree_ticket("Weck")
+        self.set_terminals(
+            [
+                {"address": "t9", "name": "fab-ada-t-9", "state": "live",
+                 "status": "idle"},
+            ]
+        )
+        self.clear_log()
+        result = self.ok("comment", tid, "--from", "mensch", "@zap los")
+        self.assertIn("gestartet", result.stdout)
+        self.assertEqual(len(self.hc_calls("run")), 1)
+        self.assertEqual(self.wake_events(tid)[-1]["text"], "gestartet")
+
+    def test_session_eines_abgeschlossenen_tickets_blockiert_wecken_nicht(self):
+        self.write_roster(max_sessions=1)
+        old = self.new("Alt")
+        self.patch_ticket(
+            old,
+            status="done",
+            sessions=[
+                {"agent": "ada", "name": "fab-ada-t-9", "terminal": "t9",
+                 "started_at": 1}
+            ],
+        )
+        tid, _worktree = self.worktree_ticket("Weck")
+        self.set_terminals(
+            [
+                {"address": "t9", "name": "fab-ada-t-9", "state": "live",
+                 "status": "working"},
+            ]
+        )
+        self.clear_log()
+        result = self.ok("comment", tid, "--from", "mensch", "@zap los")
+        self.assertIn("gestartet", result.stdout)
+        self.assertEqual(len(self.hc_calls("run")), 1)
+        self.assertEqual(self.wake_events(tid)[-1]["text"], "gestartet")
 
     def test_send_fallback_mit_force(self):
         tid = self.new("Force")

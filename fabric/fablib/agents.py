@@ -3,7 +3,7 @@ import json
 import os
 import re
 
-from . import claude, hc, herdr, render
+from . import claude, hc, herdr, render, store
 from .errors import FabError, HcError, HerdrError
 
 ORCHESTRATOR = hc.ORCHESTRATOR
@@ -163,6 +163,47 @@ def running(live_terminals):
     }
 
 
+# Status, in denen eine Session arbeitet oder auf eine Antwort wartet.
+BUSY_STATUSES = frozenset(("working", "blocked"))
+
+
+def status(row):
+    """Statuswort einer Session; None, wenn das Programm keins meldet."""
+    raw = (row or {}).get("status")
+    if isinstance(raw, dict):
+        raw = raw.get("state")
+    return str(raw or "").strip().lower() or None
+
+
+def busy(row):
+    """Arbeitet oder wartet die Session? Ohne Statuswort gilt sie als beschäftigt."""
+    word = status(row)
+    return word is None or word in BUSY_STATUSES
+
+
+def closed_session_names():
+    """Terminalnamen von Sessions aus done/dropped-Tickets."""
+    names = set()
+    for ticket in store.all_tickets():
+        if ticket.get("status") not in ("done", "dropped"):
+            continue
+        for session in ticket.get("sessions") or []:
+            name = (session or {}).get("name")
+            if name:
+                names.add(name)
+    return names
+
+
+def active(live_terminals):
+    """Sessions, die einen Platz belegen: arbeitend/wartend, Ticket nicht fertig."""
+    closed = closed_session_names()
+    return {
+        name: row
+        for name, row in running(live_terminals).items()
+        if name not in closed and busy(row)
+    }
+
+
 def _start_visible(name, cwd, argv, prompt, labels, tab_name):
     """Startet per `hc run` und hängt das Terminal in Herdrs Space „Fabric“.
 
@@ -198,7 +239,7 @@ def start_agent(roster, ticket, agent_name):
     except HcError:
         live = {}
     limit = int(roster.get("max_sessions") or 4)
-    if len(running(live)) >= limit:
+    if len(active(live)) >= limit:
         return {"result": "unterdrückt: voll", "terminal": None, "name": None}
     name = hc.terminal_name(agent_name, ticket["id"])
     if name in live:
