@@ -5,8 +5,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  groupByStage, mentionSegments, sortInbox, timeline, relativeTime, wakeLine,
-  sessionChips, sessionStatus,
+  groupByStage, mentionSegments, sortInbox, timelineFeed, eventSummary, relativeTime,
+  wakeLine, sessionChips, sessionStatus,
 } from "../model.js";
 
 test("Tickets werden nach Stufe gruppiert, in Stufenreihenfolge", () => {
@@ -64,46 +64,39 @@ test("Inbox: neueste oben, gleiche Zeit bleibt in ihrer Reihenfolge", () => {
   assert.equal(inbox[0].ticket, "T-1", "die Eingabe wird nicht verändert");
 });
 
-test("Timeline: Akteure sind Spalten, Zeit läuft von neu (oben) nach alt (unten)", () => {
-  const roster = [
-    { name: "zap", role: "umsetzer" },
-    { name: "ada", role: "pruefer" },
-  ];
+test("Zeitverlauf: neueste zuerst, nach Tagen gruppiert, Filter je Ticket", () => {
+  const now = new Date(2026, 10, 18, 12, 0, 0).getTime();
+  const day = 86400000;
   const events = [
-    { at: 5000, kind: "wake", ticket: "T-1", actor: "mensch", target: "zap", text: "gestartet" },
-    { at: 3000, kind: "wake", ticket: "T-1", actor: "zap", target: "ada", text: "geweckt" },
-    { at: 1000, kind: "created", ticket: "T-1", actor: "mensch", target: "", text: "" },
-    { at: 4000, kind: "status", ticket: "T-1", actor: "orchestrator", target: "", text: "" },
-    { at: 2000, kind: "comment", ticket: "T-1", actor: "zap", target: "", text: "@ada bitte" },
+    { at: now - day - 1000, kind: "wake", ticket: "T-1", actor: "zap", target: "ada", text: "geweckt" },
+    { at: now - 1000, kind: "comment", ticket: "T-2", actor: "mensch", target: "", text: "@zap bitte" },
+    { at: now, kind: "comment", ticket: "T-1", actor: "ada", target: "", text: "passt" },
   ];
 
-  const result = timeline(events, roster);
+  const feed = timelineFeed(events, { now });
+  assert.deepEqual(feed.days.map((group) => group.label), ["Heute", "Gestern"]);
+  assert.deepEqual(feed.days.flatMap((group) => group.rows.map((row) => row.ticket)), ["T-1", "T-2", "T-1"]);
+  assert.equal(feed.total, 3);
+  assert.equal(feed.actors, 3);
 
-  assert.deepEqual(result.lanes.map((lane) => lane.name), ["orchestrator", "zap", "ada", "mensch"]);
-  assert.deepEqual(result.lanes.map((lane) => lane.label), ["Orchestrator", "zap", "ada", "Mensch"]);
-  assert.deepEqual(result.points.map((point) => point.at), [1000, 2000, 3000, 4000, 5000]);
-  assert.deepEqual(result.points.map((point) => point.lane), [3, 1, 1, 0, 3]);
-  assert.deepEqual(result.points.map((point) => point.x), [0.875, 0.375, 0.375, 0.125, 0.875]);
-  assert.deepEqual(result.points.map((point) => point.y), [1, 0.75, 0.5, 0.25, 0]);
-  assert.deepEqual(result.times, [5000, 4000, 3000, 2000, 1000]);
-  assert.equal(result.rows, 5);
-
-  assert.equal(result.arrows.length, 2);
-  assert.deepEqual(
-    result.arrows.map((arrow) => [arrow.actor, arrow.from, arrow.target, arrow.to]),
-    [["zap", 1, "ada", 2], ["mensch", 3, "zap", 1]],
-  );
-  assert.deepEqual(
-    result.arrows.map((arrow) => [arrow.x1, arrow.x2, arrow.y]),
-    [[0.375, 0.625, 0.5], [0.875, 0.375, 0]],
-  );
+  const scoped = timelineFeed(events, { ticket: "T-1", now });
+  assert.deepEqual(scoped.days.flatMap((group) => group.rows.map((row) => row.at)), [now, now - day - 1000]);
+  assert.equal(scoped.total, 2);
+  assert.equal(scoped.actors, 2);
 });
 
-test("Timeline ohne Ereignisse hat nur die Spuren", () => {
-  const result = timeline([], [{ name: "zap" }]);
-  assert.deepEqual(result.lanes.map((lane) => lane.name), ["orchestrator", "zap", "mensch"]);
-  assert.deepEqual(result.points, []);
-  assert.deepEqual(result.arrows, []);
+test("Zeitverlauf: Ereignisarten werden zu unterscheidbaren Sätzen", () => {
+  const status = eventSummary({ at: 1, kind: "status", actor: "orchestrator", text: "draft → todo" });
+  assert.equal(status.actor, "Orchestrator");
+  assert.equal(status.verb, "änderte den Status");
+  assert.equal(status.detail, "Entwurf → Geplant");
+
+  assert.equal(eventSummary({ kind: "wake", actor: "zap", target: "ada", text: "geweckt" }).verb, "weckte ada");
+  assert.equal(eventSummary({ kind: "wake", actor: "mensch", target: "orchestrator" }).verb, "weckte den Orchestrator");
+  assert.equal(eventSummary({ kind: "wake", actor: "zap", target: "mensch" }).verb, "weckte den Menschen");
+  assert.equal(eventSummary({ kind: "verdict", actor: "ada", text: "pass: HEAD geprüft" }).detail, "bestanden — HEAD geprüft");
+  assert.equal(eventSummary({ kind: "verify", actor: "zap", text: "fail" }).detail, "rot");
+  assert.equal(eventSummary({ kind: "comment", actor: "zap", text: "hallo" }).verb, "kommentierte");
 });
 
 test("Zeit und Weckzeilen auf Deutsch", () => {

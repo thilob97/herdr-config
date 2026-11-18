@@ -1,7 +1,7 @@
 // Token und Bausteine des Fabric-Mods. Jede Ansicht baut aus diesen Teilen;
 // Farben kommen ausschließlich aus theme(), Abstände und Größen aus diesem Modul.
 
-import { div, PathBuilder, Background, svg } from "gpui-kit";
+import { div, svg } from "gpui-kit";
 import {
   h_flex, v_flex, Input, NumberInput, Textarea, Editor, TextView, Checkbox, Switch,
   Table, TableHeader, TableBody, TableRow, TableHead, TableCell, Popup, Scrollbar,
@@ -26,10 +26,6 @@ export const SIZE = {
   avatar: 24,
   nav: 34,
   sidebar: 208,
-  timelineRail: 44,
-  timelineHead: 66,
-  timelineRow: 34,
-  timelineMin: 360,
 };
 
 export const ICON = (name) => `mods/fabric/icons/${name}.svg`;
@@ -905,29 +901,3 @@ export function stageRow(t, { label, count, open = true, onClick = null, id = nu
   return onClick ? still(withId).on_click((_event, cx) => { cx.stop_propagation(); onClick(cx); }) : withId;
 }
 
-// ---------- Timeline ----------
-
-export const PLOT_INSET = 3;
-export const columnX = (fraction) => fraction * 100;
-export const plotY = (fraction) => PLOT_INSET + fraction * (100 - 2 * PLOT_INSET);
-
-export function wakeArrows(t, arrows, height = 0) {
-  if (!arrows?.length) return null;
-  const builder = PathBuilder.stroke(1.2);
-  // Pfeilspitze etwa 4 px hoch, unabhängig davon, wie lang der Graph scrollt.
-  const wingY = height > 0 ? Math.min(1.1, 500 / height) : 1.1;
-  for (const arrow of arrows) {
-    const y = plotY(arrow.y);
-    const x1 = columnX(arrow.x1);
-    const x2 = columnX(arrow.x2);
-    builder.move_to(`${x1}%`, `${y}%`).line_to(`${x2}%`, `${y}%`);
-    const dir = arrow.to > arrow.from ? 1 : -1;
-    const wing = x2 - dir * 1.4;
-    builder.move_to(`${x2}%`, `${y}%`).line_to(`${wing}%`, `${y - wingY}%`);
-    builder.move_to(`${x2}%`, `${y}%`).line_to(`${wing}%`, `${y + wingY}%`);
-  }
-  return window
-    .paint_path(builder.build(), Background.solid(t.accent + "99"))
-    .absolute()
-    .inset_0();
-}

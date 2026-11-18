@@ -220,11 +220,11 @@ Ein einziger Mod, mehrfach im Layout, Ansicht über `props().view`:
 |---|---|
 | `tickets` | Eingabe „Neues Ticket in einem Satz…“ (→ `fab new`, Repo = Git-Wurzel von `focused().cwd`). Liste nach Stufe: Entwurf, Geplant, In Arbeit, Prüfung, Fertig (eingeklappt). Klick → Detail: Kopf (ID, Titel, Status, Zuständiger, Branch, Chips für Checks und Urteil), Body, Verlauf (Autor, Zeit, Text, `@erwähnungen` hervorgehoben, `wake`-Ergebnisse dazwischen als kleine Zeilen), Kommentarfeld (→ `fab comment --from mensch`). Bei `review`: **Abnehmen** (→ `fab accept`) und **Zurück mit Feedback** (→ `fab reject`). |
 | `inbox` | `index.inbox`, neueste oben. Klick → `setShared("fabric.selected", id)` und Ticket-Ansicht zeigen. Die Zahl hängt als Badge am Kopf. |
-| `timeline` | Ereignisse aus `index.events`: eine Spur pro Akteur (Orchestrator oben, dann Roster-Agenten, dann `mensch`), Punkte nach Zeit, `wake` als Pfeil von Akteur zu Ziel. Klick auf einen Punkt wählt das Ticket. |
+| `timeline` | Ereignisse aus `index.events` als chronologischer Feed, neueste oben und nach Tagen gruppiert. Je Zeile: Akteur, Satz („weckte ada“, „änderte den Status“, „urteilte“), Ticket-ID, Uhrzeit, Art-Punkt; `wake` nennt das Ziel im Satz. Die Auswahl grenzt auf ein Ticket ein, „Alle“ zeigt wieder alle. Klick auf eine Zeile wählt das Ticket. |
 
 - Der Mod liest nur `index.json` und `tickets/<ID>.json` (`readTextFile`). Er beobachtet `data/fabric` mit `watchFolder`, mit einem 5-s-Timer als Rückfall.
 - Geschrieben wird nur über `exec("${appHome()}/fabric/fab", […])`. Der Mod schreibt nie selbst in Ticket-Dateien.
 - Gemeinsamer Zustand: `shared("fabric.selected")` (gewähltes Ticket).
-- Aufbau: `main.js` (View, verteilt nach `view`), `model.js` (reine Logik ohne herdr-/gpui-Importe: Gruppieren, Kürzel, Zeitformat, Erwähnungen markieren, Timeline-Geometrie), `ui.js` (Token und Bausteine), `views/*.js`. `model.js` hat node-Tests.
+- Aufbau: `main.js` (View, verteilt nach `view`), `model.js` (reine Logik ohne herdr-/gpui-Importe: Gruppieren, Kürzel, Zeitformat, Erwähnungen markieren, Zeitverlauf-Feed: Tagesgruppen und Ereignissätze), `ui.js` (Token und Bausteine), `views/*.js`. `model.js` hat node-Tests.
 - Texte deutsch. Farben nur über `theme()`. Status- und Stufenwörter stehen genau einmal in `model.js`.
 - Layout `layouts/fabric.json`: Klon von `main`. Im Stack `panel-body` die Kinder `fabric-tickets` (`{"mod":"fabric","props":{"view":"tickets"}}`) und `fabric-timeline`, `files` und `changes` bleiben. In der Seitenleiste unter `agents` ein Block `fabric-inbox`. Tasten in `keys.json`: Panel Tickets und Timeline umschalten, Fokus auf „Neues Ticket“.
