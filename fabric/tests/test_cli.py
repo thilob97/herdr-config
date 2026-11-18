@@ -190,6 +190,29 @@ class CliTests(FabricCase):
         self.assertIn("zap", text)
         self.assertIn("fab-zap-t-1", text)
 
+    def test_agents_zeigt_untätige_sessions(self):
+        tid = self.new("Team")
+        self.patch_ticket(
+            tid,
+            sessions=[
+                {"agent": "zap", "name": "fab-zap-t-1", "terminal": "t5",
+                 "started_at": 1}
+            ],
+        )
+        self.set_terminals(
+            [
+                {"address": "t5", "name": "fab-zap-t-1", "state": "live",
+                 "status": "idle"},
+            ]
+        )
+        payload = json.loads(self.ok("agents", "--json").stdout)
+        row = next(
+            item for item in payload["sessions"] if item["name"] == "fab-zap-t-1"
+        )
+        self.assertEqual(row["status"], "idle")
+        text = self.ok("agents").stdout
+        self.assertIn("fab-zap-t-1 (t5, T-1, idle)", text)
+
     def test_inbox_json_und_index(self):
         tid = self.new("Inbox")
         self.ok("comment", tid, "--from", "zap", "@mensch bitte")
