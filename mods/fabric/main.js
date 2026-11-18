@@ -63,6 +63,7 @@ export default class Fabric extends View {
   init(_props, cx) {
     this.view = props()?.view ?? "tickets";
     this.isApp = this.view === "app";
+    this.timelineAll = false;
     this.overlayId = props()?.overlay ?? null;
     this.dir = `${appHome()}/data/fabric`;
     this.fab = `${appHome()}/fabric/fab`;
@@ -551,6 +552,7 @@ export default class Fabric extends View {
   select(id, cx) {
     this.lastCx = cx;
     const next = id || null;
+    this.timelineAll = false;
     this.openId = next;
     this.ticket = null;
     this.ticketError = null;
