@@ -4,4 +4,6 @@ set -eu
 cd "$(dirname "$0")/.."
 python3 -m unittest discover -s fabric/tests -t .
 node --test mods/fabric/test/
+node --test mods/fabric-sidebar/test/
 herdr-app check mods/fabric
+herdr-app check mods/fabric-sidebar
