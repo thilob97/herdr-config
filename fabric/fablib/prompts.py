@@ -3,7 +3,7 @@ import os
 import re
 import stat
 
-from . import events, index, store
+from . import events, git, index, store
 from .errors import FabError
 
 PLACEHOLDER_RE = re.compile(r"\{([a-z][a-z0-9_-]*)\}")
@@ -105,4 +105,7 @@ def save(roster, name, text, actor):
     size = len(text.encode("utf-8"))
     events.append("config", "", actor, "", f"Prompt {rel} gespeichert ({size} Bytes)")
     index.rebuild()
+    git.commit_paths(
+        path, [path], f"chore(prompt): {rel} gespeichert ({size} Bytes)"
+    )
     return path, size, unknown_placeholders(text)

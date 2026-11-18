@@ -9,7 +9,7 @@ import os
 import re
 import stat
 
-from . import agents, events, hc, index, store
+from . import agents, events, git, hc, index, store
 from .errors import FabError, HcError
 
 NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,15}$")
@@ -82,7 +82,7 @@ def _abs(directory, rel):
     return rel if os.path.isabs(rel) else os.path.join(directory, rel)
 
 
-def _commit(path, data, actor, text):
+def _commit(path, data, actor, text, written=()):
     store.atomic_write(
         path,
         json.dumps(data, ensure_ascii=False, indent=2) + "\n",
@@ -90,6 +90,8 @@ def _commit(path, data, actor, text):
     )
     events.append("config", "", actor, "", text)
     index.rebuild()
+    # Nur die Dateien dieses Befehls committen; False ist kein Fehler.
+    git.commit_paths(path, [path, *written], f"chore(roster): {text}")
 
 
 # ---------------------------------------------------------------- Prüfungen
@@ -279,12 +281,15 @@ def add(name, role, color, argv_json, prompt_text, actor):
     directory = os.path.dirname(path)
     rel = f"prompts/{name}.md"
     target = _abs(directory, rel)
+    written = []
     if prompt_text is not None:
         store.atomic_write(target, prompt_text, mode=_mode(target, 0o644))
+        written.append(target)
     elif not os.path.exists(target):
         store.atomic_write(
             target, TEMPLATE.format(name=name, role=role), mode=0o644
         )
+        written.append(target)
     entry = {
         "name": name,
         "role": role,
@@ -298,6 +303,7 @@ def add(name, role, color, argv_json, prompt_text, actor):
         data,
         actor,
         f"Agent {name} angelegt: Rolle {role}, Farbe {value}, Programm {argv[0]}",
+        written=written,
     )
     return entry
 
@@ -341,6 +347,7 @@ def edit(name, rename=None, role=None, color=None, argv_json=None,
         move = (_abs(directory, current_rel), new_abs)
 
     changes = []
+    written = []
     if role is not None:
         value = _check_role(role)
         if value != entry.get("role"):
@@ -360,12 +367,14 @@ def edit(name, rename=None, role=None, color=None, argv_json=None,
     if move is not None:
         if os.path.exists(move[0]):
             os.replace(move[0], move[1])
+            written.extend(move)
         changes.append(f"Name {name} → {target}")
     if prompt_text is not None:
         prompt_abs = _abs(directory, final_rel)
         store.atomic_write(
             prompt_abs, prompt_text, mode=_mode(prompt_abs, 0o644)
         )
+        written.append(prompt_abs)
         changes.append(f"Prompt {final_rel}")
     if entry.get("prompt") != final_rel:
         entry["prompt"] = final_rel
@@ -381,7 +390,8 @@ def edit(name, rename=None, role=None, color=None, argv_json=None,
             "oder --prompt-text"
         )
     _commit(
-        path, data, actor, f"Agent {name} geändert: " + ", ".join(changes)
+        path, data, actor, f"Agent {name} geändert: " + ", ".join(changes),
+        written=written,
     )
     return f"Agent „{target}“ geändert: " + ", ".join(changes)
 
