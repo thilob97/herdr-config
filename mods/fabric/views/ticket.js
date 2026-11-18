@@ -77,6 +77,7 @@ function head(app, cx, t, ticket) {
 
 function body(app, cx, t, ticket) {
   const dirty = app.bodyEditor ? model.isDirty(app.bodyEditor.value(), app.bodySaved) : false;
+  const images = ticket.body ? model.imageRefs(ticket.body) : [];
   const toolbar = h_flex()
     .flex_none()
     .w_full()
@@ -111,6 +112,13 @@ function body(app, cx, t, ticket) {
         disabled: Boolean(app.busy) || !dirty,
         tooltip: "Änderungen verwerfen",
         onClick: (cx) => app.discardBody(cx),
+      }))
+      .child(ui.button(t, {
+        id: "fabric-body-image",
+        label: "Bild",
+        icon: "image",
+        tooltip: "Bild anhängen",
+        onClick: (cx) => app.pickImage("body", cx),
       })));
 
   return v_flex()
@@ -124,14 +132,19 @@ function body(app, cx, t, ticket) {
     .when(Boolean(app.errorFor("body")), (el) =>
       el.child(ui.notice(t, app.errorFor("body").text, app.errorFor("body").level)))
     .when(app.bodyEditing, (el) => el
-      .child(ui.editor(t, app.bodyEditor, { height: 260 }))
+      .child(
+        div().w_full().on_drop((event, cx) => app.dropImages(event.paths, "body", cx))
+          .child(ui.editor(t, app.bodyEditor, { height: 260 })),
+      )
       .child(ui.hint(t, "Markdown. ## Ziel, ## Kontext, ## Abnahmekriterien, ## Grenzen.")))
     .when(!app.bodyEditing, (el) => el
       .child(
         ticket.body
-          ? div().w_full().p(S.m).rounded(ui.RADIUS.m).border_1().border_color(t.border).bg(t.background)
-            .child(TextView.markdown(`fabric-body-${ticket.id}`, ticket.body)
+          ? div().w_full().p(S.m).gap(S.s).rounded(ui.RADIUS.m).border_1().border_color(t.border).bg(t.background)
+            .child(TextView.markdown(`fabric-body-${ticket.id}`, model.stripImages(ticket.body))
               .w_full().text_size(T.s).text_color(t.foreground).whitespace_normal().selectable(true))
+            .when(images.length > 0, (inner) => inner.child(
+              ui.imageGallery(t, images, (image) => app.openImage(image), `fabric-body-image-${ticket.id}`)))
           : ui.emptyState(t, {
             title: "Keine Beschreibung",
             text: "Der Orchestrator formuliert das Ticket aus – oder du schreibst selbst.",
@@ -158,6 +171,7 @@ function historyRow(app, cx, t, row, index) {
       .child(div().text_size(T.xs).text_color(t.dim).child(model.wakeLine(row.event)));
   }
   const comment = row.comment;
+  const images = model.imageRefs(comment.text ?? "");
   return v_flex()
     .id(`fabric-entry-${comment.n ?? index}`)
     .w_full()
@@ -178,7 +192,12 @@ function historyRow(app, cx, t, row, index) {
       div().pl(30).w_full()
         .child(TextView.markdown(`fabric-comment-${comment.n ?? index}`, ui.mentionMarkdown(comment.text))
           .w_full().text_size(T.s).text_color(t.foreground).whitespace_normal().selectable(true)),
-    );
+    )
+    .when(images.length > 0, (el) => el.child(
+      div().pl(30).w_full()
+        .child(ui.imageGallery(t, images, (image) => app.openImage(image),
+          `fabric-comment-image-${comment.n ?? index}`)),
+    ));
 }
 
 function history(app, cx, t, ticket) {
@@ -216,12 +235,26 @@ function commentBox(app, cx, t, ticket) {
   const inputBox = v_flex()
     .w_full()
     .gap(4)
-    .child(ui.textarea(t, app.commentInput, { focused: app.fieldFocused, height: 84 }))
+    .child(
+      div().w_full().on_drop((event, cx) => app.dropImages(event.paths, "comment", cx))
+        .child(ui.textarea(t, app.commentInput, { focused: app.fieldFocused, height: 84 })),
+    )
     .when(app.commentSuggestions.length > 0, (el) => el.child(
       v_flex().w_full().p(S.xs).gap(1).rounded(ui.RADIUS.m)
         .border_1().border_color(t.border).bg(t.popover).children(suggestions),
     ))
-    .child(ui.hint(t, preview));
+    .child(
+      h_flex().w_full().gap(S.xs).items_center()
+        .child(div().flex_1().min_w(0).child(ui.hint(t, preview)))
+        .child(ui.iconButton(t, {
+          id: "fabric-comment-image",
+          icon: "image",
+          tooltip: "Bild anhängen (Einfügen, Ablegen oder wählen)",
+          size: 24,
+          iconSize: 13,
+          onClick: (cx) => app.pickImage("comment", cx),
+        })),
+    );
 
   return v_flex()
     .flex_none()

@@ -78,6 +78,7 @@ export default class Fabric extends View {
     this.busy = "";
     this.menu = null;
     this.modal = null;
+    this.imageOpen = null;
     this.newOpen = false;
     this.inboxOpen = false;
     this.closed = false;
@@ -192,6 +193,7 @@ export default class Fabric extends View {
       this.notifyNow();
     });
     this.commentInput.on("submit", (_event, cx) => this.comment(cx));
+    this.commentInput.on("paste_other", (_event, cx) => { this.pasteImage("comment", cx); });
     this.track(this.commentInput);
     this.search.on("focus", (_event, cx) => { this.fieldFocused = true; this.notifyNow(); });
     this.search.on("blur", (_event, cx) => { this.fieldFocused = false; this.notifyNow(); });
@@ -325,6 +327,7 @@ export default class Fabric extends View {
   }
 
   resetTicketEditing() {
+    this.imageOpen = null;
     this.titleEdit = null;
     this.bodyEditing = false;
     this.wakeOpen = false;
@@ -437,6 +440,7 @@ export default class Fabric extends View {
         this.bodyFor = id;
         this.bodySaved = this.ticket.body ?? "";
         this.bodyEditor = this.newEditor("markdown", this.bodySaved);
+        this.bodyEditor.on("paste_other", (_event, cx) => { this.pasteImage("body", cx); });
         this.bodyEditing = false;
         this.needsHistoryScroll = true;
         this.historyLastIndex = 1 + model.history(this.ticket, this.events).length;
@@ -750,6 +754,11 @@ export default class Fabric extends View {
 
   keys(event, cx) {
     const keystroke = event.keystroke;
+    if (this.imageOpen) {
+      cx.stop_propagation();
+      if (keystroke === "escape") { this.imageOpen = null; this.notifyNow(); }
+      return;
+    }
     if (this.modal) {
       if (keystroke === "escape") {
         cx.stop_propagation();
@@ -1359,6 +1368,163 @@ export default class Fabric extends View {
     notify({ title: "Fabric", body: label, level: "success" });
   }
 
+  openImage(image) {
+    if (!image?.path) return;
+    this.imageOpen = { path: image.path, alt: image.alt ?? "" };
+    this.notifyNow();
+  }
+
+  async attachImage(sourcePath, target, cx) {
+    if (this.busy) return false;
+    const id = this.activeTicketId();
+    if (!id) return false;
+    if (!model.isImagePath(sourcePath)) {
+      const text = `Nur Bilder: ${model.IMAGE_HINT}.`;
+      this.setError("attach", text);
+      notify({ title: "Fabric", body: text, level: "error" });
+      this.notifyNow();
+      return false;
+    }
+    this.busy = "attach";
+    this.setError("attach", null);
+    this.notifyNow();
+    try {
+      const result = await this.execFab(["attach", id, sourcePath, "--no-edit", "--from=mensch"]);
+      if (result.code !== 0) {
+        const text = (result.stderr || "").trim() || (result.stdout || "").trim()
+          || `fab endete mit Code ${result.code}.`;
+        this.setError("attach", text);
+        notify({ title: "Fabric", body: text, level: "error" });
+        return false;
+      }
+      const reference = (result.stdout ?? "").split("\n")
+        .map((line) => line.trim())
+        .find((line) => line.startsWith("!["));
+      if (!reference) {
+        const text = "fab lieferte keinen Bildverweis.";
+        this.setError("attach", text);
+        notify({ title: "Fabric", body: text, level: "error" });
+        return false;
+      }
+      if (!this.insertImageRef(target, reference)) return false;
+      notify({ title: "Fabric", body: "Bild angehängt.", level: "success" });
+      return true;
+    } catch (error) {
+      const text = `Bild anhängen ging nicht: ${message(error)}`;
+      this.setError("attach", text);
+      notify({ title: "Fabric", body: text, level: "error" });
+      return false;
+    } finally {
+      this.busy = "";
+      this.notifyNow();
+    }
+  }
+
+  insertImageRef(target, reference) {
+    if (target === "body") {
+      if (!this.bodyEditor) return false;
+      const next = model.insertAttachment(
+        this.bodyEditor.value(), this.bodyEditor.selected_range(), reference,
+      );
+      this.bodyEditor.set_value(next.text);
+      this.bodyEditor.set_selected_range({ start: next.caret, end: next.caret });
+      this.bodyEditing = true;
+      this.bodyEditor.focus();
+      this.notifyNow();
+      return true;
+    }
+    if (target === "comment") {
+      const next = model.insertAttachment(
+        this.commentInput.value(), this.commentInput.selected_range(), reference,
+      );
+      this.commentInput.set_value(next.text);
+      this.commentInput.set_selected_range({ start: next.caret, end: next.caret });
+      this.commentCaret = next.caret;
+      this.commentSuggestions = model.mentionSuggestions(
+        this.commentInput.value(), this.commentCaret, this.agentNames(),
+      );
+      this.commentInput.focus();
+      this.notifyNow();
+      return true;
+    }
+    return false;
+  }
+
+  async pickImage(target, cx) {
+    let result = null;
+    try {
+      result = await exec("/usr/bin/osascript", ["-e", 'POSIX path of (choose file with prompt "Bild wählen" of type {"public.png", "public.jpeg", "com.compuserve.gif", "org.webmproject.webp"})']);
+    } catch (error) {
+      const text = `Bild wählen ging nicht: ${message(error)}`;
+      this.setError("attach", text);
+      notify({ title: "Fabric", body: text, level: "error" });
+      this.notifyNow();
+      return false;
+    }
+    if (result.code === 0) {
+      const path = (result.stdout || "").trim();
+      if (!path) return false;
+      return this.attachImage(path, target, cx);
+    }
+    const stderr = result.stderr || "";
+    if (stderr.includes("User canceled") || stderr.includes("-128")) return false;
+    const text = `Bild wählen ging nicht: ${stderr.trim() || `osascript endete mit Code ${result.code}.`}`;
+    this.setError("attach", text);
+    notify({ title: "Fabric", body: text, level: "error" });
+    this.notifyNow();
+    return false;
+  }
+
+  async pasteImage(target, cx) {
+    const temp = `${this.dir}/.tmp/paste-${Date.now()}-${Math.random().toString(36).slice(2)}.png`;
+    try {
+      try {
+        await exec("/bin/mkdir", ["-p", `${this.dir}/.tmp`]);
+      } catch {
+        // mkdir darf scheitern; osascript meldet den eigentlichen Fehler.
+      }
+      let stored = false;
+      try {
+        const result = await exec("/usr/bin/osascript", [
+          "-e", "on run argv",
+          "-e", "set targetPath to item 1 of argv",
+          "-e", "set pngData to the clipboard as «class PNGf»",
+          "-e", "set fh to open for access (POSIX file targetPath) with write permission",
+          "-e", "set eof fh to 0",
+          "-e", "write pngData to fh",
+          "-e", "close access fh",
+          "-e", "end run",
+          temp,
+        ]);
+        stored = result.code === 0;
+      } catch {
+        stored = false;
+      }
+      if (!stored) {
+        const text = "Zwischenablage enthält kein Bild.";
+        this.setError("attach", text);
+        notify({ title: "Fabric", body: text, level: "error" });
+        this.notifyNow();
+        return false;
+      }
+      return await this.attachImage(temp, target, cx);
+    } finally {
+      try { await exec("/bin/rm", ["-f", temp]); } catch { /* egal */ }
+    }
+  }
+
+  async dropImages(paths, target, cx) {
+    const images = (paths ?? []).filter((path) => model.isImagePath(path));
+    if (!images.length) {
+      const text = `Nur Bilder: ${model.IMAGE_HINT}.`;
+      this.setError("attach", text);
+      notify({ title: "Fabric", body: text, level: "error" });
+      this.notifyNow();
+      return;
+    }
+    for (const path of images) await this.attachImage(path, target, cx);
+  }
+
   async setBase(base, cx) {
     const id = this.activeTicketId();
     if (!id || !base.trim()) return;
@@ -1959,6 +2125,7 @@ export default class Fabric extends View {
       }));
     }
     if (this.newOpen || this.modal) overlay.push(renderDialogs(this, cx, t));
+    if (this.imageOpen) overlay.push(ui.imageLightbox(t, { ...this.imageOpen, onClose: () => { this.imageOpen = null; this.notifyNow(); } }));
 
     return div()
       .relative()

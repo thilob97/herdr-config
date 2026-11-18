@@ -159,7 +159,7 @@ function detail(app, cx, t) {
         )
         .when(Boolean(ticket.body), (el) => el.child(
           div().w_full().p(S.m).border_b(1).border_color(t.border)
-            .child(TextView.markdown(`fabric-panel-body-${ticket.id}`, ticket.body)
+            .child(TextView.markdown(`fabric-panel-body-${ticket.id}`, model.stripImages(ticket.body))
               .w_full().text_size(T.s).text_color(t.foreground).whitespace_normal().selectable(true)),
         ))
         .child(

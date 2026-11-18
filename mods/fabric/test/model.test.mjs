@@ -344,6 +344,85 @@ test("Kommentare bleiben reiner Text, nur Erwähnungen werden hervorgehoben", as
   assert.equal(indented.includes("    "), false, "kein ASCII-Codeblock");
 });
 
+test("Pfade und Sonderzeichen bleiben in Kommentaren wörtlich", async () => {
+  const { plainMentionMarkdown } = await import("../model.js");
+  assert.equal(
+    plainMentionMarkdown("C:\\pfad\\datei /usr/*/bin a*b*c $x_1$ __init__.py"),
+    "C:\\\\pfad\\\\datei \\/usr\\/\\*\\/bin a\\*b\\*c $x\\_1$ \\_\\_init\\_\\_.py",
+  );
+});
+
+test("Nackte URLs werden zu Links, Satzzeichen bleiben Text", async () => {
+  const { plainMentionMarkdown } = await import("../model.js");
+  assert.equal(
+    plainMentionMarkdown("Siehe https://example.com/a_b?x=1, dann."),
+    "Siehe <https://example.com/a_b?x=1>, dann.",
+  );
+  assert.equal(
+    plainMentionMarkdown("https://example.com/pfad_(x)"),
+    "<https://example.com/pfad_(x)>",
+    "paarige Klammern gehören zur Adresse",
+  );
+  assert.equal(
+    plainMentionMarkdown("https://example.com/x)"),
+    "<https://example.com/x>\\)",
+    "unpaarige Klammer bleibt Text",
+  );
+});
+
+test("Erwähnungen wirken auch neben Links und Bildverweisen", async () => {
+  const { plainMentionMarkdown, wakeTargets, mentionedNames } = await import("../model.js");
+  assert.equal(
+    plainMentionMarkdown("@ada siehe https://example.com/x und ![Plan](data/fabric/attachments/T-1/plan.png)"),
+    "**@ada** siehe <https://example.com/x> und Plan",
+  );
+  assert.equal(
+    plainMentionMarkdown("thilo@example.com schreibt"),
+    "thilo@example.com schreibt",
+    "E-Mail-Adressen bleiben Text",
+  );
+  const text = "@ada siehe https://example.com/x und ![Plan](data/fabric/attachments/T-1/plan.png)";
+  assert.deepEqual(mentionedNames(text), ["ada"]);
+  assert.deepEqual(wakeTargets(text, ["ada", "zap"], "zap"), [{ name: "ada", kind: "wake" }]);
+});
+
+test("Bildverweise: relative Pfade, Alt-Text, kein Dedupe, Anhang einfügen", async () => {
+  const {
+    IMAGE_TYPES, IMAGE_HINT, isImagePath, imageRefs, stripImages, insertAttachment,
+  } = await import("../model.js");
+
+  assert.deepEqual(IMAGE_TYPES, ["png", "jpg", "jpeg", "gif", "webp"]);
+  assert.equal(IMAGE_HINT, "png, jpg, jpeg, gif, webp");
+
+  assert.equal(isImagePath("data/fabric/attachments/T-1/plan.PNG"), true);
+  assert.equal(isImagePath("bild.webp?raw=1#oben"), true);
+  assert.equal(isImagePath("notiz.txt"), false);
+  assert.equal(isImagePath("notes/bild"), false);
+  assert.equal(isImagePath("https://example.com/x.png"), false);
+
+  const md = "![Plan](data/fabric/attachments/T-1/plan.png)";
+  assert.deepEqual(
+    imageRefs(`${md} und ${md} ![fern](https://x/y.png) ![notiz](notiz.txt) ![absolut](/tmp/x.png)`),
+    [
+      { alt: "Plan", path: "data/fabric/attachments/T-1/plan.png", markdown: md },
+      { alt: "Plan", path: "data/fabric/attachments/T-1/plan.png", markdown: md },
+    ],
+    "Doppelte bleiben erhalten, Fremdes fällt weg",
+  );
+
+  assert.equal(stripImages(`a ${md} b ![x](q.jpg)`), "a Plan b x");
+  assert.equal(stripImages("a![](p.png)b"), "ab");
+
+  assert.deepEqual(insertAttachment("", { start: 0, end: 0 }, md),
+    { text: md, caret: md.length });
+  assert.deepEqual(insertAttachment("Text", { start: 4, end: 4 }, md),
+    { text: `Text ${md}`, caret: 4 + 1 + md.length });
+  assert.deepEqual(insertAttachment("ab\ncd", { start: 2, end: 2 }, "X"),
+    { text: "ab X\ncd", caret: 4 });
+  assert.deepEqual(insertAttachment("abcdef", { start: -4, end: 99 }, "X"),
+    { text: "X", caret: 1 }, "Bereich wird beschnitten");
+});
+
 // ---------- Flags ----------
 
 test("Flags werden nach Shell-Regeln zerlegt und wieder zusammengesetzt", async () => {
