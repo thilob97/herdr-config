@@ -54,6 +54,17 @@
               }
             },
             {
+              "id": "fabric-agents",
+              "type": "block",
+              "size": {
+                "weight": 5
+              },
+              "min": 120,
+              "content": {
+                "mod": "fabric-sidebar"
+              }
+            },
+            {
               "id": "agents",
               "type": "block",
               "size": {
