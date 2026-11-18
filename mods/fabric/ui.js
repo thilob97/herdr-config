@@ -26,6 +26,10 @@ export const SIZE = {
   avatar: 24,
   nav: 34,
   sidebar: 208,
+  timelineRail: 44,
+  timelineHead: 66,
+  timelineRow: 34,
+  timelineMin: 360,
 };
 
 export const ICON = (name) => `mods/fabric/icons/${name}.svg`;
@@ -901,25 +905,26 @@ export function stageRow(t, { label, count, open = true, onClick = null, id = nu
 // ---------- Timeline ----------
 
 export const PLOT_INSET = 3;
-export const plotX = (fraction) => PLOT_INSET + fraction * (100 - 2 * PLOT_INSET);
+export const columnX = (fraction) => fraction * 100;
+export const plotY = (fraction) => PLOT_INSET + fraction * (100 - 2 * PLOT_INSET);
 
-export function wakeArrows(t, arrows, laneCount) {
-  if (!arrows?.length || laneCount < 1) return null;
+export function wakeArrows(t, arrows, height = 0) {
+  if (!arrows?.length) return null;
   const builder = PathBuilder.stroke(1.2);
+  // Pfeilspitze etwa 4 px hoch, unabhängig davon, wie lang der Graph scrollt.
+  const wingY = height > 0 ? Math.min(1.1, 500 / height) : 1.1;
   for (const arrow of arrows) {
-    const x = plotX(arrow.x);
-    const y1 = arrow.y1 * 100;
-    const y2 = arrow.y2 * 100;
-    builder.move_to(`${x}%`, `${y1}%`).line_to(`${x}%`, `${y2}%`);
-    const back = arrow.to > arrow.from ? -1 : 1;
-    const dy = (back * 3.5) / laneCount;
-    builder.move_to(`${x}%`, `${y2}%`).line_to(`${x - 0.5}%`, `${y2 + dy}%`);
-    builder.move_to(`${x}%`, `${y2}%`).line_to(`${x + 0.5}%`, `${y2 + dy}%`);
+    const y = plotY(arrow.y);
+    const x1 = columnX(arrow.x1);
+    const x2 = columnX(arrow.x2);
+    builder.move_to(`${x1}%`, `${y}%`).line_to(`${x2}%`, `${y}%`);
+    const dir = arrow.to > arrow.from ? 1 : -1;
+    const wing = x2 - dir * 1.4;
+    builder.move_to(`${x2}%`, `${y}%`).line_to(`${wing}%`, `${y - wingY}%`);
+    builder.move_to(`${x2}%`, `${y}%`).line_to(`${wing}%`, `${y + wingY}%`);
   }
   return window
     .paint_path(builder.build(), Background.solid(t.accent + "99"))
     .absolute()
-    .top(0)
-    .left(0)
-    .size_full();
+    .inset_0();
 }

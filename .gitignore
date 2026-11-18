@@ -47,3 +47,4 @@
 /mods/**/herdr.d.ts
 /mods/*/jsconfig.json
 /**/__pycache__/
+/.fabric/evidence/
