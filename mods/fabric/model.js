@@ -535,11 +535,33 @@ export function replaceMention(text, range, name) {
   if (invalid) {
     return { text: source, caret: Number.isInteger(end) ? Math.max(0, Math.min(end, source.length)) : source.length };
   }
-  const insert = `@${name} `;
+  const insert = `@${name}`;
+  const space = /\s/.test(source[end] ?? "") ? "" : " ";
   return {
-    text: source.slice(0, start) + insert + source.slice(end),
-    caret: start + insert.length,
+    text: source.slice(0, start) + insert + space + source.slice(end),
+    caret: start + insert.length + 1,
   };
+}
+
+/** Die Tasten der Vorschlagsliste. Sie hängen an den Kontexten der Textfelder
+ *  (`Input`, `Textarea`), damit sie auf derselben Tiefe liegen wie deren eigene
+ *  Bindungen; die spätere Registrierung entscheidet den Gleichstand. Ohne
+ *  offene Liste reicht der Handler die Aktion per `cx.propagate()` weiter. */
+export function mentionKeyBindings() {
+  const actions = [
+    ["up", "fabric-mention-up"],
+    ["down", "fabric-mention-down"],
+    ["enter", "fabric-mention-accept"],
+    ["tab", "fabric-mention-accept"],
+    ["escape", "fabric-mention-close"],
+  ];
+  const bindings = [];
+  for (const context of ["Input", "Textarea"]) {
+    for (const [keystroke, action] of actions) {
+      bindings.push({ keystroke, action, context });
+    }
+  }
+  return bindings;
 }
 
 /** Ersetzt die `@`-Eingabe durch `@name ` und liefert Text und neue Cursorposition. */

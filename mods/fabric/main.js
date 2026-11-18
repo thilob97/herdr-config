@@ -194,20 +194,7 @@ export default class Fabric extends View {
 
     this.appFocus = cx.focus_handle();
     this.mentionClock = cx;
-    if (!mentionKeysBound) {
-      mentionKeysBound = true;
-      try {
-        cx.bind_keys([
-          { keystroke: "up", action: "fabric-mention-up" },
-          { keystroke: "down", action: "fabric-mention-down" },
-          { keystroke: "enter", action: "fabric-mention-accept" },
-          { keystroke: "tab", action: "fabric-mention-accept" },
-          { keystroke: "escape", action: "fabric-mention-close" },
-        ]);
-      } catch {
-        // Die Keymap ist dann unverändert; die Liste bleibt ohne Tastatur bedienbar.
-      }
-    }
+    this.mentionKeyCount = 0;
 
     if (this.view === "switcher") {
       this.ready = true;
@@ -424,6 +411,7 @@ export default class Fabric extends View {
     const index = suggestions.length
       ? (same ? Math.min(this.mentions.index, suggestions.length - 1) : 0)
       : 0;
+    if (suggestions.length) this.ensureMentionKeys(cx);
     this.mentions = {
       field: suggestions.length ? field : null,
       suggestions,
@@ -492,6 +480,28 @@ export default class Fabric extends View {
       .on_action("fabric-mention-down", (_event, cx) => this.mentionAction("down", cx))
       .on_action("fabric-mention-accept", (_event, cx) => this.mentionAction("accept", cx))
       .on_action("fabric-mention-close", (_event, cx) => this.mentionAction("close", cx));
+  }
+
+  /** Bindet die Tasten erst beim ersten Vorschlag – nach den Bindungen der
+   *  Textfelder. Mit deren Kontext (`Input`, `Textarea`) und späterer
+   *  Registrierung gewinnt die Liste den Gleichstand; ohne offene Liste
+   *  reicht der Handler die Aktion per `cx.propagate()` weiter. */
+  ensureMentionKeys(cx) {
+    if (mentionKeysBound || !cx?.bind_keys) return;
+    mentionKeysBound = true;
+    try {
+      // 0 ist kein Fehler: nach einem Reload liegen dieselben Bindungen schon
+      // in der Keymap und werden nicht erneut gezählt.
+      this.mentionKeyCount = cx.bind_keys(model.mentionKeyBindings());
+    } catch (error) {
+      mentionKeysBound = false;
+      notify({
+        title: "Tastatur für @-Vorschläge nicht gebunden",
+        body: message(error),
+        level: "error",
+        timeout: 8000,
+      });
+    }
   }
 
   mentionView(field, t) {

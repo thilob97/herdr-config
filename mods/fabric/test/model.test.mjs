@@ -308,7 +308,7 @@ test("@-Vorschläge: erkennt die Eingabe am Cursor und ersetzt sie", async () =>
   assert.deepEqual(suggestions.map((entry) => entry.name), ["ada", "anton"]);
 
   const inserted = insertMention("Bitte @a prüfen", 8, "ada");
-  assert.equal(inserted.text, "Bitte @ada  prüfen");
+  assert.equal(inserted.text, "Bitte @ada prüfen");
   assert.equal(inserted.caret, 11);
   assert.deepEqual(insertMention("ohne", 4, "ada"), { text: "ohne", caret: 4 });
 });
@@ -316,6 +316,7 @@ test("@-Vorschläge: erkennt die Eingabe am Cursor und ersetzt sie", async () =>
 test("@-Vorschläge: leere Eingabe, alle Namen, Auswahl und Ersetzen", async () => {
   const {
     mentionQuery, mentionSuggestions, mentionNames, moveMentionIndex, replaceMention, insertMention,
+    mentionKeyBindings,
   } = await import("../model.js");
   assert.deepEqual(mentionQuery("@", 1), { start: 0, end: 1, query: "" });
   assert.deepEqual(mentionQuery("Hallo @", 7), { start: 6, end: 7, query: "" });
@@ -336,14 +337,27 @@ test("@-Vorschläge: leere Eingabe, alle Namen, Auswahl und Ersetzen", async () 
   assert.equal(moveMentionIndex(4, 0, -1), 0);
 
   assert.deepEqual(replaceMention("Bitte @a prüfen", { start: 6, end: 8 }, "ada"),
-    { text: "Bitte @ada  prüfen", caret: 11 });
+    { text: "Bitte @ada prüfen", caret: 11 });
+  assert.deepEqual(replaceMention("Bitte @a", { start: 6, end: 8 }, "ada"),
+    { text: "Bitte @ada ", caret: 11 });
   assert.deepEqual(replaceMention("Bitte @a prüfen", { start: 8, end: 8 }, "ada"),
     { text: "Bitte @a prüfen", caret: 8 });
   assert.deepEqual(replaceMention("Bitte @a prüfen", { start: 5, end: 2 }, "ada"),
     { text: "Bitte @a prüfen", caret: 2 });
 
-  assert.deepEqual(insertMention("Bitte @a prüfen", 8, "ada"), { text: "Bitte @ada  prüfen", caret: 11 });
+  assert.deepEqual(insertMention("Bitte @a prüfen", 8, "ada"), { text: "Bitte @ada prüfen", caret: 11 });
   assert.deepEqual(insertMention("@", 1, "orchestrator"), { text: "@orchestrator ", caret: 14 });
+
+  const bindings = mentionKeyBindings();
+  assert.equal(bindings.length, 10, "fünf Tasten in beiden Textfeld-Kontexten");
+  assert.equal(bindings.every((entry) => entry.context), true, "keine globalen Bindungen");
+  assert.deepEqual([...new Set(bindings.map((entry) => entry.context))].sort(), ["Input", "Textarea"]);
+  assert.deepEqual(
+    [...new Set(bindings.map((entry) => entry.keystroke))].sort(),
+    ["down", "enter", "escape", "tab", "up"],
+  );
+  assert.equal(bindings.filter((entry) => entry.keystroke === "enter"
+    || entry.keystroke === "tab").every((entry) => entry.action === "fabric-mention-accept"), true);
 });
 
 test("„weckt“-Vorschau: Agenten wecken, mensch landet in der Inbox, Unbekanntes nicht", async () => {
