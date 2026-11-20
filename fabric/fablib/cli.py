@@ -86,6 +86,194 @@ def _open_blockers(ticket):
     return open_ids
 
 
+def _dispatch_locked(ticket, agent_name, actor, roster):
+    """Startet oder weckt ein Ticket; der Aufrufer hält `store.locked()`.
+
+    Gibt ein Ergebnis-Dict zurück und schreibt Ticket sowie Ereignis selbst.
+    """
+    if not ticket.get("repo"):
+        raise FabError(
+            f"{ticket['id']} hat kein Repo; fab edit {ticket['id']} --repo PFAD --from {actor}"
+        )
+    top = git.toplevel(ticket["repo"])
+    if not top:
+        raise FabError(f"{ticket['id']}: {ticket['repo']} ist kein Git-Repository")
+    team_entry = agents.team_for_ticket(roster, ticket)
+    team_name = str(team_entry.get("name") or "")
+    agents.agent_in_team(roster, team_entry, agent_name)
+    if not _has_criteria(ticket["body"]):
+        raise FabError(
+            f"{ticket['id']}: Abschnitt „## Abnahmekriterien“ fehlt oder ist leer"
+        )
+    blockers = _open_blockers(ticket)
+    if blockers:
+        raise FabError(
+            f"{ticket['id']} ist blockiert durch {', '.join(blockers)}; "
+            f"erst abschließen oder fab link ändern"
+        )
+    try:
+        live = hc.live()
+    except HcError as exc:
+        raise FabError(f"Agenten nicht prüfbar: {exc}")
+    terminal = hc.terminal_name(agent_name, ticket["id"], team_name)
+    candidates = [terminal]
+    if team_name == teams.legacy_team_name(roster):
+        candidates.append(hc.terminal_name(agent_name, ticket["id"]))
+    running_name = next((name for name in candidates if name in live), None)
+    if running_name is not None:
+        results = wake.process(
+            ticket, [agent_name], actor,
+            f"Arbeite an {ticket['id']} weiter.",
+            roster,
+        )
+        if ticket["status"] != "doing":
+            ticket["status"] = "doing"
+        events.append("dispatch", ticket["id"], actor, agent_name,
+                      f"lief schon: {running_name}")
+        store.save(ticket)
+        index.rebuild()
+        return {
+            "agent": agent_name,
+            "terminal": running_name,
+            "already": True,
+            "wake": results,
+        }
+    if agents.at_limit(roster, live, team_entry):
+        limit = teams.team_limit(team_entry)
+        total = roster.get("max_sessions_total")
+        raise FabError(
+            f"{ticket['id']}: unterdrückt: voll — höchstens {limit} Sessions "
+            f"je Team {team_name}, {total} gesamt"
+        )
+    base = git.branch(top)
+    start = git.head(top)
+    branch_name = f"fab/{ticket['id']}-{_slug(ticket['title'])}"
+    folder = _worktree_for(top, branch_name)
+    folder = git.create_worktree(top, folder, branch_name, start)
+    ticket.update(
+        base=base,
+        branch=branch_name,
+        worktree=folder,
+        assignee=agent_name,
+    )
+    store.save(ticket)
+    started = agents.start_agent(roster, ticket, agent_name)
+    if started["result"] != "gestartet":
+        events.append("dispatch", ticket["id"], actor, agent_name,
+                      f"Start fehlgeschlagen: {started['result']}")
+        store.save(ticket)
+        index.rebuild()
+        detail = started.get("error") or started["result"]
+        raise FabError(
+            f"{ticket['id']}: Agent {agent_name} nicht gestartet ({detail}); "
+            f"Branch {branch_name} und Worktree {folder} bleiben für einen neuen Versuch"
+        )
+    ticket["status"] = "doing"
+    ticket["sessions"].append(
+        {
+            "agent": agent_name,
+            "terminal": started["terminal"],
+            "name": started["name"],
+            "started_at": store.now_ms(),
+        }
+    )
+    detail = f"{branch_name} · {folder}"
+    warning = started.get("warning")
+    if warning:
+        detail += f" · {warning}"
+    events.append("dispatch", ticket["id"], actor, agent_name, detail)
+    store.save(ticket)
+    index.rebuild()
+    return {
+        "agent": agent_name,
+        "terminal": started["terminal"],
+        "branch": branch_name,
+        "folder": folder,
+        "warning": warning,
+        "already": False,
+    }
+
+
+def _autostart_note(ticket, reason):
+    """Grund festhalten, warum ein startbereites Ticket nicht startet."""
+    text = f"automatisch nicht gestartet: {reason}"
+    events.append("dispatch", ticket["id"], "fab", ticket.get("assignee") or "", text)
+    index.rebuild()
+    print(f"{ticket['id']}: {text}", file=sys.stderr)
+
+
+def _autostart(candidate_ids):
+    """Startet Tickets, die durch den Wegfall einer Blockade startbereit sind.
+
+    Ein Fehler beim Start bleibt beim Ticket; der Aufrufer (accept, link) gilt
+    trotzdem als erfolgreich.
+    """
+    for candidate_id in dict.fromkeys(candidate_ids):
+        with store.locked():
+            try:
+                ticket = store.load(candidate_id)
+            except FabError:
+                continue
+            status = ticket.get("status")
+            if status != "todo":
+                if status == "draft":
+                    _autostart_note(ticket, "Status draft")
+                continue
+            if not ticket.get("assignee"):
+                _autostart_note(ticket, "kein Zuständiger")
+                continue
+            if not ticket.get("repo"):
+                _autostart_note(ticket, "kein Repo")
+                continue
+            if not _has_criteria(ticket.get("body")):
+                _autostart_note(ticket, "keine Abnahmekriterien")
+                continue
+            try:
+                roster = agents.load()
+                result = _dispatch_locked(
+                    ticket, ticket["assignee"], "fab", roster
+                )
+            except Exception as exc:
+                events.append(
+                    "dispatch", ticket["id"], "fab",
+                    ticket.get("assignee") or "",
+                    f"automatisch nicht gestartet: {exc}",
+                )
+                store.save(ticket)
+                index.rebuild()
+                print(f"{ticket['id']}: automatisch nicht gestartet: {exc}",
+                      file=sys.stderr)
+                continue
+            _print_wake_results(result.get("wake") or [])
+            if result["already"]:
+                print(
+                    f"{ticket['id']}: {result['agent']} läuft schon "
+                    f"({result['terminal']}); geweckt statt gestartet"
+                )
+            else:
+                print(
+                    f"{ticket['id']}: automatisch an {result['agent']} verteilt: "
+                    f"{result['branch']} in {result['folder']} "
+                    f"(Terminal {result['terminal']})"
+                )
+                if result.get("warning"):
+                    print(f"{ticket['id']}: {result['warning']}")
+
+
+def _unblocked_by(trigger_id):
+    """IDs der Tickets, die den Trigger als Blocker nennen und jetzt frei sind."""
+    found = []
+    for ticket in store.all_tickets():
+        if ticket["id"] == trigger_id:
+            continue
+        if trigger_id not in (ticket.get("blocked_by") or []):
+            continue
+        if _open_blockers(ticket):
+            continue
+        found.append(ticket["id"])
+    return found
+
+
 def _end_sessions(ticket):
     ended = []
     for session in ticket.get("sessions") or []:
@@ -251,6 +439,7 @@ def cmd_assign(args):
 
 def cmd_link(args):
     actor = _require_actor(args)
+    autostart = []
     with store.locked():
         ticket = store.load(args.id)
         if args.remove:
@@ -276,32 +465,36 @@ def cmd_link(args):
             print(
                 f"{ticket['id']}: blockiert durch {', '.join(remaining) or 'nichts'}"
             )
+            if not remaining:
+                autostart.append(ticket["id"])
+        else:
+            additions = [store.normalize_id(raw) for raw in args.blocked_by]
+            if ticket["id"] in additions:
+                raise FabError("Ein Ticket kann nicht auf sich selbst warten")
+            for blocker_id in additions:
+                store.load(blocker_id)
+            graph = {item["id"]: list(item["blocked_by"]) for item in store.all_tickets()}
+            merged = list(dict.fromkeys(list(ticket["blocked_by"]) + additions))
+            graph[ticket["id"]] = merged
+            for blocker_id in merged:
+                seen, stack = set(), [blocker_id]
+                while stack:
+                    current = stack.pop()
+                    if current == ticket["id"]:
+                        raise FabError(
+                            f"Zyklus: {ticket['id']} → {blocker_id} → … → {ticket['id']}"
+                        )
+                    if current in seen:
+                        continue
+                    seen.add(current)
+                    stack.extend(graph.get(current, []))
+            ticket["blocked_by"] = merged
+            events.append("edited", ticket["id"], actor, "", "blockiert durch " + ", ".join(merged))
+            store.save(ticket)
+            index.rebuild()
+            print(f"{ticket['id']}: blockiert durch {', '.join(merged)}")
             return 0
-        additions = [store.normalize_id(raw) for raw in args.blocked_by]
-        if ticket["id"] in additions:
-            raise FabError("Ein Ticket kann nicht auf sich selbst warten")
-        for blocker_id in additions:
-            store.load(blocker_id)
-        graph = {item["id"]: list(item["blocked_by"]) for item in store.all_tickets()}
-        merged = list(dict.fromkeys(list(ticket["blocked_by"]) + additions))
-        graph[ticket["id"]] = merged
-        for blocker_id in merged:
-            seen, stack = set(), [blocker_id]
-            while stack:
-                current = stack.pop()
-                if current == ticket["id"]:
-                    raise FabError(
-                        f"Zyklus: {ticket['id']} → {blocker_id} → … → {ticket['id']}"
-                    )
-                if current in seen:
-                    continue
-                seen.add(current)
-                stack.extend(graph.get(current, []))
-        ticket["blocked_by"] = merged
-        events.append("edited", ticket["id"], actor, "", "blockiert durch " + ", ".join(merged))
-        store.save(ticket)
-        index.rebuild()
-    print(f"{ticket['id']}: blockiert durch {', '.join(merged)}")
+    _autostart(autostart)
     return 0
 
 
@@ -408,102 +601,20 @@ def cmd_dispatch(args):
             raise FabError(
                 f"{ticket['id']}: kein Agent; nutze --agent NAME oder fab assign {ticket['id']} NAME"
             )
-        if not ticket.get("repo"):
-            raise FabError(
-                f"{ticket['id']} hat kein Repo; fab edit {ticket['id']} --repo PFAD --from {actor}"
-            )
-        top = git.toplevel(ticket["repo"])
-        if not top:
-            raise FabError(f"{ticket['id']}: {ticket['repo']} ist kein Git-Repository")
-        team_entry = agents.team_for_ticket(roster, ticket)
-        team_name = str(team_entry.get("name") or "")
-        agents.agent_in_team(roster, team_entry, agent_name)
-        if not _has_criteria(ticket["body"]):
-            raise FabError(
-                f"{ticket['id']}: Abschnitt „## Abnahmekriterien“ fehlt oder ist leer"
-            )
-        blockers = _open_blockers(ticket)
-        if blockers:
-            raise FabError(
-                f"{ticket['id']} ist blockiert durch {', '.join(blockers)}; "
-                f"erst abschließen oder fab link ändern"
-            )
-        try:
-            live = hc.live()
-        except HcError as exc:
-            raise FabError(f"Agenten nicht prüfbar: {exc}")
-        terminal = hc.terminal_name(agent_name, ticket["id"], team_name)
-        candidates = [terminal]
-        if team_name == teams.legacy_team_name(roster):
-            candidates.append(hc.terminal_name(agent_name, ticket["id"]))
-        running_name = next((name for name in candidates if name in live), None)
-        if running_name is not None:
-            results = wake.process(
-                ticket, [agent_name], actor,
-                f"Arbeite an {ticket['id']} weiter.",
-                roster,
-            )
-            if ticket["status"] != "doing":
-                ticket["status"] = "doing"
-            events.append("dispatch", ticket["id"], actor, agent_name,
-                          f"lief schon: {running_name}")
-            store.save(ticket)
-            index.rebuild()
-            _print_wake_results(results)
-            print(f"{ticket['id']}: {agent_name} läuft schon ({running_name}); geweckt statt gestartet")
-            return 0
-        if agents.at_limit(roster, live, team_entry):
-            limit = teams.team_limit(team_entry)
-            total = roster.get("max_sessions_total")
-            raise FabError(
-                f"{ticket['id']}: unterdrückt: voll — höchstens {limit} Sessions "
-                f"je Team {team_name}, {total} gesamt"
-            )
-        base = git.branch(top)
-        start = git.head(top)
-        branch_name = f"fab/{ticket['id']}-{_slug(ticket['title'])}"
-        folder = _worktree_for(top, branch_name)
-        folder = git.create_worktree(top, folder, branch_name, start)
-        ticket.update(
-            base=base,
-            branch=branch_name,
-            worktree=folder,
-            assignee=agent_name,
+        result = _dispatch_locked(ticket, agent_name, actor, roster)
+    _print_wake_results(result.get("wake") or [])
+    if result["already"]:
+        print(
+            f"{ticket['id']}: {agent_name} läuft schon "
+            f"({result['terminal']}); geweckt statt gestartet"
         )
-        store.save(ticket)
-        started = agents.start_agent(roster, ticket, agent_name)
-        if started["result"] != "gestartet":
-            events.append("dispatch", ticket["id"], actor, agent_name,
-                          f"Start fehlgeschlagen: {started['result']}")
-            store.save(ticket)
-            index.rebuild()
-            detail = started.get("error") or started["result"]
-            raise FabError(
-                f"{ticket['id']}: Agent {agent_name} nicht gestartet ({detail}); "
-                f"Branch {branch_name} und Worktree {folder} bleiben für einen neuen Versuch"
-            )
-        ticket["status"] = "doing"
-        ticket["sessions"].append(
-            {
-                "agent": agent_name,
-                "terminal": started["terminal"],
-                "name": started["name"],
-                "started_at": store.now_ms(),
-            }
-        )
-        detail = f"{branch_name} · {folder}"
-        warning = started.get("warning")
-        if warning:
-            detail += f" · {warning}"
-        events.append("dispatch", ticket["id"], actor, agent_name, detail)
-        store.save(ticket)
-        index.rebuild()
+        return 0
     print(
-        f"{ticket['id']} an {agent_name} verteilt: {branch_name} in {folder} "
-        f"(Terminal {started['terminal']})"
+        f"{ticket['id']} an {agent_name} verteilt: {result['branch']} in "
+        f"{result['folder']} (Terminal {result['terminal']})"
     )
-    if warning:
-        print(f"{ticket['id']}: {warning}")
+    if result.get("warning"):
+        print(f"{ticket['id']}: {result['warning']}")
     return 0
 
 
@@ -734,6 +845,7 @@ def cmd_accept(args):
         f"({_short(merged)}); Worktree und Branch entfernt"
         + (f"; {len(ended)} Session(s) beendet" if ended else "")
     )
+    _autostart(_unblocked_by(ticket["id"]))
     return 0
 
 
