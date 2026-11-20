@@ -571,24 +571,44 @@ def blueprint_rows(data):
 
 
 def team_rows(data):
+    entries = [
+        entry
+        for entry in _entries(data, "teams")
+        if isinstance(entry, dict) and entry.get("name")
+    ]
+    prompts = [
+        os.path.normpath(
+            str(_orchestrator(entry.get("orchestrator"))["prompt"])
+        )
+        for entry in entries
+    ]
+    counts = {}
+    for prompt in prompts:
+        counts[prompt] = counts.get(prompt, 0) + 1
     rows = []
-    for entry in _entries(data, "teams"):
-        if not isinstance(entry, dict) or not entry.get("name"):
-            continue
+    for entry, prompt in zip(entries, prompts):
+        name = str(entry["name"])
         members = [
             dict(member)
             for member in (entry.get("members") or [])
             if isinstance(member, dict)
         ]
+        shared_with = [
+            str(other["name"])
+            for other, other_prompt in zip(entries, prompts)
+            if other_prompt == prompt and str(other["name"]) != name
+        ]
         rows.append(
             {
-                "name": str(entry["name"]),
+                "name": name,
                 "repos": _strings(entry.get("repos")),
                 "orchestrator": _orchestrator(entry.get("orchestrator")),
                 "members": members,
                 "reviewer": str(entry.get("reviewer") or ""),
                 "max_sessions": _team_limit(entry),
                 "agents": expand_team(data, entry),
+                "prompt_shared": counts[prompt] > 1,
+                "shared_with": shared_with,
             }
         )
     return rows

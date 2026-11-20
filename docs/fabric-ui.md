@@ -67,7 +67,9 @@ Die gewählte Auswahl ist überall dieselbe: `shared("fabric.selected")`. Was da
   - Mitglieder aus den Blaupausen; je Mitglied optionale Übersteuerungen für Modell und `max-cost`.
   - Prüfer (Select, nur Mitglieder) und maximale gleichzeitige Sessions (`NumberInput`, 1–16).
   - Speichern ersetzt Repos und Mitglieder als ganze Liste über `fab team edit`; Fehler von `fab` (Repo vergeben, Prüfer kein Mitglied) stehen inline an der Karte.
-  - Orchestrator: Status, Start / Stopp / Neu starten, „Terminal öffnen“ (Peek), Programm und Prompt-Pfad; „Prompt bearbeiten“ öffnet den Prompt dieses Teams (`fab prompt show/set orchestrator --team …`).
+  - Orchestrator: Status, Start / Stopp / Neu starten, „Terminal öffnen“ (Peek), Programm und Prompt-Pfad; „Prompt bearbeiten“ öffnet den Prompt dieses Teams (`fab prompt show/set orchestrator --team …`). Nutzen mehrere Teams denselben Promptpfad (`prompt_shared`), markiert die Karte den Pfad als geteilt und nennt per Tooltip die anderen Teams (`shared_with`); „Prompt bearbeiten“ wirkt dann auf alle diese Teams.
+- **Neues Team** (Knopf über der Teamliste): Dialog mit Name, Repos, Mitgliedern, Prüfer und maximalen Sessions. `fab team add` legt automatisch `prompts/orchestrator-<name>.md` als Kopie der aktuellen Vorlage an. Fehler von `fab` stehen inline im Dialog.
+- Team löschen über „Team löschen“ an der Karte mit Bestätigungsdialog, der die Repos nennt. `fab team rm` verweigert mit Begründung, solange offene Tickets in den Repos des Teams liegen oder sein Orchestrator läuft; die Meldung steht verbatim im Dialog (inkl. `fab orchestrator stop <name>`). Die Promptdatei bleibt nach dem Löschen erhalten.
 
 **Prompts**
 - Liste: Orchestrator, Präambel, je Blaupause.
