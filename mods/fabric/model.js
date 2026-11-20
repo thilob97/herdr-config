@@ -1140,7 +1140,13 @@ export function orchestratorColorKey(state) {
 
 /** Der Orchestrator aus dem live-Terminal, mit dem gespeicherten Stand als Rücken. */
 export function liveOrchestrator(state, terminals = []) {
-  const row = (terminals ?? []).find((entry) => entry?.name === "fab-orchestrator");
+  const row = (terminals ?? []).find((entry) => {
+    const name = String(entry?.name ?? "");
+    const labels = entry?.labels && typeof entry.labels === "object" ? entry.labels : {};
+    return name === "fab-orchestrator"
+      || labels["fab.role"] === "orchestrator"
+      || /^fab-.+-orchestrator$/.test(name);
+  });
   if (!row) return { ...(state ?? {}), live: false, terminal: state?.terminal ?? null, status: null };
   return {
     ...(state ?? {}),

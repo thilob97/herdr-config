@@ -103,6 +103,83 @@ def agent(name, roster=None):
     raise FabError(f"Unbekannter Agent: {name} (Roster: {known})")
 
 
+def ticket_team(roster, ticket):
+    """Team des Ticket-Repos; ohne Repo das Legacy-Team (erstes Team)."""
+    repo = ticket.get("repo")
+    if not repo:
+        return teams.first_team(roster)
+    return teams.team_for_repo(roster, repo)
+
+
+def team_for_ticket(roster, ticket):
+    """Team des Ticket-Repos oder ein FabError mit dem `fab team edit`-Hinweis."""
+    entry = ticket_team(roster, ticket)
+    if entry is None:
+        raise FabError(teams.no_team_message(ticket.get("repo")))
+    return entry
+
+
+def agent_in_team(roster, team_entry, name):
+    """Aufgelöster Agent (mit Team-Übersteuerungen) oder FabError."""
+    team_name = str(team_entry.get("name") or "")
+    expanded = teams.expand_team(roster, team_entry)
+    for entry in expanded:
+        if entry["name"] == name:
+            return entry
+    known = ", ".join(entry["name"] for entry in expanded) or "leer"
+    raise FabError(
+        f"Agent {name} gehört nicht zu Team {team_name} "
+        f"(Mitglieder: {known})"
+    )
+
+
+def _session_teams(roster):
+    """Terminalname → Team für Sessions, die in Tickets vermerkt sind."""
+    owners = {}
+    if not roster:
+        return owners
+    for ticket in store.all_tickets():
+        entry = ticket_team(roster, ticket)
+        if entry is None:
+            continue
+        for session in ticket.get("sessions") or []:
+            name = (session or {}).get("name")
+            if name:
+                owners[name] = str(entry.get("name") or "")
+    return owners
+
+
+def _team_of(name, row, roster, owners):
+    labels = (row or {}).get("labels")
+    if isinstance(labels, dict) and labels.get("fab.team"):
+        return str(labels["fab.team"])
+    if name in owners:
+        return owners[name]
+    if roster:
+        known = [
+            str(entry.get("name"))
+            for entry in roster.get("teams") or []
+            if isinstance(entry, dict) and entry.get("name")
+        ]
+        matches = [team for team in known if name.startswith(f"fab-{team}-")]
+        if matches:
+            return max(matches, key=len)
+        legacy = teams.legacy_team_name(roster)
+        if legacy:
+            return legacy
+    return None
+
+
+def at_limit(roster, live_terminals, team_entry):
+    """Globales und Team-Limit erreicht?"""
+    team_name = str(team_entry.get("name") or "")
+    limit = teams.team_limit(team_entry)
+    total = int(roster.get("max_sessions_total") or limit)
+    if len(active(live_terminals, roster)) >= total:
+        return True
+    return len(active(live_terminals, roster, team_name)) >= limit
+
+
 def roster_rows(roster):
     rows = []
     for entry in roster["agents"]:
@@ -160,7 +237,7 @@ def _fill(text, values):
     )
 
 
-def start_prompt(roster, ticket, entry):
+def start_prompt(roster, ticket, entry, reviewer=None):
     values = {
         "id": ticket["id"],
         "title": ticket["title"],
@@ -169,7 +246,7 @@ def start_prompt(roster, ticket, entry):
         "worktree": ticket.get("worktree") or "",
         "branch": ticket.get("branch") or "",
         "base": ticket.get("base") or "",
-        "reviewer": roster.get("reviewer") or "",
+        "reviewer": reviewer if reviewer is not None else roster.get("reviewer") or "",
     }
     preamble = _fill(
         prompt_text(roster, os.path.join("prompts", "preamble.md")), values
@@ -187,11 +264,11 @@ def start_prompt(roster, ticket, entry):
 
 
 def running(live_terminals):
-    """Laufende Agenten-Terminals: alle fab-* außer dem Orchestrator."""
+    """Laufende Agenten-Terminals: alle fab-* außer Orchestratoren."""
     return {
         name: row
         for name, row in live_terminals.items()
-        if name.startswith("fab-") and name != ORCHESTRATOR
+        if name.startswith("fab-") and not hc.is_orchestrator(name)
     }
 
 
@@ -226,14 +303,21 @@ def closed_session_names():
     return names
 
 
-def active(live_terminals):
-    """Sessions, die einen Platz belegen: arbeitend/wartend, Ticket nicht fertig."""
+def active(live_terminals, roster=None, team=None):
+    """Sessions, die einen Platz belegen: arbeitend/wartend, Ticket nicht fertig.
+
+    `team` zählt nur die Sessions dieses Teams; ohne `team` alle Teams zusammen.
+    """
     closed = closed_session_names()
-    return {
-        name: row
-        for name, row in running(live_terminals).items()
-        if name not in closed and busy(row)
-    }
+    owners = _session_teams(roster)
+    rows = {}
+    for name, row in running(live_terminals).items():
+        if name in closed or not busy(row):
+            continue
+        if team is not None and _team_of(name, row, roster, owners) != team:
+            continue
+        rows[name] = row
+    return rows
 
 
 def _start_visible(name, cwd, argv, prompt, labels, tab_name):
@@ -264,24 +348,32 @@ def start_agent(roster, ticket, agent_name):
     """Startet einen Agenten im Worktree des Tickets.
 
     Ergebnis: {"result": "gestartet"|"unterdrückt: voll"|…, "terminal", "name"}.
+    Team, Übersteuerungen (Modell, max-cost) und Limits kommen aus dem Team des
+    Ticket-Repos; ein Agent außerhalb des Teams wird abgelehnt.
     """
-    entry = agent(agent_name, roster)
+    team_entry = team_for_ticket(roster, ticket)
+    team_name = str(team_entry.get("name") or "")
+    entry = agent_in_team(roster, team_entry, agent_name)
     try:
         live = hc.live()
     except HcError:
         live = {}
-    limit = int(roster.get("max_sessions") or 4)
-    if len(active(live)) >= limit:
+    name = hc.terminal_name(agent_name, ticket["id"], team_name)
+    legacy = hc.terminal_name(agent_name, ticket["id"])
+    targets = [name]
+    if team_name == teams.legacy_team_name(roster):
+        targets.append(legacy)
+    for target in targets:
+        if target in live:
+            row = live[target]
+            return {
+                "result": "geweckt",
+                "terminal": row.get("address") or target,
+                "name": target,
+                "already": True,
+            }
+    if at_limit(roster, live, team_entry):
         return {"result": "unterdrückt: voll", "terminal": None, "name": None}
-    name = hc.terminal_name(agent_name, ticket["id"])
-    if name in live:
-        row = live[name]
-        return {
-            "result": "geweckt",
-            "terminal": row.get("address") or name,
-            "name": name,
-            "already": True,
-        }
     worktree = ticket.get("worktree")
     if not worktree or not os.path.isdir(worktree):
         raise FabError(
@@ -302,8 +394,12 @@ def start_agent(roster, ticket, agent_name):
             name=name,
             cwd=worktree,
             argv=entry["argv"],
-            prompt=start_prompt(roster, ticket, entry),
-            labels={"fab.agent": agent_name, "fab.ticket": ticket["id"]},
+            prompt=start_prompt(roster, ticket, entry, team_entry.get("reviewer")),
+            labels={
+                "fab.agent": agent_name,
+                "fab.ticket": ticket["id"],
+                "fab.team": team_name,
+            },
             tab_name=ticket["id"],
         )
     except (HcError, FabError) as exc:
@@ -321,30 +417,67 @@ def start_agent(roster, ticket, agent_name):
     }
 
 
-def orchestrator_dir():
-    return os.path.expanduser("~/.herdr/fabric-orchestrator")
+def orchestrator_dir(team=None):
+    base = os.path.expanduser("~/.herdr/fabric-orchestrator")
+    return os.path.join(base, team) if team else base
 
 
-def start_orchestrator(roster):
-    folder = orchestrator_dir()
+def start_orchestrator(roster, team_name=None):
+    entry = teams.team(roster, team_name) if team_name else teams.first_team(roster)
+    if not isinstance(entry, dict) or not entry.get("name"):
+        raise FabError("Kein Team im Roster; fab team add …")
+    team_name = str(entry["name"])
+    config = teams.orchestrator_config(entry)
+    folder = orchestrator_dir(team_name)
     os.makedirs(folder, exist_ok=True)
-    text = prompt_text(roster, roster["orchestrator"]["prompt"])
+    text = prompt_text(roster, config["prompt"])
     with open(os.path.join(folder, "AGENTS.md"), "w", encoding="utf-8") as handle:
         handle.write(text)
-    if not roster["orchestrator"]["argv"]:
-        raise FabError("Orchestrator hat kein argv im Roster")
-    if claude.is_claude(roster["orchestrator"]["argv"]):
+    if not config["argv"]:
+        raise FabError(f"Team {team_name}: Orchestrator hat kein argv im Roster")
+    if claude.is_claude(config["argv"]):
         claude.ensure_trust(folder)
+    name = hc.orchestrator_name(team_name)
     answer, warning = _start_visible(
-        name=ORCHESTRATOR,
+        name=name,
         cwd=folder,
-        argv=roster["orchestrator"]["argv"],
-        prompt="Du bist der Fabric-Orchestrator. Lies AGENTS.md und dann fab inbox und fab list.",
-        labels={"fab.role": "orchestrator"},
+        argv=config["argv"],
+        prompt=(
+            f"Du bist der Fabric-Orchestrator für Team {team_name}. "
+            "Lies AGENTS.md und dann fab inbox --team "
+            f"{team_name} und fab list --team {team_name}."
+        ),
+        labels={"fab.role": "orchestrator", "fab.team": team_name},
         tab_name="Orchestrator",
     )
-    return {"terminal": answer.get("address"), "name": ORCHESTRATOR, "warning": warning}
+    return {"terminal": answer.get("address"), "name": name, "warning": warning}
 
 
-def orchestrator_live():
-    return ORCHESTRATOR in hc.live()
+def orchestrator_targets(roster, team_name):
+    """Neues Team-Terminal und, für das Legacy-Team, das alte globale Terminal."""
+    targets = [hc.orchestrator_name(team_name)]
+    if team_name == teams.legacy_team_name(roster):
+        targets.append(ORCHESTRATOR)
+    return targets
+
+
+def live_orchestrator(roster, team_name):
+    """(Name, Zeile) des laufenden Team-Orchestrators, sonst (None, None)."""
+    try:
+        live = hc.live()
+    except HcError:
+        live = {}
+    for target in orchestrator_targets(roster, team_name):
+        if target in live:
+            return target, live[target]
+    return None, None
+
+
+def orchestrator_live(roster=None, team_name=None):
+    if roster is None or team_name is None:
+        try:
+            live = hc.live()
+        except HcError:
+            live = {}
+        return any(hc.is_orchestrator(name) for name in live)
+    return live_orchestrator(roster, team_name)[0] is not None

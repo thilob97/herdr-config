@@ -1,4 +1,5 @@
 """Die einzige Stelle, die `hc` (herdr-core) aufruft."""
+import hashlib
 import json
 import re
 import subprocess
@@ -6,14 +7,53 @@ import subprocess
 from .errors import HcError
 
 ORCHESTRATOR = "fab-orchestrator"
+ORCHESTRATOR_SUFFIX = "-orchestrator"
+NAME_LIMIT = 32
 _NAME_OK = re.compile(r"[^a-z0-9-]")
 
 
-def terminal_name(agent, tid):
-    """`fab-<agent>-<id klein>`, nur a-z 0-9 - _ und höchstens 32 Zeichen."""
-    raw = f"fab-{agent}-{tid}".lower()
-    clean = _NAME_OK.sub("-", raw).strip("-")
-    return clean[:32] or "fab-agent"
+def _clean(raw):
+    return _NAME_OK.sub("-", str(raw).lower()).strip("-")
+
+
+def _digest(raw):
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:6]
+
+
+def terminal_name(agent, tid, team=None):
+    """`fab-<team>-<agent>-<id>` oder alt `fab-<agent>-<id>`, höchstens 32 Zeichen.
+
+    Zu lange Namen behalten die Ticket-ID vollständig und bekommen einen
+    Kurz-Hash der vollen Identität, damit zwei Tickets nie kollidieren.
+    """
+    tid = _clean(tid)
+    agent = _clean(agent)
+    team = _clean(team) if team else ""
+    raw = f"fab-{team}-{agent}-{tid}" if team else f"fab-{agent}-{tid}"
+    if len(raw) <= NAME_LIMIT:
+        return raw
+    tail = f"-{_digest(raw)}-{tid}"
+    room = max(1, NAME_LIMIT - len("fab-") - len(tail))
+    core = (f"{team}-{agent}" if team else agent)[:room].rstrip("-")
+    return f"fab-{core}{tail}"
+
+
+def orchestrator_name(team):
+    """`fab-<team>-orchestrator`; das alte globale Terminal bleibt `fab-orchestrator`."""
+    team = _clean(team)
+    raw = f"fab-{team}{ORCHESTRATOR_SUFFIX}"
+    if len(raw) <= NAME_LIMIT:
+        return raw
+    tail = f"{ORCHESTRATOR_SUFFIX}"
+    room = max(1, NAME_LIMIT - len("fab-") - len(tail) - 1 - 6)
+    core = f"{team[:room]}-{_digest(raw)}"
+    return f"fab-{core}{tail}"
+
+
+def is_orchestrator(name):
+    """Orchestrator-Terminal, neu (`fab-<team>-orchestrator`) oder alt."""
+    value = str(name or "")
+    return value == ORCHESTRATOR or value.endswith(ORCHESTRATOR_SUFFIX)
 
 
 def _run(args, timeout=120):

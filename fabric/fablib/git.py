@@ -28,6 +28,21 @@ def toplevel(path):
     return result.stdout.strip() or None
 
 
+def main_toplevel(path):
+    """Haupt-Checkout eines (ggf. verlinkten) Worktrees; sonst `toplevel`."""
+    top = toplevel(path)
+    if not top:
+        return None
+    result = git(["rev-parse", "--path-format=absolute", "--git-common-dir"], top)
+    if result.returncode != 0:
+        return top
+    common = result.stdout.strip()
+    if not common:
+        return top
+    main = os.path.dirname(common) if os.path.basename(common) == ".git" else common
+    return main if os.path.isdir(main) and toplevel(main) else top
+
+
 def head(path):
     result = git(["rev-parse", "HEAD"], path)
     return result.stdout.strip() if result.returncode == 0 else ""

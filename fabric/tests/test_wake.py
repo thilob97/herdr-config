@@ -108,10 +108,11 @@ class WakeTests(FabricCase):
         self.assertIn("gestartet", result.stdout)
         runs = self.hc_calls("run")
         self.assertEqual(len(runs), 1)
-        self.assertIn("fab-orchestrator", runs[0])
+        self.assertIn("fab-herdr-app-orchestrator", runs[0])
         self.assertIn("fab.role=orchestrator", runs[0])
+        self.assertIn("fab.team=herdr-app", runs[0])
         agents_md = os.path.join(
-            self.fake_home, ".herdr", "fabric-orchestrator", "AGENTS.md"
+            self.fake_home, ".herdr", "fabric-orchestrator", "herdr-app", "AGENTS.md"
         )
         with open(agents_md, encoding="utf-8") as handle:
             self.assertIn("Orchestrator-Rolle", handle.read())
@@ -139,7 +140,7 @@ class WakeTests(FabricCase):
         runs = self.hc_calls("run")
         self.assertEqual(len(runs), 1)
         args = runs[0]
-        self.assertEqual(args[args.index("--name") + 1], "fab-zap-t-1")
+        self.assertEqual(args[args.index("--name") + 1], "fab-herdr-app-zap-t-1")
         self.assertEqual(args[args.index("--cwd") + 1], worktree)
         self.assertIn("fab.agent=zap", args)
         self.assertIn("fab.ticket=" + tid, args)

@@ -13,6 +13,7 @@ class DispatchTests(FabricCase):
         return next(part[len(prefix):] for part in args if part.startswith(prefix))
 
     def prepared_ticket(self, repo, title="Kurzer Titel"):
+        self.own_repo(repo)
         tid = self.new(title)
         self.ok("assign", tid, "zap", "--from", "mensch")
         self.ok("edit", tid, "--repo", repo, "--from", "mensch")
@@ -21,6 +22,7 @@ class DispatchTests(FabricCase):
 
     def test_dispatch_verlangt_repo(self):
         tid = self.new("Ohne Repo")
+        self.patch_ticket(tid, repo=None)
         result = self.cli("dispatch", tid, "--from", "mensch")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("kein Agent", result.stderr)
@@ -31,6 +33,7 @@ class DispatchTests(FabricCase):
 
     def test_dispatch_verlangt_abnahmekriterien(self):
         repo = self.make_repo()
+        self.own_repo(repo)
         tid = self.new("Ohne Kriterien")
         self.ok("assign", tid, "zap", "--from", "mensch")
         self.ok("edit", tid, "--repo", repo, "--from", "mensch")
@@ -80,7 +83,7 @@ class DispatchTests(FabricCase):
         runs = self.hc_calls("run")
         self.assertEqual(len(runs), 1)
         args = runs[0]
-        self.assertEqual(args[args.index("--name") + 1], "fab-zap-t-1")
+        self.assertEqual(args[args.index("--name") + 1], "fab-herdr-app-zap-t-1")
         self.assertEqual(args[args.index("--cwd") + 1], expected)
         self.assertIn("fab.agent=zap", args)
         self.assertIn(f"fab.ticket={tid}", args)
@@ -189,7 +192,7 @@ class DispatchTests(FabricCase):
         )
         result = self.cli("dispatch", tid, "--from", "mensch")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Maximale Zahl", result.stderr)
+        self.assertIn("unterdrückt: voll", result.stderr)
         self.assertIsNone(self.ticket(tid)["worktree"])
 
     def test_max_sessions_ignoriert_untätige_sessions(self):
@@ -247,7 +250,7 @@ class DispatchTests(FabricCase):
         )
         result = self.cli("dispatch", tid, "--from", "mensch")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Maximale Zahl", result.stderr)
+        self.assertIn("unterdrückt: voll", result.stderr)
         self.assertIsNone(self.ticket(tid)["worktree"])
 
     def test_dispatch_meldet_startfehler_und_behaelt_worktree(self):

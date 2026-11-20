@@ -97,7 +97,9 @@ def normalize_repo(raw):
     value = str(raw or "").strip()
     if not value:
         raise FabError("Repo-Pfad ist leer")
-    return os.path.abspath(os.path.normpath(os.path.expanduser(value)))
+    return os.path.realpath(
+        os.path.abspath(os.path.normpath(os.path.expanduser(value)))
+    )
 
 
 def parse_argv(raw, what="argv"):
@@ -241,6 +243,39 @@ def repo_owner(data, repo, ignore=None):
             except FabError:
                 continue
     return None
+
+
+def team_for_repo(data, repo):
+    """Team-Eintrag zum Checkout oder None (auch bei leerem/ungültigem Pfad)."""
+    if not repo:
+        return None
+    try:
+        return repo_owner(data, repo)
+    except FabError:
+        return None
+
+
+def legacy_team_name(data):
+    """Das Team, dem die alten, teamlosen Terminals zugerechnet werden."""
+    entry = first_team(data)
+    return str(entry.get("name") or "") if isinstance(entry, dict) else ""
+
+
+def no_team_message(repo):
+    shown = repo or "—"
+    return (
+        f"Repo „{shown}“ gehört keinem Team; "
+        f"fab team edit <team> --repo {shown} --from mensch"
+    )
+
+
+def team_limit(entry):
+    return _team_limit(entry)
+
+
+def orchestrator_config(entry):
+    raw = entry.get("orchestrator") if isinstance(entry, dict) else None
+    return _orchestrator(raw)
 
 
 # ---------------------------------------------------------------- Migration
