@@ -45,6 +45,11 @@ if command == "send":
         print("hc send: blockiert", file=sys.stderr)
         sys.exit(1)
     sys.exit(0)
+if command == "kill":
+    if os.environ.get("HC_KILL_FAIL"):
+        print("hc kill: Terminal beendet nicht", file=sys.stderr)
+        sys.exit(1)
+    sys.exit(0)
 sys.exit(0)
 '''
 

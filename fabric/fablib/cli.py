@@ -881,8 +881,11 @@ def cmd_orchestrator(args):
             except HcError:
                 live = {}
             for target in targets:
-                if target in live:
-                    hc.kill(target)
+                if target in live and not hc.kill(target):
+                    raise FabError(
+                        f"Orchestrator {team_name} ließ sich nicht beenden "
+                        f"(hc kill {target})"
+                    )
             started = agents.start_orchestrator(roster, team_name)
             warning = started.get("warning")
             text = "neu gestartet"

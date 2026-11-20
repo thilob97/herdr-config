@@ -438,6 +438,17 @@ class OrchestratorTests(ConfigCase):
         )
         self.assertFalse(payload["live"])
 
+    def test_restart_bricht_ab_wenn_kill_scheitert(self):
+        self.set_live({"fab-herdr-app-orchestrator": "t0"})
+        self.clear_log()
+        result = self.cli(
+            "orchestrator", "restart", "--from", "mensch",
+            env={"HC_KILL_FAIL": "1"},
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ließ sich nicht beenden", result.stderr)
+        self.assertEqual(self.hc_calls("run"), [])
+
     def test_restart_mit_from(self):
         self.set_live({"fab-orchestrator": "t0"})
         mark = self.mark()

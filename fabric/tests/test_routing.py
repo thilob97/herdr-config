@@ -2,6 +2,7 @@
 import json
 import os
 
+from fabric.fablib import hc
 from fabric.tests.support import FabricCase
 
 BODY = "## Ziel\nEtwas.\n\n## Abnahmekriterien\n- [ ] es läuft\n"
@@ -185,3 +186,23 @@ class RoutingTests(FabricCase):
         self.assertIn("läuft schon (fab-zap-t-1)", result.stdout)
         self.assertEqual(self.hc_calls("run"), [])
         self.assertEqual(self.hc_calls("send")[0][1], "t7")
+
+    def test_lange_namen_kollidieren_nicht_und_behalten_die_ticket_id(self):
+        team = "plattform-backen"
+        agent = "reviewer-zweite"
+        first = hc.terminal_name(agent, "T-1", team)
+        second = hc.terminal_name(agent, "T-12", team)
+        self.assertNotEqual(first, second)
+        self.assertTrue(first.endswith("-t-1"), first)
+        self.assertTrue(second.endswith("-t-12"), second)
+        for name in (first, second):
+            self.assertLessEqual(len(name), hc.NAME_LIMIT)
+            self.assertRegex(name, r"^[a-z0-9-]+$")
+
+    def test_langer_orchestratorname_behaelt_den_suffix(self):
+        first = hc.orchestrator_name("abcdefghijklmnop")
+        second = hc.orchestrator_name("abcdefghijklmno2")
+        self.assertLessEqual(len(first), hc.NAME_LIMIT)
+        self.assertTrue(first.endswith("-orchestrator"), first)
+        self.assertTrue(hc.is_orchestrator(first))
+        self.assertNotEqual(first, second)
