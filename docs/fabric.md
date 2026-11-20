@@ -97,7 +97,10 @@ Bei `wake` steht in `text` genau eines von: `geweckt`, `gestartet`, `an orchestr
     {"kind": "review", "ticket": "T-2", "at": 0, "from": "zap", "text": "Zusammenfassung"},
     {"kind": "attention", "ticket": "T-3", "at": 0, "from": "fab", "text": "Ping-Pong zwischen zap und ada"}
   ],
-  "roster": [{"name": "zap", "role": "umsetzer", "color": "c1"}],
+  "roster": [{"name": "zap", "role": "umsetzer", "color": "c1", "program": "omp",
+              "model": "…", "teams": ["herdr-app"]}],
+  "teams": [{"name": "herdr-app", "reviewer": "ada", "max_sessions": 10,
+             "orchestrator": {"argv": ["omp"], "prompt": "prompts/orchestrator.md"}}],
   "events": [ "die letzten 300 Ereignisse, älteste zuerst" ]
 }
 ```
@@ -129,7 +132,7 @@ Alle Befehle schreiben unter Lock, hängen Ereignisse an und erzeugen danach `in
 | `fab reject ID "<feedback>"` | Nur der Mensch. Kommentar von `mensch`, Status `doing`, weckt `assignee`. |
 | `fab drop ID --from NAME "<grund>"` | Status `dropped`, Sessions beenden, Worktree bleibt. |
 | `fab wake ID NAME --from NAME ["<text>"]` | Wecken von Hand, gleiche Regeln wie bei Erwähnungen |
-| `fab orchestrator start\|stop\|status` | Orchestrator-Terminal verwalten (Abschnitt 5) |
+| `fab orchestrator start\|stop\|status [TEAM]` | Orchestrator-Terminal je Team verwalten (Abschnitt 5) |
 | `fab agents [--json]` | Roster und laufende Sessions |
 | `fab inbox [--json]` | wie `index.json.inbox` |
 | `fab index` | `index.json` neu erzeugen |
@@ -147,11 +150,18 @@ Das UI pflegt alles über diese Befehle. Alle schreiben atomar (tmp + `os.replac
 | `fab agent edit NAME [--rename NEU] [--role R] [--color cN] [--argv-json JSON] [--prompt-text T] --from N` | Ändern. `--rename` nur, wenn kein offenes Ticket den Agenten nennt (`assignee`) und keine Session läuft; benennt die Promptdatei mit um und passt `reviewer` an. |
 | `fab agent rm NAME --from N` | Entfernen. Verweigert bei offenen Tickets, laufender Session oder wenn er `reviewer` ist (Gründe in der Meldung). Die Promptdatei bleibt erhalten. |
 | `fab settings set KEY VALUE --from N` | `max_sessions` (1–16), `reviewer` (Roster-Name), `orchestrator_argv` (JSON-Liste, nicht leer) |
+| `fab blueprint add NAME --role R [--color cN] --argv-json JSON [--prompt-text T] --from N` | Blaupause anlegen; Name wie `fab agent add`, Farbe sonst die nächste freie, Prompt `prompts/<name>.md` |
+| `fab blueprint edit NAME [--rename NEU] [--role R] [--color cN] [--argv-json JSON] [--prompt-text T] --from N` | Blaupause ändern; `--rename` zieht Teams und Prüfer mit |
+| `fab blueprint rm NAME --from N` | Entfernen; verweigert, solange die Blaupause Mitglied eines Teams ist. Der Prompt bleibt |
+| `fab team add NAME --repo PFAD… --members-json JSON --reviewer NAME [--max-sessions N] [--orchestrator-argv-json JSON] [--orchestrator-prompt PFAD] --from N` | Team anlegen; ein Repo gehört höchstens einem Team, der Prüfer muss Mitglied sein |
+| `fab team edit NAME [--rename NEU] [--repo PFAD…] [--members-json JSON] [--reviewer NAME] [--max-sessions N] [--orchestrator-argv-json JSON] [--orchestrator-prompt PFAD] --from N` | Team ändern; Repos und Mitglieder werden als ganze Liste ersetzt. Mitglieder: `[{"blueprint": "zap", "model": "…", "max_cost": 5}]` |
+| `fab team rm NAME --from N` | Team entfernen |
+| `fab team list [--json]` | Teams mit Repos, Mitgliedern (inkl. Übersteuerungen), Prüfer, Limit und Orchestrator |
 | `fab prompt list --json` | `[{name, kind: orchestrator\|preamble\|agent, path, bytes, placeholders: [...]}]` |
-| `fab prompt show NAME` | Rohtext (`orchestrator`, `preamble` oder Agentname) |
-| `fab prompt set NAME --text T --from N` | Speichern. Bei unbekannten Platzhaltern (nicht in Abschnitt 5) Warnung auf stderr, gespeichert wird trotzdem. |
-| `fab orchestrator status --json` | `{live, name, terminal, status, started_at}`. `status` = herdr-Status aus `hc ls --json`, sonst `null` |
-| `fab orchestrator restart --from N` | stop + start |
+| `fab prompt show NAME [--team TEAM]` | Rohtext (`orchestrator`, `preamble` oder Blaupause); `--team` wählt den Orchestrator-Prompt dieses Teams |
+| `fab prompt set NAME --text T [--team TEAM] --from N` | Speichern. Bei unbekannten Platzhaltern (nicht in Abschnitt 5) Warnung auf stderr, gespeichert wird trotzdem. |
+| `fab orchestrator status [TEAM] --json` | `{live, name, terminal, status, started_at}`. `status` = herdr-Status aus `hc ls --json`, sonst `null` |
+| `fab orchestrator start\|stop\|restart [TEAM] [--from N]` | Orchestrator des Teams starten, stoppen oder neu starten |
 | `fab repos --json` | Bekannte Repos aus Tickets und `--add PFAD…` (das UI gibt die Space-Ordner mit): `[{path, branch, open_tickets, verify_exists, lessons_exists}]`, nur Git-Wurzeln, ohne Doppelte |
 | `fab repo show PFAD --json` | `{path, branch, verify: {exists, text}, lessons: {exists, text}}` |
 | `fab repo set PFAD verify\|lessons --text T --from N` | Schreibt `.fabric/verify.sh` (ausführbar) bzw. `.fabric/lessons.md` im Haupt-Checkout. Verweigert außerhalb einer Git-Wurzel. |
@@ -160,7 +170,7 @@ Das UI pflegt alles über diese Befehle. Alle schreiben atomar (tmp + `os.replac
 | `fab new "<satz>" [--repo PFAD] [--from NAME] [--no-wake]` | wie oben; `--no-wake` legt nur den Entwurf an, ohne `@orchestrator`-Kommentar |
 | `fab version` | Version (Datum + Git-HEAD des Fabric-Codes) |
 
-`index.json.roster` enthält je Agent `{name, role, color, program, model}`. Das UI liest den vollständigen Roster bei Bedarf über `fab roster --json`.
+`index.json.roster` enthält je Blaupause `{name, role, color, program, model, teams}`; `index.json.teams` nennt Reihenfolge, Prüfer, Limit und Orchestrator je Team für die Seitenleiste. Das UI liest den vollständigen Roster bei Bedarf über `fab roster --json`.
 
 ## 4. Wecken durch Erwähnung
 
@@ -200,12 +210,12 @@ Roster `fabric/roster.json`:
 ```
 
 - Start eines Agenten auf einem Ticket:
-  `hc run --bg --json --name fab-<agent>-<id klein> --cwd <worktree> --label fab.agent=<agent> --label fab.ticket=<ID> --no-parent --outlive-parent <argv…> "<startprompt>"`.
+  `hc run --bg --json --name fab-<team>-<agent>-<id klein> --cwd <worktree> --label fab.agent=<agent> --label fab.ticket=<ID> --label fab.team=<team> --no-parent --outlive-parent <argv…> "<startprompt>"`.
   Der Startprompt ist `prompts/preamble.md`, gefolgt vom Rollenprompt `prompts/<agent>.md` und dem Ticket (`fab show`-Text). Platzhalter in `preamble.md`: `{id} {title} {agent} {role} {worktree} {branch} {base} {reviewer}`.
 - Ist `argv[0]` des Agenten (oder des Orchestrators) `claude`, markiert `fab` vorher das Startverzeichnis (Worktree bzw. Orchestrator-Ordner) als vertraut: `projects["<realpath>"].hasTrustDialogAccepted = true` in `~/.claude.json`. Es wird nur dieser eine Schlüssel geändert; alle anderen Felder bleiben unverändert. Geschrieben wird atomar (tmp im selben Ordner, gleiche Dateirechte, `os.replace`); hat sich die Datei seit dem Lesen geändert, wird bis zu 3-mal neu gelesen. Fehlt die Datei oder ist sie kein gültiges JSON: Warnung auf stderr, Start läuft trotzdem. Pfad über `$FAB_CLAUDE_JSON`, Standard `~/.claude.json`; Tests setzen immer eine Temp-Datei.
 - Ist `max_sessions` erreicht (arbeitende oder auf Antwort wartende `fab-*`-Terminals ohne Orchestrator), wird nicht gestartet. Ergebnis: `unterdrückt: voll`, dazu ein `attention`-Eintrag. Status `working`/`blocked` zählt; `idle`/`done` nicht, und Sessions von `done`/`dropped`-Tickets zählen nicht mehr. Ohne Statuswort gilt eine Session als beschäftigt.
 - Laufend heißt: `hc ls --json` führt ein Terminal mit diesem Namen und `state == "live"`. `fab agents` zeigt je Session das Statuswort, damit untätige Sessions erkennbar bleiben.
-- `fab orchestrator start`: Kopiert `prompts/orchestrator.md` nach `~/.herdr/fabric-orchestrator/AGENTS.md` und startet `hc run --bg --name fab-orchestrator --cwd ~/.herdr/fabric-orchestrator --label fab.role=orchestrator --no-parent --outlive-parent <argv…> "Du bist der Fabric-Orchestrator. Lies AGENTS.md und dann fab inbox und fab list."`.
+- `fab orchestrator start [TEAM]`: Kopiert den Orchestrator-Prompt des Teams nach `~/.herdr/fabric-orchestrator/<team>/AGENTS.md` und startet `hc run --bg --name fab-<team>-orchestrator --cwd ~/.herdr/fabric-orchestrator/<team> --label fab.role=orchestrator --label fab.team=<team> --no-parent --outlive-parent <argv…> "Du bist der Fabric-Orchestrator für Team <team>. Lies AGENTS.md und dann fab inbox --team <team> und fab list --team <team>."`.
 - Alle `hc`-Aufrufe gehen über eine einzige Funktion, die Tests durch einen Stub auf dem `PATH` ersetzen.
 
 ## 6. Ablauf, den die Prompts beschreiben

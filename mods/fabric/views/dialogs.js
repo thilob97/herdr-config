@@ -1,4 +1,4 @@
-// Dialoge und der Agent-Drawer: Neues Ticket, Bestätigungen, Schutz vor Verlust.
+// Dialoge und der Blaupausen-Drawer: Neues Ticket, Bestätigungen, Schutz vor Verlust.
 
 import { div } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
@@ -150,30 +150,35 @@ function dropDialog(app, cx, t) {
   ]);
 }
 
-function deleteAgentDialog(app, cx, t) {
-  const agent = app.modal.agent ?? {};
+function deleteBlueprintDialog(app, cx, t) {
+  const blueprint = app.modal.blueprint ?? {};
+  const teams = blueprint.teams ?? [];
+  const detail = [
+    `Die Blaupause ${blueprint.name} wird aus dem Roster entfernt.`,
+    teams.length
+      ? `In Teams verwendet: ${teams.join(", ")}. fab verweigert das Löschen, solange sie dort Mitglied ist.`
+      : "Sie ist in keinem Team Mitglied.",
+    `Der Prompt ${blueprint.prompt || `prompts/${blueprint.name}.md`} bleibt erhalten.`,
+  ].join("\n");
+  const error = app.errorFor("blueprint-rm");
   return ui.modal(t, {
-    title: `Agent ${agent.name} löschen?`,
-    detail: [
-      `${agent.name} hat ${agent.open_tickets ?? 0} offene Tickets und ${(agent.sessions ?? []).length} laufende Sessions.`,
-      "fab verweigert das Löschen, solange Tickets offen sind, eine Session läuft oder der Agent Prüfer ist.",
-      "Die Promptdatei bleibt erhalten.",
-    ].join("\n"),
-    width: 520,
+    title: `Blaupause ${blueprint.name} löschen?`,
+    detail,
+    width: 540,
     actions: [
-      ui.button(t, { id: "fabric-agent-delete-cancel", label: "Abbrechen", onClick: (cx) => { app.modal = null; cx.notify(); } }),
+      ui.button(t, { id: "fabric-blueprint-delete-cancel", label: "Abbrechen", tooltip: "Nicht löschen", onClick: (cx) => { app.modal = null; cx.notify(); } }),
       ui.button(t, {
-        id: "fabric-agent-delete-confirm",
+        id: "fabric-blueprint-delete-confirm",
         label: "Löschen",
         icon: "trash",
         danger: true,
-        busy: app.busy === "agent-rm",
+        busy: app.busy === "blueprint-rm",
         disabled: Boolean(app.busy),
-        tooltip: "Agent entfernen (fab agent rm)",
-        onClick: (cx) => app.deleteAgent(cx),
+        tooltip: "Blaupause entfernen (fab blueprint rm)",
+        onClick: (cx) => app.deleteBlueprint(cx),
       }),
     ],
-  });
+  }, error ? [ui.notice(t, error.text, error.level)] : []);
 }
 
 function unsavedDialog(app, cx, t) {
@@ -183,12 +188,13 @@ function unsavedDialog(app, cx, t) {
     detail: `Diese Bereiche haben Änderungen:\n${labels}\n\nSpeichern, verwerfen oder hier bleiben.`,
     width: 520,
     actions: [
-      ui.button(t, { id: "fabric-unsaved-cancel", label: "Abbrechen", onClick: (cx) => { app.modal = null; cx.notify(); } }),
+      ui.button(t, { id: "fabric-unsaved-cancel", label: "Abbrechen", tooltip: "Hier bleiben", onClick: (cx) => { app.modal = null; cx.notify(); } }),
       ui.button(t, {
         id: "fabric-unsaved-discard",
         label: "Verwerfen",
         icon: "undo",
         disabled: Boolean(app.busy),
+        tooltip: "Änderungen verwerfen",
         onClick: (cx) => {
           const then = app.modal?.then;
           app.discardDirty(cx);
@@ -204,6 +210,7 @@ function unsavedDialog(app, cx, t) {
         primary: true,
         busy: Boolean(app.busy),
         disabled: Boolean(app.busy),
+        tooltip: "Alle Änderungen speichern",
         onClick: (cx) => {
           cx.spawn(async (cx) => {
             const ok = await app.saveDirty(cx);
@@ -224,7 +231,7 @@ export function renderDialogs(app, cx, t) {
   if (!app.modal) return null;
   if (app.modal.kind === "accept") return acceptDialog(app, cx, t);
   if (app.modal.kind === "drop") return dropDialog(app, cx, t);
-  if (app.modal.kind === "delete-agent") return deleteAgentDialog(app, cx, t);
+  if (app.modal.kind === "delete-blueprint") return deleteBlueprintDialog(app, cx, t);
   if (app.modal.kind === "unsaved" || app.modal.kind === "unsaved-close") return unsavedDialog(app, cx, t);
   return null;
 }
@@ -235,10 +242,10 @@ function programOptions(app, current) {
 
 function colorRow(app, cx, t) {
   // Klicks aus dem Elementbaum eines älteren Drawers dürfen nicht in den
-  // inzwischen sichtbaren Agenten schreiben.
-  const draftId = app.agentDraftId;
+  // inzwischen sichtbaren Drawer schreiben.
+  const draftId = app.blueprintDraftId;
   return h_flex().w_full().gap(6).items_center().children(COLORS.map((key) => {
-    const active = app.agentColorKey === key;
+    const active = app.blueprintColorKey === key;
     const color = ui.roleColor(t, key);
     return h_flex()
       .id(`fabric-color-${key}`)
@@ -252,82 +259,86 @@ function colorRow(app, cx, t) {
       .tooltip(key)
       .on_click((_event, cx) => {
         cx.stop_propagation();
-        if (app.agentDraftId !== draftId || !app.teamDrawer) return;
-        app.agentColorKey = key;
-        app.teamDirty = true;
+        if (app.blueprintDraftId !== draftId || !app.blueprintDrawer) return;
+        app.blueprintColorKey = key;
+        app.blueprintDirty = true;
         cx.notify();
       });
   }));
 }
 
-export function renderAgentDrawer(app, cx, t) {
-  if (!app.teamDrawer) return null;
-  const mode = app.teamDrawer.mode;
-  const draftId = app.agentDraftId;
-  const original = app.agentOriginal;
-  const agent = app.agentFor(original);
+export function renderBlueprintDrawer(app, cx, t) {
+  if (!app.blueprintDrawer) return null;
+  const mode = app.blueprintDrawer.mode;
+  const draftId = app.blueprintDraftId;
+  const original = app.blueprintOriginal;
+  const blueprint = app.blueprintFor(original);
   const parsed = model.argvParts(model.argvFromParts({
-    program: app.agentProgram,
-    model: app.agentModel?.value() ?? "",
-    flags: app.agentFlags?.value() ?? "",
+    program: app.blueprintProgram,
+    model: app.blueprintModel?.value() ?? "",
+    flags: app.blueprintFlags?.value() ?? "",
   }));
-  const programRows = programOptions(app, app.agentProgram);
-  const programLabel = programRows.find((row) => row.value === app.agentProgram)?.label ?? app.agentProgram;
+  const programRows = programOptions(app, app.blueprintProgram);
+  const programLabel = programRows.find((row) => row.value === app.blueprintProgram)?.label ?? app.blueprintProgram;
+  const promptPath = app.blueprintPromptPath || `prompts/${app.blueprintName?.value() || original || "name"}.md`;
   return ui.drawer(t, {
-    title: mode === "new" ? "Neuer Agent" : `Agent ${original}`,
-    subtitle: mode === "new" ? "Roster und Rollenprompt" : `${agent?.open_tickets ?? 0} offene Tickets`,
-    onClose: (cx) => app.closeDrawer(cx),
+    title: mode === "new" ? "Neue Blaupause" : `Blaupause ${original}`,
+    subtitle: mode === "new"
+      ? "Rolle, Farbe, Programm und Rollenprompt"
+      : `${(blueprint?.teams ?? []).length} Team(s) · ${blueprint?.prompt ?? promptPath}`,
+    onClose: (cx) => app.closeBlueprintDrawer(cx),
     tooltip: "Drawer schließen (Esc)",
     width: 420,
     footer: [
       ...(mode === "edit" ? [ui.button(t, {
-        id: "fabric-agent-delete",
+        id: "fabric-blueprint-delete",
         label: "Löschen",
         icon: "trash",
         danger: true,
         disabled: Boolean(app.busy),
-        tooltip: "Agent löschen (fragt nach)",
-        onClick: (cx) => app.confirmDeleteAgent(agent ?? { name: original }, cx),
+        tooltip: "Blaupause löschen (fragt nach)",
+        onClick: (cx) => app.confirmDeleteBlueprint(blueprint ?? { name: original, teams: [] }, cx),
       })] : []),
       ui.button(t, {
-        id: "fabric-agent-cancel",
+        id: "fabric-blueprint-cancel",
         label: "Abbrechen",
-        onClick: (cx) => app.closeDrawer(cx),
+        tooltip: "Drawer schließen (Esc)",
+        onClick: (cx) => app.closeBlueprintDrawer(cx),
       }),
       ui.button(t, {
-        id: "fabric-agent-save",
+        id: "fabric-blueprint-save",
         label: "Speichern",
         icon: "save",
         primary: true,
-        busy: app.busy === "agent",
+        busy: app.busy === "blueprint",
         disabled: Boolean(app.busy),
-        tooltip: "Agent speichern (⌘S)",
-        onClick: (cx) => app.saveAgent(cx),
+        tooltip: "Blaupause speichern (⌘S)",
+        onClick: (cx) => app.saveBlueprint(cx),
       }),
     ],
   }, [
-    ui.field(t, "Name", app.agentName ? ui.input(t, app.agentName, { focused: true }) : div(), {
+    ui.field(t, "Name", app.blueprintName ? ui.input(t, app.blueprintName, { focused: true }) : div(), {
       hint: "a–z, 0–9, _ und -, höchstens 16 Zeichen",
     }),
-    ui.field(t, "Rolle", app.agentRole ? ui.input(t, app.agentRole) : div(), {
+    ui.field(t, "Rolle", app.blueprintRole ? ui.input(t, app.blueprintRole) : div(), {
       hint: "z. B. umsetzer, pruefer, recherchierer",
     }),
     ui.field(t, "Farbe", colorRow(app, cx, t)),
     ui.field(t, "Programm", ui.dropdown(t, {
-      id: "fabric-agent-program",
+      id: "fabric-blueprint-program",
       value: programLabel,
       placeholder: app.programs ? "Programm wählen…" : "Programme werden geladen …",
       options: programRows,
-      open: app.menu === "agent-program",
+      open: app.menu === "blueprint-program",
       width: 300,
       scrollHandle: app.dropdownScroll,
-      onToggle: () => { app.menu = app.menu === "agent-program" ? null : "agent-program"; cx.notify(); },
+      onToggle: () => { app.menu = app.menu === "blueprint-program" ? null : "blueprint-program"; cx.notify(); },
       onPick: (value) => {
         app.menu = null;
-        // Eine Auswahl aus zaps offenem Menü darf nicht adas Programm setzen.
-        if (app.agentDraftId !== draftId || !app.teamDrawer) { cx.notify(); return; }
-        app.agentProgram = value;
-        app.teamDirty = true;
+        // Eine Auswahl aus einem offenen Menü darf nicht in einen neuen Drawer setzen.
+        if (app.blueprintDraftId !== draftId || !app.blueprintDrawer) { cx.notify(); return; }
+        app.blueprintProgram = value;
+        app.blueprintDirty = true;
         cx.notify();
       },
     }), {
@@ -336,24 +347,24 @@ export function renderAgentDrawer(app, cx, t) {
           ? "Keine installierten Programme gefunden; der bisherige Wert bleibt."
           : null),
     }),
-    ui.field(t, "Modell", app.agentModel ? ui.input(t, app.agentModel) : div(), {
+    ui.field(t, "Modell", app.blueprintModel ? ui.input(t, app.blueprintModel) : div(), {
       hint: "Wird als --model=<Wert> gesetzt",
     }),
-    ui.field(t, "Weitere Flags", app.agentFlags ? ui.input(t, app.agentFlags) : div(), {
+    ui.field(t, "Weitere Flags", app.blueprintFlags ? ui.input(t, app.blueprintFlags) : div(), {
       hint: `Shell-Regeln: Anführungszeichen bleiben zusammen · ${parsed.flags.length} erkannt`,
     }),
     div().w_full().h(1).bg(t.border),
     h_flex().w_full().items_center()
       .child(div().text_size(T.xs).text_color(t.dim).child("Rollenprompt"))
       .child(div().flex_1())
-      .child(ui.chip(t, `prompts/${app.agentName?.value() || original || "name"}.md`, t.dim)),
-    app.agentPrompt
-      ? ui.editor(t, app.agentPrompt, { height: 220 })
+      .child(ui.chip(t, promptPath, t.dim, "fabric-blueprint-prompt-path", { tooltip: promptPath })),
+    app.blueprintPrompt
+      ? ui.editor(t, app.blueprintPrompt, { height: 220 })
       : ui.loading(t, "Prompt wird geladen …"),
-    ui.hint(t, "Speichern ruft fab agent add bzw. fab agent edit. Die Promptdatei wird mitgeschrieben."),
-    ...(app.errorFor("agent") || app.errorFor("agent-rm")
-      ? [ui.notice(t, (app.errorFor("agent") || app.errorFor("agent-rm")).text,
-        (app.errorFor("agent") || app.errorFor("agent-rm")).level)]
+    ui.hint(t, "Speichern ruft fab blueprint add bzw. fab blueprint edit. Die Promptdatei wird mitgeschrieben."),
+    ...(app.errorFor("blueprint") || app.errorFor("blueprint-rm")
+      ? [ui.notice(t, (app.errorFor("blueprint") || app.errorFor("blueprint-rm")).text,
+        (app.errorFor("blueprint") || app.errorFor("blueprint-rm")).level)]
       : []),
   ]);
 }

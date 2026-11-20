@@ -12,7 +12,7 @@ import * as model from "./model.js";
 import { renderBoard } from "./views/board.js";
 import { renderTicket } from "./views/ticket.js";
 import { renderTicketsPage } from "./views/tickets-page.js";
-import { renderTeam } from "./views/team.js";
+import { renderTeam, renderTeamPromptDrawer } from "./views/team.js";
 import { renderPrompts } from "./views/prompts.js";
 import { renderRepos } from "./views/repos.js";
 import { renderSettings } from "./views/settings.js";
@@ -20,7 +20,7 @@ import { renderTicketsPanel } from "./views/tickets.js";
 import { renderInboxPanel } from "./views/inbox.js";
 import { renderTimelinePanel } from "./views/timeline.js";
 import { renderSwitcher } from "./views/switcher.js";
-import { renderDialogs, renderAgentDrawer } from "./views/dialogs.js";
+import { renderDialogs, renderBlueprintDrawer } from "./views/dialogs.js";
 
 const VIEWS = ["board", "tickets", "ticket", "team", "prompts", "repos", "settings"];
 const NAV = [
@@ -118,8 +118,7 @@ export default class Fabric extends View {
     this.baseInput.on("change", (_event, cx) => cx.notify());
     this.baseInput.on("submit", (_event, cx) => this.setBase(this.baseInput.value(), cx));
     this.track(this.baseInput);
-    this.orchestrator = null;
-    this.orchestratorError = null;
+    this.orchestratorGlobal = null;
     this.roster = null;
     this.rosterError = null;
     this.rosterAt = 0;
@@ -148,21 +147,26 @@ export default class Fabric extends View {
     this.versionError = null;
     this.programs = null;
     this.programsAt = 0;
-    this.teamDrawer = null;
-    this.agentName = null;
-    this.agentRole = null;
-    this.agentModel = null;
-    this.agentFlags = null;
-    this.agentPrompt = null;
-    this.agentProgram = "";
-    this.agentColorKey = "c1";
-    this.agentOriginal = "";
-    this.agentDraftId = 0;
-    this.agentPromptLoading = false;
-    this.teamDirty = false;
-    this.teamSaving = false;
-    this.maxSessions = null;
-    this.reviewerDraft = null;
+    this.blueprintDrawer = null;
+    this.blueprintName = null;
+    this.blueprintRole = null;
+    this.blueprintModel = null;
+    this.blueprintFlags = null;
+    this.blueprintPrompt = null;
+    this.blueprintProgram = "";
+    this.blueprintColorKey = "c1";
+    this.blueprintOriginal = "";
+    this.blueprintPromptPath = "";
+    this.blueprintDraftId = 0;
+    this.blueprintPromptLoading = false;
+    this.blueprintDirty = false;
+    this.blueprintSaving = false;
+    this.teamForms = {};
+    this.orchestrators = {};
+    this.orchestratorErrors = {};
+    this.teamPrompt = null;
+    this.teamPromptId = 0;
+    this.teamPromptLoading = false;
     this.newSentence = null;
     this.newRepo = null;
     this.newWake = true;
@@ -221,7 +225,7 @@ export default class Fabric extends View {
         this.appFocus.focus();
         cx.timer.after(120, () => this.appFocus.focus());
         await this.loadRoster(cx);
-        await this.loadOrchestrator(cx);
+        await this.loadOrchestrators(cx);
         await this.loadVersion(cx);
         // Programme und bekannte Repos jetzt holen, nicht erst beim Öffnen von
         // Team/Drawer/Neuem Ticket: knownAgents kostet ~160 ms (Login-Shell)
@@ -791,7 +795,10 @@ export default class Fabric extends View {
       this.menu = null;
       this.inboxOpen = false;
       this.modal = null;
-      if (page !== "team") this.clearAgentDrawer();
+      if (page !== "team") {
+        this.clearBlueprintDrawer();
+        this.clearTeamPrompt();
+      }
       if (page !== "ticket" || target.id !== this.openId) this.resetTicketEditing();
       if (target.id) setShared("fabric.selected", target.id);
       setShared("fabric.route", target);
@@ -815,8 +822,10 @@ export default class Fabric extends View {
     const route = this.currentRoute();
     if (route.page === "team") {
       if (!this.roster || Date.now() - this.rosterAt > 15000) cx.spawn((cx) => this.loadRoster(cx));
-      cx.spawn((cx) => this.loadOrchestrator(cx));
+      else this.syncTeamForms();
+      cx.spawn((cx) => this.loadOrchestrators(cx));
       this.ensurePrograms(cx);
+      this.ensureReposQuiet(cx);
     } else if (route.page === "prompts") {
       if (!this.promptList || Date.now() - this.promptsAt > 15000) {
         cx.spawn(async (cx) => {
@@ -988,7 +997,8 @@ export default class Fabric extends View {
       if (this.menu) { this.menu = null; this.notifyNow(); return; }
       if (this.inboxOpen) { this.inboxOpen = false; this.notifyNow(); return; }
       if (this.newOpen) { this.newOpen = false; this.clearMentions(this.lastCx); this.notifyNow(); return; }
-      if (this.teamDrawer) { this.closeDrawer(cx); return; }
+      if (this.blueprintDrawer) { this.closeBlueprintDrawer(cx); return; }
+      if (this.teamPrompt) { this.closeTeamPrompt(cx); return; }
       const route = this.currentRoute();
       if (route.page === "ticket") { this.navigate("tickets", {}, cx); return; }
       this.closeWindowWithGuard(cx);
@@ -1051,20 +1061,12 @@ export default class Fabric extends View {
       && model.isDirty(this.bodyEditor.value(), this.bodySaved)) this.saveBody(cx);
     else if (route.page === "prompts") this.savePrompt(cx);
     else if (route.page === "repos") this.saveRepo(cx);
-    else if (this.teamDrawer) this.saveAgent(cx);
-    else if (route.page === "team") this.saveTeamSettings(cx);
+    else if (this.blueprintDrawer) this.saveBlueprint(cx);
+    else if (this.teamPrompt) this.saveTeamPrompt(cx);
+    else if (route.page === "team") this.saveChangedTeams(cx);
   }
 
   // ---------- Änderungen schützen ----------
-
-  teamSettingsDirty() {
-    const roster = this.roster;
-    if (!roster) return false;
-    const reviewer = this.reviewerDraft ?? roster.reviewer ?? "";
-    if (reviewer !== (roster.reviewer ?? "")) return true;
-    if (!this.maxSessions) return false;
-    return String(this.maxSessions.value()).trim() !== String(roster.max_sessions ?? "");
-  }
 
   dirtySections() {
     const entries = [];
@@ -1085,11 +1087,16 @@ export default class Fabric extends View {
         entries.push({ key: "lessons", label: "Lernnotizen" });
       }
     }
-    if (this.teamDrawer && this.teamDirty) {
-      entries.push({ key: "agent", label: "Agent im Drawer" });
+    if (this.blueprintDrawer && this.blueprintDirty) {
+      entries.push({ key: "blueprint", label: "Blaupause im Drawer" });
     }
-    if (this.teamSettingsDirty()) {
-      entries.push({ key: "settings", label: "Team-Einstellungen" });
+    if (this.teamPromptDirty()) {
+      entries.push({ key: "team-prompt", label: `Orchestrator-Prompt ${this.teamPrompt.team}` });
+    }
+    for (const team of this.roster?.teams ?? []) {
+      if (this.teamFormDirty(team.name)) {
+        entries.push({ key: `team:${team.name}`, label: `Team ${team.name}` });
+      }
     }
     return entries;
   }
@@ -1116,8 +1123,9 @@ export default class Fabric extends View {
       if (entry.key === "body") ok = await this.saveBody(cx, true);
       if (entry.key === "prompt") ok = await this.savePrompt(cx, true);
       if (entry.key === "verify" || entry.key === "lessons") ok = await this.saveRepo(cx, entry.key, true);
-      if (entry.key === "agent") ok = await this.saveAgent(cx, true);
-      if (entry.key === "settings") ok = await this.saveTeamSettings(cx, true);
+      if (entry.key === "blueprint") ok = await this.saveBlueprint(cx, true);
+      if (entry.key === "team-prompt") ok = await this.saveTeamPrompt(cx, true);
+      if (entry.key.startsWith("team:")) ok = await this.saveTeam(entry.key.slice(5), cx, true);
       if (!ok) break;
     }
     return ok;
@@ -1129,9 +1137,9 @@ export default class Fabric extends View {
     if (this.promptEditor) this.promptEditor.set_value(this.promptSaved);
     if (this.verifyEditor) this.verifyEditor.set_value(this.verifySaved);
     if (this.lessonsEditor) this.lessonsEditor.set_value(this.lessonsSaved);
-    if (this.teamDrawer) this.teamDirty = false;
-    this.reviewerDraft = this.roster?.reviewer ?? "";
-    if (this.maxSessions) this.maxSessions.set_value(String(this.roster?.max_sessions ?? 4));
+    if (this.blueprintDrawer) this.blueprintDirty = false;
+    if (this.teamPrompt) this.teamPrompt.editor.set_value(this.teamPrompt.saved);
+    this.resetTeamForms();
     this.titleEdit = null;
     this.bodyEditing = false;
     this.clearMentions();
@@ -1190,6 +1198,7 @@ export default class Fabric extends View {
         max_sessions: raw.max_sessions ?? 4,
         reviewer: raw.reviewer ?? "",
         orchestrator: raw.orchestrator ?? { argv: [], prompt: "" },
+        team: raw.team ?? (raw.teams ?? [])[0]?.name ?? null,
         agents: (raw.agents ?? []).map((agent) => {
           const parts = model.argvParts(agent.argv ?? []);
           return {
@@ -1201,39 +1210,33 @@ export default class Fabric extends View {
             sessions: agent.sessions ?? [],
           };
         }),
+        blueprints: (raw.blueprints ?? [])
+          .filter((blueprint) => blueprint?.name)
+          .map((blueprint) => ({
+            ...blueprint,
+            role: blueprint.role ?? "",
+            color: blueprint.color ?? "",
+            argv: blueprint.argv ?? [],
+            teams: blueprint.teams ?? [],
+            prompt: blueprint.prompt ?? "",
+          })),
+        teams: (raw.teams ?? [])
+          .filter((team) => team?.name)
+          .map((team) => ({
+            ...team,
+            repos: team.repos ?? [],
+            members: (team.members ?? []).filter((member) => member?.blueprint),
+            reviewer: team.reviewer ?? "",
+            max_sessions: team.max_sessions ?? 4,
+            orchestrator: team.orchestrator ?? { argv: [], prompt: "" },
+            agents: team.agents ?? [],
+          })),
       };
       this.rosterError = null;
       this.rosterAt = Date.now();
-      if (!this.maxSessions) {
-        this.maxSessions = InputState.new({ value: String(this.roster.max_sessions ?? 4) });
-        this.maxSessions.set_step(1);
-        this.maxSessions.set_min(1);
-        this.maxSessions.set_max(16);
-        this.maxSessions.on("change", (_event, cx) => cx.notify());
-        this.maxSessions.on("submit", (_event, cx) => this.saveSetting("max_sessions", this.maxSessions.value(), cx));
-        this.track(this.maxSessions);
-      }
-      if (!this.teamSettingsDirty()) {
-        this.reviewerDraft = this.roster.reviewer ?? "";
-        if (this.maxSessions && !this.fieldFocused) {
-          this.maxSessions.set_value(String(this.roster.max_sessions ?? 4));
-        }
-      }
+      this.syncTeamForms();
     } catch (error) {
       this.rosterError = `Roster nicht lesbar: ${message(error)}`;
-    }
-    this.notifyNow();
-  }
-
-  async loadOrchestrator(cx) {
-    try {
-      const result = await this.execFab(["orchestrator", "status", "--json"], { timeout: 20000 });
-      if (result.code !== 0) throw new Error((result.stderr || "").trim() || `Code ${result.code}`);
-      this.orchestrator = parseJson(result.stdout, null);
-      this.orchestratorError = null;
-    } catch (error) {
-      this.orchestratorError = `Orchestrator-Status nicht lesbar: ${message(error)}`;
-      this.orchestrator = null;
     }
     this.notifyNow();
   }
@@ -1918,53 +1921,68 @@ export default class Fabric extends View {
 
   // ---------- Team ----------
 
-  openAgentDrawer(mode, agent, cx) {
-    const next = { mode, original: agent?.name ?? "" };
-    if (model.sameAgentDraft(this.teamDrawer, next)) {
-      this.notifyNow();
-      return;
-    }
-    if (model.agentSwitchNeedsConfirm(this.teamDrawer, next, this.teamDirty)) {
-      // Der offene Drawer gehört einem anderen Agenten; erst speichern oder verwerfen.
-      this.guard(() => this.showAgentDrawer(mode, agent, cx), cx);
-      return;
-    }
-    this.showAgentDrawer(mode, agent, cx);
+  firstTeamName() {
+    return this.roster?.teams?.[0]?.name ?? this.roster?.team ?? null;
   }
 
-  showAgentDrawer(mode, agent, cx) {
-    // Ein offenes Dropdown darf nicht in den neuen Agenten hineinwählen.
+  teamFor(name) {
+    return (this.roster?.teams ?? []).find((team) => team.name === name) ?? null;
+  }
+
+  blueprintFor(name) {
+    return (this.roster?.blueprints ?? []).find((row) => row.name === name) ?? null;
+  }
+
+  openBlueprintDrawer(mode, blueprint, cx) {
+    const next = { mode, original: blueprint?.name ?? "" };
+    if (model.sameBlueprintDraft(this.blueprintDrawer, next)) {
+      this.notifyNow();
+      return;
+    }
+    if (this.teamPromptDirty()
+      || model.blueprintSwitchNeedsConfirm(this.blueprintDrawer, next, this.blueprintDirty)) {
+      // Der offene Drawer gehört einer anderen Blaupause oder einem Prompt; erst speichern oder verwerfen.
+      this.guard(() => this.showBlueprintDrawer(mode, blueprint, cx), cx);
+      return;
+    }
+    this.showBlueprintDrawer(mode, blueprint, cx);
+  }
+
+  showBlueprintDrawer(mode, blueprint, cx) {
+    // Ein offenes Dropdown darf nicht in die neue Blaupause hineinwählen.
     this.menu = null;
-    this.agentDraftId += 1;
-    const draftId = this.agentDraftId;
-    const draft = model.agentDraft(agent);
-    this.teamDirty = false;
-    this.teamDrawer = { mode, original: draft.original };
-    this.agentOriginal = draft.original;
-    this.agentColorKey = agent?.color ?? this.nextColor();
-    this.agentProgram = draft.program;
-    this.agentName = InputState.new({ value: draft.name });
-    this.agentRole = InputState.new({ value: draft.role });
-    this.agentModel = InputState.new({ value: draft.model });
-    this.agentFlags = InputState.new({ value: draft.flags });
-    this.agentPrompt = this.newEditor("markdown", "");
-    for (const state of [this.agentName, this.agentRole, this.agentModel, this.agentFlags]) {
-      state.on("change", (_event, cx) => { this.teamDirty = true; this.notifyNow(); });
+    if (this.teamPrompt) this.clearTeamPrompt(cx);
+    this.blueprintDraftId += 1;
+    const draftId = this.blueprintDraftId;
+    const draft = model.blueprintDraft(blueprint);
+    this.blueprintDirty = false;
+    this.blueprintDrawer = { mode, original: draft.original };
+    this.blueprintOriginal = draft.original;
+    this.blueprintPromptPath = draft.prompt;
+    this.blueprintColorKey = blueprint?.color || this.nextBlueprintColor();
+    this.blueprintProgram = draft.program;
+    this.blueprintName = InputState.new({ value: draft.name });
+    this.blueprintRole = InputState.new({ value: draft.role });
+    this.blueprintModel = InputState.new({ value: draft.model });
+    this.blueprintFlags = InputState.new({ value: draft.flags });
+    this.blueprintPrompt = this.newEditor("markdown", "");
+    for (const state of [this.blueprintName, this.blueprintRole, this.blueprintModel, this.blueprintFlags]) {
+      state.on("change", (_event, cx) => { this.blueprintDirty = true; this.notifyNow(); });
       this.track(state);
     }
-    this.agentPrompt.on("change", (_event, cx) => {
-      if (this.agentPromptLoading) return;
-      this.teamDirty = true;
+    this.blueprintPrompt.on("change", (_event, cx) => {
+      if (this.blueprintPromptLoading) return;
+      this.blueprintDirty = true;
       this.notifyNow();
     });
-    const editor = this.agentPrompt;
+    const editor = this.blueprintPrompt;
     this.ensurePrograms(cx);
     this.notifyNow();
-    if (agent?.name) {
+    if (blueprint?.name) {
       cx.spawn(async (cx) => {
         let text = null;
         try {
-          const result = await this.execFab(["prompt", "show", agent.name], { timeout: 20000 });
+          const result = await this.execFab(["prompt", "show", blueprint.name], { timeout: 20000 });
           if (result.code === 0) text = result.stdout ?? "";
         } catch {
           // Ohne Promptdatei bleibt der Editor leer; fab legt sie beim Speichern an.
@@ -1972,162 +1990,437 @@ export default class Fabric extends View {
         if (text === null) return;
         // Nur der Drawer, der diesen Lauf gestartet hat, darf ihn übernehmen.
         if (!model.promptLoadApplies(
-          { draft: draftId, editor, name: agent.name },
-          { draft: this.agentDraftId, editor: this.agentPrompt, name: this.agentOriginal },
+          { draft: draftId, editor, name: blueprint.name },
+          { draft: this.blueprintDraftId, editor: this.blueprintPrompt, name: this.blueprintOriginal },
         )) return;
         if (editor.value() !== "") return; // Nutzer tippt bereits im Feld
-        const dirty = this.teamDirty;
-        this.agentPromptLoading = true;
+        const dirty = this.blueprintDirty;
+        this.blueprintPromptLoading = true;
         editor.set_value(text);
-        this.agentPromptLoading = false;
-        this.teamDirty = dirty;
+        this.blueprintPromptLoading = false;
+        this.blueprintDirty = dirty;
         this.notifyNow();
       });
     }
   }
 
-  nextColor() {
-    const used = new Set(this.agents.map((agent) => agent.color));
+  nextBlueprintColor() {
+    const used = new Set((this.roster?.blueprints ?? []).map((row) => row.color));
     for (const key of ["c1", "c2", "c3", "c4", "c5", "c6"]) if (!used.has(key)) return key;
     return "c1";
   }
 
-  clearAgentDrawer(cx) {
-    this.agentDraftId += 1;
-    this.teamDrawer = null;
-    this.teamDirty = false;
-    this.agentName = null;
-    this.agentRole = null;
-    this.agentModel = null;
-    this.agentFlags = null;
-    this.agentPrompt = null;
+  clearBlueprintDrawer(cx) {
+    this.blueprintDraftId += 1;
+    this.blueprintDrawer = null;
+    this.blueprintDirty = false;
+    this.blueprintOriginal = "";
+    this.blueprintPromptPath = "";
+    this.blueprintName = null;
+    this.blueprintRole = null;
+    this.blueprintModel = null;
+    this.blueprintFlags = null;
+    this.blueprintPrompt = null;
     cx?.notify();
   }
 
-  closeDrawer(cx) {
-    if (!this.teamDrawer) return;
-    if (this.teamDirty) {
+  closeBlueprintDrawer(cx) {
+    if (!this.blueprintDrawer) return;
+    if (this.blueprintDirty) {
       this.modal = {
         kind: "unsaved",
         dirty: this.dirtySections(),
-        then: () => this.clearAgentDrawer(cx),
+        then: () => this.clearBlueprintDrawer(cx),
       };
       cx?.notify();
     } else {
-      this.clearAgentDrawer(cx);
+      this.clearBlueprintDrawer(cx);
     }
   }
 
-  async saveAgent(cx, silent = false) {
-    if (!this.teamDrawer || this.teamSaving) return false;
-    const draftId = this.agentDraftId;
+  async saveBlueprint(cx, silent = false) {
+    if (!this.blueprintDrawer || this.blueprintSaving) return false;
+    const draftId = this.blueprintDraftId;
     const draft = {
-      mode: this.teamDrawer.mode,
-      original: this.agentOriginal,
-      color: this.agentColorKey,
+      mode: this.blueprintDrawer.mode,
+      original: this.blueprintOriginal,
+      color: this.blueprintColorKey,
     };
-    const plan = model.agentSaveArgs(draft, {
-      name: this.agentName.value(),
-      role: this.agentRole.value(),
-      model: this.agentModel.value(),
-      flags: this.agentFlags.value(),
-      program: this.agentProgram,
-      prompt: this.agentPrompt.value(),
+    const plan = model.blueprintSaveArgs(draft, {
+      name: this.blueprintName.value(),
+      role: this.blueprintRole.value(),
+      model: this.blueprintModel.value(),
+      flags: this.blueprintFlags.value(),
+      program: this.blueprintProgram,
+      prompt: this.blueprintPrompt.value(),
     });
     if (plan.error) {
-      this.setError("agent", plan.error);
+      this.setError("blueprint", plan.error);
       this.notifyNow();
       return false;
     }
 
-    this.teamSaving = true;
-    const result = await this.action("agent", plan.args, {
-      success: draft.mode === "new" ? `Agent ${plan.name} angelegt.` : `Agent ${plan.name} gespeichert.`,
+    this.blueprintSaving = true;
+    const result = await this.action("blueprint", plan.args, {
+      success: draft.mode === "new"
+        ? `Blaupause ${plan.name} angelegt.`
+        : `Blaupause ${plan.name} gespeichert.`,
     });
-    this.teamSaving = false;
+    this.blueprintSaving = false;
     if (result.ok) {
       await this.loadRoster(cx);
       // Ein zwischenzeitlich geöffneter anderer Drawer bleibt stehen.
-      if (this.agentDraftId === draftId) this.clearAgentDrawer();
+      if (this.blueprintDraftId === draftId) this.clearBlueprintDrawer();
     }
     if (!silent) this.notifyNow();
     return result.ok;
   }
 
-  confirmDeleteAgent(agent, cx) {
-    this.modal = { kind: "delete-agent", agent };
+  confirmDeleteBlueprint(blueprint, cx) {
+    this.setError("blueprint-rm", null);
+    this.modal = { kind: "delete-blueprint", blueprint };
     this.notifyNow();
   }
 
-  async deleteAgent(cx) {
-    const agent = this.modal?.agent;
-    if (!agent) return;
+  async deleteBlueprint(cx) {
+    const blueprint = this.modal?.blueprint;
+    if (!blueprint) return;
     this.modal = null;
-    await this.action("agent-rm", ["agent", "rm", agent.name, "--from=mensch"], {
-      success: `Agent ${agent.name} entfernt.`,
+    const result = await this.action("blueprint-rm", ["blueprint", "rm", blueprint.name, "--from=mensch"], {
+      success: `Blaupause ${blueprint.name} entfernt.`,
       after: (result) => {
-        this.clearAgentDrawer();
+        this.clearBlueprintDrawer();
         this.loadRoster(cx);
       },
     });
+    if (!result.ok) this.modal = { kind: "delete-blueprint", blueprint };
     this.notifyNow();
   }
 
-  async saveSetting(key, value, cx, { silentSuccess = false } = {}) {
-    const result = await this.action("settings", ["settings", "set", key, String(value), "--from=mensch"], {
-      success: silentSuccess ? "" : (key === "reviewer" ? `Prüfer: ${value}.` : `Maximale Sessions: ${value}.`),
-      after: (result) => this.loadRoster(cx),
+  // ---------- Teamkarten ----------
+
+  memberForm(member) {
+    const modelState = InputState.new({
+      value: String(member?.model ?? ""),
+      placeholder: "Modell (leer = keine Übersteuerung)",
     });
+    const costState = InputState.new({
+      value: member?.max_cost == null ? "" : String(member.max_cost),
+      placeholder: "max-cost",
+    });
+    for (const state of [modelState, costState]) {
+      state.on("change", (_event, cx) => cx.notify());
+      this.track(state);
+    }
+    return { blueprint: String(member?.blueprint ?? ""), model: modelState, maxCost: costState };
+  }
+
+  buildTeamForm(team) {
+    const draft = model.teamDraft(team);
+    const maxSessions = InputState.new({ value: String(draft.max_sessions) });
+    maxSessions.set_step(1);
+    maxSessions.set_min(1);
+    maxSessions.set_max(16);
+    maxSessions.on("change", (_event, cx) => cx.notify());
+    maxSessions.on("submit", (_event, cx) => this.saveTeam(team.name, cx));
+    this.track(maxSessions);
+    return {
+      name: draft.name,
+      repos: [...draft.repos],
+      reviewer: draft.reviewer,
+      members: draft.members.map((member) => this.memberForm(member)),
+      maxSessions,
+      origin: model.teamDraft(team),
+    };
+  }
+
+  teamFormValues(name) {
+    const form = this.teamForms[name];
+    if (!form) return null;
+    return {
+      name: form.name,
+      repos: [...form.repos],
+      members: form.members.map((member) => ({
+        blueprint: member.blueprint,
+        model: member.model.value(),
+        max_cost: member.maxCost.value(),
+      })),
+      reviewer: form.reviewer,
+      max_sessions: form.maxSessions.value(),
+    };
+  }
+
+  teamFormDirty(name) {
+    const form = this.teamForms[name];
+    if (!form) return false;
+    return model.teamDirty(form.origin, this.teamFormValues(name));
+  }
+
+  /** Roster-Reload: unveränderte Formulare folgen dem neuen Stand, geänderte bleiben. */
+  syncTeamForms() {
+    const teams = this.roster?.teams ?? [];
+    const seen = new Set();
+    for (const team of teams) {
+      seen.add(team.name);
+      const form = this.teamForms[team.name];
+      if (!form) {
+        this.teamForms[team.name] = this.buildTeamForm(team);
+        continue;
+      }
+      if (this.teamFormDirty(team.name)) continue;
+      if (model.teamDirty(team, this.teamFormValues(team.name))) {
+        this.teamForms[team.name] = this.buildTeamForm(team);
+      }
+    }
+    for (const name of Object.keys(this.teamForms)) {
+      if (!seen.has(name)) delete this.teamForms[name];
+    }
+  }
+
+  resetTeamForms() {
+    const next = {};
+    for (const team of this.roster?.teams ?? []) next[team.name] = this.buildTeamForm(team);
+    this.teamForms = next;
+  }
+
+  addTeamRepo(name, path, cx) {
+    const form = this.teamForms[name];
+    const clean = String(path ?? "").trim();
+    if (!form || !clean || form.repos.includes(clean)) return;
+    form.repos.push(clean);
+    cx?.notify();
+  }
+
+  removeTeamRepo(name, path, cx) {
+    const form = this.teamForms[name];
+    if (!form) return;
+    form.repos = form.repos.filter((repo) => repo !== path);
+    cx?.notify();
+  }
+
+  async pickTeamRepo(name, cx) {
+    const folder = await pickFolder({ prompt: `Repo für Team ${name} wählen` });
+    if (folder) this.addTeamRepo(name, folder, cx);
+  }
+
+  addTeamMember(name, blueprint, cx) {
+    const form = this.teamForms[name];
+    if (!form || !blueprint || form.members.some((member) => member.blueprint === blueprint)) return;
+    form.members.push(this.memberForm({ blueprint, model: "", max_cost: "" }));
+    if (!form.reviewer) form.reviewer = blueprint;
+    cx?.notify();
+  }
+
+  removeTeamMember(name, blueprint, cx) {
+    const form = this.teamForms[name];
+    if (!form) return;
+    form.members = form.members.filter((member) => member.blueprint !== blueprint);
+    cx?.notify();
+  }
+
+  setTeamReviewer(name, reviewer, cx) {
+    const form = this.teamForms[name];
+    if (!form) return;
+    form.reviewer = reviewer;
+    cx?.notify();
+  }
+
+  async saveTeam(name, cx, silent = false) {
+    const form = this.teamForms[name];
+    const team = this.teamFor(name);
+    if (!form || !team) return false;
+    const values = this.teamFormValues(name);
+    const plan = model.teamSaveArgs(team, values);
+    if (plan.error) {
+      this.setError(`team:${name}`, plan.error);
+      this.notifyNow();
+      return false;
+    }
+    const result = await this.action(`team:${name}`, plan.args, {
+      success: `Team ${name} gespeichert.`,
+      after: async () => {
+        const current = this.teamForms[name];
+        // Nach dem Schreiben ist der eingereichte Stand die neue Vergleichsbasis.
+        if (current) current.origin = model.teamDraft(values);
+        await this.loadRoster(cx);
+      },
+    });
+    if (result.ok) {
+      await this.loadOrchestrator(cx, name);
+      this.syncTeamForms();
+    }
+    if (!silent) this.notifyNow();
     return result.ok;
   }
 
-  async saveTeamSettings(cx, silent = false) {
-    const roster = this.roster;
-    if (!roster) return false;
-    const reviewer = this.reviewerDraft ?? roster.reviewer ?? "";
-    const sessions = String(this.maxSessions?.value() ?? roster.max_sessions ?? "");
-    const reviewerChanged = reviewer !== (roster.reviewer ?? "");
-    const sessionsChanged = sessions !== String(roster.max_sessions ?? "");
-    if (!reviewerChanged && !sessionsChanged) return true;
+  async saveChangedTeams(cx, silent = false) {
+    const teams = (this.roster?.teams ?? []).filter((team) => this.teamFormDirty(team.name));
     let ok = true;
-    if (reviewerChanged) {
-      ok = await this.saveSetting("reviewer", reviewer, cx, { silentSuccess: true });
-    }
-    if (ok && sessionsChanged) {
-      ok = await this.saveSetting("max_sessions", sessions, cx, { silentSuccess: true });
-      if (!ok) {
-        const failure = this.errorFor("settings")?.text ?? "unbekannter Fehler";
-        this.setError("settings",
-          `Der Prüfer wurde bereits gespeichert; die Sessions nicht: ${failure}`);
-      }
-    }
-    if (ok) {
-      this.reviewerDraft = this.roster?.reviewer ?? reviewer;
-      notify({ title: "Fabric", body: "Team-Einstellungen gespeichert.", level: "success" });
+    for (const team of teams) {
+      ok = await this.saveTeam(team.name, cx, true);
+      if (!ok) break;
     }
     if (!silent) this.notifyNow();
     return ok;
   }
 
-  async orchestrator(action, cx) {
-    const args = ["orchestrator", action];
-    if (action === "restart") args.push("--from=mensch");
-    await this.action("orchestrator", args, {
-      success: action === "start" ? "Orchestrator gestartet."
-        : action === "stop" ? "Orchestrator gestoppt." : "Orchestrator neu gestartet.",
-      timeout: 120000,
-      after: (result) => this.loadOrchestrator(cx),
+  // ---------- Team-Prompt ----------
+
+  teamPromptDirty() {
+    return Boolean(this.teamPrompt)
+      && model.isDirty(this.teamPrompt.editor.value(), this.teamPrompt.saved);
+  }
+
+  openTeamPrompt(name, cx) {
+    if (!name) return;
+    if (this.teamPrompt?.team === name) {
+      this.notifyNow();
+      return;
+    }
+    const go = () => this.showTeamPrompt(name, cx);
+    if (this.teamPromptDirty() || (this.blueprintDrawer && this.blueprintDirty)) {
+      this.guard(go, cx);
+      return;
+    }
+    go();
+  }
+
+  showTeamPrompt(name, cx) {
+    this.menu = null;
+    if (this.blueprintDrawer) this.clearBlueprintDrawer(cx);
+    this.teamPromptId += 1;
+    const id = this.teamPromptId;
+    this.setError("team-prompt", null);
+    this.teamPromptLoading = true;
+    this.teamPrompt = { team: name, editor: this.newEditor("markdown", ""), saved: "" };
+    this.notifyNow();
+    cx.spawn(async (cx) => {
+      let text = null;
+      try {
+        const result = await this.execFab(["prompt", "show", "orchestrator", "--team", name], {
+          timeout: 20000,
+        });
+        if (result.code === 0) text = result.stdout ?? "";
+        else this.setError("team-prompt", (result.stderr || "").trim() || `Code ${result.code}`);
+      } catch (error) {
+        this.setError("team-prompt", `Prompt nicht lesbar: ${message(error)}`);
+      }
+      if (id !== this.teamPromptId || this.teamPrompt?.team !== name) return;
+      this.teamPromptLoading = false;
+      if (text !== null) {
+        this.teamPrompt.saved = text;
+        if (this.teamPrompt.editor.value() === "") this.teamPrompt.editor.set_value(text);
+      }
+      this.notifyNow();
     });
   }
 
-  orchestratorState() {
-    return model.liveOrchestrator(this.orchestrator, terminals());
+  clearTeamPrompt(cx) {
+    this.teamPromptId += 1;
+    this.teamPrompt = null;
+    this.teamPromptLoading = false;
+    this.setError("team-prompt", null);
+    cx?.notify();
   }
 
-  peekOrchestrator(cx) {
-    const terminal = this.orchestratorState().terminal;
+  closeTeamPrompt(cx) {
+    if (!this.teamPrompt) return;
+    if (this.teamPromptDirty()) {
+      this.modal = {
+        kind: "unsaved",
+        dirty: this.dirtySections(),
+        then: () => this.clearTeamPrompt(cx),
+      };
+      cx?.notify();
+    } else {
+      this.clearTeamPrompt(cx);
+    }
+  }
+
+  async saveTeamPrompt(cx, silent = false) {
+    if (!this.teamPrompt || !this.teamPrompt.editor || this.teamPromptLoading) return false;
+    const team = this.teamPrompt.team;
+    const text = this.teamPrompt.editor.value();
+    const result = await this.action("team-prompt", [
+      "prompt", "set", "orchestrator", `--text=${text}`, "--team", team, "--from=mensch",
+    ], {
+      success: `Orchestrator-Prompt für ${team} gespeichert.`,
+    });
+    if (result.ok && this.teamPrompt?.team === team) this.teamPrompt.saved = text;
+    if (!silent) this.notifyNow();
+    return result.ok;
+  }
+
+  // ---------- Orchestrator ----------
+
+  async loadOrchestrator(cx, team = null) {
+    const name = team ?? this.firstTeamName();
+    const args = ["orchestrator", "status"];
+    if (name) args.push(name);
+    args.push("--json");
+    try {
+      const result = await this.execFab(args, { timeout: 20000 });
+      if (result.code !== 0) throw new Error((result.stderr || "").trim() || `Code ${result.code}`);
+      const raw = parseJson(result.stdout, null);
+      if (!raw) throw new Error("orchestrator status --json lieferte kein JSON");
+      if (name) {
+        this.orchestrators[name] = raw;
+        delete this.orchestratorErrors[name];
+      }
+      if (!name || name === this.firstTeamName()) {
+        this.orchestratorGlobal = raw;
+      }
+    } catch (error) {
+      const text = `Orchestrator-Status nicht lesbar: ${message(error)}`;
+      if (name) {
+        this.orchestrators[name] = null;
+        this.orchestratorErrors[name] = text;
+      }
+      if (!name || name === this.firstTeamName()) {
+        this.orchestratorGlobal = null;
+      }
+    }
+    this.notifyNow();
+  }
+
+  async loadOrchestrators(cx) {
+    const teams = this.roster?.teams ?? [];
+    if (!teams.length) {
+      await this.loadOrchestrator(cx);
+      return;
+    }
+    await Promise.all(teams.map((team) => this.loadOrchestrator(cx, team.name)));
+  }
+
+  async orchestrator(action, team, cx) {
+    const name = team ?? this.firstTeamName();
+    const args = ["orchestrator", action];
+    if (name) args.push(name);
+    if (action === "restart") args.push("--from=mensch");
+    const success = action === "start" ? "Orchestrator gestartet."
+      : action === "stop" ? "Orchestrator gestoppt." : "Orchestrator neu gestartet.";
+    await this.action(`orchestrator:${name ?? ""}`, args, {
+      success: name ? `${success.slice(0, -1)} (${name}).` : success,
+      timeout: 120000,
+      after: async () => {
+        await this.loadOrchestrator(cx, name);
+      },
+    });
+  }
+
+  orchestratorState(team = null) {
+    const name = team ?? this.firstTeamName();
+    const state = name
+      ? (this.orchestrators[name] ?? (name === this.firstTeamName() ? this.orchestratorGlobal : null))
+      : this.orchestratorGlobal;
+    return model.liveOrchestrator(state, terminals(), name ?? "");
+  }
+
+  peekOrchestrator(team, cx) {
+    const terminal = this.orchestratorState(team).terminal;
     if (terminal) run("terminal.peek", { terminal });
   }
+
 
   // ---------- Prompts ----------
 
@@ -2362,7 +2655,8 @@ export default class Fabric extends View {
       .items_stretch()
       .child(nav)
       .child(v_flex().flex_1().min_w(0).h_full().min_h(0).overflow_hidden().child(content))
-      .when(Boolean(this.teamDrawer), (el) => el.child(renderAgentDrawer(this, cx, t)));
+      .when(Boolean(this.blueprintDrawer), (el) => el.child(renderBlueprintDrawer(this, cx, t)))
+      .when(Boolean(this.teamPrompt), (el) => el.child(renderTeamPromptDrawer(this, cx, t)));
 
     const overlay = [];
     if (this.menu || this.inboxOpen) {

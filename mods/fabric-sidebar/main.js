@@ -26,6 +26,7 @@ function normalizeIndex(raw) {
   return {
     tickets: Array.isArray(raw?.tickets) ? raw.tickets : [],
     roster: Array.isArray(raw?.roster) ? raw.roster : [],
+    teams: Array.isArray(raw?.teams) ? raw.teams : [],
   };
 }
 
@@ -90,6 +91,21 @@ function orchestratorBadge(t) {
     .flex()
     .items_center()
     .child("Orchestrator");
+}
+
+// Team-Überschrift: dezent, mit Anzahl; nur die erste Gruppe ohne Trennlinie.
+function teamHeader(t, group, first) {
+  return h_flex()
+    .flex_none()
+    .w_full()
+    .when(!first, (el) => el.mt(4).pt(6).border_t(1).border_color(t.border))
+    .px(10)
+    .pb(2)
+    .gap(6)
+    .items_center()
+    .child(div().flex_1().min_w(0).truncate().text_size(10.5).font_semibold().text_color(t.dim)
+      .child(group.name))
+    .child(div().flex_none().text_size(10).text_color(t.dim).child(String(group.count)));
 }
 
 function metaLine(t, row) {
@@ -186,13 +202,20 @@ export default class FabricSidebar extends View {
 
   render(cx) {
     const t = theme();
-    const { rows } = model.fabricRows(
+    const { rows, teams: groups } = model.fabricRows(
       terminals(),
       agents(),
       this.index?.tickets ?? [],
       this.index?.roster ?? [],
       Date.now(),
+      this.index?.teams ?? [],
     );
+    const sections = [];
+    for (const group of groups) {
+      if (group.rows.length === 0) continue;
+      sections.push(teamHeader(t, group, sections.length === 0));
+      for (const row of group.rows) sections.push(rowView(t, row));
+    }
 
     return v_flex()
       .size_full()
@@ -248,7 +271,7 @@ export default class FabricSidebar extends View {
               .child(div().text_size(10.5).text_color(t.dim)
                 .child("fab dispatch startet einen.")),
           ))
-          .children(rows.map((row) => rowView(t, row))),
+          .children(sections),
       );
   }
 }

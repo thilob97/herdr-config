@@ -20,13 +20,16 @@ export function ticketFromName(name) {
   return match ? match[2].toUpperCase() : null;
 }
 
-/** Fabric-Terminal oder null. Orchestrator: Label `fab.role=orchestrator` oder Name. */
+/** Fabric-Terminal oder null. Orchestrator: Label `fab.role=orchestrator` oder
+    Name `fab-orchestrator` (alt) bzw. `fab-<team>-orchestrator`. */
 export function fabricEntry(terminal) {
   if (!terminal || typeof terminal !== "object") return null;
   const labels = terminal.labels && typeof terminal.labels === "object" ? terminal.labels : {};
   const name = String(terminal.name ?? "");
   const role = String(labels["fab.role"] ?? "");
-  const orchestrator = role === "orchestrator" || name === "fab-orchestrator";
+  const orchestrator = role === "orchestrator"
+    || name === "fab-orchestrator"
+    || /^fab-.+-orchestrator$/.test(name);
   const agent = labels["fab.agent"] ? String(labels["fab.agent"]) : "";
   const rawTicket = labels["fab.ticket"] ? String(labels["fab.ticket"]) : ticketFromName(name);
   if (!orchestrator && !agent) return null;
@@ -83,14 +86,30 @@ function inheritedEntry(terminal, parent, address) {
   };
 }
 
-/** Zeilen für die Seitenleiste: Orchestrator zuerst, Agenten darunter eingerückt.
+/** Team aus dem Terminalnamen `fab-<team>-…`; der längste bekannte Name gewinnt. */
+function teamFromName(name, known) {
+  const value = String(name ?? "");
+  if (!value.startsWith("fab-")) return null;
+  let best = "";
+  for (const team of known) {
+    if (team.length > best.length && value.startsWith(`fab-${team}-`)) best = team;
+  }
+  return best || null;
+}
 
-    Eltern sind, in dieser Reihenfolge: ein Fabric-Terminal aus `parent` (echte
-    Subagenten, `hc run` ohne `--no-parent`), sonst der Orchestrator. Fabric
-    startet Agenten mit `--no-parent`; sie stehen deshalb als Kinder des
-    Orchestrators, nicht als dessen Geschwister. Subagenten tragen keine
+/** Zeilen für die Seitenleiste, nach Team gruppiert; je Team der Orchestrator
+    zuerst, Agenten darunter eingerückt.
+
+    Team: Label `fab.team`, sonst vom Elternknoten, sonst aus dem Terminalnamen
+    `fab-<team>-…`, sonst das Legacy-Team (erstes Team im Roster, sonst
+    `"Fabric"`). Eltern sind, in dieser Reihenfolge: ein Fabric-Terminal aus
+    `parent` (echte Subagenten, `hc run` ohne `--no-parent`), sonst der
+    Orchestrator des Teams. Fabric startet Agenten mit `--no-parent`; sie stehen
+    deshalb als Kinder ihres Team-Orchestrators. Subagenten tragen keine
     `fab.*`-Labels und werden über ihre `parent`-Kette aufgenommen. */
-export function fabricRows(terminals = [], listed = [], tickets = [], roster = [], now = Date.now()) {
+export function fabricRows(
+  terminals = [], listed = [], tickets = [], roster = [], now = Date.now(), teams = [],
+) {
   const statuses = new Map(
     (listed ?? []).filter(Boolean).map((agent) => [agent.address, agent.status]),
   );
@@ -100,6 +119,19 @@ export function fabricRows(terminals = [], listed = [], tickets = [], roster = [
   const roles = new Map(
     (roster ?? []).filter((row) => row?.name).map((row) => [row.name, row.role ?? ""]),
   );
+
+  const teamNames = (Array.isArray(teams) ? teams : [])
+    .map((team) => String((typeof team === "string" ? team : team?.name) ?? "").trim())
+    .filter(Boolean);
+  const rosterTeams = (roster ?? [])
+    .filter((row) => row && typeof row === "object")
+    .flatMap((row) => (Array.isArray(row.teams) ? row.teams : []))
+    .map((name) => String(name ?? "").trim())
+    .filter(Boolean);
+  const knownTeams = [...new Set([...teamNames, ...rosterTeams])];
+  const legacyTeam = teamNames[0]
+    || String(roster?.[0]?.teams?.[0] ?? "").trim()
+    || "Fabric";
 
   const live = (terminals ?? [])
     .filter((terminal) => terminal && (terminal.state === undefined || terminal.state === "live"));
@@ -123,34 +155,55 @@ export function fabricRows(terminals = [], listed = [], tickets = [], roster = [
     }
   }
 
-  const nodes = [...included.values()].map(({ terminal, entry }) => ({
+  const resolvedTeams = new Map();
+  const resolving = new Set();
+  const teamOf = (address) => {
+    if (resolvedTeams.has(address)) return resolvedTeams.get(address);
+    const item = included.get(address);
+    if (!item) return legacyTeam;
+    if (resolving.has(address)) return legacyTeam;
+    resolving.add(address);
+    const labels = item.terminal.labels && typeof item.terminal.labels === "object"
+      ? item.terminal.labels
+      : {};
+    let team = String(labels["fab.team"] ?? "").trim();
+    if (!team) {
+      const parentAddress = typeof item.terminal.parent === "string" ? item.terminal.parent : "";
+      if (parentAddress && included.has(parentAddress)) team = teamOf(parentAddress);
+    }
+    if (!team) team = teamFromName(item.terminal.name, knownTeams) ?? legacyTeam;
+    resolving.delete(address);
+    resolvedTeams.set(address, team);
+    return team;
+  };
+
+  const nodes = [...included.entries()].map(([address, { terminal, entry }]) => ({
     ...entry,
     parent: typeof terminal.parent === "string" && terminal.parent ? terminal.parent : null,
     status: statuses.get(entry.address) ?? terminal.status ?? null,
     created: Number.isFinite(terminal.created_ms) ? terminal.created_ms : null,
     cost: costOf(terminal),
+    team: teamOf(address),
   }));
 
-  const orchestrator = nodes.find((node) => node.orchestrator) ?? null;
-  const agents = nodes.filter((node) => !node.orchestrator);
-  const known = new Set(agents.map((node) => node.address));
-  const root = orchestrator?.address ?? null;
-
-  const children = new Map();
-  for (const node of agents) {
-    const parent = node.parent && known.has(node.parent) && node.parent !== node.address
-      ? node.parent
-      : root;
-    if (!children.has(parent)) children.set(parent, []);
-    children.get(parent).push(node);
+  const grouped = new Map();
+  for (const node of nodes) {
+    if (!grouped.has(node.team)) grouped.set(node.team, []);
+    grouped.get(node.team).push(node);
   }
+  const orderedTeams = [];
+  for (const name of teamNames) {
+    if (grouped.has(name) && !orderedTeams.includes(name)) orderedTeams.push(name);
+  }
+  for (const name of [...grouped.keys()].sort((a, b) => a.localeCompare(b))) {
+    if (!orderedTeams.includes(name)) orderedTeams.push(name);
+  }
+
   const order = (a, b) => ticketNumber(a.ticket) - ticketNumber(b.ticket)
     || String(a.agent).localeCompare(String(b.agent))
     || a.address.localeCompare(b.address);
-  for (const list of children.values()) list.sort(order);
 
-  const rows = [];
-  const push = (node, depth) => {
+  const makeRow = (node, depth) => {
     const runtime = runtimeText(node.created, now);
     const cost = costText(node.cost);
     const status = node.status ? statusWord(node.status) : "";
@@ -165,7 +218,7 @@ export function fabricRows(terminals = [], listed = [], tickets = [], roster = [
       runtime,
       cost,
     ].filter(Boolean).join(" · ");
-    rows.push({
+    return {
       ...node,
       depth,
       role: node.orchestrator ? "" : roles.get(node.agent) || "",
@@ -174,15 +227,48 @@ export function fabricRows(terminals = [], listed = [], tickets = [], roster = [
       statusWord: status,
       runtime,
       costText: cost,
-    });
-    for (const child of children.get(node.address) ?? []) push(child, depth + 1);
+    };
   };
 
-  if (orchestrator) {
-    push(orchestrator, 0);
-  } else {
-    for (const node of children.get(null) ?? []) push(node, 0);
+  const rows = [];
+  const groups = [];
+  let orchestrator = null;
+
+  for (const name of orderedTeams) {
+    const groupNodes = grouped.get(name) ?? [];
+    if (groupNodes.length === 0) continue;
+    const heads = groupNodes.filter((node) => node.orchestrator);
+    // Das alte globale `fab-orchestrator` weicht dem Team-Orchestrator.
+    const head = heads.find((node) => node.name !== "fab-orchestrator") ?? heads[0] ?? null;
+    if (!orchestrator && head) orchestrator = head;
+
+    const agents = groupNodes.filter((node) => !node.orchestrator);
+    const known = new Set(agents.map((node) => node.address));
+    const root = head?.address ?? null;
+    const children = new Map();
+    for (const node of agents) {
+      const parent = node.parent && known.has(node.parent) && node.parent !== node.address
+        ? node.parent
+        : root;
+      if (!children.has(parent)) children.set(parent, []);
+      children.get(parent).push(node);
+    }
+    for (const list of children.values()) list.sort(order);
+
+    const groupRows = [];
+    const push = (node, depth) => {
+      groupRows.push(makeRow(node, depth));
+      for (const child of children.get(node.address) ?? []) push(child, depth + 1);
+    };
+    if (head) {
+      push(head, 0);
+    } else {
+      for (const node of children.get(null) ?? []) push(node, 0);
+    }
+
+    rows.push(...groupRows);
+    groups.push({ name, orchestrator: head, rows: groupRows, count: groupRows.length });
   }
 
-  return { orchestrator, rows };
+  return { orchestrator, rows, teams: groups };
 }

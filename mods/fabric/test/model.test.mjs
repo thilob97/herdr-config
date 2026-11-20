@@ -625,7 +625,7 @@ test("Freitexte stehen hinter --, Optionen tragen =", async () => {
   ]);
 });
 
-// ---------- Agenten-Drawer: Wechsel zwischen Agenten ----------
+// ---------- Blaupausen-Drawer: Wechsel zwischen Blaupausen ----------
 
 const ZAP = {
   name: "zap", role: "umsetzer", color: "c1",
@@ -643,11 +643,11 @@ function argvOf(args) {
   return JSON.parse(flag.slice("--argv-json=".length));
 }
 
-test("Drawer-Wechsel zeigt und speichert nur die Werte des gewählten Agenten", async () => {
-  const { agentDraft, sameAgentDraft, agentSwitchNeedsConfirm, agentSaveArgs } =
+test("Drawer-Wechsel zeigt und speichert nur die Werte der gewählten Blaupause", async () => {
+  const { blueprintDraft, sameBlueprintDraft, blueprintSwitchNeedsConfirm, blueprintSaveArgs } =
     await import("../model.js");
 
-  assert.deepEqual(agentDraft(ADA), {
+  assert.deepEqual(blueprintDraft(ADA), {
     original: "ada",
     color: "c2",
     name: "ada",
@@ -655,17 +655,18 @@ test("Drawer-Wechsel zeigt und speichert nur die Werte des gewählten Agenten", 
     program: "claude",
     model: "opus",
     flags: "--dangerously-skip-permissions",
+    prompt: "",
   });
 
-  const zapDraft = { mode: "edit", ...agentDraft(ZAP) };
-  const adaDraft = { mode: "edit", ...agentDraft(ADA) };
-  assert.equal(sameAgentDraft(zapDraft, adaDraft), false);
-  assert.equal(sameAgentDraft(zapDraft, { mode: "edit", original: "zap" }), true);
+  const zapDraft = { mode: "edit", ...blueprintDraft(ZAP) };
+  const adaDraft = { mode: "edit", ...blueprintDraft(ADA) };
+  assert.equal(sameBlueprintDraft(zapDraft, adaDraft), false);
+  assert.equal(sameBlueprintDraft(zapDraft, { mode: "edit", original: "zap" }), true);
 
   // Geänderter zap-Drawer: Wechsel fragt nach, statt still zu überschreiben.
-  assert.equal(agentSwitchNeedsConfirm(zapDraft, adaDraft, true), true);
-  assert.equal(agentSwitchNeedsConfirm(null, adaDraft, true), false, "erster Aufbau fragt nicht");
-  assert.equal(agentSwitchNeedsConfirm(zapDraft, adaDraft, false), false, "ohne Änderung wechselt es direkt");
+  assert.equal(blueprintSwitchNeedsConfirm(zapDraft, adaDraft, true), true);
+  assert.equal(blueprintSwitchNeedsConfirm(null, adaDraft, true), false, "erster Aufbau fragt nicht");
+  assert.equal(blueprintSwitchNeedsConfirm(zapDraft, adaDraft, false), false, "ohne Änderung wechselt es direkt");
 
   // Nach dem Wechsel steht ausschließlich adas Formular im Drawer.
   const form = {
@@ -676,22 +677,28 @@ test("Drawer-Wechsel zeigt und speichert nur die Werte des gewählten Agenten", 
     program: adaDraft.program,
     prompt: "adas prompt",
   };
-  const plan = agentSaveArgs({ mode: "edit", original: "ada", color: "c2" }, form);
+  const plan = blueprintSaveArgs({ mode: "edit", original: "ada", color: "c2" }, form);
   assert.equal(plan.error, undefined);
+  assert.equal(plan.args[0], "blueprint");
+  assert.equal(plan.args[1], "edit");
   assert.equal(plan.args[2], "ada");
   assert.deepEqual(argvOf(plan.args), ADA_SAVED);
   assert.equal(plan.args.includes("--prompt-text=adas prompt"), true);
   assert.equal(plan.args.some((arg) => arg.includes("deepseek") || arg.includes("yolo")), false,
     "keine Werte aus zaps Drawer");
 
-  // Umbenennen zielt weiterhin auf den angezeigten Agenten (ada), nicht auf zap.
-  const renamed = agentSaveArgs({ mode: "edit", original: "ada", color: "c2" }, { ...form, name: "ada-2" });
+  // Umbenennen zielt weiterhin auf die angezeigte Blaupause (ada), nicht auf zap.
+  const renamed = blueprintSaveArgs({ mode: "edit", original: "ada", color: "c2" }, { ...form, name: "ada-2" });
   assert.equal(renamed.args[2], "ada");
   assert.equal(renamed.args.includes("--rename=ada-2"), true);
   assert.deepEqual(argvOf(renamed.args), ADA_SAVED);
+
+  const added = blueprintSaveArgs({ mode: "new", original: "", color: "c3" }, { ...form, name: "neu" });
+  assert.deepEqual(added.args.slice(0, 3), ["blueprint", "add", "neu"]);
+  assert.equal(added.args.includes("--color=c3"), true);
 });
 
-test("Schneller Wechsel: spätes Prompt-Laden des alten Agenten landet nicht im neuen Formular", async () => {
+test("Schneller Wechsel: spätes Prompt-Laden der alten Blaupause landet nicht im neuen Formular", async () => {
   const { promptLoadApplies } = await import("../model.js");
   const zapEditor = { value: "" };
   const adaEditor = { value: "" };
@@ -710,11 +717,118 @@ test("Schneller Wechsel: spätes Prompt-Laden des alten Agenten landet nicht im 
 });
 
 test("Speichern ohne Namen oder Programm meldet den Fehler statt zu schreiben", async () => {
-  const { agentSaveArgs } = await import("../model.js");
-  assert.deepEqual(agentSaveArgs({ mode: "edit", original: "ada", color: "c2" }, {
+  const { blueprintSaveArgs } = await import("../model.js");
+  assert.deepEqual(blueprintSaveArgs({ mode: "edit", original: "ada", color: "c2" }, {
     name: "  ", role: "pruefer", model: "opus", flags: "", program: "claude", prompt: "",
   }), { error: "Bitte einen Namen angeben." });
-  assert.deepEqual(agentSaveArgs({ mode: "edit", original: "ada", color: "c2" }, {
+  assert.deepEqual(blueprintSaveArgs({ mode: "edit", original: "ada", color: "c2" }, {
     name: "ada", role: "pruefer", model: "opus", flags: "", program: "", prompt: "",
   }), { error: "Bitte ein Programm wählen." });
+});
+
+// ---------- Teamkarten ----------
+
+const TEAM = {
+  name: "herdr-app",
+  repos: ["/r/a", "/r/b"],
+  members: [{ blueprint: "zap", model: "sonnet", max_cost: 7 }, { blueprint: "ada" }],
+  reviewer: "ada",
+  max_sessions: 4,
+};
+
+test("teamDraft liest die Teamkarte ohne Zusatzfelder", async () => {
+  const { teamDraft } = await import("../model.js");
+  assert.deepEqual(teamDraft(TEAM), {
+    name: "herdr-app",
+    repos: ["/r/a", "/r/b"],
+    members: [
+      { blueprint: "zap", model: "sonnet", max_cost: 7 },
+      { blueprint: "ada", model: "", max_cost: "" },
+    ],
+    reviewer: "ada",
+    max_sessions: 4,
+  });
+});
+
+test("teamMembersJson lässt leere Übersteuerungen weg und schreibt max_cost als Zahl", async () => {
+  const { teamMembersJson } = await import("../model.js");
+  assert.equal(teamMembersJson([
+    { blueprint: "zap", model: "sonnet", max_cost: "7" },
+    { blueprint: "ada", model: "  ", max_cost: "" },
+    { blueprint: "bo", max_cost: 0 },
+  ]), JSON.stringify([
+    { blueprint: "zap", model: "sonnet", max_cost: 7 },
+    { blueprint: "ada" },
+    { blueprint: "bo", max_cost: 0 },
+  ]));
+});
+
+test("teamSaveArgs ersetzt Repos und Mitglieder als ganze Listen", async () => {
+  const { teamSaveArgs } = await import("../model.js");
+  const plan = teamSaveArgs(TEAM, {
+    name: "herdr-app",
+    repos: ["/r/a", "/r/c"],
+    members: [{ blueprint: "zap", model: "", max_cost: "" }, { blueprint: "ada", model: "opus" }],
+    reviewer: "ada",
+    max_sessions: "6",
+  });
+  assert.equal(plan.error, undefined);
+  assert.deepEqual(plan.args.slice(0, 3), ["team", "edit", "herdr-app"]);
+  const repoArgs = [];
+  for (let index = 3; index < plan.args.length; index += 1) {
+    if (plan.args[index] === "--repo") repoArgs.push(plan.args[index + 1]);
+  }
+  assert.deepEqual(repoArgs, ["/r/a", "/r/c"]);
+  assert.equal(plan.args.filter((arg) => arg === "--repo").length, 2, "ein --repo je Pfad");
+  assert.equal(plan.args.includes('--members-json=[{"blueprint":"zap"},{"blueprint":"ada","model":"opus"}]'), true);
+  assert.equal(plan.args.includes("--reviewer=ada"), true);
+  assert.equal(plan.args.includes("--max-sessions=6"), true);
+  assert.equal(plan.args.at(-1), "--from=mensch");
+});
+
+test("teamSaveArgs verlangt Repos, Mitglieder und einen Prüfer aus dem Team", async () => {
+  const { teamSaveArgs } = await import("../model.js");
+  const base = {
+    name: "herdr-app",
+    repos: ["/r/a"],
+    members: [{ blueprint: "zap" }, { blueprint: "ada" }],
+    reviewer: "ada",
+    max_sessions: 4,
+  };
+  assert.equal(teamSaveArgs(TEAM, { ...base, repos: [] }).error, "Team braucht mindestens ein Repo.");
+  assert.equal(teamSaveArgs(TEAM, { ...base, members: [] }).error, "Team braucht mindestens ein Mitglied.");
+  assert.equal(teamSaveArgs(TEAM, { ...base, reviewer: "" }).error, "Bitte eine Prüferin oder einen Prüfer wählen.");
+  // Ein Prüfer außerhalb der Mitglieder geht an fab; dort kommt die Meldung her.
+  assert.equal(teamSaveArgs(TEAM, { ...base, reviewer: "bo" }).error, undefined);
+  assert.equal(teamSaveArgs(TEAM, { ...base, max_sessions: 0 }).error, "Sitzungen müssen zwischen 1 und 16 liegen.");
+  assert.equal(teamSaveArgs(TEAM, { ...base, members: [{ blueprint: "zap" }, { blueprint: "ada", max_cost: "viel" }] }).error,
+    "max-cost für ada muss eine ganze Zahl ≥ 0 sein.");
+});
+
+test("blueprintMemberOptions bietet nur noch nicht gewählte Blaupausen", async () => {
+  const { blueprintMemberOptions } = await import("../model.js");
+  const blueprints = [
+    { name: "zap", role: "umsetzer" },
+    { name: "ada", role: "pruefer" },
+    { name: "bo", role: "recherche" },
+  ];
+  assert.deepEqual(blueprintMemberOptions(blueprints, [{ blueprint: "ada" }, "zap"]), [
+    { value: "bo", label: "bo", detail: "recherche", selected: false },
+  ]);
+});
+
+test("teamDirty erkennt Änderungen an Repos, Mitgliedern, Prüfer und Sitzungen", async () => {
+  const { teamDirty } = await import("../model.js");
+  const form = {
+    name: "herdr-app",
+    repos: ["/r/a", "/r/b"],
+    members: [{ blueprint: "zap", model: "sonnet", max_cost: "7" }, { blueprint: "ada" }],
+    reviewer: "ada",
+    max_sessions: "4",
+  };
+  assert.equal(teamDirty(TEAM, form), false);
+  assert.equal(teamDirty(TEAM, { ...form, repos: ["/r/a"] }), true);
+  assert.equal(teamDirty(TEAM, { ...form, members: [{ blueprint: "zap" }, { blueprint: "ada" }] }), true);
+  assert.equal(teamDirty(TEAM, { ...form, reviewer: "zap" }), true);
+  assert.equal(teamDirty(TEAM, { ...form, max_sessions: "5" }), true);
 });

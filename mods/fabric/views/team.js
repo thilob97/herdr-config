@@ -1,14 +1,12 @@
-// Team: Agentenkarten im responsiven Raster, Orchestrator, Drawer und Einstellungen.
+// Team: Blaupausen und Teamkarten mit Orchestrator, Repos, Mitgliedern und Prüfer.
 
 import { div } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { run, terminals } from "herdr";
 import * as model from "../model.js";
 import * as ui from "../ui.js";
 
 const T = ui.FONT;
 const S = ui.SPACE;
-const CARD_MIN = 280;
 
 /** Eine Definitionszeile: Label links, Wert rechts, lang -> gekürzt + Tooltip. */
 function definition(t, label, value, tooltip = null) {
@@ -23,221 +21,447 @@ function definition(t, label, value, tooltip = null) {
       .child(shown).tooltip(tooltip ?? shown));
 }
 
-function sessionChip(t, session, index, id) {
-  const look = model.sessionStatus(session.status);
-  const color = ui.sessionColor(t, look.color);
-  return ui.chip(t, `${session.name || session.terminal || "Session"} · ${look.word}`, color, `${id}-${index}`, {
-    tooltip: session.terminal
-      ? `Terminal ${session.terminal} · ${look.word} · klicken zum Öffnen`
-      : `${session.name ?? "Session"} · ${look.word}`,
-    onClick: session.terminal ? (cx) => run("terminal.peek", { terminal: session.terminal }) : null,
-  });
+function argvSummary(argv) {
+  const parts = model.argvParts(argv ?? []);
+  return model.argvSummary(parts.program, parts.model, parts.flags);
 }
 
-function agentCard(app, cx, t, agent) {
-  const parts = model.argvParts(agent.argv ?? []);
-  const program = agent.program ?? parts.program;
-  const modelName = agent.model ?? parts.model;
-  const flags = agent.flags ?? parts.flags;
-  const sessions = model.liveAgentSessions(agent.name, terminals());
-  const reviewer = app.roster?.reviewer === agent.name;
+function sectionHead(t, title, right = []) {
+  return h_flex().w_full().gap(S.s).items_center()
+    .child(div().text_size(T.s).font_semibold().whitespace_nowrap().child(title))
+    .child(div().flex_1())
+    .children(right);
+}
+
+function blueprintRow(app, cx, t, blueprint) {
+  const parts = model.argvParts(blueprint.argv ?? []);
+  const teams = (blueprint.teams ?? []).join(", ") || "—";
+  return h_flex()
+    .id(`fabric-blueprint-${blueprint.name}`)
+    .w_full()
+    .min_h(44)
+    .gap(S.s)
+    .items_center()
+    .py(4)
+    .border_b(1)
+    .border_color(t.border)
+    .child(ui.avatar(t, blueprint.name, blueprint.color || "c1", 28))
+    .child(v_flex().flex_1().min_w(0).gap(1)
+      .child(h_flex().gap(6).items_center()
+        .child(div().text_size(T.m).font_semibold().whitespace_nowrap().child(blueprint.name))
+        .child(ui.chip(t, blueprint.role || "ohne Rolle", t.dim,
+          `fabric-blueprint-role-${blueprint.name}`,
+          { tooltip: blueprint.role || "ohne Rolle" })))
+      .child(div().text_size(T.xs).text_color(t.dim).truncate()
+        .child(model.argvSummary(parts.program, parts.model, parts.flags))
+        .tooltip(model.argvSummary(parts.program, parts.model, parts.flags))))
+    .child(div().max_w(220).min_w(0).truncate().text_size(T.xs).text_color(t.dim)
+      .child(`Teams: ${teams}`).tooltip(`Teams: ${teams}`))
+    .child(ui.iconButton(t, {
+      id: `fabric-blueprint-edit-${blueprint.name}`,
+      icon: "edit",
+      tooltip: `Blaupause ${blueprint.name} bearbeiten`,
+      disabled: Boolean(app.busy),
+      onClick: (cx) => app.openBlueprintDrawer("edit", blueprint, cx),
+    }))
+    .child(ui.iconButton(t, {
+      id: `fabric-blueprint-delete-${blueprint.name}`,
+      icon: "trash",
+      tooltip: `Blaupause ${blueprint.name} löschen (fragt nach)`,
+      disabled: Boolean(app.busy),
+      onClick: (cx) => app.confirmDeleteBlueprint(blueprint, cx),
+    }));
+}
+
+function blueprintCard(app, cx, t) {
+  const blueprints = app.roster?.blueprints ?? [];
   return ui.card(t, [
-    h_flex().w_full().gap(S.s).items_center()
-      .child(ui.avatar(t, agent.name, agent.color, 32))
-      .child(v_flex().flex_1().min_w(0).gap(0)
-        .child(h_flex().gap(6).items_center()
-          .child(div().text_size(T.m).font_semibold().whitespace_nowrap().child(agent.name))
-          .when(reviewer, (el) => el.child(ui.chip(t, "Prüferin/Prüfer", t.done))))
-        .child(div().text_size(T.xs).text_color(t.dim).truncate()
-          .child(agent.role || "ohne Rolle").tooltip(agent.role || "ohne Rolle"))),
-    v_flex().w_full().gap(1)
-      .child(definition(t, "Programm", program, model.argvSummary(program, modelName, flags)))
-      .child(definition(t, "Modell", modelName, modelName))
-      .child(definition(t, "Flags", model.flagsText(flags), model.flagsText(flags))),
-    h_flex().w_full().gap(6).items_center().flex_wrap()
-      .child(ui.chip(t, `${agent.open_tickets ?? 0} offen`, (agent.open_tickets ?? 0) ? t.accent : t.dim))
-      .child(ui.chip(t, `${sessions.length} Session${sessions.length === 1 ? "" : "s"}`, sessions.length ? t.working : t.dim))
-      .child(div().flex_1())
-      .child(ui.button(t, {
-        id: `fabric-agent-edit-${agent.name}`,
-        label: "Bearbeiten",
-        icon: "edit",
-        small: true,
-        tooltip: `Agent ${agent.name} bearbeiten`,
-        onClick: (cx) => app.openAgentDrawer("edit", agent, cx),
-      })),
-    h_flex().w_full().gap(4).flex_wrap()
-      .when(sessions.length === 0, (el) => el.child(div().text_size(T.xs).text_color(t.dim).child("Keine laufende Session")))
-      .children(sessions.map((session, index) => sessionChip(t, session, index, `fabric-agent-session-${agent.name}`))),
-  ], { id: `fabric-agent-card-${agent.name}`, padding: S.m, gap: S.s });
+    sectionHead(t, "Blaupausen", [
+      ui.chip(t, String(blueprints.length), t.dim, "fabric-blueprints-count", {
+        tooltip: `${blueprints.length} Blaupause${blueprints.length === 1 ? "" : "n"}`,
+      }),
+    ]),
+    blueprints.length
+      ? v_flex().w_full().gap(0).children(blueprints.map((blueprint) => blueprintRow(app, cx, t, blueprint)))
+      : v_flex().w_full().gap(S.s).p(S.s).items_center()
+        .child(div().text_size(T.s).text_color(t.muted).child("Noch keine Blaupausen"))
+        .child(div().text_size(T.xs).text_color(t.dim).text_center()
+          .child("Eine Blaupause beschreibt Rolle, Farbe, Programm und Prompt einer Sitzung."))
+        .child(ui.button(t, {
+          id: "fabric-blueprint-empty-new",
+          label: "Neue Blaupause",
+          icon: "plus",
+          small: true,
+          tooltip: "Blaupause anlegen",
+          onClick: (cx) => app.openBlueprintDrawer("new", null, cx),
+        })),
+  ], { id: "fabric-blueprints", padding: S.m, gap: S.xs });
 }
 
-function orchestratorCard(app, cx, t) {
-  const state = app.orchestratorState();
+function orchestratorBlock(app, cx, t, team) {
+  const state = app.orchestratorState(team.name);
   const live = ui.orchestratorStatus(t, state);
-  const argv = app.roster?.orchestrator?.argv ?? state?.argv ?? [];
-  const parts = model.argvParts(argv);
+  const parts = model.argvParts(team.orchestrator?.argv ?? []);
+  const busy = app.busy === `orchestrator:${team.name}`;
+  const blocked = Boolean(app.busy);
   const started = state?.started_at
     ? `Gestartet ${model.relativeTime(state.started_at)}`
     : state?.live ? `Läuft · ${state.terminal ?? "Terminal"}` : "Noch nicht gestartet";
-  return ui.card(t, [
-    h_flex().w_full().gap(S.s).items_center()
-      .child(div().flex_none().text_color(t.foreground).child(ui.icon("fabric", 16)))
-      .child(div().text_size(T.m).font_semibold().whitespace_nowrap().child("Orchestrator"))
-      .child(ui.pill(t, { label: live.word, color: live.color, tooltip: state?.terminal ? `Terminal ${state.terminal}` : "Kein Terminal" }))
-      .child(div().flex_1())
-      .child(div().max_w(220).min_w(0).truncate().text_size(T.xs).text_color(t.dim)
-        .child(state?.terminal ?? "kein Terminal").tooltip(state?.terminal ?? "kein Terminal")),
-    v_flex().w_full().gap(1)
-      .child(definition(t, "Programm", parts.program, parts.program))
-      .child(definition(t, "Modell", parts.model, parts.model))
-      .child(definition(t, "Flags", model.flagsText(parts.flags), model.flagsText(parts.flags))),
-    h_flex().w_full().gap(S.s).items_center().flex_wrap()
-      .child(ui.button(t, {
-        id: "fabric-orchestrator-prompt",
-        label: "Prompt",
-        icon: "prompt",
-        small: true,
-        tooltip: "Orchestrator-Prompt öffnen",
-        onClick: (cx) => app.navigate("prompts", { name: "orchestrator" }, cx),
+  const error = app.errorFor(`orchestrator:${team.name}`) ?? app.orchestratorErrors?.[team.name];
+  return v_flex()
+    .w_full()
+    .gap(S.s)
+    .p(S.s)
+    .rounded(ui.RADIUS.m)
+    .bg(t.surface)
+    .child(h_flex().w_full().gap(S.s).items_center()
+      .child(div().flex_none().text_color(t.foreground).child(ui.icon("fabric", 15)))
+      .child(div().text_size(T.s).font_semibold().whitespace_nowrap().child("Orchestrator"))
+      .child(ui.pill(t, {
+        label: live.word,
+        color: live.color,
+        id: `fabric-team-orchestrator-pill-${team.name}`,
+        tooltip: state?.terminal ? `Terminal ${state.terminal}` : "Kein Terminal",
       }))
+      .child(div().flex_1())
+      .child(div().max_w(240).min_w(0).truncate().text_size(T.xs).text_color(t.dim)
+        .child(state?.terminal ?? "kein Terminal").tooltip(state?.terminal ?? "kein Terminal")))
+    .child(definition(t, "Programm", parts.program, parts.program))
+    .child(definition(t, "Modell", parts.model, parts.model))
+    .child(definition(t, "Prompt", team.orchestrator?.prompt, team.orchestrator?.prompt))
+    .child(h_flex().w_full().gap(6).items_center().flex_wrap()
       .child(ui.button(t, {
-        id: "fabric-orchestrator-start",
+        id: `fabric-team-orchestrator-start-${team.name}`,
         label: "Start",
         icon: "play",
         small: true,
-        busy: app.busy === "orchestrator",
-        disabled: Boolean(app.busy) || Boolean(state?.live),
+        busy,
+        disabled: blocked || Boolean(state?.live),
         reason: state?.live ? "Läuft bereits" : "",
-        tooltip: "Orchestrator starten (fab orchestrator start)",
-        onClick: (cx) => app.orchestrator("start", cx),
+        tooltip: `Orchestrator ${team.name} starten (fab orchestrator start ${team.name})`,
+        onClick: (cx) => app.orchestrator("start", team.name, cx),
       }))
       .child(ui.button(t, {
-        id: "fabric-orchestrator-stop",
+        id: `fabric-team-orchestrator-stop-${team.name}`,
         label: "Stopp",
         icon: "stop",
         small: true,
-        disabled: Boolean(app.busy) || !state?.live,
+        disabled: blocked || !state?.live,
         reason: state?.live ? "" : "Läuft nicht",
-        tooltip: "Orchestrator stoppen (fab orchestrator stop)",
-        onClick: (cx) => app.orchestrator("stop", cx),
+        tooltip: `Orchestrator ${team.name} stoppen (fab orchestrator stop ${team.name})`,
+        onClick: (cx) => app.orchestrator("stop", team.name, cx),
       }))
       .child(ui.button(t, {
-        id: "fabric-orchestrator-restart",
+        id: `fabric-team-orchestrator-restart-${team.name}`,
         label: "Neu starten",
         icon: "restart",
         small: true,
-        busy: app.busy === "orchestrator",
-        disabled: Boolean(app.busy),
-        tooltip: "Orchestrator neu starten (fab orchestrator restart)",
-        onClick: (cx) => app.orchestrator("restart", cx),
+        busy,
+        disabled: blocked,
+        tooltip: `Orchestrator ${team.name} neu starten (fab orchestrator restart ${team.name})`,
+        onClick: (cx) => app.orchestrator("restart", team.name, cx),
       }))
       .child(ui.button(t, {
-        id: "fabric-orchestrator-terminal",
+        id: `fabric-team-orchestrator-terminal-${team.name}`,
         label: "Terminal öffnen",
         icon: "terminal",
         small: true,
         disabled: !state?.terminal,
         reason: state?.terminal ? "" : "Kein laufendes Terminal",
         tooltip: "Orchestrator-Terminal zeigen",
-        onClick: (cx) => app.peekOrchestrator(cx),
-      })),
-    ...(app.errorFor("orchestrator") || app.orchestratorError
-      ? [ui.notice(t, (app.errorFor("orchestrator") || { text: app.orchestratorError }).text,
-        (app.errorFor("orchestrator") || { level: "error" }).level)] : []),
-    h_flex().w_full().gap(6).items_center()
+        onClick: (cx) => app.peekOrchestrator(team.name, cx),
+      }))
+      .child(ui.button(t, {
+        id: `fabric-team-orchestrator-prompt-${team.name}`,
+        label: "Prompt bearbeiten",
+        icon: "prompt",
+        small: true,
+        tooltip: `Orchestrator-Prompt für ${team.name} bearbeiten`,
+        onClick: (cx) => app.openTeamPrompt(team.name, cx),
+      })))
+    .child(h_flex().w_full().gap(6).items_center()
       .child(div().text_size(T.xs).text_color(t.dim).whitespace_nowrap().child(started))
-      .child(div().flex_1())
-      .child(div().text_size(T.xs).text_color(t.dim).truncate()
-        .child(model.oneLine(app.roster?.orchestrator?.prompt ?? "", 40))
-        .tooltip(app.roster?.orchestrator?.prompt ?? "")),
-  ], { id: "fabric-orchestrator-card", padding: S.m, gap: S.s });
+      .child(div().flex_1()))
+    .when(Boolean(error), (el) => el.child(ui.notice(t, error.text ?? String(error),
+      error.level ?? "error")));
 }
 
-function settingsCard(app, cx, t) {
-  const roster = app.roster;
-  const agents = app.agents;
-  const dirty = app.teamSettingsDirty();
-  const reviewer = app.reviewerDraft ?? roster?.reviewer ?? "";
-  return ui.card(t, [
-    h_flex().w_full().items_center().gap(S.s)
-      .child(div().text_size(T.m).font_semibold().whitespace_nowrap().child("Team-Einstellungen"))
-      .child(div().flex_1())
-      .when(dirty, (el) => el.child(ui.chip(t, "ungespeichert", t.working))),
-    h_flex().w_full().gap(S.m).items_end().flex_wrap()
-      .child(v_flex().flex_1().min_w(220).gap(5)
-        .child(div().text_size(T.xs).text_color(t.dim).whitespace_nowrap().child("Prüferin / Prüfer"))
+function reposBlock(app, cx, t, team, form) {
+  const used = new Set(form.repos);
+  const known = (app.repos ?? []).map((repo) => repo.path).filter((path) => path && !used.has(path));
+  const options = [
+    ...known.map((path) => ({
+      value: path,
+      label: model.repoName(path),
+      detail: path,
+      selected: false,
+    })),
+    { value: "__pick", label: "Ordner wählen…", detail: "Systemdialog", selected: false },
+  ];
+  return v_flex()
+    .w_full()
+    .gap(S.xs)
+    .child(sectionHead(t, "Repos", [
+      ui.chip(t, String(form.repos.length), t.dim, `fabric-team-repos-count-${team.name}`, {
+        tooltip: `${form.repos.length} Repo${form.repos.length === 1 ? "" : "s"}`,
+      }),
+    ]))
+    .children(form.repos.map((path, index) => h_flex()
+      .w_full()
+      .min_h(26)
+      .gap(S.s)
+      .items_center()
+      .child(div().flex_none().text_color(t.dim).child(ui.icon("repo", 12)))
+      .child(div().flex_1().min_w(0).truncate().text_size(T.xs).child(path).tooltip(path))
+      .child(ui.iconButton(t, {
+        id: `fabric-team-repo-remove-${team.name}-${index}`,
+        icon: "close",
+        size: 22,
+        iconSize: 11,
+        tooltip: `Repo ${path} entfernen`,
+        onClick: (cx) => app.removeTeamRepo(team.name, path, cx),
+      }))))
+    .when(form.repos.length === 0, (el) => el.child(ui.hint(t, "Mindestens ein Repo ist nötig.")))
+    .child(ui.dropdown(t, {
+      id: `fabric-team-repo-add-${team.name}`,
+      value: "",
+      placeholder: "Repo hinzufügen…",
+      options,
+      open: app.menu === `team-repos-${team.name}`,
+      width: 360,
+      scrollHandle: app.dropdownScroll,
+      empty: app.reposError ?? "Keine bekannten Repos",
+      onToggle: () => {
+        const key = `team-repos-${team.name}`;
+        app.menu = app.menu === key ? null : key;
+        cx.notify();
+      },
+      onPick: (value) => {
+        app.menu = null;
+        if (value === "__pick") app.pickTeamRepo(team.name, cx);
+        else app.addTeamRepo(team.name, value, cx);
+      },
+    }));
+}
+
+function memberRow(app, cx, t, team, form, member) {
+  const blueprint = app.blueprintFor(member.blueprint) ?? { name: member.blueprint, role: "", color: "c1" };
+  return h_flex()
+    .w_full()
+    .gap(S.s)
+    .items_center()
+    .child(ui.avatar(t, blueprint.name, blueprint.color || "c1", 24))
+    .child(v_flex().flex_none().w(110).min_w(0).gap(0)
+      .child(div().text_size(T.xs).font_semibold().truncate()
+        .child(blueprint.name).tooltip(blueprint.name))
+      .child(div().text_size(T.xs).text_color(t.dim).truncate()
+        .child(blueprint.role || "ohne Rolle").tooltip(blueprint.role || "ohne Rolle")))
+    .child(div().flex_1().min_w(120).child(ui.input(t, member.model)))
+    .child(div().flex_none().w(92).child(ui.input(t, member.maxCost)))
+    .child(ui.iconButton(t, {
+      id: `fabric-team-member-remove-${team.name}-${member.blueprint}`,
+      icon: "close",
+      size: 22,
+      iconSize: 11,
+      tooltip: `${member.blueprint} aus dem Team entfernen`,
+      onClick: (cx) => app.removeTeamMember(team.name, member.blueprint, cx),
+    }));
+}
+
+function membersBlock(app, cx, t, team, form) {
+  const addOptions = model.blueprintMemberOptions(app.roster?.blueprints ?? [], form.members);
+  const reviewerOptions = form.members.map((member) => {
+    const blueprint = app.blueprintFor(member.blueprint);
+    return {
+      value: member.blueprint,
+      label: member.blueprint,
+      detail: blueprint?.role || "",
+      selected: member.blueprint === form.reviewer,
+    };
+  });
+  return v_flex()
+    .w_full()
+    .gap(S.s)
+    .child(sectionHead(t, "Mitglieder", [
+      ui.chip(t, String(form.members.length), t.dim, `fabric-team-members-count-${team.name}`, {
+        tooltip: `${form.members.length} Mitglied${form.members.length === 1 ? "" : "er"}`,
+      }),
+    ]))
+    .children(form.members.map((member) => memberRow(app, cx, t, team, form, member)))
+    .child(ui.dropdown(t, {
+      id: `fabric-team-member-add-${team.name}`,
+      value: "",
+      placeholder: "Mitglied hinzufügen…",
+      options: addOptions,
+      open: app.menu === `team-members-${team.name}`,
+      width: 260,
+      scrollHandle: app.dropdownScroll,
+      empty: "Alle Blaupausen sind bereits Mitglied.",
+      onToggle: () => {
+        const key = `team-members-${team.name}`;
+        app.menu = app.menu === key ? null : key;
+        cx.notify();
+      },
+      onPick: (value) => {
+        app.menu = null;
+        app.addTeamMember(team.name, value, cx);
+      },
+    }))
+    .child(h_flex().w_full().gap(S.m).items_end().flex_wrap()
+      .child(v_flex().flex_1().min_w(180).gap(5)
+        .child(div().text_size(T.xs).text_color(t.dim).whitespace_nowrap()
+          .child("Prüferin / Prüfer (nur Mitglieder)"))
         .child(ui.dropdown(t, {
-          id: "fabric-team-reviewer",
-          value: reviewer,
-          placeholder: "Niemand",
-          options: agents.map((agent) => ({
-            value: agent.name,
-            label: agent.name,
-            detail: agent.role,
-            selected: agent.name === reviewer,
-          })),
-          open: app.menu === "team-reviewer",
+          id: `fabric-team-reviewer-${team.name}`,
+          value: form.reviewer || "",
+          placeholder: "Bitte wählen",
+          options: reviewerOptions,
+          open: app.menu === `team-reviewer-${team.name}`,
           width: 220,
           scrollHandle: app.dropdownScroll,
-          onToggle: () => { app.menu = app.menu === "team-reviewer" ? null : "team-reviewer"; cx.notify(); },
-          onPick: (value) => { app.menu = null; app.reviewerDraft = value; cx.notify(); },
+          empty: "Erst Mitglieder hinzufügen",
+          onToggle: () => {
+            const key = `team-reviewer-${team.name}`;
+            app.menu = app.menu === key ? null : key;
+            cx.notify();
+          },
+          onPick: (value) => {
+            app.menu = null;
+            app.setTeamReviewer(team.name, value, cx);
+          },
         })))
-      .child(v_flex().w(220).flex_none().gap(5)
-        .child(div().text_size(T.xs).text_color(t.dim).whitespace_nowrap().child("Gleichzeitige Sessions (1–16)"))
-        .child(app.maxSessions ? ui.numberInput(t, app.maxSessions) : div())),
+      .child(v_flex().w(170).flex_none().gap(5)
+        .child(div().text_size(T.xs).text_color(t.dim).whitespace_nowrap()
+          .child("Gleichzeitige Sessions (1–16)"))
+        .child(ui.numberInput(t, form.maxSessions))));
+}
+
+function teamCard(app, cx, t, team) {
+  const form = app.teamForms[team.name];
+  if (!form) return null;
+  const dirty = app.teamFormDirty(team.name);
+  const busy = app.busy === `team:${team.name}`;
+  const state = app.orchestratorState(team.name);
+  const live = ui.orchestratorStatus(t, state);
+  const error = app.errorFor(`team:${team.name}`);
+  const blockedReason = form.repos.length
+    ? (!dirty ? "Keine Änderungen" : "")
+    : "Mindestens ein Repo ist nötig.";
+  return ui.card(t, [
+    h_flex().w_full().gap(S.s).items_center().flex_wrap()
+      .child(div().text_size(T.l).font_semibold().whitespace_nowrap().child(team.name))
+      .child(ui.chip(t, `${form.members.length} Mitglied${form.members.length === 1 ? "" : "er"}`,
+        t.dim, `fabric-team-members-chip-${team.name}`, { tooltip: "Mitglieder im Team" }))
+      .child(ui.chip(t, `${form.repos.length} Repo${form.repos.length === 1 ? "" : "s"}`,
+        t.dim, `fabric-team-repos-chip-${team.name}`, { tooltip: "Repos im Team" }))
+      .child(ui.pill(t, {
+        label: live.word,
+        color: live.color,
+        id: `fabric-team-status-${team.name}`,
+        tooltip: state?.terminal ? `Terminal ${state.terminal}` : "Orchestrator-Status",
+      }))
+      .child(div().flex_1())
+      .when(dirty, (el) => el.child(ui.chip(t, "ungespeichert", t.working,
+        `fabric-team-dirty-${team.name}`, { tooltip: "Änderungen sind noch nicht gespeichert" }))),
+    orchestratorBlock(app, cx, t, team),
+    reposBlock(app, cx, t, team, form),
+    membersBlock(app, cx, t, team, form),
     h_flex().w_full().gap(S.s).items_center()
       .child(ui.button(t, {
-        id: "fabric-team-save",
+        id: `fabric-team-save-${team.name}`,
         label: "Speichern",
         icon: "save",
         small: true,
         primary: true,
-        busy: app.busy === "settings",
-        disabled: Boolean(app.busy) || !dirty,
-        tooltip: "Prüfer und maximale Sessions speichern (⌘S)",
-        onClick: (cx) => app.saveTeamSettings(cx),
+        busy,
+        disabled: Boolean(app.busy) || !dirty || form.repos.length === 0,
+        reason: blockedReason,
+        tooltip: `Team ${team.name} speichern (⌘S)`,
+        onClick: (cx) => app.saveTeam(team.name, cx),
       }))
       .child(div().flex_1())
-      .child(ui.hint(t, "Prüfer und Sessions werden nacheinander gespeichert; scheitert der zweite Schritt, bleibt der erste gespeichert.")),
-    ...(app.errorFor("settings") ? [ui.notice(t, app.errorFor("settings").text, app.errorFor("settings").level)] : []),
-    ...(app.rosterError ? [ui.hint(t, app.rosterError)] : []),
-  ], { id: "fabric-team-settings", padding: S.m, gap: S.s });
+      .child(ui.hint(t, "Speichern ersetzt Repos und Mitglieder als ganze Liste (fab team edit).")),
+    ...(error ? [ui.notice(t, error.text, error.level)] : []),
+  ], { id: `fabric-team-card-${team.name}`, padding: S.m, gap: S.m });
 }
 
 export function renderTeam(app, cx, t) {
+  const teams = app.roster?.teams ?? [];
+  const blueprints = app.roster?.blueprints ?? [];
   return v_flex()
     .size_full()
     .min_h(0)
     .child(ui.header(t, "Team", [
       div().text_size(T.xs).text_color(t.dim).child(
-        `${app.agents.length} Agent${app.agents.length === 1 ? "" : "en"} · max. ${app.roster?.max_sessions ?? "—"} Sessions`,
+        `${blueprints.length} Blaupause${blueprints.length === 1 ? "" : "n"} · ${teams.length} Team${teams.length === 1 ? "" : "s"}`,
       ),
       ui.button(t, {
-        id: "fabric-agent-new",
-        label: "Neuer Agent",
+        id: "fabric-blueprint-new",
+        label: "Neue Blaupause",
         icon: "plus",
         primary: true,
-        tooltip: "Agent anlegen",
-        onClick: (cx) => app.openAgentDrawer("new", null, cx),
+        tooltip: "Blaupause anlegen",
+        onClick: (cx) => app.openBlueprintDrawer("new", null, cx),
       }),
-    ], { iconName: "team", subtitle: "Roster, Sessions und Orchestrator pflegen" }))
+    ], { iconName: "team", subtitle: "Blaupausen pflegen und Teams steuern" }))
     .when(Boolean(app.rosterError), (el) => el.child(ui.notice(t, app.rosterError)))
     .when(Boolean(app.flash?.text), (el) => el.child(ui.notice(t, app.flash.text, app.flash.level)))
     .child(
       app.roster
         ? v_flex().flex_1().min_h(0).overflow_y_scrollbar().p(S.l).gap(S.m)
-          .child(orchestratorCard(app, cx, t))
-          .child(
-            h_flex().w_full().gap(S.m).items_stretch().flex_wrap()
-              .children(app.agents.map((agent) => div()
-                .flex_basis(CARD_MIN)
-                .flex_grow(1)
-                .flex_shrink(1)
-                .min_w(CARD_MIN)
-                .child(agentCard(app, cx, t, agent)))),
-          )
-          .child(settingsCard(app, cx, t))
+          .child(blueprintCard(app, cx, t))
+          .when(teams.length === 0, (el) => el.child(v_flex().w_full().gap(S.s).p(S.l).items_center()
+            .child(div().text_size(T.s).text_color(t.muted).child("Noch keine Teams"))
+            .child(div().text_size(T.xs).text_color(t.dim).text_center()
+              .child("Ein Team verbindet Repos, Blaupausen, einen Prüfer und einen Orchestrator."))))
+          .children(teams.map((team) => teamCard(app, cx, t, team)).filter(Boolean))
         : ui.loading(t, "Roster wird geladen …"),
     );
+}
+
+export function renderTeamPromptDrawer(app, cx, t) {
+  const prompt = app.teamPrompt;
+  if (!prompt) return null;
+  const team = app.teamFor(prompt.team);
+  const path = team?.orchestrator?.prompt ?? "prompts/orchestrator.md";
+  const busy = app.busy === "team-prompt";
+  return ui.drawer(t, {
+    title: `Orchestrator-Prompt · ${prompt.team}`,
+    subtitle: "Gilt nur für dieses Team",
+    onClose: (cx) => app.closeTeamPrompt(cx),
+    tooltip: "Drawer schließen (Esc)",
+    width: 560,
+    footer: [
+      ui.button(t, {
+        id: "fabric-team-prompt-cancel",
+        label: "Schließen",
+        tooltip: "Drawer schließen (Esc)",
+        onClick: (cx) => app.closeTeamPrompt(cx),
+      }),
+      ui.button(t, {
+        id: "fabric-team-prompt-save",
+        label: "Speichern",
+        icon: "save",
+        primary: true,
+        busy,
+        disabled: Boolean(app.busy) || app.teamPromptLoading,
+        reason: app.teamPromptLoading ? "Prompt wird noch geladen" : "",
+        tooltip: "Prompt speichern (⌘S)",
+        onClick: (cx) => app.saveTeamPrompt(cx),
+      }),
+    ],
+  }, [
+    h_flex().w_full().items_center().gap(S.s)
+      .child(ui.chip(t, path, t.dim, "fabric-team-prompt-path", { tooltip: path }))
+      .child(div().flex_1())
+      .when(app.teamPromptDirty(), (el) => el.child(ui.chip(t, "ungespeichert", t.working,
+        "fabric-team-prompt-dirty", { tooltip: "Änderungen sind noch nicht gespeichert" }))),
+    app.teamPromptLoading
+      ? ui.loading(t, "Prompt wird geladen …")
+      : ui.editor(t, prompt.editor, { height: 360 }),
+    ui.hint(t, "Speichern ruft fab prompt set orchestrator --team und schreibt nur diesen Prompt."),
+    ...(app.errorFor("team-prompt")
+      ? [ui.notice(t, app.errorFor("team-prompt").text, app.errorFor("team-prompt").level)]
+      : []),
+  ]);
 }

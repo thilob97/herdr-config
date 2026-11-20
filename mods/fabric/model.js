@@ -471,55 +471,169 @@ export function insertAttachment(text, range, reference) {
   };
 }
 
-// ---------- Agenten-Drawer ----------
+// ---------- Blaupausen-Drawer ----------
 
-/** Formularwerte des Agenten-Drawers, ausschließlich aus diesem Agenten. */
-export function agentDraft(agent) {
-  const parts = argvParts(agent?.argv ?? []);
+/** Formularwerte des Blaupausen-Drawers, ausschließlich aus dieser Blaupause. */
+export function blueprintDraft(blueprint) {
+  const parts = argvParts(blueprint?.argv ?? []);
   return {
-    original: agent?.name ?? "",
-    color: agent?.color ?? "",
-    name: agent?.name ?? "",
-    role: agent?.role ?? "umsetzer",
+    original: blueprint?.name ?? "",
+    color: blueprint?.color ?? "",
+    name: blueprint?.name ?? "",
+    role: blueprint?.role ?? "umsetzer",
     program: parts.program,
     model: parts.model,
     flags: flagsText(parts.flags),
+    prompt: blueprint?.prompt ?? "",
   };
 }
 
-/** Zeigt der Drawer denselben Agenten im selben Modus? */
-export function sameAgentDraft(left, right) {
+/** Zeigt der Drawer dieselbe Blaupause im selben Modus? */
+export function sameBlueprintDraft(left, right) {
   return Boolean(left && right)
     && left.mode === right.mode
     && left.original === (right.original ?? "");
 }
 
 /** Ein offener, geänderter Drawer wird beim Wechsel nicht still überschrieben. */
-export function agentSwitchNeedsConfirm(current, next, dirty) {
-  if (!current || sameAgentDraft(current, next)) return false;
+export function blueprintSwitchNeedsConfirm(current, next, dirty) {
+  if (!current || sameBlueprintDraft(current, next)) return false;
   return Boolean(dirty);
 }
 
 /** Speicherargumente: Ziel und Werte stammen aus demselben Drawer-Zustand.
- *  `draft` = { mode, original, color } des angezeigten Agenten,
- *  `form` = { name, role, model, flags, prompt } aus den Formularfeldern. */
-export function agentSaveArgs(draft, form) {
+ *  `draft` = { mode, original, color } der angezeigten Blaupause,
+ *  `form` = { name, role, model, flags, program, prompt } aus den Formularfeldern. */
+export function blueprintSaveArgs(draft, form) {
   const name = String(form?.name ?? "").trim();
   const program = String(form?.program ?? draft?.program ?? "").trim();
   if (!name) return { error: "Bitte einen Namen angeben." };
   if (!program) return { error: "Bitte ein Programm wählen." };
   const argv = argvFromParts({ program, model: form?.model ?? "", flags: form?.flags ?? "" });
   const args = [
-    "agent",
+    "blueprint",
     draft.mode === "new" ? "add" : "edit",
     draft.mode === "new" ? name : draft.original,
   ];
   if (draft.mode === "edit" && name !== draft.original) args.push(`--rename=${name}`);
-  args.push(`--role=${String(form?.role ?? "").trim() || "umsetzer"}`, `--color=${draft.color}`);
+  args.push(`--role=${String(form?.role ?? "").trim() || "umsetzer"}`);
+  if (draft.color) args.push(`--color=${draft.color}`);
   args.push(`--argv-json=${JSON.stringify(argv)}`);
   if (String(form?.prompt ?? "").trim()) args.push(`--prompt-text=${form.prompt}`);
   args.push("--from=mensch");
   return { args, name, argv };
+}
+
+// ---------- Teams ----------
+
+/** Formularwerte einer Teamkarte aus dem Roster. */
+export function teamDraft(team) {
+  return {
+    name: String(team?.name ?? ""),
+    repos: (team?.repos ?? []).map((repo) => String(repo)),
+    members: (team?.members ?? [])
+      .filter((member) => member && typeof member === "object" && member.blueprint)
+      .map((member) => ({
+        blueprint: String(member.blueprint),
+        model: String(member.model ?? ""),
+        max_cost: member.max_cost == null ? "" : member.max_cost,
+      })),
+    reviewer: String(team?.reviewer ?? ""),
+    max_sessions: Number(team?.max_sessions ?? 4),
+  };
+}
+
+function memberCost(raw) {
+  const text = String(raw ?? "").trim();
+  if (!text) return "";
+  const value = Number(text);
+  return Number.isInteger(value) && value >= 0 ? value : text;
+}
+
+function normalizeMembers(members) {
+  return (members ?? [])
+    .filter((member) => member && String(member.blueprint ?? "").trim())
+    .map((member) => ({
+      blueprint: String(member.blueprint).trim(),
+      model: String(member.model ?? "").trim(),
+      max_cost: memberCost(member.max_cost),
+    }));
+}
+
+function sessionNumber(raw) {
+  const text = String(raw ?? "").trim();
+  const value = Number(text);
+  return Number.isInteger(value) ? value : text;
+}
+
+/** Mitglieder als JSON; leere Übersteuerungen entfallen, max_cost wird Zahl. */
+export function teamMembersJson(members) {
+  return JSON.stringify(normalizeMembers(members).map((member) => {
+    const row = { blueprint: member.blueprint };
+    if (member.model) row.model = member.model;
+    if (member.max_cost !== "") row.max_cost = member.max_cost;
+    return row;
+  }));
+}
+
+/** Speicherargumente einer Teamkarte; Repos bleiben eine geordnete Liste. */
+export function teamSaveArgs(team, form) {
+  const name = String(team?.name ?? "").trim();
+  const repos = (form?.repos ?? []).map((repo) => String(repo ?? "").trim()).filter(Boolean);
+  const members = normalizeMembers(form?.members);
+  const reviewer = String(form?.reviewer ?? "").trim();
+  const sessions = sessionNumber(form?.max_sessions);
+  if (!name) return { error: "Teamname fehlt." };
+  if (!repos.length) return { error: "Team braucht mindestens ein Repo." };
+  if (!members.length) return { error: "Team braucht mindestens ein Mitglied." };
+  if (!reviewer) return { error: "Bitte eine Prüferin oder einen Prüfer wählen." };
+  // Ob der Prüfer Mitglied ist, entscheidet fab (`Prüfer muss Mitglied des Teams sein`).
+  for (const member of members) {
+    if (member.max_cost !== "" && typeof member.max_cost !== "number") {
+      return { error: `max-cost für ${member.blueprint} muss eine ganze Zahl ≥ 0 sein.` };
+    }
+  }
+  if (!Number.isInteger(sessions) || sessions < 1 || sessions > 16) {
+    return { error: "Sitzungen müssen zwischen 1 und 16 liegen." };
+  }
+  const args = ["team", "edit", name];
+  for (const repo of repos) args.push("--repo", repo);
+  args.push(
+    `--members-json=${teamMembersJson(members)}`,
+    `--reviewer=${reviewer}`,
+    `--max-sessions=${sessions}`,
+    "--from=mensch",
+  );
+  return { args, name, sessions };
+}
+
+/** Noch nicht gewählte Blaupausen für das Mitglieder-Dropdown. */
+export function blueprintMemberOptions(blueprints, members) {
+  const used = new Set((members ?? [])
+    .map((member) => (typeof member === "string" ? member : member?.blueprint))
+    .filter(Boolean));
+  return (blueprints ?? [])
+    .filter((blueprint) => blueprint?.name && !used.has(blueprint.name))
+    .map((blueprint) => ({
+      value: blueprint.name,
+      label: blueprint.name,
+      detail: blueprint.role || "ohne Rolle",
+      selected: false,
+    }));
+}
+
+/** Weicht das Formular vom geladenen Team ab? */
+export function teamDirty(team, form) {
+  if (!team || !form) return false;
+  const base = teamDraft(team);
+  const next = {
+    name: String(form.name ?? base.name),
+    repos: (form.repos ?? []).map((repo) => String(repo)),
+    members: normalizeMembers(form.members),
+    reviewer: String(form.reviewer ?? ""),
+    max_sessions: sessionNumber(form.max_sessions),
+  };
+  return JSON.stringify(base) !== JSON.stringify(next);
 }
 
 /** Ein später `prompt show`-Lauf darf nur das Formular füllen, das ihn startete. */
@@ -1138,16 +1252,23 @@ export function orchestratorColorKey(state) {
   return "muted";
 }
 
-/** Der Orchestrator aus dem live-Terminal, mit dem gespeicherten Stand als Rücken. */
-export function liveOrchestrator(state, terminals = []) {
+/** Der Orchestrator aus dem live-Terminal, mit dem gespeicherten Stand als Rücken.
+ *  `team` grenzt die Terminals über `fab.team` bzw. den Terminalnamen ein. */
+export function liveOrchestrator(state, terminals = [], team = "") {
   const row = (terminals ?? []).find((entry) => {
     const name = String(entry?.name ?? "");
     const labels = entry?.labels && typeof entry.labels === "object" ? entry.labels : {};
-    return name === "fab-orchestrator"
+    const orchestrator = name === "fab-orchestrator"
       || labels["fab.role"] === "orchestrator"
       || /^fab-.+-orchestrator$/.test(name);
+    if (!orchestrator) return false;
+    if (!team) return true;
+    return labels["fab.team"] === team || name === `fab-${team}-orchestrator`;
   });
-  if (!row) return { ...(state ?? {}), live: false, terminal: state?.terminal ?? null, status: null };
+  if (!row) {
+    if (state?.live) return { ...state };
+    return { ...(state ?? {}), live: false, terminal: state?.terminal ?? null, status: null };
+  }
   return {
     ...(state ?? {}),
     live: row.state === "live",

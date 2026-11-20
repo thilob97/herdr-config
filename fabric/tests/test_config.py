@@ -406,6 +406,49 @@ class PromptTests(ConfigCase):
         self.assertEqual(rows["zap"]["placeholders"], ["id"])
         self.assertEqual(rows["preamble"]["placeholders"], ["id", "agent", "quatsch"])
 
+    def test_prompt_je_team_und_blueprint_ausserhalb_des_ersten_teams(self):
+        self.ok("roster", "--json")
+        data = self.roster_json()
+        data["teams"].append({
+            "name": "zweit",
+            "repos": [os.path.join(self.tmp, "zweit-repo")],
+            "orchestrator": {"argv": ["true"],
+                             "prompt": "prompts/zweit-orchestrator.md"},
+            "members": [{"blueprint": "ada"}, {"blueprint": "nur"}],
+            "reviewer": "ada",
+            "max_sessions": 2,
+        })
+        data["blueprints"].append({
+            "name": "nur", "role": "recherche", "color": "c6",
+            "prompt": "prompts/nur.md", "argv": ["true"],
+        })
+        data["max_sessions_total"] = 6
+        self.write_raw_roster(data)
+        self._write(self.prompt_path("zweit-orchestrator"), "Zweites Team.\n")
+        self._write(self.prompt_path("nur"), "Nur-Rolle.\n")
+
+        self.assertEqual(
+            self.ok("prompt", "show", "orchestrator", "--team", "zweit").stdout,
+            "Zweites Team.\n",
+        )
+        self.assertIn(
+            "Orchestrator-Rolle",
+            self.ok("prompt", "show", "orchestrator").stdout,
+        )
+        self.assertEqual(self.ok("prompt", "show", "nur").stdout, "Nur-Rolle.\n")
+
+        self.ok("prompt", "set", "orchestrator", "--team", "zweit",
+                "--text", "Neu für zwei.\n", "--from", "mensch")
+        self.assertEqual(
+            self._read(self.prompt_path("zweit-orchestrator")), "Neu für zwei.\n")
+        self.assertIn(
+            "Orchestrator-Rolle",
+            self._read(self.prompt_path("orchestrator")),
+        )
+        result = self.cli("prompt", "show", "orchestrator", "--team", "fehlt")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Unbekanntes Team", result.stderr)
+
 
 class OrchestratorTests(ConfigCase):
     def test_status_json_ohne_lauf(self):

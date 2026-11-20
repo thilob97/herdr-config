@@ -12,7 +12,7 @@ Grundlagen: `docs/concept.md`, Vertrag `docs/fabric.md` (Daten, CLI, Abschnitt 3
 | Panel `tickets` | Sidepanel | Schnellzugriff: Liste, kompaktes Detail, Kommentar, Abnahme; Knopf „Im Fenster öffnen“ |
 | Panel `timeline` | Sidepanel | Zeitverlauf |
 | `inbox` | Seitenleiste | Was auf den Menschen wartet; Klick öffnet das Ticket im Fenster |
-| **Fabric-Agenten** | Seitenleiste, Block `fabric-agents` (Mod `fabric-sidebar`) in `layouts/fabric.json` | Orchestrator zuerst mit Badge, Agenten eingerückt mit Rolle, Status und Laufzeit; Klick öffnet das Terminal, der Ticket-Chip das Ticket |
+| **Fabric-Agenten** | Seitenleiste, Block `fabric-agents` (Mod `fabric-sidebar`) in `layouts/fabric.json` | Nach Team gruppiert, je Team der Orchestrator mit Badge zuerst, Agenten eingerückt mit Rolle, Status und Laufzeit; Klick öffnet das Terminal, der Ticket-Chip das Ticket |
 
 Die gewählte Auswahl ist überall dieselbe: `shared("fabric.selected")`. Was das Fenster zeigt, steht in `shared("fabric.route")` (z. B. `{ page: "ticket", id: "T-3" }`).
 
@@ -59,20 +59,18 @@ Die gewählte Auswahl ist überall dieselbe: `shared("fabric.selected")`. Was da
 **Neues Ticket** (Dialog): ein Satz (Pflicht), Repo (vorbelegt mit dem Git-Root des fokussierten Terminals), Schalter „Orchestrator sofort ausformulieren lassen“ (Standard an). Mit Schalter aus wird nur ein Entwurf angelegt, mit `--no-wake` am automatischen Kommentar.
 
 **Team**
-- Karten je Agent: Avatar in Rollenfarbe, Name, Rolle, Programm und Modell, laufende Sessions mit Live-Status, offene Tickets.
-- Bearbeiten in einem Drawer rechts:
-  - Name, Rolle, Farbe (Swatches c1–c6);
-  - Programm: Select aus `knownAgents()`, nicht installierte deaktiviert;
-  - Modell;
-  - weitere Flags als Text, geteilt nach Shell-Regeln;
-  - Rollenprompt im Editor.
-  Speichern ruft `fab agent add` bzw. `fab agent edit` auf.
-- Löschen mit Bestätigung. Belegte Agenten kann man nicht löschen; die Begründung kommt von `fab`.
-- Abschnitt **Einstellungen des Teams**: Prüfer (Select) und maximale gleichzeitige Sessions (`NumberInput`, 1–16).
-- **Orchestrator-Karte**: Status, Start / Stopp / Neu starten, „Terminal öffnen“ (Peek), Programm und Flags, Link zum Prompt.
+- Karte **Blaupausen**: je Blaupause Avatar in Rollenfarbe, Name, Rolle, Programm/Modell und die Teams, in denen sie Mitglied ist.
+- Anlegen und Bearbeiten in einem Drawer rechts: Name (Umbenennen), Rolle, Farbe (Swatches c1–c6), Programm (Select aus `knownAgents()`, nicht installierte markiert), Modell, weitere Flags nach Shell-Regeln und Rollenprompt im Editor. Speichern ruft `fab blueprint add` bzw. `fab blueprint edit` auf.
+- Löschen mit Bestätigung; `fab` verweigert Blaupausen, die noch Mitglied eines Teams sind, mit Begründung.
+- Je Team eine Karte:
+  - Repos als Liste mit Entfernen; Hinzufügen aus bekannten Repos oder per Ordnerwahl.
+  - Mitglieder aus den Blaupausen; je Mitglied optionale Übersteuerungen für Modell und `max-cost`.
+  - Prüfer (Select, nur Mitglieder) und maximale gleichzeitige Sessions (`NumberInput`, 1–16).
+  - Speichern ersetzt Repos und Mitglieder als ganze Liste über `fab team edit`; Fehler von `fab` (Repo vergeben, Prüfer kein Mitglied) stehen inline an der Karte.
+  - Orchestrator: Status, Start / Stopp / Neu starten, „Terminal öffnen“ (Peek), Programm und Prompt-Pfad; „Prompt bearbeiten“ öffnet den Prompt dieses Teams (`fab prompt show/set orchestrator --team …`).
 
 **Prompts**
-- Liste: Orchestrator, Präambel, je Agent.
+- Liste: Orchestrator, Präambel, je Blaupause.
 - Rechts ein Editor (`Editor`, Markdown) mit Speichern/Verwerfen, Kennzeichnung ungespeicherter Änderungen und `cmd-s`.
 - Bei der Präambel eine Legende der Platzhalter. `fab` warnt bei unbekannten Platzhaltern.
 
