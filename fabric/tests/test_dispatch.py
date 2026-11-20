@@ -267,3 +267,167 @@ class DispatchTests(FabricCase):
         self.ok("dispatch", tid, "--from", "mensch")
         self.assertEqual(self.ticket(tid)["status"], "doing")
         self.assertEqual(len(self.ticket(tid)["sessions"]), 1)
+
+
+class AutostartTests(FabricCase):
+    """Nach accept oder dem letzten link --remove startet fab frei gewordene Tickets."""
+
+    def ready(self, repo, title, blockers=(), status="todo", body=BODY):
+        tid = self.new(title)
+        self.ok("assign", tid, "zap", "--from", "mensch")
+        self.ok("edit", tid, "--repo", repo, "--from", "mensch")
+        self.ok("edit", tid, "--body", body, "--from", "mensch")
+        if status:
+            self.ok("status", tid, status, "--from", "mensch")
+        if blockers:
+            self.ok("link", tid, "--blocked-by", *blockers, "--from", "mensch")
+        return tid
+
+    def review_ticket(self):
+        repo, tid, worktree = self.ready_ticket()
+        self.commit_in(worktree, "aenderung.txt", "wert\n")
+        self.passing_verify(worktree)
+        self.ok("verify", tid)
+        self.ok("verdict", tid, "pass", "--from", "ada", "Sieht gut aus")
+        self.ok("handover", tid, "--from", "zap", "Fertig")
+        return repo, tid
+
+    def test_accept_startet_das_entblockte_ticket(self):
+        repo, blocker = self.review_ticket()
+        follow = self.ready(repo, "Danach", blockers=[blocker])
+        self.clear_log()
+        result = self.ok("accept", blocker)
+        self.assertIn(follow, result.stdout)
+        self.assertIn("automatisch", result.stdout)
+        ticket = self.ticket(follow)
+        self.assertEqual(ticket["status"], "doing")
+        self.assertEqual(ticket["branch"], f"fab/{follow}-danach")
+        self.assertTrue(os.path.isdir(ticket["worktree"]))
+        self.assertEqual(len(ticket["sessions"]), 1)
+        dispatched = [
+            row for row in self.events()
+            if row["kind"] == "dispatch" and row["ticket"] == follow
+        ]
+        self.assertEqual(dispatched[-1]["target"], "zap")
+
+    def test_weiterer_offener_blocker_verhindert_den_start(self):
+        repo, blocker = self.review_ticket()
+        other = self.new("Noch offen")
+        follow = self.ready(repo, "Danach", blockers=[blocker, other])
+        result = self.ok("accept", blocker)
+        self.assertNotIn("Danach", result.stdout)
+        ticket = self.ticket(follow)
+        self.assertEqual(ticket["status"], "todo")
+        self.assertIsNone(ticket["worktree"])
+        self.assertFalse([
+            row for row in self.events()
+            if row["kind"] == "dispatch" and row["ticket"] == follow
+        ])
+
+    def test_draft_und_unvollstaendige_tickets_bleiben_liegen(self):
+        repo, blocker = self.review_ticket()
+        draft = self.ready(repo, "Entwurf", blockers=[blocker], status="draft")
+        no_agent = self.new("Ohne Agent")
+        self.ok("edit", no_agent, "--repo", repo, "--from", "mensch")
+        self.ok("edit", no_agent, "--body", BODY, "--from", "mensch")
+        self.ok("status", no_agent, "todo", "--from", "mensch")
+        self.ok("link", no_agent, "--blocked-by", blocker, "--from", "mensch")
+        no_repo = self.new("Ohne Repo")
+        self.ok("assign", no_repo, "zap", "--from", "mensch")
+        self.ok("edit", no_repo, "--body", BODY, "--from", "mensch")
+        self.ok("status", no_repo, "todo", "--from", "mensch")
+        self.ok("link", no_repo, "--blocked-by", blocker, "--from", "mensch")
+        self.patch_ticket(no_repo, repo=None)
+        no_criteria = self.new("Ohne Kriterien")
+        self.ok("assign", no_criteria, "zap", "--from", "mensch")
+        self.ok("edit", no_criteria, "--repo", repo, "--from", "mensch")
+        self.ok("edit", no_criteria, "--body", "## Ziel\nNur ein Ziel.\n", "--from", "mensch")
+        self.ok("status", no_criteria, "todo", "--from", "mensch")
+        self.ok("link", no_criteria, "--blocked-by", blocker, "--from", "mensch")
+        mark = self.mark()
+        self.ok("accept", blocker)
+        expected = {
+            draft: "draft",
+            no_agent: "todo",
+            no_repo: "todo",
+            no_criteria: "todo",
+        }
+        for tid, status in expected.items():
+            self.assertEqual(self.ticket(tid)["status"], status)
+            self.assertIsNone(self.ticket(tid)["worktree"])
+        notes = {
+            row["ticket"]: row["text"]
+            for row in self.events_since(mark, "dispatch")
+        }
+        self.assertIn("Status draft", notes[draft])
+        self.assertIn("kein Zuständiger", notes[no_agent])
+        self.assertIn("kein Repo", notes[no_repo])
+        self.assertIn("keine Abnahmekriterien", notes[no_criteria])
+
+    def test_voller_platz_bricht_die_abnahme_nicht_ab(self):
+        repo, blocker = self.review_ticket()
+        follow = self.ready(repo, "Danach", blockers=[blocker])
+        self.write_roster(max_sessions=1)
+        self.set_terminals([
+            {"address": "t1", "name": "fab-ada-t-1", "state": "live",
+             "status": "working"},
+        ])
+        mark = self.mark()
+        result = self.ok("accept", blocker)
+        self.assertIn("angenommen", result.stdout)
+        self.assertIn("unterdrückt: voll", result.stderr)
+        ticket = self.ticket(follow)
+        self.assertEqual(ticket["status"], "todo")
+        self.assertIsNone(ticket["worktree"])
+        notes = [
+            row["text"] for row in self.events_since(mark, "dispatch")
+            if row["ticket"] == follow
+        ]
+        self.assertTrue(any("unterdrückt: voll" in text for text in notes))
+
+    def test_startfehler_bricht_die_abnahme_nicht_ab(self):
+        repo, blocker = self.review_ticket()
+        follow = self.ready(repo, "Danach", blockers=[blocker])
+        mark = self.mark()
+        result = self.ok("accept", blocker, env={"HC_RUN_FAIL": "1"})
+        self.assertIn("angenommen", result.stdout)
+        self.assertIn("nicht gestartet", result.stderr)
+        ticket = self.ticket(follow)
+        self.assertEqual(ticket["status"], "todo")
+        self.assertTrue(os.path.isdir(ticket["worktree"]))
+        notes = [
+            row["text"] for row in self.events_since(mark, "dispatch")
+            if row["ticket"] == follow
+        ]
+        self.assertTrue(any("nicht gestartet" in text for text in notes))
+
+    def test_link_remove_startet_nach_der_letzten_blockade(self):
+        repo = self.default_repo()
+        blocker = self.new("Blocker")
+        follow = self.ready(repo, "Frei", blockers=[blocker])
+        self.ok("link", follow, "--remove", blocker, "--from", "mensch")
+        ticket = self.ticket(follow)
+        self.assertEqual(ticket["status"], "doing")
+        self.assertTrue(os.path.isdir(ticket["worktree"]))
+
+    def test_link_remove_startet_trotz_erledigtem_blocker_im_blocked_by(self):
+        repo, blocker = self.review_ticket()
+        other = self.new("Noch offen")
+        follow = self.ready(repo, "Frei", blockers=[blocker, other])
+        self.ok("accept", blocker)
+        self.assertEqual(self.ticket(follow)["status"], "todo")
+        self.assertIsNone(self.ticket(follow)["worktree"])
+        self.ok("link", follow, "--remove", other, "--from", "mensch")
+        ticket = self.ticket(follow)
+        self.assertEqual(ticket["status"], "doing")
+        self.assertTrue(os.path.isdir(ticket["worktree"]))
+
+    def test_link_remove_mit_weiterem_blocker_startet_nicht(self):
+        repo = self.default_repo()
+        first = self.new("Erster")
+        second = self.new("Zweiter")
+        follow = self.ready(repo, "Frei", blockers=[first, second])
+        self.ok("link", follow, "--remove", first, "--from", "mensch")
+        ticket = self.ticket(follow)
+        self.assertEqual(ticket["status"], "todo")
+        self.assertIsNone(ticket["worktree"])
