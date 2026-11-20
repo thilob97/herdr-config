@@ -578,6 +578,11 @@ test("Orchestrator: arbeitet ist nicht wartet; Live-Terminal hat Vorrang", async
     { address: "t90", name: "fab-orchestrator", state: "live", status: "blocked" },
   ]);
   assert.deepEqual([live.live, live.terminal, live.status, live.started_at], [true, "t90", "blocked", 1]);
+  const team = liveOrchestrator({ started_at: 2 }, [
+    { address: "t91", name: "fab-zweit-orchestrator", state: "live", status: "working",
+      labels: { "fab.role": "orchestrator", "fab.team": "zweit" } },
+  ]);
+  assert.deepEqual([team.live, team.terminal, team.status], [true, "t91", "working"]);
 });
 
 test("Live-Sessions eines Agenten kommen aus den Terminals", async () => {

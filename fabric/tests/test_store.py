@@ -51,7 +51,7 @@ class StoreTests(FabricCase):
             raise errors[0]
 
     def test_ids_laufen_auch_parallel_fort(self):
-        script = [sys.executable, FAB, "new", "Parallel"]
+        script = [sys.executable, FAB, "new", "Parallel", "--repo", self.default_repo()]
         first = subprocess.Popen(script, cwd=self.tmp, env=self.env,
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         second = subprocess.Popen(script, cwd=self.tmp, env=self.env,

@@ -412,7 +412,8 @@ class OrchestratorTests(ConfigCase):
         payload = json.loads(self.ok("orchestrator", "status", "--json").stdout)
         self.assertEqual(
             payload,
-            {"live": False, "name": "fab-orchestrator", "terminal": None,
+            {"team": "herdr-app", "live": False,
+             "name": "fab-herdr-app-orchestrator", "terminal": None,
              "status": None, "started_at": None},
         )
         self.assertIn("läuft nicht", self.ok("orchestrator", "status").stdout)
@@ -624,7 +625,8 @@ class TicketPflegeTests(ConfigCase):
     def test_new_no_wake_legt_nur_entwurf(self):
         self.clear_log()
         mark = self.mark()
-        result = self.ok("new", "Nur ein Entwurf", "--no-wake")
+        result = self.ok("new", "Nur ein Entwurf", "--no-wake",
+                         "--repo", self.default_repo())
         tid = result.stdout.strip().splitlines()[-1]
         ticket = self.ticket(tid)
         self.assertEqual(ticket["status"], "draft")
@@ -641,7 +643,8 @@ class FreitextTests(ConfigCase):
 
     def test_new_nimmt_fuehrende_striche(self):
         for mark in self.MARKS:
-            result = self.ok("new", "--no-wake", "--", mark)
+            result = self.ok("new", "--no-wake", "--repo", self.default_repo(),
+                             "--", mark)
             ticket = self.ticket(result.stdout.strip().splitlines()[-1])
             self.assertEqual(ticket["title"], mark)
             self.assertEqual(ticket["body"], f"## Auftrag\n{mark}")
@@ -825,7 +828,7 @@ class MigrationTests(ConfigCase):
         self.assertEqual(team["name"], "herdr-app")
         self.assertEqual(
             team["repos"],
-            [os.path.join(self.fake_home, ".config", "herdr-app")],
+            [os.path.realpath(os.path.join(self.fake_home, ".config", "herdr-app"))],
         )
         self.assertEqual(
             team["members"], [{"blueprint": "zap"}, {"blueprint": "ada"}]
@@ -957,7 +960,7 @@ class TeamTests(ConfigCase):
             max_sessions=3, actor="mensch",
         )
         self.assertEqual(entry["name"], "zwei")
-        self.assertEqual(entry["repos"], [os.path.abspath(repo)])
+        self.assertEqual(entry["repos"], [os.path.realpath(repo)])
         self.assertEqual(entry["members"], [{"blueprint": "zap"}])
         self.assertEqual(entry["reviewer"], "zap")
         self.assertEqual(entry["max_sessions"], 3)
@@ -1037,7 +1040,7 @@ class TeamTests(ConfigCase):
         self.assertEqual(payload["team"], "herdr-app")
         row = payload["teams"][1]
         self.assertEqual(row["name"], "zwei")
-        self.assertEqual(row["repos"], [os.path.abspath(other)])
+        self.assertEqual(row["repos"], [os.path.realpath(other)])
         self.assertEqual(
             row["members"],
             [{"blueprint": "zap", "model": "klein", "max_cost": 7}],

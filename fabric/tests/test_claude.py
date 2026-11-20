@@ -23,6 +23,7 @@ class ClaudeTrustTests(FabricCase):
 
     def prepare(self, title="Claude"):
         repo = self.make_repo()
+        self.own_repo(repo)
         tid = self.new(title)
         self.ok("assign", tid, "zap", "--from", "mensch")
         self.ok("edit", tid, "--repo", repo, "--from", "mensch")
@@ -71,7 +72,7 @@ class ClaudeTrustTests(FabricCase):
         )
         self.ok("orchestrator", "start")
         folder = os.path.realpath(
-            os.path.join(self.fake_home, ".herdr", "fabric-orchestrator")
+            os.path.join(self.fake_home, ".herdr", "fabric-orchestrator", "herdr-app")
         )
         self.assertIs(
             self.config()["projects"][folder]["hasTrustDialogAccepted"], True

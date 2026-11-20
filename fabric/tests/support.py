@@ -108,6 +108,7 @@ class FabricCase(unittest.TestCase):
         self._write(os.path.join(self.roster_dir, "prompts", "ada.md"),
                     "Ada-Rolle: prüfe das Ticket.\n")
         self.roster = os.path.join(self.roster_dir, "roster.json")
+        self._owned_repos = []
         self.write_roster()
         self.hc_log = os.path.join(self.tmp, "hc.log")
         self.ls_json = os.path.join(self.tmp, "ls.json")
@@ -165,8 +166,54 @@ class FabricCase(unittest.TestCase):
             ],
         }
         data.update(overrides)
+        if self._owned_repos:
+            data["blueprints"] = [dict(entry) for entry in data["agents"]]
+            data["teams"] = [
+                {
+                    "name": "herdr-app",
+                    "repos": self._team_repos(),
+                    "orchestrator": dict(data["orchestrator"]),
+                    "members": [
+                        {"blueprint": entry["name"]} for entry in data["agents"]
+                    ],
+                    "reviewer": data["reviewer"],
+                    "max_sessions": data["max_sessions"],
+                }
+            ]
+            data.setdefault("max_sessions_total", data["max_sessions"])
         self._write(self.roster, json.dumps(data, ensure_ascii=False, indent=2))
         return data
+
+    def _team_repos(self):
+        default = os.path.realpath(os.path.join(
+            self.fake_home, ".config", "herdr-app"))
+        repos = [default]
+        for path in self._owned_repos:
+            if path not in repos:
+                repos.append(path)
+        return repos
+
+    def own_repo(self, repo, team="herdr-app"):
+        """Repo dem Fixture-Team zuschlagen; danach ist es routingfähig."""
+        path = os.path.realpath(os.path.abspath(repo))
+        if path not in self._owned_repos:
+            self._owned_repos.append(path)
+        self.ok("roster", "--json")
+        data = json.loads(self._read(self.roster))
+        entry = next(item for item in data["teams"] if item["name"] == team)
+        repos = list(entry.get("repos") or [])
+        for candidate in [path, *self._team_repos()]:
+            if candidate not in repos:
+                repos.append(candidate)
+        entry["repos"] = repos
+        self._write(self.roster, json.dumps(data, ensure_ascii=False, indent=2))
+        return path
+
+    def default_repo(self):
+        path = os.path.join(self.fake_home, ".config", "herdr-app")
+        if not os.path.isdir(os.path.join(path, ".git")):
+            self.init_repo(path)
+        return path
 
     def cli(self, *args, env=None, cwd=None, input_text=None):
         merged = dict(self.env)
@@ -274,9 +321,11 @@ class FabricCase(unittest.TestCase):
             return json.load(handle)
 
     def new(self, sentence="Test", repo=None, author=None):
-        args = ["new", sentence]
-        if repo:
-            args += ["--repo", repo]
+        explicit = repo is not None
+        repo = repo or self.default_repo()
+        if explicit:
+            self.own_repo(repo)
+        args = ["new", sentence, "--repo", repo]
         if author:
             args += ["--from", author]
         result = self.ok(*args)
@@ -285,7 +334,9 @@ class FabricCase(unittest.TestCase):
     # -- Git
 
     def make_repo(self, name="repo"):
-        path = os.path.join(self.tmp, name)
+        return self.init_repo(os.path.join(self.tmp, name))
+
+    def init_repo(self, path):
         os.makedirs(path, exist_ok=True)
 
         def git(*args):
@@ -317,6 +368,7 @@ class FabricCase(unittest.TestCase):
     def ready_ticket(self, title="Kurzer Titel"):
         """Repo + verteiltes Ticket mit Worktree (Agent über den Stub gestartet)."""
         repo = self.make_repo()
+        self.own_repo(repo)
         tid = self.new(title)
         self.ok("assign", tid, "zap", "--from", "mensch")
         self.ok("edit", tid, "--repo", repo, "--from", "mensch")

@@ -6,7 +6,7 @@ import re
 import sys
 import unicodedata
 
-from . import agents, config, events, git, hc, index, prompts, render, repos, store, wake
+from . import agents, config, events, git, hc, index, prompts, render, repos, store, teams, wake
 from .errors import FabError, HcError
 
 
@@ -28,7 +28,15 @@ def _abs_repo(path):
     folder = os.path.abspath(os.path.expanduser(path))
     if not os.path.isdir(folder):
         raise FabError(f"Repo-Pfad gibt es nicht: {folder}")
-    return git.toplevel(folder) or folder
+    return git.main_toplevel(folder) or folder
+
+
+def _ticket_team(ticket, roster):
+    """Team des Ticket-Repos; ohne Repo das Legacy-Team, ohne Team None."""
+    repo = ticket.get("repo")
+    if not repo:
+        return teams.first_team(roster)
+    return teams.team_for_repo(roster, repo)
 
 
 def _slug(text, limit=50):
@@ -105,8 +113,17 @@ def cmd_new(args):
     if not sentence:
         raise FabError("Der Satz für das Ticket ist leer")
     author = _actor(args) or "mensch"
-    repo = _abs_repo(args.repo) if args.repo else git.toplevel(os.getcwd())
+    if args.repo:
+        repo = _abs_repo(args.repo)
+    else:
+        repo = git.main_toplevel(os.getcwd())
+    if not repo:
+        raise FabError(
+            "Repo fehlt: --repo PFAD angeben oder in einem Git-Checkout ausführen"
+        )
     roster = agents.load(required=False)
+    if roster is not None and teams.team_for_repo(roster, repo) is None:
+        raise FabError(teams.no_team_message(repo))
     if roster is None and not args.no_wake:
         print(f"Warnung: Roster fehlt ({agents.roster_path()}); @orchestrator wird nicht geweckt",
               file=sys.stderr)
@@ -136,6 +153,14 @@ def cmd_list(args):
                 f"Unbekannter Status {args.status}; erlaubt: {', '.join(store.STATUSES)}"
             )
         tickets = [ticket for ticket in tickets if ticket["status"] == args.status]
+    if args.team:
+        roster = agents.load()
+        teams.team(roster, args.team)
+        tickets = [
+            ticket
+            for ticket in tickets
+            if (_ticket_team(ticket, roster) or {}).get("name") == args.team
+        ]
     if args.json:
         print(json.dumps([index.entry(ticket) for ticket in tickets],
                          ensure_ascii=False, indent=2))
@@ -383,7 +408,6 @@ def cmd_dispatch(args):
             raise FabError(
                 f"{ticket['id']}: kein Agent; nutze --agent NAME oder fab assign {ticket['id']} NAME"
             )
-        agents.agent(agent_name, roster)
         if not ticket.get("repo"):
             raise FabError(
                 f"{ticket['id']} hat kein Repo; fab edit {ticket['id']} --repo PFAD --from {actor}"
@@ -391,6 +415,9 @@ def cmd_dispatch(args):
         top = git.toplevel(ticket["repo"])
         if not top:
             raise FabError(f"{ticket['id']}: {ticket['repo']} ist kein Git-Repository")
+        team_entry = agents.team_for_ticket(roster, ticket)
+        team_name = str(team_entry.get("name") or "")
+        agents.agent_in_team(roster, team_entry, agent_name)
         if not _has_criteria(ticket["body"]):
             raise FabError(
                 f"{ticket['id']}: Abschnitt „## Abnahmekriterien“ fehlt oder ist leer"
@@ -405,8 +432,12 @@ def cmd_dispatch(args):
             live = hc.live()
         except HcError as exc:
             raise FabError(f"Agenten nicht prüfbar: {exc}")
-        terminal = hc.terminal_name(agent_name, ticket["id"])
-        if terminal in live:
+        terminal = hc.terminal_name(agent_name, ticket["id"], team_name)
+        candidates = [terminal]
+        if team_name == teams.legacy_team_name(roster):
+            candidates.append(hc.terminal_name(agent_name, ticket["id"]))
+        running_name = next((name for name in candidates if name in live), None)
+        if running_name is not None:
             results = wake.process(
                 ticket, [agent_name], actor,
                 f"Arbeite an {ticket['id']} weiter.",
@@ -415,17 +446,18 @@ def cmd_dispatch(args):
             if ticket["status"] != "doing":
                 ticket["status"] = "doing"
             events.append("dispatch", ticket["id"], actor, agent_name,
-                          f"lief schon: {terminal}")
+                          f"lief schon: {running_name}")
             store.save(ticket)
             index.rebuild()
             _print_wake_results(results)
-            print(f"{ticket['id']}: {agent_name} läuft schon ({terminal}); geweckt statt gestartet")
+            print(f"{ticket['id']}: {agent_name} läuft schon ({running_name}); geweckt statt gestartet")
             return 0
-        limit = int(roster.get("max_sessions") or 4)
-        if len(agents.active(live)) >= limit:
+        if agents.at_limit(roster, live, team_entry):
+            limit = teams.team_limit(team_entry)
+            total = roster.get("max_sessions_total")
             raise FabError(
-                f"Maximale Zahl aktiver Agenten ({limit}) erreicht; "
-                f"erst ein Ticket abschließen oder das Limit im Roster erhöhen"
+                f"{ticket['id']}: unterdrückt: voll — höchstens {limit} Sessions "
+                f"je Team {team_name}, {total} gesamt"
             )
         base = git.branch(top)
         start = git.head(top)
@@ -778,29 +810,46 @@ def cmd_wake(args):
     return 0
 
 
-def _orchestrator_state():
-    """Zustand des Orchestrators; funktioniert auch ohne laufendes Terminal."""
+def _resolve_team(roster, raw):
+    if raw:
+        return teams.team(roster, raw)
+    repo = git.main_toplevel(os.getcwd())
+    entry = teams.team_for_repo(roster, repo) if repo else None
+    entry = entry or teams.first_team(roster)
+    if not entry:
+        raise FabError("Kein Team im Roster; fab team add …")
+    return entry
+
+
+def _orchestrator_state(roster, team_entry):
+    """Zustand des Team-Orchestrators; funktioniert auch ohne laufendes Terminal."""
+    team_name = str(team_entry.get("name") or "")
+    targets = agents.orchestrator_targets(roster, team_name)
     row = None
+    actual = targets[0]
     try:
         rows = hc.ls()
     except HcError:
         rows = []
     for item in rows:
-        if item.get("name") == agents.ORCHESTRATOR and item.get("state") == "live":
+        if item.get("name") in targets and item.get("state") == "live":
             row = item
+            actual = item.get("name")
     started = None
     if row is not None:
         for event in reversed(events.read_all()):
             text = event.get("text") or ""
-            if event.get("kind") == "orchestrator" and (
+            target = event.get("target") or ""
+            if event.get("kind") == "orchestrator" and target in ("", team_name) and (
                 text in ("gestartet", "neu gestartet")
                 or text.startswith(("gestartet (", "neu gestartet ("))
             ):
                 started = event.get("at")
                 break
     return {
+        "team": team_name,
         "live": row is not None,
-        "name": agents.ORCHESTRATOR,
+        "name": actual,
         "terminal": (row or {}).get("address"),
         "status": (row or {}).get("status"),
         "started_at": started,
@@ -808,60 +857,69 @@ def _orchestrator_state():
 
 
 def cmd_orchestrator(args):
+    roster = agents.load()
+    team_entry = _resolve_team(roster, args.team)
+    team_name = str(team_entry.get("name") or "")
+    targets = agents.orchestrator_targets(roster, team_name)
     if args.action == "status":
-        state = _orchestrator_state()
+        state = _orchestrator_state(roster, team_entry)
         if args.json:
             print(json.dumps(state, ensure_ascii=False, indent=2))
         elif state["live"]:
             print(
-                f"Orchestrator läuft ({state['terminal']}) · "
+                f"Orchestrator {team_name} läuft ({state['terminal']}) · "
                 f"{state['status'] or 'ohne Status'}"
             )
         else:
-            print("Orchestrator läuft nicht")
+            print(f"Orchestrator {team_name} läuft nicht")
         return 0
     if args.action == "restart":
         actor = _require_actor(args)
-        roster = agents.load()
         with store.locked():
-            if agents.orchestrator_live() and not hc.kill(agents.ORCHESTRATOR):
-                raise FabError("Orchestrator ließ sich nicht beenden (hc kill)")
-            started = agents.start_orchestrator(roster)
+            try:
+                live = hc.live()
+            except HcError:
+                live = {}
+            for target in targets:
+                if target in live:
+                    hc.kill(target)
+            started = agents.start_orchestrator(roster, team_name)
             warning = started.get("warning")
             text = "neu gestartet"
             if warning:
                 text += f" ({warning})"
-            events.append("orchestrator", "", actor, "", text)
-            events.append("config", "", actor, "", "Orchestrator neu gestartet")
+            events.append("orchestrator", "", actor, team_name, text)
+            events.append("config", "", actor, "", f"Orchestrator {team_name} neu gestartet")
             index.rebuild()
-        print("Orchestrator neu gestartet (fab-orchestrator)")
+        print(f"Orchestrator {team_name} neu gestartet ({started['name']})")
         if warning:
             print(warning)
         return 0
-    roster = agents.load()
     with store.locked():
         if args.action == "start":
-            if agents.orchestrator_live():
-                raise FabError("Orchestrator läuft schon (fab-orchestrator)")
-            started = agents.start_orchestrator(roster)
+            live_name, _row = agents.live_orchestrator(roster, team_name)
+            if live_name:
+                raise FabError(f"Orchestrator läuft schon ({live_name})")
+            started = agents.start_orchestrator(roster, team_name)
             warning = started.get("warning")
             text = "gestartet"
             if warning:
                 text += f" ({warning})"
-            events.append("orchestrator", "", "fab", "", text)
+            events.append("orchestrator", "", "fab", team_name, text)
             index.rebuild()
-            print("Orchestrator gestartet (fab-orchestrator)")
+            print(f"Orchestrator {team_name} gestartet ({started['name']})")
             if warning:
                 print(warning)
             return 0
         if args.action == "stop":
-            if not agents.orchestrator_live():
-                print("Orchestrator läuft nicht")
+            live_name, _row = agents.live_orchestrator(roster, team_name)
+            if not live_name:
+                print(f"Orchestrator {team_name} läuft nicht")
                 return 0
-            hc.kill(agents.ORCHESTRATOR)
-            events.append("orchestrator", "", "fab", "", "beendet")
+            hc.kill(live_name)
+            events.append("orchestrator", "", "fab", team_name, "beendet")
             index.rebuild()
-            print("Orchestrator beendet")
+            print(f"Orchestrator {team_name} beendet")
             return 0
     return 0
 
@@ -887,10 +945,18 @@ def cmd_agents(args):
     known = {session["name"] for session in sessions}
     for name, row in sorted(running.items()):
         if name not in known:
+            labels = row.get("labels") if isinstance(row.get("labels"), dict) else {}
+            agent_name = labels.get("fab.agent")
+            if not agent_name:
+                for item in roster["agents"]:
+                    if (name.startswith(f"fab-{item['name']}-")
+                            or f"-{item['name']}-" in name):
+                        agent_name = item["name"]
+                        break
             sessions.append(
                 {
                     "ticket": None,
-                    "agent": None,
+                    "agent": agent_name,
                     "name": name,
                     "terminal": row.get("address"),
                     "live": True,
@@ -898,13 +964,18 @@ def cmd_agents(args):
                 }
             )
     if args.json:
+        first = teams.first_team(roster)
+        state = _orchestrator_state(roster, first) if first else {
+            "team": None, "live": False, "name": None, "terminal": None,
+        }
         payload = {
             "max_sessions": roster["max_sessions"],
             "reviewer": roster["reviewer"],
             "orchestrator": {
-                "name": agents.ORCHESTRATOR,
-                "live": agents.ORCHESTRATOR in live,
-                "terminal": (live.get(agents.ORCHESTRATOR) or {}).get("address"),
+                "name": state["name"],
+                "team": state["team"],
+                "live": state["live"],
+                "terminal": state["terminal"],
             },
             "agents": [
                 {
@@ -927,7 +998,7 @@ def cmd_agents(args):
         mine = [
             session
             for session in sessions
-            if session["name"].startswith(f"fab-{item['name']}-")
+            if session["agent"] == item["name"]
         ]
         state = "läuft nicht"
         if mine:
@@ -942,11 +1013,13 @@ def cmd_agents(args):
                 for session in mine
             )
         print(f"{item['name']:<10} {item['role']:<10} {item['color']:<4} {state}")
+    first = teams.first_team(roster)
+    state = _orchestrator_state(roster, first) if first else {"live": False, "terminal": None}
     print(
         "Orchestrator: "
         + (
-            f"läuft ({(live.get(agents.ORCHESTRATOR) or {}).get('address')})"
-            if agents.ORCHESTRATOR in live
+            f"läuft ({state['terminal']})"
+            if state["live"]
             else "läuft nicht"
         )
     )
@@ -956,6 +1029,20 @@ def cmd_agents(args):
 def cmd_inbox(args):
     with store.locked():
         payload = index.rebuild()
+    if args.team:
+        roster = agents.load()
+        teams.team(roster, args.team)
+        tickets = {ticket["id"]: ticket for ticket in store.all_tickets()}
+
+        def keep(item):
+            ticket = tickets.get(item.get("ticket"))
+            if ticket is None:
+                return False
+            entry = _ticket_team(ticket, roster)
+            return entry is not None and entry.get("name") == args.team
+
+        payload = dict(payload)
+        payload["inbox"] = [item for item in payload["inbox"] if keep(item)]
     if args.json:
         print(json.dumps(payload["inbox"], ensure_ascii=False, indent=2))
     elif not payload["inbox"]:
@@ -1296,6 +1383,7 @@ def build_parser():
 
     item = command("list", "Tickets auflisten", cmd_list)
     item.add_argument("--status", metavar="S", help="nur dieser Status")
+    item.add_argument("--team", metavar="NAME", help="nur Tickets dieses Teams")
     item.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe")
 
     item = command("show", "Ein Ticket mit Verlauf zeigen", cmd_show)
@@ -1384,8 +1472,10 @@ def build_parser():
     item.add_argument("--from", dest="from_", metavar="NAME", required=True)
     item.add_argument("text", metavar="TEXT", nargs="?", default=None)
 
-    item = command("orchestrator", "Orchestrator-Terminal starten, beenden, prüfen", cmd_orchestrator)
+    item = command("orchestrator", "Team-Orchestrator starten, beenden, prüfen", cmd_orchestrator)
     item.add_argument("action", metavar="AKTION", choices=("start", "stop", "status", "restart"))
+    item.add_argument("team", metavar="TEAM", nargs="?",
+                      help="Team; Standard: Team des aktuellen Checkouts, sonst das erste")
     item.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe bei status")
     item.add_argument("--from", dest="from_", metavar="NAME",
                       help="wer neu startet (Pflicht bei restart)")
@@ -1394,6 +1484,7 @@ def build_parser():
     item.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe")
 
     item = command("inbox", "Was auf den Menschen wartet", cmd_inbox)
+    item.add_argument("--team", metavar="NAME", help="nur Inbox-Einträge dieses Teams")
     item.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe")
 
     item = command("roster", "Kompletten Roster mit abgeleiteten Feldern zeigen", cmd_roster)

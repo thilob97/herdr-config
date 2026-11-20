@@ -209,9 +209,20 @@ def _open_tickets(name):
     ]
 
 
+def _agent_of(terminal, row, name):
+    labels = (row or {}).get("labels")
+    if isinstance(labels, dict) and labels.get("fab.agent"):
+        return str(labels["fab.agent"])
+    return None
+
+
 def _running_sessions(name, live):
     prefix = f"fab-{name.lower()}-"
-    return sorted(terminal for terminal in live if terminal.startswith(prefix))
+    return sorted(
+        terminal
+        for terminal, row in live.items()
+        if terminal.startswith(prefix) or _agent_of(terminal, row, name) == name
+    )
 
 
 def _busy_reasons(name, live):
@@ -232,14 +243,15 @@ def _sessions(name, live):
     prefix = f"fab-{name.lower()}-"
     rows = []
     for terminal, row in live.items():
-        if terminal.startswith(prefix):
-            rows.append(
-                {
-                    "name": terminal,
-                    "terminal": row.get("address") or terminal,
-                    "status": row.get("status"),
-                }
-            )
+        if not (terminal.startswith(prefix) or _agent_of(terminal, row, name) == name):
+            continue
+        rows.append(
+            {
+                "name": terminal,
+                "terminal": row.get("address") or terminal,
+                "status": row.get("status"),
+            }
+        )
     rows.sort(key=lambda row: row["name"])
     return rows
 

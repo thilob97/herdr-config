@@ -1,7 +1,7 @@
 """Erwähnungen (`@name`) und die Weckregeln aus Abschnitt 4 des Vertrags."""
 import re
 
-from . import agents, events, git, hc, store
+from . import agents, events, git, hc, store, teams
 from .errors import FabError, HcError
 
 # Kein `@` direkt hinter einem E-Mail-Zeichen: `a@b.de` ist keine Erwähnung.
@@ -18,6 +18,13 @@ def known_names(roster=None):
         name = str(entry.get("name") or "").lower()
         if name:
             names.add(name)
+    for team_entry in (roster or {}).get("teams") or []:
+        if not isinstance(team_entry, dict):
+            continue
+        for entry in teams.expand_team(roster, team_entry):
+            name = str(entry.get("name") or "").lower()
+            if name:
+                names.add(name)
     return names
 
 
@@ -105,39 +112,56 @@ def message(ticket, author, name, text):
     )
 
 
-def _orchestrator_wake(roster, text):
-    """Weckt das Orchestrator-Terminal; startet es, wenn es nicht läuft."""
+def _ticket_team(roster, ticket):
+    """Team des Ticket-Repos; ohne Repo das Legacy-Team (erstes Team)."""
+    repo = ticket.get("repo")
+    if not repo:
+        return teams.first_team(roster)
+    return teams.team_for_repo(roster, repo)
+
+
+def _orchestrator_wake(roster, text, team_entry=None):
+    """Weckt den Team-Orchestrator; startet ihn, wenn er nicht läuft."""
+    entry = team_entry if isinstance(team_entry, dict) else teams.first_team(roster)
+    if not entry:
+        return "unterdrückt: kein Team", None
+    team_name = str(entry.get("name") or "")
     try:
         live = hc.live()
     except HcError:
         live = {}
-    row = live.get(agents.ORCHESTRATOR)
-    if row:
-        address = row.get("address") or agents.ORCHESTRATOR
-        if hc.send(address, text):
-            return "geweckt", address
-        return "unterdrückt: start fehlgeschlagen", None
+    for target in agents.orchestrator_targets(roster, team_name):
+        row = live.get(target)
+        if row:
+            address = row.get("address") or target
+            if hc.send(address, text):
+                return "geweckt", address
+            return "unterdrückt: start fehlgeschlagen", None
     try:
-        agents.start_orchestrator(roster)
+        started = agents.start_orchestrator(roster, team_name)
     except (FabError, HcError):
         return "unterdrückt: start fehlgeschlagen", None
-    return "gestartet", agents.ORCHESTRATOR
+    return "gestartet", started["name"]
 
 
-def _notify_orchestrator(roster, text):
-    """Eine Nachricht an den Orchestrator, ohne Weckereignis (Ping-Pong-Bremse)."""
+def _notify_orchestrator(roster, text, team_entry=None):
+    """Eine Nachricht an den Team-Orchestrator, ohne Weckereignis (Ping-Pong-Bremse)."""
+    entry = team_entry if isinstance(team_entry, dict) else teams.first_team(roster)
+    if not entry:
+        return False
+    team_name = str(entry.get("name") or "")
     try:
         live = hc.live()
     except HcError:
         live = {}
-    row = live.get(agents.ORCHESTRATOR)
-    if row:
-        return hc.send(row.get("address") or agents.ORCHESTRATOR, text)
+    for target in agents.orchestrator_targets(roster, team_name):
+        if target in live:
+            return hc.send(live[target].get("address") or target, text)
     try:
-        agents.start_orchestrator(roster)
+        started = agents.start_orchestrator(roster, team_name)
     except (FabError, HcError):
         return False
-    return hc.send(agents.ORCHESTRATOR, text)
+    return hc.send(started["name"], text)
 
 
 def _pingpong_notice(ticket, name, author, roster):
@@ -149,7 +173,7 @@ def _pingpong_notice(ticket, name, author, roster):
         f"{PING_LIMIT} Weckungen in 10 Minuten. Bitte im Ticket klären "
         f"(`fab show {ticket['id']}`)."
     )
-    _notify_orchestrator(roster, text)
+    _notify_orchestrator(roster, text, _ticket_team(roster, ticket))
 
 
 def _one(ticket, name, author, text, roster, no_wake, message_for):
@@ -186,25 +210,35 @@ def _one(ticket, name, author, text, roster, no_wake, message_for):
         return "unterdrückt: ping-pong", "unterdrückt: ping-pong", None
 
     send_text = message_for(name) if message_for else message(ticket, author, name, text)
+    team_entry = _ticket_team(roster, ticket)
 
     if name == "orchestrator":
-        result, address = _orchestrator_wake(roster, send_text)
+        if team_entry is None:
+            return "unterdrückt: kein Team", "unterdrückt: kein Team", None
+        result, address = _orchestrator_wake(roster, send_text, team_entry)
         return result, result, address
 
-    entry = next((item for item in roster["agents"] if item["name"] == name), None)
-    if entry is None:
-        return "unterdrückt: unbekannt", "unterdrückt: unbekannt", None
+    if team_entry is None:
+        return "unterdrückt: kein Team", "unterdrückt: kein Team", None
+    team_name = str(team_entry.get("name") or "")
+    try:
+        agents.agent_in_team(roster, team_entry, name)
+    except FabError:
+        return "unterdrückt: nicht im Team", "unterdrückt: nicht im Team", None
 
-    terminal_name = hc.terminal_name(name, ticket["id"])
+    targets = [hc.terminal_name(name, ticket["id"], team_name)]
+    if team_name == teams.legacy_team_name(roster):
+        targets.append(hc.terminal_name(name, ticket["id"]))
     try:
         live = hc.live()
     except HcError:
         live = {}
-    if terminal_name in live:
-        address = live[terminal_name].get("address") or terminal_name
-        if hc.send(address, send_text):
-            return "geweckt", "geweckt", address
-        return "unterdrückt: start fehlgeschlagen", "unterdrückt: start fehlgeschlagen", None
+    for terminal_name in targets:
+        if terminal_name in live:
+            address = live[terminal_name].get("address") or terminal_name
+            if hc.send(address, send_text):
+                return "geweckt", "geweckt", address
+            return "unterdrückt: start fehlgeschlagen", "unterdrückt: start fehlgeschlagen", None
 
     if ticket.get("worktree"):
         try:
@@ -232,7 +266,7 @@ def _one(ticket, name, author, text, roster, no_wake, message_for):
         f"aber das Ticket hat keinen Worktree. Lies `fab show {ticket['id']}` und "
         f"entscheide (`fab dispatch {ticket['id']} --agent {name}`)."
     )
-    result, address = _orchestrator_wake(roster, notice)
+    result, address = _orchestrator_wake(roster, notice, team_entry)
     if result in ("geweckt", "gestartet"):
         return "an orchestrator", "an orchestrator", address
     return "unterdrückt: start fehlgeschlagen", "unterdrückt: start fehlgeschlagen", None

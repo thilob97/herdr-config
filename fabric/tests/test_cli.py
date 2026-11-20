@@ -31,6 +31,7 @@ class CliTests(FabricCase):
 
     def test_new_speichert_repo_titel_und_kommentar(self):
         repo = self.make_repo()
+        self.own_repo(repo)
         sentence = "Ein " + "sehr " * 30 + "langer Satz"
         result = self.ok("new", sentence, "--repo", repo)
         tid = result.stdout.strip()
@@ -134,9 +135,9 @@ class CliTests(FabricCase):
         self.ok("orchestrator", "start")
         runs = self.hc_calls("run")
         self.assertEqual(len(runs), 1)
-        self.assertIn("fab-orchestrator", runs[0])
+        self.assertIn("fab-herdr-app-orchestrator", runs[0])
         agents_md = os.path.join(
-            self.fake_home, ".herdr", "fabric-orchestrator", "AGENTS.md"
+            self.fake_home, ".herdr", "fabric-orchestrator", "herdr-app", "AGENTS.md"
         )
         with open(agents_md, encoding="utf-8") as handle:
             self.assertIn("Orchestrator-Rolle", handle.read())
@@ -337,7 +338,7 @@ class CliTests(FabricCase):
         self.assertIn("Prüfer ada", result.stdout)
         self.assertIn("max_sessions 3", result.stdout)
         rows = self._team_rows()
-        self.assertEqual(rows["zweit"]["repos"], [os.path.abspath(repo)])
+        self.assertEqual(rows["zweit"]["repos"], [os.path.realpath(repo)])
         self.assertEqual(rows["zweit"]["reviewer"], "ada")
         self.assertEqual(rows["zweit"]["max_sessions"], 3)
         self.assertEqual(
@@ -350,7 +351,7 @@ class CliTests(FabricCase):
         text = self.ok("team", "list").stdout
         self.assertIn("zweit", text)
         self.assertIn("Prüfer ada", text)
-        self.assertIn(os.path.abspath(repo), text)
+        self.assertIn(os.path.realpath(repo), text)
         self.assertIn("Mitglieder zap, ada", text)
 
         result = self.cli(

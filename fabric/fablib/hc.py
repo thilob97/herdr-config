@@ -9,11 +9,26 @@ ORCHESTRATOR = "fab-orchestrator"
 _NAME_OK = re.compile(r"[^a-z0-9-]")
 
 
-def terminal_name(agent, tid):
-    """`fab-<agent>-<id klein>`, nur a-z 0-9 - _ und höchstens 32 Zeichen."""
-    raw = f"fab-{agent}-{tid}".lower()
-    clean = _NAME_OK.sub("-", raw).strip("-")
-    return clean[:32] or "fab-agent"
+def _clean(raw, fallback):
+    clean = _NAME_OK.sub("-", raw.lower()).strip("-")
+    return clean[:32] or fallback
+
+
+def terminal_name(agent, tid, team=None):
+    """`fab-<team>-<agent>-<id>` oder alt `fab-<agent>-<id>`, höchstens 32 Zeichen."""
+    prefix = f"fab-{team}" if team else "fab"
+    return _clean(f"{prefix}-{agent}-{tid}", "fab-agent")
+
+
+def orchestrator_name(team):
+    """`fab-<team>-orchestrator`; das alte globale Terminal bleibt `fab-orchestrator`."""
+    return _clean(f"fab-{team}-orchestrator", ORCHESTRATOR)
+
+
+def is_orchestrator(name):
+    """Orchestrator-Terminal, neu (`fab-<team>-orchestrator`) oder alt."""
+    value = str(name or "")
+    return value == ORCHESTRATOR or value.endswith("-orchestrator")
 
 
 def _run(args, timeout=120):
