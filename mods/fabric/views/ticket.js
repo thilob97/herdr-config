@@ -390,6 +390,44 @@ function blockerField(app, cx, t, ticket) {
     })));
 }
 
+function parentField(app, cx, t, ticket) {
+  const parent = app.tickets.find((row) => row.id === ticket.parent);
+  return ui.field(t, "Eltern-Ticket", h_flex().w_full().gap(S.xs).items_center()
+    .child(ui.chip(t, ticket.parent, t.muted, `fabric-parent-${ticket.parent}`, {
+      tooltip: parent?.title || ticket.parent,
+      onClick: (cx) => app.select(ticket.parent, cx),
+    }))
+    .when(Boolean(parent), (el) => el.child(div().flex_1().min_w(0).truncate()
+      .text_size(T.s).text_color(t.foreground).child(parent.title || "Ohne Titel")
+      .tooltip(parent.title || ""))));
+}
+
+function childrenField(app, cx, t, ticket) {
+  const children = model.childrenOf(app.tickets, ticket.id);
+  const progress = model.childProgress(children);
+  return ui.field(t, "Unter-Tickets", v_flex().w_full().gap(5)
+    .child(h_flex().w_full().gap(S.s).items_center()
+      .child(div().text_size(T.xs).text_color(t.dim).child(`${progress.closed}/${progress.total} erledigt`))
+      .child(div().flex_1())
+      .when(progress.open > 0, (el) => el.child(ui.chip(t, `${progress.open} offen`, t.working))))
+    .children(children.map((child) => h_flex()
+      .id(`fabric-child-${child.id}`)
+      .w_full()
+      .h(24)
+      .px(6)
+      .gap(5)
+      .items_center()
+      .rounded(ui.RADIUS.s)
+      .cursor_pointer()
+      .hover((style) => style.bg(t.hover))
+      .on_click((_event, cx) => { cx.stop_propagation(); app.select(child.id, cx); })
+      .child(ui.dot(t, ui.statusColor(t, child.status)))
+      .child(div().w(34).flex_none().text_size(T.xs).text_color(t.dim).child(child.id))
+      .child(div().flex_1().min_w(0).truncate().text_size(T.s).text_color(t.foreground)
+        .child(child.title || "Ohne Titel").tooltip(child.title || ""))
+      .child(div().flex_none().text_size(T.xs).text_color(t.dim).child(model.statusWord(child.status))))));
+}
+
 function checksField(app, cx, t, ticket) {
   const checks = ticket.checks ?? null;
   const state = checks?.state;
@@ -518,6 +556,8 @@ function properties(app, cx, t, ticket) {
     .child(readonlyValue(app, cx, t, "Branch", ticket.branch))
     .child(readonlyValue(app, cx, t, "Worktree", ticket.worktree))
     .child(blockerField(app, cx, t, ticket))
+    .when(Boolean(ticket.parent), (el) => el.child(parentField(app, cx, t, ticket)))
+    .when(model.childrenOf(app.tickets, ticket.id).length > 0, (el) => el.child(childrenField(app, cx, t, ticket)))
     .child(div().w_full().h(1).bg(t.border))
     .child(checksField(app, cx, t, ticket))
     .child(verdictField(app, cx, t, ticket))
