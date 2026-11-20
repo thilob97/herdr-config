@@ -315,6 +315,81 @@ def cmd_comment(args):
     return 0
 
 
+_ATTACHMENT_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".webp")
+
+
+def _attachment_name(source):
+    suffix = os.path.splitext(source)[1].lower()
+    if suffix not in _ATTACHMENT_SUFFIXES:
+        raise FabError(
+            "Nur Bilder als Anhang: erlaubt sind "
+            + ", ".join(_ATTACHMENT_SUFFIXES)
+        )
+    stem = os.path.splitext(os.path.basename(source))[0]
+    slug = _slug(stem, 60)
+    # _slug fällt bei leerem Rumpf auf „ticket“ zurück; Anhänge heißen dann „bild“.
+    if slug == "ticket" and stem.strip().lower() != "ticket":
+        slug = "bild"
+    return f"{slug}{suffix}"
+
+
+def _copy_attachment(source, tid, wanted):
+    folder = os.path.join(store.home(), "attachments", tid)
+    os.makedirs(folder, exist_ok=True)
+    try:
+        with open(source, "rb") as handle:
+            data = handle.read()
+    except OSError as exc:
+        raise FabError(f"Datei nicht lesbar: {source}: {exc}")
+    stem, suffix = os.path.splitext(wanted)
+    name = wanted
+    counter = 2
+    while True:
+        target = os.path.join(folder, name)
+        if not os.path.exists(target):
+            with open(target, "wb") as handle:
+                handle.write(data)
+            return name
+        try:
+            with open(target, "rb") as handle:
+                if handle.read() == data:
+                    return name
+        except OSError:
+            pass
+        name = f"{stem}-{counter}{suffix}"
+        counter += 1
+
+
+def cmd_attach(args):
+    actor = _actor(args) or "mensch"
+    source = os.path.expanduser(args.datei)
+    if not os.path.isfile(source):
+        raise FabError(f"Datei gibt es nicht: {source}")
+    if not os.access(source, os.R_OK):
+        raise FabError(f"Datei ist nicht lesbar: {source}")
+    ticket = store.load(args.id)
+    tid = ticket["id"]
+    wanted = _attachment_name(source)
+    with store.locked():
+        ticket = store.load(tid)
+        name = _copy_attachment(source, tid, wanted)
+        path = f"data/fabric/attachments/{tid}/{name}"
+        reference = f"![{name}]({path})"
+        attachments = ticket.setdefault("attachments", [])
+        if not any(item.get("path") == path for item in attachments):
+            attachments.append({"name": name, "path": path, "at": store.now_ms()})
+        events.append("edited", tid, actor, "", f"Anhang {name}")
+        if not args.no_edit:
+            body = (ticket.get("body") or "").rstrip()
+            if reference not in body:
+                body = f"{body}\n\n{reference}\n" if body else f"{reference}\n"
+                ticket["body"] = body
+        store.save(ticket)
+        index.rebuild()
+    print(reference)
+    return 0
+
+
 def cmd_dispatch(args):
     actor = _require_actor(args)
     roster = agents.load()
@@ -1137,6 +1212,14 @@ def build_parser():
     item.add_argument("--from", dest="from_", metavar="NAME", required=True)
     item.add_argument("--no-wake", action="store_true", help="niemanden wecken")
     item.add_argument("text", metavar="TEXT")
+
+    item = command("attach", "Bild als Anhang an ein Ticket hängen", cmd_attach)
+    item.add_argument("id", metavar="ID")
+    item.add_argument("datei", metavar="DATEI",
+                      help="Bilddatei (.png, .jpg, .jpeg, .gif, .webp)")
+    item.add_argument("--no-edit", action="store_true", help="Body nicht ergänzen")
+    item.add_argument("--from", dest="from_", metavar="NAME", default="mensch",
+                      help="Autor (Standard: mensch)")
 
     item = command("dispatch", "Branch und Worktree anlegen und den Agenten starten", cmd_dispatch)
     item.add_argument("id", metavar="ID")

@@ -1,7 +1,7 @@
 // Token und Bausteine des Fabric-Mods. Jede Ansicht baut aus diesen Teilen;
 // Farben kommen ausschließlich aus theme(), Abstände und Größen aus diesem Modul.
 
-import { div, svg } from "gpui-kit";
+import { div, image, svg } from "gpui-kit";
 import {
   h_flex, v_flex, Input, NumberInput, Textarea, Editor, TextView, Checkbox, Switch,
   Table, TableHeader, TableBody, TableRow, TableHead, TableCell, Popup, Scrollbar,
@@ -820,6 +820,75 @@ export function markdown(id, text, { size = FONT.s, selectable = true } = {}) {
     .selectable(selectable);
 }
 
+/** Kurzer, stabiler Teil einer Bild-ID: nur Buchstaben, Ziffern, `-` und `_`. */
+function imageIdPart(path) {
+  return String(path ?? "")
+    .replace(/[^a-zA-Z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "bild";
+}
+
+export function imagePreview(t, { id, path, alt = "", onOpen = null, height = 132 }) {
+  return div()
+    .id(id)
+    .flex_none()
+    .h(height)
+    .max_w(240)
+    .rounded(RADIUS.m)
+    .border_1()
+    .border_color(t.border)
+    .bg(t.input)
+    .overflow_hidden()
+    .cursor_pointer()
+    .hover((s) => s.opacity(0.86))
+    .tooltip(alt || path)
+    .child(image(path).h(height).max_w(240))
+    .on_click((_event, cx) => {
+      cx.stop_propagation();
+      onOpen?.({ path, alt });
+    });
+}
+
+export function imageGallery(t, images, onOpen, idPrefix = "fabric-image") {
+  const list = Array.isArray(images) ? images : [];
+  return h_flex()
+    .w_full()
+    .flex_wrap()
+    .gap(SPACE.s)
+    .children(list.map((bild, index) => imagePreview(t, {
+      id: `${idPrefix}-${index}-${imageIdPart(bild?.path)}`,
+      path: bild?.path ?? "",
+      alt: bild?.alt ?? "",
+      onOpen,
+    })));
+}
+
+export function imageLightbox(t, { path, alt = "", onClose = null }) {
+  return v_flex()
+    .absolute()
+    .inset_0()
+    .items_center()
+    .justify_center()
+    .child(backdrop(t, { onClick: onClose }))
+    .child(
+      v_flex()
+        .relative()
+        .w_full()
+        .max_w(960)
+        .max_h("92%")
+        .p(SPACE.l)
+        .gap(SPACE.s)
+        .rounded(RADIUS.l)
+        .border_1()
+        .border_color(t.border)
+        .bg(t.popover)
+        .child(h_flex().w_full().items_center().gap(SPACE.s)
+          .child(div().flex_1().min_w(0).text_size(FONT.m).font_semibold().whitespace_nowrap().child(alt || "Bild"))
+          .child(iconButton(t, { id: "fabric-image-close", icon: "close", tooltip: "Schließen (Esc)", onClick: onClose })))
+        .child(div().w_full().min_w(0).text_size(FONT.xs).text_color(t.muted).whitespace_normal().child(path))
+        .child(h_flex().w_full().justify_center().child(image(path).max_w(920).max_h(620))),
+    );
+}
+
 // ---------- Tabellen ----------
 
 export function table(t, { id, columns, rows, sort, onSort, renderCell, onRow }) {
@@ -944,4 +1013,3 @@ export function stageRow(t, { label, count, open = true, onClick = null, id = nu
   const withId = id ? row.id(id) : row;
   return onClick ? still(withId).on_click((_event, cx) => { cx.stop_propagation(); onClick(cx); }) : withId;
 }
-

@@ -48,6 +48,11 @@ def ticket_text(ticket):
         )
     lines.append("")
     lines.append((ticket.get("body") or "").rstrip())
+    attachments = ticket.get("attachments") or []
+    if attachments:
+        lines.extend(["", "## Anhänge"])
+        for item in attachments:
+            lines.append(f"- ![{item.get('name')}]({item.get('path')})")
     if ticket.get("checks") and ticket["checks"].get("tail"):
         lines.extend(["", "## Letzter Prüflauf", "", "```", ticket["checks"]["tail"], "```"])
     if ticket.get("sessions"):

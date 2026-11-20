@@ -414,6 +414,63 @@ export function argvSummary(program, model, flags) {
   return pieces.join(" · ");
 }
 
+// ---------- Anhänge ----------
+
+/** Bildtypen, die `fab attach` annimmt. */
+export const IMAGE_TYPES = ["png", "jpg", "jpeg", "gif", "webp"];
+/** Kurzhinweis für Eingabefelder. */
+export const IMAGE_HINT = "png, jpg, jpeg, gif, webp";
+
+// Markdown-Bild: `![alt](pfad)`; der Pfad endet am ersten `)`.
+const IMAGE_MARKDOWN = /!\[([^\]]*)\]\(([^)\s]+)\)/g;
+const SCHEME = /^[A-Za-z][A-Za-z0-9+.-]*:/;
+
+/** Relativer Pfad mit Bildendung? Abfrage und Fragment zählen nicht mit. */
+export function isImagePath(path) {
+  const value = String(path ?? "").trim();
+  if (!value || SCHEME.test(value)) return false;
+  const clean = value.split(/[?#]/, 1)[0];
+  const dot = clean.lastIndexOf(".");
+  if (dot < 0) return false;
+  return IMAGE_TYPES.includes(clean.slice(dot + 1).toLowerCase());
+}
+
+/** Alle relativen Bildverweise in Reihenfolge, ohne Dedupe: { alt, path, markdown }. */
+export function imageRefs(text) {
+  const refs = [];
+  for (const match of String(text ?? "").matchAll(IMAGE_MARKDOWN)) {
+    const path = match[2];
+    if (path.startsWith("/") || /^https?:/i.test(path)) continue;
+    if (!isImagePath(path)) continue;
+    refs.push({ alt: match[1], path, markdown: match[0] });
+  }
+  return refs;
+}
+
+/** Bild-Markdown durch seinen Alt-Text ersetzen; leerer Alt-Text entfernt den Verweis. */
+export function stripImages(text) {
+  return String(text ?? "").replace(IMAGE_MARKDOWN, "$1");
+}
+
+/** Anhang an `range` einfügen: { text, caret }. Leerraum bleibt, sonst ein Trennzeichen. */
+export function insertAttachment(text, range, reference) {
+  const source = String(text ?? "");
+  const ref = String(reference ?? "");
+  const clamp = (value, fallback) => {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return fallback;
+    return Math.max(0, Math.min(Math.trunc(number), source.length));
+  };
+  const start = clamp(range?.start, 0);
+  const end = Math.max(start, clamp(range?.end, start));
+  const lead = start > 0 && !/\s/.test(source[start - 1]) ? " " : "";
+  const trail = end < source.length && !/\s/.test(source[end]) ? " " : "";
+  return {
+    text: source.slice(0, start) + lead + ref + trail + source.slice(end),
+    caret: start + lead.length + ref.length,
+  };
+}
+
 // ---------- Agenten-Drawer ----------
 
 /** Formularwerte des Agenten-Drawers, ausschließlich aus diesem Agenten. */
@@ -497,7 +554,8 @@ export function mentionSegments(text) {
 }
 
 // Zeichen, die Markdown auswerten würde. Kommentare und Inbox-Texte sind
-// reiner Text; nur die Erwähnungen darin werden hervorgehoben.
+// reiner Text; betont werden nur Erwähnungen, verlinkt nur nackte URLs.
+// Auch der Punkt bleibt maskiert: `1. ` am Zeilenanfang wäre sonst eine Liste.
 const MARKDOWN_SPECIAL = /[\\`*_{}\[\]()#+\-.!|>~=&<>]/g;
 
 /** Maskiert Markdown-Sonderzeichen, damit der Text wörtlich erscheint. */
@@ -513,12 +571,55 @@ function protectIndent(text) {
     .replace(/\t/g, "\u00a0\u00a0\u00a0\u00a0"));
 }
 
-/** Kommentartext als reiner Text, Zeilenumbrüche erhalten, `@name` fett. */
+/** Nackte URL: Satzzeichen am Ende abtrennen, unpaarige Klammer am Ende schließen. */
+function trimUrl(url) {
+  let value = url;
+  let changed = true;
+  while (changed) {
+    changed = false;
+    while (value && ".,;:!?".includes(value[value.length - 1])) {
+      value = value.slice(0, -1);
+      changed = true;
+    }
+    while (value.endsWith(")")) {
+      const open = (value.match(/\(/g) ?? []).length;
+      const close = (value.match(/\)/g) ?? []).length;
+      if (close <= open) break;
+      value = value.slice(0, -1);
+      changed = true;
+    }
+  }
+  return value;
+}
+
+// Bild-Markdown, nackte URL, Erwähnung — in dieser Reihenfolge, damit der
+// Bild-Alt-Text und URLs nicht als Erwähnung gelesen werden.
+const PLAIN_TOKEN = new RegExp([
+  IMAGE_MARKDOWN.source,
+  "https?:\\/\\/[^\\s<>\"']+",
+  "(?<![A-Za-z0-9._%+-])@([A-Za-z][A-Za-z0-9_-]*)",
+].join("|"), "g");
+
+/** Kommentartext als reiner Text, Zeilenumbrüche erhalten: `@name` fett,
+ *  nackte URLs als Link, Bild-Markdown nur als Alt-Text. */
 export function plainMentionMarkdown(text) {
-  return mentionSegments(protectIndent(String(text ?? "")))
-    .map((part) => (part.mention ? `**${escapeMarkdown(part.text)}**` : escapeMarkdown(part.text)))
-    .join("")
-    .replace(/\n/g, "  \n");
+  const source = protectIndent(String(text ?? ""));
+  const parts = [];
+  let last = 0;
+  for (const match of source.matchAll(PLAIN_TOKEN)) {
+    if (match.index > last) parts.push(escapeMarkdown(source.slice(last, match.index)));
+    if (match[1] !== undefined) {
+      parts.push(escapeMarkdown(match[1]));
+    } else if (match[3] !== undefined) {
+      parts.push(`**${escapeMarkdown(`@${match[3]}`)}**`);
+    } else {
+      const url = trimUrl(match[0]);
+      parts.push(`<${url}>${escapeMarkdown(match[0].slice(url.length))}`);
+    }
+    last = match.index + match[0].length;
+  }
+  if (last < source.length) parts.push(escapeMarkdown(source.slice(last)));
+  return parts.join("").replace(/\n/g, "  \n");
 }
 
 /** Alle genannten Namen, in Reihenfolge, ohne Doppelte. */

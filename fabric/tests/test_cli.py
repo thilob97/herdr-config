@@ -11,7 +11,8 @@ class CliTests(FabricCase):
         result = self.ok("--help")
         for command in (
             "new", "list", "show", "edit", "status", "assign", "link", "comment",
-            "dispatch", "verify", "verdict", "handover", "accept", "reject", "drop",
+            "attach", "dispatch", "verify", "verdict", "handover", "accept",
+            "reject", "drop",
             "wake", "orchestrator", "agents", "inbox", "index",
         ):
             self.assertIn(command, result.stdout)
