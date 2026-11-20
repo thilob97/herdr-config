@@ -1,7 +1,7 @@
 """Erwähnungen (`@name`) und die Weckregeln aus Abschnitt 4 des Vertrags."""
 import re
 
-from . import agents, events, hc, store
+from . import agents, events, git, hc, store
 from .errors import FabError, HcError
 
 # Kein `@` direkt hinter einem E-Mail-Zeichen: `a@b.de` ist keine Erwähnung.
@@ -31,6 +31,69 @@ def mentions(text, known=None):
         if name not in found:
             found.append(name)
     return found
+
+
+def add_comment(ticket, author, text, roster=None):
+    """Kommentar anhängen, Autor aus waiting nehmen, comment-Ereignis schreiben."""
+    at = store.now_ms()
+    if roster is None:
+        roster = agents.load(required=False)
+    found = mentions(text, known_names(roster))
+    ticket["comments"].append(
+        {
+            "n": len(ticket["comments"]) + 1,
+            "at": at,
+            "author": author,
+            "text": text,
+            "mentions": found,
+        }
+    )
+    ticket["waiting"] = [
+        waiting for waiting in ticket["waiting"] if waiting.lower() != author.lower()
+    ]
+    events.append("comment", ticket["id"], author, "", text)
+    return found
+
+
+def ticket_conflict(ticket):
+    """(basis, dateien) bei Merge-Konflikt des Ticket-Branches mit der Basis, sonst None."""
+    base = ticket.get("base")
+    branch_name = ticket.get("branch")
+    repo = ticket.get("repo")
+    if not base or not branch_name or not repo:
+        return None
+    try:
+        files = git.merge_conflicts(repo, base, branch_name)
+    except FabError:
+        return None
+    if not files:
+        return None
+    return base, files
+
+
+def conflict_text(ticket, base, files):
+    """Kommentar an den zuständigen Agenten mit Dateiliste und Bitte, die Basis einzumergen."""
+    assignee = ticket.get("assignee") or "zuständig"
+    branch_name = ticket.get("branch") or ""
+    lines = [f"@{assignee} Merge-Konflikt mit {base} beim Mergen von {branch_name}:"]
+    lines.extend(f"- {name}" for name in files)
+    lines.append(
+        f"Bitte `{base}` in den Ticket-Branch einmergen, die Konflikte auflösen, "
+        f"dann `fab verify {ticket['id']}` und erneut "
+        f"`fab handover {ticket['id']}`."
+    )
+    return "\n".join(lines)
+
+
+def conflict_wake_text(ticket, base, files):
+    """Einzeilige Wecknachricht: Merge-Konflikt, Dateien, Nacharbeitsbitte."""
+    return (
+        f"Ticket {ticket['id']} „{ticket['title']}“: Merge-Konflikt mit {base} "
+        f"beim Mergen von {ticket.get('branch') or ''}. Betroffene Dateien: "
+        f"{', '.join(files)}. Bitte `{base}` in den Ticket-Branch einmergen, die "
+        f"Konflikte auflösen, dann `fab verify {ticket['id']}` und erneut "
+        f"`fab handover {ticket['id']}`."
+    )
 
 
 def message(ticket, author, name, text):
@@ -96,6 +159,21 @@ def _one(ticket, name, author, text, roster, no_wake, message_for):
     if no_wake:
         return None, "kein Wecken (--no-wake)", None
     if name == "mensch":
+        conflict = ticket_conflict(ticket)
+        if conflict is not None:
+            base, files = conflict
+            comment = conflict_text(ticket, base, files)
+            add_comment(ticket, author, comment, roster)
+            assignee = (ticket.get("assignee") or "").lower()
+            if assignee and assignee in known_names(roster) and assignee != "mensch":
+                event_text, line, address = _one(
+                    ticket, assignee, author, comment, roster, no_wake,
+                    lambda _name: conflict_wake_text(ticket, base, files),
+                )
+                if event_text is not None:
+                    events.append("wake", ticket["id"], author, assignee, event_text)
+                return None, f"Merge-Konflikt mit {base}: {line}", address
+            return None, f"Merge-Konflikt mit {base}: kein zuständiger Agent", None
         if "mensch" not in ticket["waiting"]:
             ticket["waiting"].append("mensch")
         return "unterdrückt: mensch", "unterdrückt: mensch", None

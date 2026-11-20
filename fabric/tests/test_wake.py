@@ -320,3 +320,40 @@ class WakeTests(FabricCase):
         self.assertEqual(len(sends), 2)
         self.assertNotIn("--force", sends[0])
         self.assertIn("--force", sends[1])
+
+    def test_mensch_bei_merge_konflikt_weckt_zur_nacharbeit(self):
+        repo, tid, worktree = self.ready_ticket()
+        self.commit_in(worktree, "aenderung.txt", "vom branch\n")
+        self.write_file(os.path.join(repo, "aenderung.txt"), "von main\n")
+        self.git(repo, "add", "aenderung.txt")
+        commit = self.git(repo, "commit", "-qm", "main ändert aenderung.txt")
+        self.assertEqual(commit.returncode, 0, commit.stderr)
+        self.set_live({"fab-zap-t-1": "t7"})
+        self.clear_log()
+        mark = self.mark()
+        result = self.ok("comment", tid, "--from", "ada", "@mensch bitte abnehmen")
+        self.assertIn("Merge-Konflikt mit main", result.stdout)
+        ticket = self.ticket(tid)
+        self.assertNotIn("mensch", ticket["waiting"])
+        self.assertFalse(
+            any(row["kind"] == "question" for row in self.index()["inbox"])
+        )
+        comment = ticket["comments"][-1]["text"]
+        self.assertIn("@zap", comment)
+        self.assertIn("aenderung.txt", comment)
+        self.assertIn("einmergen", comment)
+        sends = self.hc_calls("send")
+        self.assertEqual(len(sends), 1)
+        self.assertEqual(sends[0][1], "t7")
+        wakes = self.wake_since(mark, tid)
+        self.assertEqual([row["target"] for row in wakes], ["zap"])
+        self.assertEqual(wakes[-1]["text"], "geweckt")
+
+    def test_mensch_ohne_konflikt_kommt_in_waiting(self):
+        repo, tid, worktree = self.ready_ticket()
+        result = self.ok("comment", tid, "--from", "zap", "@mensch bitte")
+        self.assertIn("unterdrückt: mensch", result.stdout)
+        self.assertIn("mensch", self.ticket(tid)["waiting"])
+        self.assertTrue(
+            any(row["kind"] == "question" for row in self.index()["inbox"])
+        )
