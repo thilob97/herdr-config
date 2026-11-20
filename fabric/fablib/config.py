@@ -2,22 +2,28 @@
 
 Jede Änderung läuft unter dem Lock aus `store`, schreibt atomar, lässt Felder
 stehen, die `fab` nicht kennt, hängt ein `config`-Ereignis an und erzeugt
-`index.json` neu. Alle Meldungen sind deutsch und für das UI gedacht.
+`index.json` neu. Quelle sind Blaupausen und Teams; die Legacy-Felder
+(`agents`, `reviewer`, `orchestrator`, `max_sessions`) werden gespiegelt.
+Alle Meldungen sind deutsch und für das UI gedacht.
 """
 import json
 import os
-import re
 import stat
 
-from . import agents, events, git, hc, index, store
+from . import agents, events, git, hc, index, store, teams
 from .errors import FabError, HcError
 
-NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,15}$")
-RESERVED = ("orchestrator", "mensch", "fab", "preamble")
-COLORS = ("c1", "c2", "c3", "c4", "c5", "c6")
-SETTINGS = ("max_sessions", "reviewer", "orchestrator_argv")
-MIN_SESSIONS = 1
-MAX_SESSIONS = 16
+NAME_RE = teams.NAME_RE
+RESERVED = teams.RESERVED
+COLORS = teams.COLORS
+SETTINGS = ("max_sessions", "reviewer", "orchestrator_argv", "max_sessions_total")
+MIN_SESSIONS = teams.MIN_SESSIONS
+MAX_SESSIONS = teams.MAX_SESSIONS
+
+check_name = teams.check_name
+parse_argv = teams.parse_argv
+_check_color = teams.check_color
+_check_role = teams.check_role
 
 TEMPLATE = """# {name}
 
@@ -52,30 +58,65 @@ def _load():
     return path, data
 
 
-def _entries(data):
-    entries = data.get("agents")
-    if entries is None:
-        entries = []
-        data["agents"] = entries
+def _migrate(data):
+    """Migration nur im Speicher; geschrieben wird erst nach `_commit`."""
+    for key in ("agents", "blueprints"):
+        value = data.get(key)
+        if value is not None and not isinstance(value, list):
+            raise FabError(f"Roster: „{key}“ ist keine Liste")
+    if teams.migrate(data) or teams.is_migrated(data):
+        return data
+    data.setdefault("blueprints", [])
+    data.setdefault("agents", [])
+    teams.migrate(data)
+    return data
+
+
+def _blueprints(data):
+    entries = data.get("blueprints")
     if not isinstance(entries, list):
-        raise FabError("Roster: „agents“ ist keine Liste")
+        raise FabError("Roster: „blueprints“ ist keine Liste")
     return entries
 
 
-def _names(entries):
+def _team_entries(data):
+    entries = data.get("teams")
+    if not isinstance(entries, list):
+        raise FabError("Roster: „teams“ ist keine Liste")
+    return entries
+
+
+def _blueprint_teams(data, name):
+    used = []
+    for team_entry in _team_entries(data):
+        if not isinstance(team_entry, dict):
+            continue
+        for member in team_entry.get("members") or []:
+            if isinstance(member, dict) and member.get("blueprint") == name:
+                used.append(str(team_entry.get("name") or ""))
+                break
+    return used
+
+
+def _team_orchestrator(team_entry):
+    orchestrator = team_entry.get("orchestrator")
+    if not isinstance(orchestrator, dict):
+        orchestrator = {}
+        team_entry["orchestrator"] = orchestrator
+    return orchestrator
+
+
+def _legacy_orchestrator(data):
+    orchestrator = data.get("orchestrator")
+    return orchestrator if isinstance(orchestrator, dict) else {}
+
+
+def _member_names(members):
     return [
-        str(entry.get("name"))
-        for entry in entries
-        if isinstance(entry, dict) and entry.get("name")
+        str(member.get("blueprint"))
+        for member in members or []
+        if isinstance(member, dict) and member.get("blueprint")
     ]
-
-
-def _entry(entries, name):
-    for entry in entries:
-        if isinstance(entry, dict) and entry.get("name") == name:
-            return entry
-    known = ", ".join(_names(entries)) or "leer"
-    raise FabError(f"Unbekannter Agent: {name} (Roster: {known})")
 
 
 def _abs(directory, rel):
@@ -94,52 +135,24 @@ def _commit(path, data, actor, text, written=()):
     git.commit_paths(path, [path, *written], f"chore(roster): {text}")
 
 
-# ---------------------------------------------------------------- Prüfungen
-
-def check_name(raw):
-    value = (raw or "").strip()
-    if not value:
-        raise FabError("Der Agentname ist leer")
-    if value in RESERVED or value.lower() in RESERVED:
-        raise FabError(
-            f"Der Name „{value}“ ist reserviert; erlaubt sind Agentennamen wie "
-            f"„zap“ oder „ada“"
-        )
-    if not NAME_RE.match(value):
-        raise FabError(
-            f"Agentname „{value}“ ist ungültig: 1–16 Zeichen, nur Kleinbuchstaben, "
-            f"Ziffern, „_“ und „-“, beginnend mit einem Buchstaben "
-            f"(Muster ^[a-z][a-z0-9_-]{{0,15}}$)"
-        )
-    return value
+def _sync_legacy(data):
+    """Legacy-Felder aus dem ersten Team spiegeln, Zusatzfelder erhalten."""
+    if not teams.is_migrated(data):
+        return
+    expanded = teams.expansion(data)
+    data["agents"] = expanded["agents"]
+    data["reviewer"] = expanded["reviewer"]
+    data["max_sessions"] = expanded["max_sessions"]
+    data[teams.GLOBAL_KEY] = expanded["max_sessions_total"]
+    orchestrator = data.get("orchestrator")
+    if not isinstance(orchestrator, dict):
+        orchestrator = {}
+        data["orchestrator"] = orchestrator
+    orchestrator["argv"] = expanded["orchestrator"]["argv"]
+    orchestrator["prompt"] = expanded["orchestrator"]["prompt"]
 
 
-def parse_argv(raw, what="argv"):
-    try:
-        data = json.loads(raw)
-    except (TypeError, json.JSONDecodeError) as exc:
-        raise FabError(f"{what} ist kein gültiges JSON: {exc}")
-    if not isinstance(data, list) or not data:
-        raise FabError(
-            f'{what} muss eine nicht-leere JSON-Liste sein, z. B. ["omp", "--model=…"]'
-        )
-    parts = []
-    for part in data:
-        if not isinstance(part, str):
-            raise FabError(f"{what} enthält keinen String: {part!r}")
-        if not part.strip():
-            raise FabError(f"{what} enthält einen leeren Eintrag")
-        parts.append(part)
-    return parts
-
-
-def _check_color(value):
-    if value not in COLORS:
-        raise FabError(
-            f"Farbe „{value}“ gibt es nicht; erlaubt sind {', '.join(COLORS)}"
-        )
-    return value
-
+# ---------------------------------------------------------------- Farben
 
 def _next_color(entries):
     used = {
@@ -153,13 +166,6 @@ def _next_color(entries):
     raise FabError(
         f"Alle Farben {', '.join(COLORS)} sind belegt; gib eine Farbe mit --color an"
     )
-
-
-def _check_role(raw):
-    value = (raw or "").strip()
-    if not value:
-        raise FabError("Rolle fehlt: --role R, z. B. --role recherche")
-    return value
 
 
 # ---------------------------------------------------------------- Laufendes
@@ -252,30 +258,42 @@ def payload():
                 "sessions": _sessions(entry["name"], live),
             }
         )
+    blueprint_data = {
+        "blueprints": roster["blueprints"],
+        "teams": roster["teams"],
+    }
     return {
         "path": roster["path"],
         "max_sessions": roster["max_sessions"],
+        "max_sessions_total": roster["max_sessions_total"],
         "reviewer": roster["reviewer"],
         "orchestrator": {
             "argv": list(roster["orchestrator"]["argv"]),
             "prompt": roster["orchestrator"]["prompt"],
         },
+        "team": roster.get("team"),
         "agents": rows,
+        "blueprints": teams.blueprint_rows(blueprint_data),
+        "teams": teams.team_rows(blueprint_data),
     }
 
 
-# ---------------------------------------------------------------- Agenten
+# ---------------------------------------------------------------- Blaupausen
 
-def add(name, role, color, argv_json, prompt_text, actor):
+def _add_blueprint(path, data, name, role, color, argv_json, prompt_text):
     name = check_name(name)
     role = _check_role(role)
     argv = parse_argv(argv_json, "--argv-json")
-    path, data = _load()
-    entries = _entries(data)
-    if name in _names(entries):
+    entries = _blueprints(data)
+    known = [
+        str(entry.get("name"))
+        for entry in entries
+        if isinstance(entry, dict) and entry.get("name")
+    ]
+    if name in known:
         raise FabError(
-            f"Agent „{name}“ gibt es schon; nimm einen anderen Namen oder "
-            f"fab agent edit {name}"
+            f"„{name}“ gibt es schon; nimm einen anderen Namen oder "
+            f"fab blueprint edit {name}"
         )
     value = _check_color(color) if color is not None else _next_color(entries)
     directory = os.path.dirname(path)
@@ -298,21 +316,13 @@ def add(name, role, color, argv_json, prompt_text, actor):
         "argv": argv,
     }
     entries.append(entry)
-    _commit(
-        path,
-        data,
-        actor,
-        f"Agent {name} angelegt: Rolle {role}, Farbe {value}, Programm {argv[0]}",
-        written=written,
-    )
-    return entry
+    return entry, written
 
 
-def edit(name, rename=None, role=None, color=None, argv_json=None,
-         prompt_text=None, actor=""):
-    path, data = _load()
-    entries = _entries(data)
-    entry = _entry(entries, name)
+def _edit_blueprint(path, data, name, rename, role, color, argv_json,
+                    prompt_text):
+    entries = _blueprints(data)
+    entry = teams.blueprint(data, name)
     directory = os.path.dirname(path)
 
     target = name
@@ -322,16 +332,20 @@ def edit(name, rename=None, role=None, color=None, argv_json=None,
             raise FabError("Der neue Name ist leer")
         if candidate != name:
             target = check_name(candidate)
-            if target in _names(entries):
+            if any(
+                isinstance(item, dict) and item.get("name") == target
+                for item in entries
+            ):
                 raise FabError(
                     f"Agent „{target}“ gibt es schon; wähle einen anderen Namen"
                 )
-            reasons = _busy_reasons(name, _live_checked())
-            if reasons:
-                raise FabError(
-                    f"Agent „{name}“ kann nicht umbenannt werden:\n- "
-                    + "\n- ".join(reasons)
-                )
+            if _blueprint_teams(data, name):
+                reasons = _busy_reasons(name, _live_checked())
+                if reasons:
+                    raise FabError(
+                        f"Agent „{name}“ kann nicht umbenannt werden:\n- "
+                        + "\n- ".join(reasons)
+                    )
 
     current_rel = str(entry.get("prompt") or f"prompts/{name}.md")
     final_rel = current_rel
@@ -380,17 +394,116 @@ def edit(name, rename=None, role=None, color=None, argv_json=None,
         entry["prompt"] = final_rel
     if target != name:
         entry["name"] = target
-        if str(data.get("reviewer") or "") == name:
-            data["reviewer"] = target
-            changes.append(f"reviewer → {target}")
+        renamed_reviewer = False
+        for team_entry in _team_entries(data):
+            if not isinstance(team_entry, dict):
+                continue
+            for member in team_entry.get("members") or []:
+                if isinstance(member, dict) and member.get("blueprint") == name:
+                    member["blueprint"] = target
+            if str(team_entry.get("reviewer") or "") == name:
+                team_entry["reviewer"] = target
+                renamed_reviewer = True
+        if renamed_reviewer:
+            changes.append(f"Prüfer → {target}")
 
     if not changes:
         raise FabError(
             "Nichts zu ändern: nutze --rename, --role, --color, --argv-json "
             "oder --prompt-text"
         )
+    return changes, target, written
+
+
+def add_blueprint(name, role, color, argv_json, prompt_text, actor):
+    path, data = _load()
+    _migrate(data)
+    entry, written = _add_blueprint(
+        path, data, name, role, color, argv_json, prompt_text
+    )
+    _sync_legacy(data)
     _commit(
-        path, data, actor, f"Agent {name} geändert: " + ", ".join(changes),
+        path,
+        data,
+        actor,
+        f"Blaupause {entry['name']} angelegt: Rolle {entry['role']}, "
+        f"Farbe {entry['color']}, Programm {entry['argv'][0]}",
+        written=written,
+    )
+    return entry
+
+
+def edit_blueprint(name, rename=None, role=None, color=None, argv_json=None,
+                   prompt_text=None, actor=""):
+    path, data = _load()
+    _migrate(data)
+    changes, target, written = _edit_blueprint(
+        path, data, name, rename, role, color, argv_json, prompt_text
+    )
+    _sync_legacy(data)
+    _commit(
+        path, data, actor,
+        f"Blaupause {name} geändert: " + ", ".join(changes),
+        written=written,
+    )
+    return f"Blaupause „{target}“ geändert: " + ", ".join(changes)
+
+
+def remove_blueprint(name, actor):
+    path, data = _load()
+    _migrate(data)
+    entry = teams.blueprint(data, name)
+    used = _blueprint_teams(data, name)
+    if used:
+        raise FabError(
+            f"Blaupause „{name}“ wird im Team „{used[0]}“ genutzt und kann "
+            f"nicht entfernt werden"
+        )
+    rel = str(entry.get("prompt") or f"prompts/{name}.md")
+    _blueprints(data).remove(entry)
+    _sync_legacy(data)
+    _commit(path, data, actor, f"Blaupause {name} entfernt; Prompt {rel} bleibt")
+    return rel
+
+
+# ---------------------------------------------------------------- Agenten (Legacy)
+
+def add(name, role, color, argv_json, prompt_text, actor):
+    path, data = _load()
+    _migrate(data)
+    entry, written = _add_blueprint(
+        path, data, name, role, color, argv_json, prompt_text
+    )
+    first = teams.first_team(data)
+    if isinstance(first, dict):
+        members = first.get("members")
+        if not isinstance(members, list):
+            members = []
+            first["members"] = members
+        members.append({"blueprint": entry["name"]})
+    _sync_legacy(data)
+    _commit(
+        path,
+        data,
+        actor,
+        f"Agent {entry['name']} angelegt: Rolle {entry['role']}, "
+        f"Farbe {entry['color']}, Programm {entry['argv'][0]}",
+        written=written,
+    )
+    return entry
+
+
+def edit(name, rename=None, role=None, color=None, argv_json=None,
+         prompt_text=None, actor=""):
+    path, data = _load()
+    _migrate(data)
+    changes, target, written = _edit_blueprint(
+        path, data, name, rename, role, color, argv_json, prompt_text
+    )
+    _sync_legacy(data)
+    _commit(
+        path, data, actor,
+        f"Agent {name} geändert: " + ", ".join(changes),
         written=written,
     )
     return f"Agent „{target}“ geändert: " + ", ".join(changes)
@@ -398,20 +511,240 @@ def edit(name, rename=None, role=None, color=None, argv_json=None,
 
 def remove(name, actor):
     path, data = _load()
-    entries = _entries(data)
-    entry = _entry(entries, name)
+    _migrate(data)
+    entry = teams.blueprint(data, name)
     reasons = _busy_reasons(name, _live_checked())
-    if str(data.get("reviewer") or "") == name:
+    used = _blueprint_teams(data, name)
+    if any(
+        isinstance(team_entry, dict)
+        and str(team_entry.get("reviewer") or "") == name
+        for team_entry in _team_entries(data)
+    ):
         reasons.append("ist als Prüfer im Roster eingetragen (reviewer)")
+    if len(used) > 1:
+        reasons.append(
+            "wird in mehreren Teams genutzt: " + ", ".join(used)
+        )
     if reasons:
         raise FabError(
             f"Agent „{name}“ kann nicht entfernt werden:\n- "
             + "\n- ".join(reasons)
         )
     rel = str(entry.get("prompt") or f"prompts/{name}.md")
-    entries.remove(entry)
+    for team_entry in _team_entries(data):
+        if not isinstance(team_entry, dict):
+            continue
+        members = team_entry.get("members")
+        if isinstance(members, list):
+            team_entry["members"] = [
+                member
+                for member in members
+                if not (
+                    isinstance(member, dict)
+                    and member.get("blueprint") == name
+                )
+            ]
+    _blueprints(data).remove(entry)
+    _sync_legacy(data)
     _commit(path, data, actor, f"Agent {name} entfernt; Prompt {rel} bleibt")
     return rel
+
+
+# ---------------------------------------------------------------- Teams
+
+def _team_repos(entry):
+    return [
+        teams.normalize_repo(repo)
+        for repo in (entry.get("repos") or [])
+    ]
+
+
+def add_team(name, repos, members_json, orchestrator_argv_json=None,
+             orchestrator_prompt=None, reviewer=None, max_sessions=None,
+             actor=""):
+    path, data = _load()
+    _migrate(data)
+    name = check_name(name)
+    if not repos:
+        raise FabError("Fehlt: --repo PFAD")
+    normalized = [teams.normalize_repo(repo) for repo in repos]
+    members = teams.parse_members(members_json)
+    if reviewer is None or not str(reviewer).strip():
+        raise FabError("Fehlt: --reviewer NAME")
+    reviewer = str(reviewer).strip()
+    limit = (
+        teams.DEFAULT_MAX_SESSIONS
+        if max_sessions is None or not str(max_sessions).strip()
+        else teams.check_sessions(max_sessions)
+    )
+    if any(
+        isinstance(entry, dict) and entry.get("name") == name
+        for entry in _team_entries(data)
+    ):
+        raise FabError(f"Team „{name}“ gibt es schon; wähle einen anderen Namen")
+    legacy = _legacy_orchestrator(data)
+    if orchestrator_argv_json is not None:
+        argv = parse_argv(orchestrator_argv_json, "--orchestrator-argv-json")
+    else:
+        argv = [str(part) for part in (legacy.get("argv") or [])]
+        if not argv:
+            raise FabError(
+                "--orchestrator-argv-json fehlt: Team braucht ein "
+                "Orchestrator-Programm"
+            )
+    prompt = str(
+        orchestrator_prompt
+        or legacy.get("prompt")
+        or teams.DEFAULT_ORCHESTRATOR_PROMPT
+    )
+    teams.validate_team(data, name, normalized, members, reviewer, limit)
+    entry = {
+        "name": name,
+        "repos": normalized,
+        "orchestrator": {"argv": argv, "prompt": prompt},
+        "members": members,
+        "reviewer": reviewer,
+        "max_sessions": limit,
+    }
+    _team_entries(data).append(entry)
+    _sync_legacy(data)
+    _commit(
+        path,
+        data,
+        actor,
+        f"Team {name} angelegt: {len(normalized)} Repo(s), Mitglieder "
+        f"{', '.join(_member_names(members))}, Prüfer {reviewer}, "
+        f"max_sessions {limit}",
+    )
+    return entry
+
+
+def edit_team(name, rename=None, repos=None, members_json=None,
+              orchestrator_argv_json=None, orchestrator_prompt=None,
+              reviewer=None, max_sessions=None, actor=""):
+    path, data = _load()
+    _migrate(data)
+    entry = teams.team(data, name)
+
+    target = name
+    if rename is not None:
+        candidate = rename.strip()
+        if not candidate:
+            raise FabError("Der neue Name ist leer")
+        if candidate != name:
+            target = check_name(candidate)
+            if any(
+                isinstance(item, dict) and item.get("name") == target
+                for item in _team_entries(data)
+            ):
+                raise FabError(
+                    f"Team „{target}“ gibt es schon; wähle einen anderen Namen"
+                )
+
+    old_repos = _team_repos(entry)
+    final_repos = old_repos
+    if repos is not None:
+        if not repos:
+            raise FabError("Fehlt: --repo PFAD")
+        final_repos = [teams.normalize_repo(repo) for repo in repos]
+
+    old_members = [
+        dict(member)
+        for member in (entry.get("members") or [])
+        if isinstance(member, dict)
+    ]
+    final_members = old_members
+    if members_json is not None:
+        final_members = teams.parse_members(members_json)
+
+    old_reviewer = str(entry.get("reviewer") or "")
+    final_reviewer = old_reviewer
+    if reviewer is not None:
+        final_reviewer = str(reviewer).strip()
+        if not final_reviewer:
+            raise FabError("Fehlt: --reviewer NAME")
+
+    old_limit = entry.get("max_sessions")
+    old_limit = (
+        teams.DEFAULT_MAX_SESSIONS
+        if old_limit is None
+        else teams.check_sessions(old_limit)
+    )
+    final_limit = old_limit
+    if max_sessions is not None:
+        final_limit = teams.check_sessions(max_sessions)
+
+    orchestrator = _team_orchestrator(entry)
+    old_argv = [str(part) for part in (orchestrator.get("argv") or [])]
+    final_argv = old_argv
+    if orchestrator_argv_json is not None:
+        final_argv = parse_argv(
+            orchestrator_argv_json, "--orchestrator-argv-json"
+        )
+    old_prompt = str(
+        orchestrator.get("prompt") or teams.DEFAULT_ORCHESTRATOR_PROMPT
+    )
+    final_prompt = old_prompt
+    if orchestrator_prompt is not None:
+        final_prompt = str(orchestrator_prompt)
+
+    teams.validate_team(
+        data, target, final_repos, final_members, final_reviewer, final_limit,
+        ignore=name,
+    )
+
+    changes = []
+    if target != name:
+        changes.append(f"Name {name} → {target}")
+    if final_repos != old_repos:
+        changes.append(
+            f"Repos {', '.join(old_repos) or '—'} → "
+            f"{', '.join(final_repos)}"
+        )
+    if final_members != old_members:
+        changes.append(
+            f"Mitglieder {', '.join(_member_names(old_members)) or '—'} → "
+            f"{', '.join(_member_names(final_members))}"
+        )
+    if final_reviewer != old_reviewer:
+        changes.append(
+            f"Prüfer {old_reviewer or '—'} → {final_reviewer}"
+        )
+    if final_limit != old_limit:
+        changes.append(f"max_sessions {old_limit} → {final_limit}")
+    if final_argv != old_argv:
+        changes.append("orchestrator argv " + " ".join(final_argv))
+    if final_prompt != old_prompt:
+        changes.append(f"orchestrator_prompt {final_prompt}")
+    if not changes:
+        raise FabError(
+            "Nichts zu ändern: nutze --rename, --repo, --members-json, "
+            "--reviewer, --max-sessions, --orchestrator-argv-json oder "
+            "--orchestrator-prompt"
+        )
+
+    entry["name"] = target
+    entry["repos"] = final_repos
+    entry["members"] = final_members
+    entry["reviewer"] = final_reviewer
+    entry["max_sessions"] = final_limit
+    orchestrator["argv"] = final_argv
+    orchestrator["prompt"] = final_prompt
+    _sync_legacy(data)
+    text = f"Team {name} geändert: " + ", ".join(changes)
+    _commit(path, data, actor, text)
+    return text
+
+
+def remove_team(name, actor):
+    path, data = _load()
+    _migrate(data)
+    entry = teams.team(data, name)
+    _team_entries(data).remove(entry)
+    if teams.is_migrated(data):
+        _sync_legacy(data)
+    _commit(path, data, actor, f"Team {name} entfernt")
+    return name
 
 
 # ---------------------------------------------------------------- Einstellungen
@@ -419,43 +752,53 @@ def remove(name, actor):
 def set_setting(key, value, actor):
     raw = "" if value is None else str(value)
     path, data = _load()
+    _migrate(data)
     if key == "max_sessions":
-        try:
-            number = int(raw.strip())
-        except ValueError:
-            raise FabError(
-                f"max_sessions muss eine ganze Zahl von {MIN_SESSIONS} bis "
-                f"{MAX_SESSIONS} sein (ist: „{raw}“)"
-            )
-        if not MIN_SESSIONS <= number <= MAX_SESSIONS:
-            raise FabError(
-                f"max_sessions muss zwischen {MIN_SESSIONS} und {MAX_SESSIONS} "
-                f"liegen (ist: {number})"
-            )
+        number = teams.check_sessions(raw)
+        first = teams.first_team(data)
         old = data.get("max_sessions")
+        if isinstance(first, dict):
+            if first.get("max_sessions") is not None:
+                old = first.get("max_sessions")
+            first["max_sessions"] = number
         data["max_sessions"] = number
         text = f"max_sessions: {old} → {number}"
     elif key == "reviewer":
         name = raw.strip()
-        names = _names(_entries(data))
+        first = teams.first_team(data)
+        names = _member_names(
+            first.get("members") if isinstance(first, dict) else []
+        )
         if name not in names:
             raise FabError(
                 f"reviewer muss ein Agent aus dem Roster sein („{name}“ fehlt); "
                 f"im Roster: {', '.join(names) or 'keine'}"
             )
+        if isinstance(first, dict):
+            first["reviewer"] = name
         data["reviewer"] = name
         text = f"reviewer: {name}"
     elif key == "orchestrator_argv":
         argv = parse_argv(raw, "orchestrator_argv")
-        orchestrator = data.get("orchestrator")
-        if not isinstance(orchestrator, dict):
-            orchestrator = {}
+        first = teams.first_team(data)
+        if isinstance(first, dict):
+            _team_orchestrator(first)["argv"] = argv
+        orchestrator = _legacy_orchestrator(data)
+        if not orchestrator:
             data["orchestrator"] = orchestrator
         orchestrator["argv"] = argv
         text = "orchestrator_argv: " + " ".join(argv)
+    elif key == "max_sessions_total":
+        number = teams.check_total_sessions(raw)
+        old = data.get(teams.GLOBAL_KEY)
+        data[teams.GLOBAL_KEY] = number
+        text = (
+            f"max_sessions_total: {old if old is not None else '—'} → {number}"
+        )
     else:
         raise FabError(
             f"Unbekannte Einstellung „{key}“; erlaubt: {', '.join(SETTINGS)}"
         )
+    _sync_legacy(data)
     _commit(path, data, actor, text)
     return text
