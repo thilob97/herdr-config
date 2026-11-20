@@ -1,7 +1,7 @@
 // Token und Bausteine des Fabric-Mods. Jede Ansicht baut aus diesen Teilen;
 // Farben kommen ausschließlich aus theme(), Abstände und Größen aus diesem Modul.
 
-import { div, image, PathBuilder, Background, svg } from "gpui-kit";
+import { div, image, svg } from "gpui-kit";
 import {
   h_flex, v_flex, Input, NumberInput, Textarea, Editor, TextView, Checkbox, Switch,
   Table, TableHeader, TableBody, TableRow, TableHead, TableCell, Popup, Scrollbar,
@@ -26,10 +26,6 @@ export const SIZE = {
   avatar: 24,
   nav: 34,
   sidebar: 208,
-  timelineRail: 44,
-  timelineHead: 66,
-  timelineRow: 34,
-  timelineMin: 360,
 };
 
 export const ICON = (name) => `mods/fabric/icons/${name}.svg`;
@@ -701,6 +697,50 @@ export function dropdown(t, {
 
 const moduleDropdown = dropdown;
 
+/** Vorschlagsliste der `@`-Erwähnungen. Übernommen wird per Mausdruck,
+ *  damit der Klick nicht mit dem Blur des Textfelds verloren geht. */
+export function mentionList(t, field, suggestions, index, onPick) {
+  const listId = `fabric-mentions-${field}`;
+  const rows = (suggestions ?? []).map((suggestion, position) => {
+    const name = typeof suggestion === "string" ? suggestion : suggestion?.name ?? "";
+    const selected = position === (index ?? 0);
+    return h_flex()
+      .id(`${listId}-option-${name}`)
+      .role("list_box_option")
+      .aria_selected(selected)
+      .when(selected, (el) => el.aria_active_descendant().bg(t.hover))
+      .w_full()
+      .h(26)
+      .px(7)
+      .gap(SPACE.s)
+      .items_center()
+      .rounded(RADIUS.s)
+      .text_size(FONT.s)
+      .text_color(t.foreground)
+      .cursor_pointer()
+      .hover((style) => style.bg(t.hover))
+      .child(div().flex_none().text_color(t.accent).child(`@${name}`))
+      .child(div().flex_1())
+      .on_mouse_down("left", (_event, cx) => {
+        cx.stop_propagation();
+        onPick?.(name, cx);
+      });
+  });
+  return v_flex()
+    .id(listId)
+    .role("list_box")
+    .w_full()
+    .max_h(190)
+    .overflow_y_scrollbar()
+    .p(SPACE.xs)
+    .gap(1)
+    .rounded(RADIUS.m)
+    .border_1()
+    .border_color(t.border)
+    .bg(t.popover)
+    .children(rows);
+}
+
 // ---------- Flächen ----------
 
 export function backdrop(t, { onClick = null, dim = true } = {}) {
@@ -972,31 +1012,4 @@ export function stageRow(t, { label, count, open = true, onClick = null, id = nu
     .child(div().flex_none().text_size(FONT.xs).text_color(t.dim).child(String(count)));
   const withId = id ? row.id(id) : row;
   return onClick ? still(withId).on_click((_event, cx) => { cx.stop_propagation(); onClick(cx); }) : withId;
-}
-
-// ---------- Timeline ----------
-
-export const PLOT_INSET = 3;
-export const columnX = (fraction) => fraction * 100;
-export const plotY = (fraction) => PLOT_INSET + fraction * (100 - 2 * PLOT_INSET);
-
-export function wakeArrows(t, arrows, height = 0) {
-  if (!arrows?.length) return null;
-  const builder = PathBuilder.stroke(1.2);
-  // Pfeilspitze etwa 4 px hoch, unabhängig davon, wie lang der Graph scrollt.
-  const wingY = height > 0 ? Math.min(1.1, 500 / height) : 1.1;
-  for (const arrow of arrows) {
-    const y = plotY(arrow.y);
-    const x1 = columnX(arrow.x1);
-    const x2 = columnX(arrow.x2);
-    builder.move_to(`${x1}%`, `${y}%`).line_to(`${x2}%`, `${y}%`);
-    const dir = arrow.to > arrow.from ? 1 : -1;
-    const wing = x2 - dir * 1.4;
-    builder.move_to(`${x2}%`, `${y}%`).line_to(`${wing}%`, `${y - wingY}%`);
-    builder.move_to(`${x2}%`, `${y}%`).line_to(`${wing}%`, `${y + wingY}%`);
-  }
-  return window
-    .paint_path(builder.build(), Background.solid(t.accent + "99"))
-    .absolute()
-    .inset_0();
 }

@@ -1,0 +1,5 @@
+{
+  "// why": "Node 26 nimmt bei --test keinen Ordner mehr an; main lädt die Testdatei dieses Ordners. `node --test mods/fabric-sidebar/test/` bleibt damit der eine Befehl.",
+  "type": "module",
+  "main": "model.test.mjs"
+}

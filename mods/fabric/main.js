@@ -32,6 +32,10 @@ const NAV = [
   { page: "settings", icon: "settings", label: "Einstellungen" },
 ];
 
+// Die Tasten der Erwähnungsliste gehören der Anwendung, nicht dem Fenster:
+// einmal binden, beide Wurzeln hängen ihre on_action-Handler daran.
+let mentionKeysBound = false;
+
 function message(error) {
   return error instanceof Error ? error.message : String(error ?? "");
 }
@@ -63,6 +67,7 @@ export default class Fabric extends View {
   init(_props, cx) {
     this.view = props()?.view ?? "tickets";
     this.isApp = this.view === "app";
+    this.timelineAll = false;
     this.overlayId = props()?.overlay ?? null;
     this.dir = `${appHome()}/data/fabric`;
     this.fab = `${appHome()}/fabric/fab`;
@@ -98,8 +103,9 @@ export default class Fabric extends View {
     this.bodySaved = "";
     this.titleEdit = null;
     this.titleSaved = "";
-    this.commentCaret = 0;
-    this.commentSuggestions = [];
+    this.mentions = { field: null, suggestions: [], index: 0, start: 0, end: 0 };
+    this.focusedField = null;
+    this.mentionClock = null;
     this.wakeOpen = false;
     this.wakeName = "";
     this.wakeText = null;
@@ -151,6 +157,8 @@ export default class Fabric extends View {
     this.agentProgram = "";
     this.agentColorKey = "c1";
     this.agentOriginal = "";
+    this.agentDraftId = 0;
+    this.agentPromptLoading = false;
     this.teamDirty = false;
     this.teamSaving = false;
     this.maxSessions = null;
@@ -171,36 +179,27 @@ export default class Fabric extends View {
     this.search.on("blur", (_event, cx) => { this.searchFocused = false; this.fieldFocused = false; this.notifyNow(); });
 
     this.newInput = InputState.new({ placeholder: "Neues Ticket in einem Satz…" });
-    this.newInput.on("change", (_event, cx) => cx.notify());
-    this.newInput.on("submit", (_event, cx) => this.createFromPanel(cx));
+    this.newInput.on("submit", (_event, cx) => {
+      if (this.consumeMentionSubmit("quick", cx)) return;
+      this.createFromPanel(cx);
+    });
     this.track(this.newInput);
+    this.wireMentions("quick", this.newInput);
 
     this.commentInput = TextareaState.new({ placeholder: "Kommentar … @name weckt", rows: 3 });
-    this.commentInput.on("change", (_event, cx) => {
-      this.commentCaret = this.commentInput.selected_range().end;
-      this.commentSuggestions = model.mentionSuggestions(
-        this.commentInput.value(), this.commentCaret, this.agentNames(),
-      );
-      this.notifyNow();
+    this.commentInput.on("submit", (_event, cx) => {
+      if (this.consumeMentionSubmit("comment", cx)) return;
+      this.comment(cx);
     });
-    this.commentInput.on("focus", (_event, cx) => {
-      this.fieldFocused = true;
-      this.notifyNow();
-    });
-    this.commentInput.on("blur", (_event, cx) => {
-      this.fieldFocused = false;
-      this.commentSuggestions = [];
-      this.notifyNow();
-    });
-    this.commentInput.on("submit", (_event, cx) => this.comment(cx));
     this.commentInput.on("paste_other", (_event, cx) => { this.pasteImage("comment", cx); });
     this.track(this.commentInput);
+    this.wireMentions("comment", this.commentInput);
     this.search.on("focus", (_event, cx) => { this.fieldFocused = true; this.notifyNow(); });
     this.search.on("blur", (_event, cx) => { this.fieldFocused = false; this.notifyNow(); });
-    this.newInput.on("focus", (_event, cx) => { this.fieldFocused = true; this.notifyNow(); });
-    this.newInput.on("blur", (_event, cx) => { this.fieldFocused = false; this.notifyNow(); });
 
     this.appFocus = cx.focus_handle();
+    this.mentionClock = cx;
+    this.mentionKeyCount = 0;
 
     if (this.view === "switcher") {
       this.ready = true;
@@ -332,13 +331,213 @@ export default class Fabric extends View {
     this.bodyEditing = false;
     this.wakeOpen = false;
     this.checksOpen = false;
-    this.commentSuggestions = [];
+    this.clearMentions();
     this.bodyFor = null;
     this.bodyEditor = null;
   }
 
   agentNames() {
-    return [...this.agents.map((agent) => agent.name), "orchestrator", "mensch"];
+    return model.mentionNames(this.agents);
+  }
+
+  // ---------- Namensvorschläge hinter `@` ----------
+
+  mentionInput(field) {
+    switch (field) {
+      case "comment": return this.commentInput;
+      case "new": return this.newSentence;
+      case "quick": return this.newInput;
+      case "title": return this.titleEdit;
+      case "wake": return this.wakeText;
+      default: return null;
+    }
+  }
+
+  mentionOpen(field) {
+    return Boolean(field) && this.mentions.field === field && this.mentions.suggestions.length > 0;
+  }
+
+  clearMentions(cx) {
+    this.mentions = { field: null, suggestions: [], index: 0, start: 0, end: 0 };
+    this.focusedField = null;
+    if (cx) cx.notify();
+  }
+
+  /** Ein Timer aus dem Besitz des Fensters; der `cx` eines Handlers trägt keinen. */
+  mentionLater(ms, body) {
+    const clock = this.asyncCx ?? this.mentionClock;
+    if (clock?.timer?.after) {
+      try {
+        clock.timer.after(ms, () => { if (!this.closed) body(); });
+        return;
+      } catch {
+        // Ein ersetzter Build hat keinen gültigen Timer mehr; dann sofort leeren.
+      }
+    }
+    body();
+  }
+
+  wireMentions(field, state) {
+    if (!state?.on) return;
+    state.on("change", (_event, cx) => {
+      this.focusedField = field;
+      this.refreshMentions(field, cx);
+    });
+    state.on("focus", (_event, cx) => {
+      this.focusedField = field;
+      this.refreshMentions(field, cx);
+    });
+    state.on("blur", (_event, _cx) => {
+      if (this.focusedField === field) this.focusedField = null;
+      // Der Klick auf eine Vorschlagszeile kommt nach dem Blur; erst danach leeren.
+      this.mentionLater(120, () => {
+        if (this.focusedField === field || this.mentions.field !== field) return;
+        this.mentions = { field: null, suggestions: [], index: 0, start: 0, end: 0 };
+        this.notifyNow();
+      });
+    });
+  }
+
+  refreshMentions(field, cx) {
+    const input = this.mentionInput(field);
+    if (!input) {
+      this.mentions = { field: null, suggestions: [], index: 0, start: 0, end: 0 };
+      return;
+    }
+    const value = input.value();
+    const range = input.selected_range();
+    const caret = range?.end ?? String(value).length;
+    // Ein Textarea fügt bei Enter zuerst den Zeilenumbruch ein und meldet
+    // danach submit. Die Liste muss diesen Umbruch überleben, damit Enter
+    // den Vorschlag übernimmt statt den Kommentar zu senden.
+    const at = caret > 0 && value[caret - 1] === "\n" ? caret - 1 : caret;
+    const query = model.mentionQuery(value, at);
+    const suggestions = query ? model.mentionSuggestions(value, at, this.agentNames()) : [];
+    const same = this.mentions.field === field && this.mentions.start === (query?.start ?? 0);
+    const index = suggestions.length
+      ? (same ? Math.min(this.mentions.index, suggestions.length - 1) : 0)
+      : 0;
+    if (suggestions.length) this.ensureMentionKeys(cx);
+    this.mentions = {
+      field: suggestions.length ? field : null,
+      suggestions,
+      index,
+      start: query?.start ?? 0,
+      end: query?.end ?? 0,
+    };
+    cx?.notify?.();
+  }
+
+  moveMention(delta, cx) {
+    if (!this.mentionOpen(this.focusedField)) return;
+    this.mentions.index = model.moveMentionIndex(
+      this.mentions.index, this.mentions.suggestions.length, delta,
+    );
+    this.notifyNow();
+  }
+
+  acceptMention(field, name, cx) {
+    const input = this.mentionInput(field);
+    if (!input || !name || this.mentions.field !== field) return false;
+    const value = input.value();
+    let end = this.mentions.end;
+    // Enter im Textfeld steht als Zeilenumbruch direkt hinter `end`.
+    if (value[end] === "\n") end += 1;
+    const next = model.replaceMention(value, { start: this.mentions.start, end }, name);
+    this.mentions = { field: null, suggestions: [], index: 0, start: 0, end: 0 };
+    this.focusedField = field;
+    input.set_value(next.text);
+    input.set_selected_range({ start: next.caret, end: next.caret });
+    input.focus();
+    this.notifyNow();
+    return true;
+  }
+
+  consumeMentionSubmit(field, cx) {
+    if (!this.mentionOpen(field)) return false;
+    const suggestion = this.mentions.suggestions[this.mentions.index]
+      ?? this.mentions.suggestions[0];
+    if (!suggestion) return false;
+    return this.acceptMention(field, suggestion.name, cx);
+  }
+
+  mentionAction(kind, cx) {
+    const field = this.focusedField;
+    const open = field && this.mentions.field === field && this.mentions.suggestions.length > 0;
+    if (!open) {
+      cx.propagate();
+      return;
+    }
+    if (kind === "up" || kind === "down") {
+      this.moveMention(kind === "up" ? -1 : 1, cx);
+      return;
+    }
+    if (kind === "accept") {
+      this.consumeMentionSubmit(field, cx);
+      return;
+    }
+    this.mentions = { field: null, suggestions: [], index: 0, start: 0, end: 0 };
+    this.notifyNow();
+  }
+
+  mentionActions(el) {
+    return el
+      .on_action("fabric-mention-up", (_event, cx) => this.mentionAction("up", cx))
+      .on_action("fabric-mention-down", (_event, cx) => this.mentionAction("down", cx))
+      .on_action("fabric-mention-accept", (_event, cx) => this.mentionAction("accept", cx))
+      .on_action("fabric-mention-close", (_event, cx) => this.mentionAction("close", cx))
+      // Auch ohne eigene Keymap-Bindung: die Textfelder dispatchten ihre
+      // eigenen Aktionen. In der Capture-Phase an der Fabric-Wurzel fangen wir
+      // sie ab, bevor das Feld Cursor/Zeilenumbruch/Einzug ausführt.
+      .on_action("input::MoveUp", (_event, cx) => this.inputMentionAction("up", cx))
+      .on_action("input::MoveDown", (_event, cx) => this.inputMentionAction("down", cx))
+      .on_action("input::Enter", (_event, cx) => this.inputMentionAction("accept", cx))
+      .on_action("input::IndentInline", (_event, cx) => this.inputMentionAction("accept", cx))
+      .on_action("input::Indent", (_event, cx) => this.inputMentionAction("accept", cx))
+      .on_action("input::Escape", (_event, cx) => this.inputMentionAction("close", cx));
+  }
+
+  inputMentionAction(kind, cx) {
+    const field = this.focusedField;
+    if (!field || this.mentions.field !== field || !this.mentions.suggestions.length) return;
+    cx.stop_propagation();
+    if (kind === "up" || kind === "down") {
+      this.moveMention(kind === "up" ? -1 : 1, cx);
+      return;
+    }
+    if (kind === "accept") {
+      this.consumeMentionSubmit(field, cx);
+      return;
+    }
+    this.clearMentions(cx);
+  }
+
+  /** Bindet die Tasten erst beim ersten Vorschlag – nach den Bindungen der
+   *  Textfelder. Mit deren Kontext (`Input`, `Textarea`) und späterer
+   *  Registrierung gewinnt die Liste den Gleichstand; ohne offene Liste
+   *  reicht der Handler die Aktion per `cx.propagate()` weiter. */
+  ensureMentionKeys(cx) {
+    if (mentionKeysBound || !cx?.bind_keys) return;
+    mentionKeysBound = true;
+    try {
+      // 0 ist kein Fehler: nach einem Reload liegen dieselben Bindungen schon
+      // in der Keymap und werden nicht erneut gezählt.
+      this.mentionKeyCount = cx.bind_keys(model.mentionKeyBindings());
+    } catch (error) {
+      mentionKeysBound = false;
+      notify({
+        title: "Tastatur für @-Vorschläge nicht gebunden",
+        body: message(error),
+        level: "error",
+        timeout: 8000,
+      });
+    }
+  }
+
+  mentionView(field, t) {
+    if (!this.mentionOpen(field)) return null;
+    return ui.mentionList(t, field, this.mentions.suggestions, this.mentions.index,
+      (name, cx) => this.acceptMention(field, name, cx));
   }
 
   agentColor(name) {
@@ -555,6 +754,7 @@ export default class Fabric extends View {
   select(id, cx) {
     this.lastCx = cx;
     const next = id || null;
+    this.timelineAll = false;
     this.openId = next;
     this.ticket = null;
     this.ticketError = null;
@@ -591,10 +791,7 @@ export default class Fabric extends View {
       this.menu = null;
       this.inboxOpen = false;
       this.modal = null;
-      if (page !== "team") {
-        this.teamDrawer = null;
-        this.teamDirty = false;
-      }
+      if (page !== "team") this.clearAgentDrawer();
       if (page !== "ticket" || target.id !== this.openId) this.resetTicketEditing();
       if (target.id) setShared("fabric.selected", target.id);
       setShared("fabric.route", target);
@@ -759,6 +956,11 @@ export default class Fabric extends View {
       if (keystroke === "escape") { this.imageOpen = null; this.notifyNow(); }
       return;
     }
+    if (keystroke === "escape" && this.mentions.field && this.mentions.suggestions.length) {
+      cx.stop_propagation();
+      this.clearMentions(cx);
+      return;
+    }
     if (this.modal) {
       if (keystroke === "escape") {
         cx.stop_propagation();
@@ -785,7 +987,7 @@ export default class Fabric extends View {
       cx.stop_propagation();
       if (this.menu) { this.menu = null; this.notifyNow(); return; }
       if (this.inboxOpen) { this.inboxOpen = false; this.notifyNow(); return; }
-      if (this.newOpen) { this.newOpen = false; this.notifyNow(); return; }
+      if (this.newOpen) { this.newOpen = false; this.clearMentions(this.lastCx); this.notifyNow(); return; }
       if (this.teamDrawer) { this.closeDrawer(cx); return; }
       const route = this.currentRoute();
       if (route.page === "ticket") { this.navigate("tickets", {}, cx); return; }
@@ -932,6 +1134,7 @@ export default class Fabric extends View {
     if (this.maxSessions) this.maxSessions.set_value(String(this.roster?.max_sessions ?? 4));
     this.titleEdit = null;
     this.bodyEditing = false;
+    this.clearMentions();
     cx?.notify();
   }
 
@@ -1197,7 +1400,10 @@ export default class Fabric extends View {
         if (match) this.select(match[0], cx);
       },
     });
-    if (result.ok) this.newInput.set_value("");
+    if (result.ok) {
+      this.newInput.set_value("");
+      this.clearMentions();
+    }
   }
 
   openNewTicket(cx) {
@@ -1212,9 +1418,12 @@ export default class Fabric extends View {
     this.newRepo = null;
     if (this.newSentence) this.newSentence.release?.();
     this.newSentence = InputState.new({ placeholder: "Ein Satz genügt, z. B. „Login-Fehler beheben“" });
-    this.newSentence.on("change", (_event, cx) => cx.notify());
-    this.newSentence.on("submit", (_event, cx) => this.createTicket(cx));
+    this.newSentence.on("submit", (_event, cx) => {
+      if (this.consumeMentionSubmit("new", cx)) return;
+      this.createTicket(cx);
+    });
     this.track(this.newSentence);
+    this.wireMentions("new", this.newSentence);
     this.ensurePrograms(cx);
     this.ensureReposQuiet(cx);
     cx.spawn(async (cx) => {
@@ -1258,6 +1467,7 @@ export default class Fabric extends View {
       const match = /T-\d+/.exec(result.result?.stdout ?? "");
       this.newOpen = false;
       this.newError = null;
+      this.clearMentions();
       if (match) {
         if (this.isApp) this.navigate("ticket", { id: match[0] }, cx);
         else this.select(match[0], cx);
@@ -1291,21 +1501,9 @@ export default class Fabric extends View {
     });
     if (result.ok) {
       this.commentInput.set_value("");
-      this.commentCaret = 0;
-      this.commentSuggestions = [];
+      this.clearMentions();
       await this.loadTicket();
     }
-    this.notifyNow();
-  }
-
-  insertSuggestion(name, cx) {
-    const value = this.commentInput.value();
-    const next = model.insertMention(value, this.commentCaret, name);
-    this.commentInput.set_value(next.text);
-    this.commentInput.set_selected_range({ start: next.caret, end: next.caret });
-    this.commentCaret = next.caret;
-    this.commentSuggestions = [];
-    this.commentInput.focus();
     this.notifyNow();
   }
 
@@ -1406,7 +1604,7 @@ export default class Fabric extends View {
         notify({ title: "Fabric", body: text, level: "error" });
         return false;
       }
-      if (!this.insertImageRef(target, reference)) return false;
+      if (!this.insertImageRef(target, reference, cx)) return false;
       notify({ title: "Fabric", body: "Bild angehängt.", level: "success" });
       return true;
     } catch (error) {
@@ -1420,7 +1618,7 @@ export default class Fabric extends View {
     }
   }
 
-  insertImageRef(target, reference) {
+  insertImageRef(target, reference, cx) {
     if (target === "body") {
       if (!this.bodyEditor) return false;
       const next = model.insertAttachment(
@@ -1439,11 +1637,8 @@ export default class Fabric extends View {
       );
       this.commentInput.set_value(next.text);
       this.commentInput.set_selected_range({ start: next.caret, end: next.caret });
-      this.commentCaret = next.caret;
-      this.commentSuggestions = model.mentionSuggestions(
-        this.commentInput.value(), this.commentCaret, this.agentNames(),
-      );
       this.commentInput.focus();
+      this.refreshMentions("comment", cx);
       this.notifyNow();
       return true;
     }
@@ -1569,6 +1764,7 @@ export default class Fabric extends View {
       this.titleSaved = title;
       this.titleEdit = null;
       this.titleEditFocused = false;
+      this.clearMentions();
       await this.loadTicket();
     }
     if (!silent) this.notifyNow();
@@ -1580,15 +1776,19 @@ export default class Fabric extends View {
     if (this.titleEdit) this.titleEdit.release?.();
     this.titleSaved = this.ticket.title ?? "";
     this.titleEdit = InputState.new({ value: this.titleSaved });
-    this.titleEdit.on("change", (_event, cx) => cx.notify());
-    this.titleEdit.on("submit", (_event, cx) => this.saveTitle(cx));
+    this.titleEdit.on("submit", (_event, cx) => {
+      if (this.consumeMentionSubmit("title", cx)) return;
+      this.saveTitle(cx);
+    });
     this.track(this.titleEdit);
+    this.wireMentions("title", this.titleEdit);
     this.notifyNow();
     cx.timer.after(60, () => this.titleEdit?.focus());
   }
 
   cancelTitleEdit(cx) {
     this.titleEdit = null;
+    this.clearMentions();
     this.setError("title", null);
     this.notifyNow();
   }
@@ -1637,7 +1837,10 @@ export default class Fabric extends View {
     const result = await this.action("reject", model.rejectArgs(id, text), {
       success: `${id} mit Feedback zurückgegeben.`,
     });
-    if (result.ok) this.commentInput.set_value("");
+    if (result.ok) {
+      this.commentInput.set_value("");
+      this.clearMentions();
+    }
     this.notifyNow();
   }
 
@@ -1665,10 +1868,22 @@ export default class Fabric extends View {
     this.wakeOpen = true;
     this.wakeName = this.ticket.assignee || this.agents[0]?.name || "";
     this.wakeText = InputState.new({ placeholder: "Was soll der Agent tun?" });
-    this.wakeText.on("submit", (_event, cx) => this.sendWake(cx));
+    this.wakeText.on("submit", (_event, cx) => {
+      if (this.consumeMentionSubmit("wake", cx)) return;
+      this.sendWake(cx);
+    });
     this.track(this.wakeText);
+    this.wireMentions("wake", this.wakeText);
+    this.clearMentions();
     this.notifyNow();
     cx.timer.after(60, () => this.wakeText?.focus());
+  }
+
+  closeWake(cx) {
+    this.wakeOpen = false;
+    this.wakeText = null;
+    this.clearMentions();
+    cx?.notify();
   }
 
   async sendWake(cx) {
@@ -1680,6 +1895,7 @@ export default class Fabric extends View {
     if (result.ok) {
       this.wakeOpen = false;
       this.wakeText = null;
+      this.clearMentions();
     }
     this.notifyNow();
   }
@@ -1703,38 +1919,69 @@ export default class Fabric extends View {
   // ---------- Team ----------
 
   openAgentDrawer(mode, agent, cx) {
+    const next = { mode, original: agent?.name ?? "" };
+    if (model.sameAgentDraft(this.teamDrawer, next)) {
+      this.notifyNow();
+      return;
+    }
+    if (model.agentSwitchNeedsConfirm(this.teamDrawer, next, this.teamDirty)) {
+      // Der offene Drawer gehört einem anderen Agenten; erst speichern oder verwerfen.
+      this.guard(() => this.showAgentDrawer(mode, agent, cx), cx);
+      return;
+    }
+    this.showAgentDrawer(mode, agent, cx);
+  }
+
+  showAgentDrawer(mode, agent, cx) {
+    // Ein offenes Dropdown darf nicht in den neuen Agenten hineinwählen.
+    this.menu = null;
+    this.agentDraftId += 1;
+    const draftId = this.agentDraftId;
+    const draft = model.agentDraft(agent);
     this.teamDirty = false;
-    this.teamDrawer = { mode, original: agent?.name ?? "" };
-    this.agentOriginal = agent?.name ?? "";
+    this.teamDrawer = { mode, original: draft.original };
+    this.agentOriginal = draft.original;
     this.agentColorKey = agent?.color ?? this.nextColor();
-    const parts = model.argvParts(agent?.argv ?? []);
-    this.agentProgram = parts.program;
-    this.agentName = InputState.new({ value: agent?.name ?? "" });
-    this.agentRole = InputState.new({ value: agent?.role ?? "umsetzer" });
-    this.agentModel = InputState.new({ value: parts.model });
-    this.agentFlags = InputState.new({ value: model.flagsText(parts.flags) });
+    this.agentProgram = draft.program;
+    this.agentName = InputState.new({ value: draft.name });
+    this.agentRole = InputState.new({ value: draft.role });
+    this.agentModel = InputState.new({ value: draft.model });
+    this.agentFlags = InputState.new({ value: draft.flags });
     this.agentPrompt = this.newEditor("markdown", "");
-    for (const [state, key] of [
-      [this.agentName, "name"], [this.agentRole, "role"], [this.agentModel, "model"], [this.agentFlags, "flags"],
-    ]) {
+    for (const state of [this.agentName, this.agentRole, this.agentModel, this.agentFlags]) {
       state.on("change", (_event, cx) => { this.teamDirty = true; this.notifyNow(); });
       this.track(state);
     }
-    this.agentPrompt.on("change", (_event, cx) => { this.teamDirty = true; this.notifyNow(); });
+    this.agentPrompt.on("change", (_event, cx) => {
+      if (this.agentPromptLoading) return;
+      this.teamDirty = true;
+      this.notifyNow();
+    });
+    const editor = this.agentPrompt;
     this.ensurePrograms(cx);
     this.notifyNow();
     if (agent?.name) {
       cx.spawn(async (cx) => {
+        let text = null;
         try {
           const result = await this.execFab(["prompt", "show", agent.name], { timeout: 20000 });
-          if (result.code === 0 && this.agentPrompt) {
-            this.agentPrompt.set_value(result.stdout ?? "");
-            this.teamDirty = false;
-            this.notifyNow();
-          }
+          if (result.code === 0) text = result.stdout ?? "";
         } catch {
           // Ohne Promptdatei bleibt der Editor leer; fab legt sie beim Speichern an.
         }
+        if (text === null) return;
+        // Nur der Drawer, der diesen Lauf gestartet hat, darf ihn übernehmen.
+        if (!model.promptLoadApplies(
+          { draft: draftId, editor, name: agent.name },
+          { draft: this.agentDraftId, editor: this.agentPrompt, name: this.agentOriginal },
+        )) return;
+        if (editor.value() !== "") return; // Nutzer tippt bereits im Feld
+        const dirty = this.teamDirty;
+        this.agentPromptLoading = true;
+        editor.set_value(text);
+        this.agentPromptLoading = false;
+        this.teamDirty = dirty;
+        this.notifyNow();
       });
     }
   }
@@ -1745,63 +1992,64 @@ export default class Fabric extends View {
     return "c1";
   }
 
+  clearAgentDrawer(cx) {
+    this.agentDraftId += 1;
+    this.teamDrawer = null;
+    this.teamDirty = false;
+    this.agentName = null;
+    this.agentRole = null;
+    this.agentModel = null;
+    this.agentFlags = null;
+    this.agentPrompt = null;
+    cx?.notify();
+  }
+
   closeDrawer(cx) {
     if (!this.teamDrawer) return;
-    const go = () => {
-      this.teamDrawer = null;
-      this.teamDirty = false;
-      this.agentName = null;
-      this.agentRole = null;
-      this.agentModel = null;
-      this.agentFlags = null;
-      this.agentPrompt = null;
-      cx?.notify();
-    };
     if (this.teamDirty) {
-      this.modal = { kind: "unsaved", dirty: this.dirtySections(), then: go };
+      this.modal = {
+        kind: "unsaved",
+        dirty: this.dirtySections(),
+        then: () => this.clearAgentDrawer(cx),
+      };
       cx?.notify();
     } else {
-      go();
+      this.clearAgentDrawer(cx);
     }
   }
 
   async saveAgent(cx, silent = false) {
     if (!this.teamDrawer || this.teamSaving) return false;
-    const name = this.agentName.value().trim();
-    const role = this.agentRole.value().trim();
-    const modelValue = this.agentModel.value().trim();
-    const flags = this.agentFlags.value();
-    const program = this.agentProgram;
-    const promptText = this.agentPrompt.value();
-    if (!name) {
-      this.setError("agent", "Bitte einen Namen angeben.");
+    const draftId = this.agentDraftId;
+    const draft = {
+      mode: this.teamDrawer.mode,
+      original: this.agentOriginal,
+      color: this.agentColorKey,
+    };
+    const plan = model.agentSaveArgs(draft, {
+      name: this.agentName.value(),
+      role: this.agentRole.value(),
+      model: this.agentModel.value(),
+      flags: this.agentFlags.value(),
+      program: this.agentProgram,
+      prompt: this.agentPrompt.value(),
+    });
+    if (plan.error) {
+      this.setError("agent", plan.error);
       this.notifyNow();
       return false;
     }
-    if (!program) {
-      this.setError("agent", "Bitte ein Programm wählen.");
-      this.notifyNow();
-      return false;
-    }
-    const argv = model.argvFromParts({ program, model: modelValue, flags });
-    const mode = this.teamDrawer.mode;
-    const args = ["agent", mode === "new" ? "add" : "edit", mode === "new" ? name : this.agentOriginal];
-    if (mode === "edit" && name !== this.agentOriginal) args.push(`--rename=${name}`);
-    args.push(`--role=${role || "umsetzer"}`, `--color=${this.agentColorKey}`);
-    args.push(`--argv-json=${JSON.stringify(argv)}`);
-    if (promptText.trim()) args.push(`--prompt-text=${promptText}`);
-    args.push("--from=mensch");
 
     this.teamSaving = true;
-    const result = await this.action("agent", args, {
-      success: mode === "new" ? `Agent ${name} angelegt.` : `Agent ${name} gespeichert.`,
-      after: async () => {
-        this.teamDrawer = null;
-        this.teamDirty = false;
-        await this.loadRoster(cx);
-      },
+    const result = await this.action("agent", plan.args, {
+      success: draft.mode === "new" ? `Agent ${plan.name} angelegt.` : `Agent ${plan.name} gespeichert.`,
     });
     this.teamSaving = false;
+    if (result.ok) {
+      await this.loadRoster(cx);
+      // Ein zwischenzeitlich geöffneter anderer Drawer bleibt stehen.
+      if (this.agentDraftId === draftId) this.clearAgentDrawer();
+    }
     if (!silent) this.notifyNow();
     return result.ok;
   }
@@ -1818,8 +2066,7 @@ export default class Fabric extends View {
     await this.action("agent-rm", ["agent", "rm", agent.name, "--from=mensch"], {
       success: `Agent ${agent.name} entfernt.`,
       after: (result) => {
-        this.teamDrawer = null;
-        this.teamDirty = false;
+        this.clearAgentDrawer();
         this.loadRoster(cx);
       },
     });
@@ -2127,7 +2374,7 @@ export default class Fabric extends View {
     if (this.newOpen || this.modal) overlay.push(renderDialogs(this, cx, t));
     if (this.imageOpen) overlay.push(ui.imageLightbox(t, { ...this.imageOpen, onClose: () => { this.imageOpen = null; this.notifyNow(); } }));
 
-    return div()
+    const root = div()
       .relative()
       .size_full()
       .min_h(0)
@@ -2152,6 +2399,7 @@ export default class Fabric extends View {
           .child(body),
       )
       .children(overlay);
+    return this.mentionActions(root);
   }
 
   inboxButton(t, cx) {

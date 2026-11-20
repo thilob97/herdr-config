@@ -12,6 +12,7 @@ Grundlagen: `docs/concept.md`, Vertrag `docs/fabric.md` (Daten, CLI, Abschnitt 3
 | Panel `tickets` | Sidepanel | Schnellzugriff: Liste, kompaktes Detail, Kommentar, Abnahme; Knopf „Im Fenster öffnen“ |
 | Panel `timeline` | Sidepanel | Zeitverlauf |
 | `inbox` | Seitenleiste | Was auf den Menschen wartet; Klick öffnet das Ticket im Fenster |
+| **Fabric-Agenten** | Seitenleiste, Block `fabric-agents` (Mod `fabric-sidebar`) in `layouts/fabric.json` | Orchestrator zuerst mit Badge, Agenten eingerückt mit Rolle, Status und Laufzeit; Klick öffnet das Terminal, der Ticket-Chip das Ticket |
 
 Die gewählte Auswahl ist überall dieselbe: `shared("fabric.selected")`. Was das Fenster zeigt, steht in `shared("fabric.route")` (z. B. `{ page: "ticket", id: "T-3" }`).
 

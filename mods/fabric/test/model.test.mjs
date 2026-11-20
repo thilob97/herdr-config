@@ -5,8 +5,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  groupByStage, mentionSegments, sortInbox, timeline, relativeTime, wakeLine,
-  sessionChips, sessionStatus,
+  groupByStage, mentionSegments, sortInbox, timelineFeed, eventSummary, relativeTime,
+  wakeLine, sessionChips, sessionStatus,
 } from "../model.js";
 
 test("Tickets werden nach Stufe gruppiert, in Stufenreihenfolge", () => {
@@ -64,46 +64,39 @@ test("Inbox: neueste oben, gleiche Zeit bleibt in ihrer Reihenfolge", () => {
   assert.equal(inbox[0].ticket, "T-1", "die Eingabe wird nicht verändert");
 });
 
-test("Timeline: Akteure sind Spalten, Zeit läuft von neu (oben) nach alt (unten)", () => {
-  const roster = [
-    { name: "zap", role: "umsetzer" },
-    { name: "ada", role: "pruefer" },
-  ];
+test("Zeitverlauf: neueste zuerst, nach Tagen gruppiert, Filter je Ticket", () => {
+  const now = new Date(2026, 10, 18, 12, 0, 0).getTime();
+  const day = 86400000;
   const events = [
-    { at: 5000, kind: "wake", ticket: "T-1", actor: "mensch", target: "zap", text: "gestartet" },
-    { at: 3000, kind: "wake", ticket: "T-1", actor: "zap", target: "ada", text: "geweckt" },
-    { at: 1000, kind: "created", ticket: "T-1", actor: "mensch", target: "", text: "" },
-    { at: 4000, kind: "status", ticket: "T-1", actor: "orchestrator", target: "", text: "" },
-    { at: 2000, kind: "comment", ticket: "T-1", actor: "zap", target: "", text: "@ada bitte" },
+    { at: now - day - 1000, kind: "wake", ticket: "T-1", actor: "zap", target: "ada", text: "geweckt" },
+    { at: now - 1000, kind: "comment", ticket: "T-2", actor: "mensch", target: "", text: "@zap bitte" },
+    { at: now, kind: "comment", ticket: "T-1", actor: "ada", target: "", text: "passt" },
   ];
 
-  const result = timeline(events, roster);
+  const feed = timelineFeed(events, { now });
+  assert.deepEqual(feed.days.map((group) => group.label), ["Heute", "Gestern"]);
+  assert.deepEqual(feed.days.flatMap((group) => group.rows.map((row) => row.ticket)), ["T-1", "T-2", "T-1"]);
+  assert.equal(feed.total, 3);
+  assert.equal(feed.actors, 3);
 
-  assert.deepEqual(result.lanes.map((lane) => lane.name), ["orchestrator", "zap", "ada", "mensch"]);
-  assert.deepEqual(result.lanes.map((lane) => lane.label), ["Orchestrator", "zap", "ada", "Mensch"]);
-  assert.deepEqual(result.points.map((point) => point.at), [1000, 2000, 3000, 4000, 5000]);
-  assert.deepEqual(result.points.map((point) => point.lane), [3, 1, 1, 0, 3]);
-  assert.deepEqual(result.points.map((point) => point.x), [0.875, 0.375, 0.375, 0.125, 0.875]);
-  assert.deepEqual(result.points.map((point) => point.y), [1, 0.75, 0.5, 0.25, 0]);
-  assert.deepEqual(result.times, [5000, 4000, 3000, 2000, 1000]);
-  assert.equal(result.rows, 5);
-
-  assert.equal(result.arrows.length, 2);
-  assert.deepEqual(
-    result.arrows.map((arrow) => [arrow.actor, arrow.from, arrow.target, arrow.to]),
-    [["zap", 1, "ada", 2], ["mensch", 3, "zap", 1]],
-  );
-  assert.deepEqual(
-    result.arrows.map((arrow) => [arrow.x1, arrow.x2, arrow.y]),
-    [[0.375, 0.625, 0.5], [0.875, 0.375, 0]],
-  );
+  const scoped = timelineFeed(events, { ticket: "T-1", now });
+  assert.deepEqual(scoped.days.flatMap((group) => group.rows.map((row) => row.at)), [now, now - day - 1000]);
+  assert.equal(scoped.total, 2);
+  assert.equal(scoped.actors, 2);
 });
 
-test("Timeline ohne Ereignisse hat nur die Spuren", () => {
-  const result = timeline([], [{ name: "zap" }]);
-  assert.deepEqual(result.lanes.map((lane) => lane.name), ["orchestrator", "zap", "mensch"]);
-  assert.deepEqual(result.points, []);
-  assert.deepEqual(result.arrows, []);
+test("Zeitverlauf: Ereignisarten werden zu unterscheidbaren Sätzen", () => {
+  const status = eventSummary({ at: 1, kind: "status", actor: "orchestrator", text: "draft → todo" });
+  assert.equal(status.actor, "Orchestrator");
+  assert.equal(status.verb, "änderte den Status");
+  assert.equal(status.detail, "Entwurf → Geplant");
+
+  assert.equal(eventSummary({ kind: "wake", actor: "zap", target: "ada", text: "geweckt" }).verb, "weckte ada");
+  assert.equal(eventSummary({ kind: "wake", actor: "mensch", target: "orchestrator" }).verb, "weckte den Orchestrator");
+  assert.equal(eventSummary({ kind: "wake", actor: "zap", target: "mensch" }).verb, "weckte den Menschen");
+  assert.equal(eventSummary({ kind: "verdict", actor: "ada", text: "pass: HEAD geprüft" }).detail, "bestanden — HEAD geprüft");
+  assert.equal(eventSummary({ kind: "verify", actor: "zap", text: "fail" }).detail, "rot");
+  assert.equal(eventSummary({ kind: "comment", actor: "zap", text: "hallo" }).verb, "kommentierte");
 });
 
 test("Zeit und Weckzeilen auf Deutsch", () => {
@@ -308,9 +301,56 @@ test("@-Vorschläge: erkennt die Eingabe am Cursor und ersetzt sie", async () =>
   assert.deepEqual(suggestions.map((entry) => entry.name), ["ada", "anton"]);
 
   const inserted = insertMention("Bitte @a prüfen", 8, "ada");
-  assert.equal(inserted.text, "Bitte @ada  prüfen");
+  assert.equal(inserted.text, "Bitte @ada prüfen");
   assert.equal(inserted.caret, 11);
   assert.deepEqual(insertMention("ohne", 4, "ada"), { text: "ohne", caret: 4 });
+});
+
+test("@-Vorschläge: leere Eingabe, alle Namen, Auswahl und Ersetzen", async () => {
+  const {
+    mentionQuery, mentionSuggestions, mentionNames, moveMentionIndex, replaceMention, insertMention,
+    mentionKeyBindings,
+  } = await import("../model.js");
+  assert.deepEqual(mentionQuery("@", 1), { start: 0, end: 1, query: "" });
+  assert.deepEqual(mentionQuery("Hallo @", 7), { start: 6, end: 7, query: "" });
+  assert.equal(mentionQuery("thilo@", 6), null);
+  assert.equal(mentionQuery("thilo@example.com", 16), null);
+
+  const names = ["ada", "anton", "zap", "bo", "cy", "di", "ed", "fay"];
+  assert.equal(mentionSuggestions("@", 1, names).length, 8, "kein 6er-Deckel");
+
+  assert.deepEqual(mentionNames([{ name: "zap" }, { name: "ada" }, { name: "Zap" }]),
+    ["zap", "ada", "orchestrator", "mensch"]);
+  assert.deepEqual(mentionNames([" mensch ", "Ada", ""]), ["mensch", "Ada", "orchestrator"]);
+
+  assert.equal(moveMentionIndex(0, 3, -1), 2);
+  assert.equal(moveMentionIndex(2, 3, 1), 0);
+  assert.equal(moveMentionIndex(1, 3, 1), 2);
+  assert.equal(moveMentionIndex(4, 0, 1), 0);
+  assert.equal(moveMentionIndex(4, 0, -1), 0);
+
+  assert.deepEqual(replaceMention("Bitte @a prüfen", { start: 6, end: 8 }, "ada"),
+    { text: "Bitte @ada prüfen", caret: 11 });
+  assert.deepEqual(replaceMention("Bitte @a", { start: 6, end: 8 }, "ada"),
+    { text: "Bitte @ada ", caret: 11 });
+  assert.deepEqual(replaceMention("Bitte @a prüfen", { start: 8, end: 8 }, "ada"),
+    { text: "Bitte @a prüfen", caret: 8 });
+  assert.deepEqual(replaceMention("Bitte @a prüfen", { start: 5, end: 2 }, "ada"),
+    { text: "Bitte @a prüfen", caret: 2 });
+
+  assert.deepEqual(insertMention("Bitte @a prüfen", 8, "ada"), { text: "Bitte @ada prüfen", caret: 11 });
+  assert.deepEqual(insertMention("@", 1, "orchestrator"), { text: "@orchestrator ", caret: 14 });
+
+  const bindings = mentionKeyBindings();
+  assert.equal(bindings.length, 10, "fünf Tasten in beiden Textfeld-Kontexten");
+  assert.equal(bindings.every((entry) => entry.context), true, "keine globalen Bindungen");
+  assert.deepEqual([...new Set(bindings.map((entry) => entry.context))].sort(), ["Input", "Textarea"]);
+  assert.deepEqual(
+    [...new Set(bindings.map((entry) => entry.keystroke))].sort(),
+    ["down", "enter", "escape", "tab", "up"],
+  );
+  assert.equal(bindings.filter((entry) => entry.keystroke === "enter"
+    || entry.keystroke === "tab").every((entry) => entry.action === "fabric-mention-accept"), true);
 });
 
 test("„weckt“-Vorschau: Agenten wecken, mensch landet in der Inbox, Unbekanntes nicht", async () => {
@@ -578,4 +618,98 @@ test("Freitexte stehen hinter --, Optionen tragen =", async () => {
   assert.deepEqual(repoSetArgs("/r", "verify", "#!/bin/sh\n"), [
     "repo", "set", "/r", "verify", "--text=#!/bin/sh\n", "--from=mensch",
   ]);
+});
+
+// ---------- Agenten-Drawer: Wechsel zwischen Agenten ----------
+
+const ZAP = {
+  name: "zap", role: "umsetzer", color: "c1",
+  argv: ["omp", "--model=opencode-go/deepseek-v4.1-flash", "--approval-mode=yolo", "--max-cost=5"],
+};
+const ADA = {
+  name: "ada", role: "pruefer", color: "c2",
+  argv: ["claude", "--model", "opus", "--dangerously-skip-permissions"],
+};
+// Das Formular schreibt das Modell immer als --model=<Wert>; inhaltlich gleich.
+const ADA_SAVED = ["claude", "--model=opus", "--dangerously-skip-permissions"];
+
+function argvOf(args) {
+  const flag = args.find((arg) => arg.startsWith("--argv-json="));
+  return JSON.parse(flag.slice("--argv-json=".length));
+}
+
+test("Drawer-Wechsel zeigt und speichert nur die Werte des gewählten Agenten", async () => {
+  const { agentDraft, sameAgentDraft, agentSwitchNeedsConfirm, agentSaveArgs } =
+    await import("../model.js");
+
+  assert.deepEqual(agentDraft(ADA), {
+    original: "ada",
+    color: "c2",
+    name: "ada",
+    role: "pruefer",
+    program: "claude",
+    model: "opus",
+    flags: "--dangerously-skip-permissions",
+  });
+
+  const zapDraft = { mode: "edit", ...agentDraft(ZAP) };
+  const adaDraft = { mode: "edit", ...agentDraft(ADA) };
+  assert.equal(sameAgentDraft(zapDraft, adaDraft), false);
+  assert.equal(sameAgentDraft(zapDraft, { mode: "edit", original: "zap" }), true);
+
+  // Geänderter zap-Drawer: Wechsel fragt nach, statt still zu überschreiben.
+  assert.equal(agentSwitchNeedsConfirm(zapDraft, adaDraft, true), true);
+  assert.equal(agentSwitchNeedsConfirm(null, adaDraft, true), false, "erster Aufbau fragt nicht");
+  assert.equal(agentSwitchNeedsConfirm(zapDraft, adaDraft, false), false, "ohne Änderung wechselt es direkt");
+
+  // Nach dem Wechsel steht ausschließlich adas Formular im Drawer.
+  const form = {
+    name: adaDraft.name,
+    role: adaDraft.role,
+    model: adaDraft.model,
+    flags: adaDraft.flags,
+    program: adaDraft.program,
+    prompt: "adas prompt",
+  };
+  const plan = agentSaveArgs({ mode: "edit", original: "ada", color: "c2" }, form);
+  assert.equal(plan.error, undefined);
+  assert.equal(plan.args[2], "ada");
+  assert.deepEqual(argvOf(plan.args), ADA_SAVED);
+  assert.equal(plan.args.includes("--prompt-text=adas prompt"), true);
+  assert.equal(plan.args.some((arg) => arg.includes("deepseek") || arg.includes("yolo")), false,
+    "keine Werte aus zaps Drawer");
+
+  // Umbenennen zielt weiterhin auf den angezeigten Agenten (ada), nicht auf zap.
+  const renamed = agentSaveArgs({ mode: "edit", original: "ada", color: "c2" }, { ...form, name: "ada-2" });
+  assert.equal(renamed.args[2], "ada");
+  assert.equal(renamed.args.includes("--rename=ada-2"), true);
+  assert.deepEqual(argvOf(renamed.args), ADA_SAVED);
+});
+
+test("Schneller Wechsel: spätes Prompt-Laden des alten Agenten landet nicht im neuen Formular", async () => {
+  const { promptLoadApplies } = await import("../model.js");
+  const zapEditor = { value: "" };
+  const adaEditor = { value: "" };
+  const zapLoad = { draft: 1, editor: zapEditor, name: "zap" };
+
+  // Drawer inzwischen auf ada (neuer Lauf, neuer Editor) → zaps Antwort verwerfen.
+  assert.equal(promptLoadApplies(zapLoad, { draft: 2, editor: adaEditor, name: "ada" }), false);
+  // Gleicher Lauf, aber Drawer geschlossen → verwerfen.
+  assert.equal(promptLoadApplies(zapLoad, { draft: 2, editor: null, name: "" }), false);
+  // Eigener Lauf darf schreiben.
+  assert.equal(promptLoadApplies(zapLoad, { draft: 1, editor: zapEditor, name: "zap" }), true);
+  // adas Lauf schreibt nur in adas Editor.
+  const adaLoad = { draft: 2, editor: adaEditor, name: "ada" };
+  assert.equal(promptLoadApplies(adaLoad, { draft: 2, editor: adaEditor, name: "ada" }), true);
+  assert.equal(promptLoadApplies(adaLoad, { draft: 2, editor: zapEditor, name: "zap" }), false);
+});
+
+test("Speichern ohne Namen oder Programm meldet den Fehler statt zu schreiben", async () => {
+  const { agentSaveArgs } = await import("../model.js");
+  assert.deepEqual(agentSaveArgs({ mode: "edit", original: "ada", color: "c2" }, {
+    name: "  ", role: "pruefer", model: "opus", flags: "", program: "claude", prompt: "",
+  }), { error: "Bitte einen Namen angeben." });
+  assert.deepEqual(agentSaveArgs({ mode: "edit", original: "ada", color: "c2" }, {
+    name: "ada", role: "pruefer", model: "opus", flags: "", program: "", prompt: "",
+  }), { error: "Bitte ein Programm wählen." });
 });

@@ -179,13 +179,63 @@ class WakeTests(FabricCase):
         self.assertIn("keinen Worktree", sends[0][2])
         self.assertEqual(self.wake_events(tid)[-1]["text"], "an orchestrator")
 
-    def test_unbekannter_name(self):
+    def test_unbekannter_name_wird_still_ignoriert(self):
         tid = self.new("Unbekannt")
         self.clear_log()
+        mark = self.mark()
         result = self.ok("comment", tid, "--from", "zap", "@niemand hallo")
-        self.assertIn("unterdrückt: unbekannt", result.stdout)
+        self.assertEqual(result.stdout, "")
         self.assertEqual(self.hc_calls(), [])
-        self.assertEqual(self.wake_events(tid)[-1]["text"], "unterdrückt: unbekannt")
+        self.assertEqual(self.wake_since(mark), [])
+        self.assertEqual(self.ticket(tid)["comments"][-1]["mentions"], [])
+
+    def test_erklaertext_weckt_nicht(self):
+        tid = self.new("Tipp")
+        self.clear_log()
+        mark = self.mark()
+        result = self.ok(
+            "comment", tid, "--from", "orchestrator",
+            "Tipp: @name weckt, @a filtert",
+        )
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(self.hc_calls(), [])
+        self.assertEqual(self.wake_since(mark), [])
+        self.assertEqual(self.ticket(tid)["comments"][-1]["mentions"], [])
+
+    def test_bekannte_namen_auch_gross_klein(self):
+        tid = self.new("Namen")
+        self.set_live(
+            {"fab-ada-t-1": "t1", "fab-zap-t-1": "t5", "fab-orchestrator": "t0"}
+        )
+        self.clear_log()
+        result = self.ok(
+            "comment", tid, "--from", "mensch", "@ZAP @Ada @Orchestrator"
+        )
+        self.assertIn("@zap: geweckt", result.stdout)
+        self.assertIn("@ada: geweckt", result.stdout)
+        self.assertIn("@orchestrator: geweckt", result.stdout)
+        self.assertEqual(len(self.hc_calls("send")), 3)
+        self.assertEqual(
+            self.ticket(tid)["comments"][-1]["mentions"],
+            ["zap", "ada", "orchestrator"],
+        )
+        result = self.ok("comment", tid, "--from", "zap", "@MENSCH bitte")
+        self.assertIn("@mensch: unterdrückt: mensch", result.stdout)
+        self.assertIn("mensch", self.ticket(tid)["waiting"])
+
+    def test_email_ist_keine_erwaehnung(self):
+        tid = self.new("Mail")
+        self.set_live({"fab-zap-t-1": "t5", "fab-ada-t-1": "t1"})
+        self.clear_log()
+        mark = self.mark()
+        result = self.ok(
+            "comment", tid, "--from", "mensch",
+            "Mail an a@b.de, thilo@zap.de und a@ada.de",
+        )
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(self.hc_calls(), [])
+        self.assertEqual(self.wake_since(mark), [])
+        self.assertEqual(self.ticket(tid)["comments"][-1]["mentions"], [])
 
     def test_doppelte_erwaehnung_weckt_einmal(self):
         tid = self.new("Doppelt")
@@ -202,7 +252,12 @@ class WakeTests(FabricCase):
     def test_voll_verhindert_start(self):
         self.write_roster(max_sessions=1)
         tid, _worktree = self.worktree_ticket("Voll")
-        self.set_live({"fab-ada-t-9": "t9"})
+        self.set_terminals(
+            [
+                {"address": "t9", "name": "fab-ada-t-9", "state": "live",
+                 "status": "working"},
+            ]
+        )
         self.clear_log()
         result = self.ok("comment", tid, "--from", "mensch", "@zap los")
         self.assertIn("unterdrückt: voll", result.stdout)
@@ -210,7 +265,48 @@ class WakeTests(FabricCase):
         self.assertEqual(self.ticket(tid)["sessions"], [])
         attention = [row for row in self.index()["inbox"] if row["kind"] == "attention"]
         self.assertEqual(len(attention), 1)
+        self.assertEqual(attention[0]["ticket"], tid)
         self.assertIn("voll", attention[0]["text"])
+        self.assertIn("zap", attention[0]["text"])
+
+    def test_untätige_session_blockiert_wecken_nicht(self):
+        self.write_roster(max_sessions=1)
+        tid, _worktree = self.worktree_ticket("Weck")
+        self.set_terminals(
+            [
+                {"address": "t9", "name": "fab-ada-t-9", "state": "live",
+                 "status": "idle"},
+            ]
+        )
+        self.clear_log()
+        result = self.ok("comment", tid, "--from", "mensch", "@zap los")
+        self.assertIn("gestartet", result.stdout)
+        self.assertEqual(len(self.hc_calls("run")), 1)
+        self.assertEqual(self.wake_events(tid)[-1]["text"], "gestartet")
+
+    def test_session_eines_abgeschlossenen_tickets_blockiert_wecken_nicht(self):
+        self.write_roster(max_sessions=1)
+        old = self.new("Alt")
+        self.patch_ticket(
+            old,
+            status="done",
+            sessions=[
+                {"agent": "ada", "name": "fab-ada-t-9", "terminal": "t9",
+                 "started_at": 1}
+            ],
+        )
+        tid, _worktree = self.worktree_ticket("Weck")
+        self.set_terminals(
+            [
+                {"address": "t9", "name": "fab-ada-t-9", "state": "live",
+                 "status": "working"},
+            ]
+        )
+        self.clear_log()
+        result = self.ok("comment", tid, "--from", "mensch", "@zap los")
+        self.assertIn("gestartet", result.stdout)
+        self.assertEqual(len(self.hc_calls("run")), 1)
+        self.assertEqual(self.wake_events(tid)[-1]["text"], "gestartet")
 
     def test_send_fallback_mit_force(self):
         tid = self.new("Force")

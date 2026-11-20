@@ -1,6 +1,6 @@
 // Reine Logik des Fabric-Mods: keine herdr-, keine gpui-Importe.
 // Wörter, Übergänge, Board, Filter, Flags, Erwähnungen, Zeitformat,
-// Timeline-Geometrie und der Schutz vor ungespeicherten Änderungen stehen hier.
+// der Zeitverlauf-Feed und der Schutz vor ungespeicherten Änderungen stehen hier.
 
 // ---------- Stufen und Statuswörter ----------
 
@@ -471,6 +471,65 @@ export function insertAttachment(text, range, reference) {
   };
 }
 
+// ---------- Agenten-Drawer ----------
+
+/** Formularwerte des Agenten-Drawers, ausschließlich aus diesem Agenten. */
+export function agentDraft(agent) {
+  const parts = argvParts(agent?.argv ?? []);
+  return {
+    original: agent?.name ?? "",
+    color: agent?.color ?? "",
+    name: agent?.name ?? "",
+    role: agent?.role ?? "umsetzer",
+    program: parts.program,
+    model: parts.model,
+    flags: flagsText(parts.flags),
+  };
+}
+
+/** Zeigt der Drawer denselben Agenten im selben Modus? */
+export function sameAgentDraft(left, right) {
+  return Boolean(left && right)
+    && left.mode === right.mode
+    && left.original === (right.original ?? "");
+}
+
+/** Ein offener, geänderter Drawer wird beim Wechsel nicht still überschrieben. */
+export function agentSwitchNeedsConfirm(current, next, dirty) {
+  if (!current || sameAgentDraft(current, next)) return false;
+  return Boolean(dirty);
+}
+
+/** Speicherargumente: Ziel und Werte stammen aus demselben Drawer-Zustand.
+ *  `draft` = { mode, original, color } des angezeigten Agenten,
+ *  `form` = { name, role, model, flags, prompt } aus den Formularfeldern. */
+export function agentSaveArgs(draft, form) {
+  const name = String(form?.name ?? "").trim();
+  const program = String(form?.program ?? draft?.program ?? "").trim();
+  if (!name) return { error: "Bitte einen Namen angeben." };
+  if (!program) return { error: "Bitte ein Programm wählen." };
+  const argv = argvFromParts({ program, model: form?.model ?? "", flags: form?.flags ?? "" });
+  const args = [
+    "agent",
+    draft.mode === "new" ? "add" : "edit",
+    draft.mode === "new" ? name : draft.original,
+  ];
+  if (draft.mode === "edit" && name !== draft.original) args.push(`--rename=${name}`);
+  args.push(`--role=${String(form?.role ?? "").trim() || "umsetzer"}`, `--color=${draft.color}`);
+  args.push(`--argv-json=${JSON.stringify(argv)}`);
+  if (String(form?.prompt ?? "").trim()) args.push(`--prompt-text=${form.prompt}`);
+  args.push("--from=mensch");
+  return { args, name, argv };
+}
+
+/** Ein später `prompt show`-Lauf darf nur das Formular füllen, das ihn startete. */
+export function promptLoadApplies(load, current) {
+  return Boolean(load && current)
+    && load.draft === current.draft
+    && load.editor === current.editor
+    && load.name === current.name;
+}
+
 // ---------- Erwähnungen ----------
 
 // Eine Erwähnung ist `@name` mit `[a-z][a-z0-9_-]*`, ohne Groß-/Kleinschreibung.
@@ -581,7 +640,7 @@ export function mentionQuery(text, caret = String(text ?? "").length) {
   const source = String(text ?? "");
   const at = Math.max(0, Math.min(caret, source.length));
   const before = source.slice(0, at);
-  const match = /@([A-Za-z][A-Za-z0-9_-]*)$/.exec(before);
+  const match = /@([A-Za-z0-9_-]*)$/.exec(before);
   if (!match) return null;
   const start = at - match[0].length;
   const previous = start > 0 ? source[start - 1] : "";
@@ -596,7 +655,73 @@ export function mentionSuggestions(text, caret, names = []) {
   const unique = [...new Set((names ?? []).map((name) => String(name ?? "").toLowerCase()).filter(Boolean))];
   const matches = unique.filter((name) => name.startsWith(query.query));
   matches.sort((a, b) => (a === query.query ? -1 : b === query.query ? 1 : a.localeCompare(b)));
-  return matches.slice(0, 6).map((name) => ({ name, query: query.query }));
+  return matches.map((name) => ({ name, query: query.query }));
+}
+
+/** Alle vorschlagbaren Namen: Roster, dann `orchestrator` und `mensch`.
+ *  Einträge dürfen `{name}` oder Zeichenketten sein; Doppelte fallen weg. */
+export function mentionNames(agents = []) {
+  const seen = new Set();
+  const names = [];
+  const add = (value) => {
+    const name = String(value ?? "").trim();
+    if (!name) return;
+    const key = name.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    names.push(name);
+  };
+  for (const agent of agents ?? []) add(typeof agent === "string" ? agent : agent?.name);
+  add("orchestrator");
+  add("mensch");
+  return names;
+}
+
+/** Nächster Vorschlag in der Liste; läuft am Ende wieder zum Anfang. */
+export function moveMentionIndex(index, length, delta) {
+  if (!(length > 0)) return 0;
+  const step = Number(delta) || 0;
+  return (((Number(index) || 0) + step) % length + length) % length;
+}
+
+/** Ersetzt genau `range` durch `@name ` und liefert Text und Cursor dahinter.
+ *  Ein ungültiger oder leerer Bereich lässt den Text unverändert. */
+export function replaceMention(text, range, name) {
+  const source = String(text ?? "");
+  const start = Number(range?.start);
+  const end = Number(range?.end);
+  const invalid = !Number.isInteger(start) || !Number.isInteger(end)
+    || start < 0 || end > source.length || end <= start;
+  if (invalid) {
+    return { text: source, caret: Number.isInteger(end) ? Math.max(0, Math.min(end, source.length)) : source.length };
+  }
+  const insert = `@${name}`;
+  const space = /\s/.test(source[end] ?? "") ? "" : " ";
+  return {
+    text: source.slice(0, start) + insert + space + source.slice(end),
+    caret: start + insert.length + 1,
+  };
+}
+
+/** Die Tasten der Vorschlagsliste. Sie hängen an den Kontexten der Textfelder
+ *  (`Input`, `Textarea`), damit sie auf derselben Tiefe liegen wie deren eigene
+ *  Bindungen; die spätere Registrierung entscheidet den Gleichstand. Ohne
+ *  offene Liste reicht der Handler die Aktion per `cx.propagate()` weiter. */
+export function mentionKeyBindings() {
+  const actions = [
+    ["up", "fabric-mention-up"],
+    ["down", "fabric-mention-down"],
+    ["enter", "fabric-mention-accept"],
+    ["tab", "fabric-mention-accept"],
+    ["escape", "fabric-mention-close"],
+  ];
+  const bindings = [];
+  for (const context of ["Input", "Textarea"]) {
+    for (const [keystroke, action] of actions) {
+      bindings.push({ keystroke, action, context });
+    }
+  }
+  return bindings;
 }
 
 /** Ersetzt die `@`-Eingabe durch `@name ` und liefert Text und neue Cursorposition. */
@@ -604,11 +729,7 @@ export function insertMention(text, caret, name) {
   const source = String(text ?? "");
   const query = mentionQuery(source, caret);
   if (!query) return { text: source, caret };
-  const insert = `@${name} `;
-  return {
-    text: source.slice(0, query.start) + insert + source.slice(query.end),
-    caret: query.start + insert.length,
-  };
+  return replaceMention(source, query, name);
 }
 
 /** Wen ein Kommentar erreicht. `author` ist der schreibende Name (hier `mensch`).
@@ -806,83 +927,123 @@ export function history(ticket, events) {
   return rows.sort((a, b) => a.at - b.at);
 }
 
-// ---------- Timeline ----------
+// ---------- Zeitverlauf (Feed) ----------
 
-/** Spuren und Punkte für `index.events`.
- *  Spuren: Orchestrator, Roster-Agenten in Roster-Reihenfolge, Mensch; jede Spur ist eine Spalte.
- *  `x` ist die Mitte der Spalte (0 bis 1). `y` ist der Zeitrang: 0 ist die neueste
- *  Uhrzeit, 1 die älteste; gleiche Zeitpunkte teilen sich eine Zeile. `rows` ist die
- *  Anzahl dieser Zeitzeilen. `wake` wird zum waagerechten Pfeil von Spalte zu Spalte. */
-export function timeline(events, roster = []) {
-  const list = [...(events ?? [])]
-    .filter((event) => event && Number.isFinite(event.at))
-    .sort((a, b) => a.at - b.at);
+/** Anzeigename eines Akteurs. */
+export function actorLabel(name) {
+  if (name === "orchestrator") return "Orchestrator";
+  if (name === "mensch") return "Mensch";
+  return String(name ?? "");
+}
 
-  const names = [];
-  const roles = new Map();
-  const add = (name) => {
-    if (typeof name === "string" && name && !names.includes(name)) names.push(name);
+/** Tagesschlüssel in der Zeitzone des Rechners, z. B. `2026-11-18`. */
+export function dayKey(at) {
+  if (!Number.isFinite(at)) return "";
+  const date = new Date(at);
+  const two = (n) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${two(date.getMonth() + 1)}-${two(date.getDate())}`;
+}
+
+/** „Heute“, „Gestern“ oder DD.MM.YYYY für eine Tagesüberschrift. */
+export function dayLabel(at, now = Date.now()) {
+  if (!Number.isFinite(at)) return "";
+  if (dayKey(at) === dayKey(now)) return "Heute";
+  const yesterday = new Date(now);
+  yesterday.setDate(yesterday.getDate() - 1);
+  if (dayKey(at) === dayKey(yesterday.getTime())) return "Gestern";
+  const date = new Date(at);
+  const two = (n) => String(n).padStart(2, "0");
+  return `${two(date.getDate())}.${two(date.getMonth() + 1)}.${date.getFullYear()}`;
+}
+
+function firstWord(text) {
+  return String(text ?? "").trim().split(/[\s:—·]+/)[0] ?? "";
+}
+
+/** Ein Ereignis als Satz: `actorLabel`, `verb` und `detail` für eine Feed-Zeile.
+ *  Die Formulierung ist die Unterscheidung; Farbe und Punkt sind nur Verstärkung. */
+export function eventSummary(event) {
+  const kind = event?.kind ?? "";
+  const text = String(event?.text ?? "").trim();
+  const target = actorLabel(event?.target);
+  const base = {
+    kind,
+    at: event?.at ?? 0,
+    ticket: event?.ticket ?? "",
+    actor: actorLabel(event?.actor),
+    target,
+    text,
   };
-
-  add("orchestrator");
-  for (const entry of roster ?? []) {
-    const name = typeof entry === "string" ? entry : entry?.name;
-    add(name);
-    if (name && entry?.role) roles.set(name, entry.role);
+  switch (kind) {
+    case "comment":
+      return { ...base, verb: "kommentierte", detail: text };
+    case "wake": {
+      const who = target === "Orchestrator" ? "den Orchestrator"
+        : target === "Mensch" ? "den Menschen" : target;
+      return { ...base, verb: who ? `weckte ${who}` : "weckte", detail: text };
+    }
+    case "status": {
+      const change = /^([a-z]+)\s*→\s*([a-z]+)$/.exec(text);
+      return {
+        ...base,
+        verb: "änderte den Status",
+        detail: change ? `${statusWord(change[1])} → ${statusWord(change[2])}` : text || "Status geändert",
+      };
+    }
+    case "verdict": {
+      const word = VERDICT_WORDS[firstWord(text)];
+      const colon = text.indexOf(":");
+      const rest = colon >= 0 ? text.slice(colon + 1).trim() : "";
+      return { ...base, verb: "urteilte", detail: word ? `${word}${rest ? ` — ${rest}` : ""}` : text };
+    }
+    case "verify":
+      return { ...base, verb: "prüfte", detail: CHECK_WORDS[firstWord(text)] ?? text };
+    case "created":
+      return { ...base, verb: "legte an", detail: text };
+    case "edited":
+      return { ...base, verb: "änderte", detail: text };
+    case "assigned":
+      return { ...base, verb: "teilte zu", detail: target || text };
+    case "dispatch":
+      return { ...base, verb: "verteilte", detail: text };
+    case "handover":
+      return { ...base, verb: "übergab", detail: text };
+    case "accept":
+      return { ...base, verb: "nahm ab", detail: text };
+    case "reject":
+      return { ...base, verb: "wies zurück", detail: text };
+    case "drop":
+      return { ...base, verb: "verwarf", detail: text };
+    default:
+      return { ...base, verb: eventWord(kind) || "Ereignis", detail: text };
   }
-  for (const event of list) {
-    if (event.actor && event.actor !== "mensch") add(event.actor);
+}
+
+/** Ereignisse als Feed: neueste zuerst, nach Tagen gruppiert.
+ *  `ticket` grenzt auf ein Ticket ein; ohne Angabe zählen alle Ereignisse.
+ *  `total` ist die Zahl der Zeilen, `actors` die Zahl der beteiligten Akteure. */
+export function timelineFeed(events, { ticket = null, now = Date.now() } = {}) {
+  const list = (events ?? [])
+    .map((event, index) => ({ event, index }))
+    .filter(({ event }) => event && Number.isFinite(event.at))
+    .filter(({ event }) => !ticket || event.ticket === ticket)
+    .sort((a, b) => b.event.at - a.event.at || a.index - b.index);
+
+  const days = [];
+  const byKey = new Map();
+  const actors = new Set();
+  for (const { event } of list) {
+    if (event.actor) actors.add(event.actor);
+    const key = dayKey(event.at);
+    let day = byKey.get(key);
+    if (!day) {
+      day = { key, label: dayLabel(event.at, now), rows: [] };
+      byKey.set(key, day);
+      days.push(day);
+    }
+    day.rows.push(eventSummary(event));
   }
-  add("mensch");
-
-  const label = (name) =>
-    name === "orchestrator" ? "Orchestrator" : name === "mensch" ? "Mensch" : name;
-  const lanes = names.map((name, index) => ({
-    name,
-    index,
-    label: label(name),
-    role: roles.get(name) ?? null,
-  }));
-  const laneOf = new Map(lanes.map((lane) => [lane.name, lane.index]));
-  const laneCount = Math.max(1, lanes.length);
-  const start = list.length ? list[0].at : 0;
-  const end = list.length ? list[list.length - 1].at : 0;
-  const times = [...new Set(list.map((event) => event.at))].sort((a, b) => b - a);
-  const rowOf = new Map(times.map((at, index) => [at, index]));
-  const rows = Math.max(1, times.length);
-  const timeFraction = (at) => (rows === 1 ? 0.5 : rowOf.get(at) / (rows - 1));
-
-  const points = list.map((event) => {
-    const lane = laneOf.get(event.actor) ?? 0;
-    return {
-      event,
-      at: event.at,
-      actor: event.actor ?? "",
-      kind: event.kind ?? "",
-      ticket: event.ticket ?? "",
-      lane,
-      x: (lane + 0.5) / laneCount,
-      y: timeFraction(event.at),
-    };
-  });
-
-  const arrows = points
-    .filter((point) => point.kind === "wake" && laneOf.has(point.event.target))
-    .map((point) => ({
-      at: point.at,
-      from: point.lane,
-      to: laneOf.get(point.event.target),
-      x1: point.x,
-      x2: (laneOf.get(point.event.target) + 0.5) / laneCount,
-      y: point.y,
-      actor: point.actor,
-      target: point.event.target,
-      ticket: point.ticket,
-      text: point.event.text ?? "",
-    }))
-    .filter((arrow) => arrow.from !== arrow.to);
-
-  return { lanes, points, arrows, times, rows, start, end, span: end - start };
+  return { days, total: list.length, actors: actors.size };
 }
 
 // ---------- Prompts, Repos, Einstellungen ----------
