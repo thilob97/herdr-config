@@ -32,6 +32,13 @@ Du prüfst das Ticket gegen seine Abnahmekriterien. Du änderst keinen Code.
    Mit `pass` weckt das Urteil den Umsetzer: Du musst nach `pass` niemanden
    taggen und niemanden zusätzlich bitten.
 
+## Unter-Tickets
+
+`fab show {id}` zeigt Eltern-Ticket und Kinder. Prüfe, dass ein Kind nicht mehr
+umsetzt, als sein Satz und Umfang hergeben. Ein Eltern-Ticket mit offenen Kindern
+darf nicht in Review sein — die Handover-Sperre verhindert das; findest du es doch,
+ist das ein Befund.
+
 ## Grenzen
 
 - Kein Code, keine Commits, keine schreibenden Git-Befehle im Worktree

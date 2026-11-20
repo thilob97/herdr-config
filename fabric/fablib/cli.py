@@ -86,6 +86,21 @@ def _open_blockers(ticket):
     return open_ids
 
 
+def _open_children(ticket):
+    """Offene Unter-Tickets einer ID als Liste von Ticket-Dicts."""
+    return [
+        child
+        for child in store.children_of(store.all_tickets(), ticket["id"])
+        if child.get("status") not in ("done", "dropped")
+    ]
+
+
+def _children_reason(children):
+    return "offene Unter-Tickets: " + ", ".join(
+        f"{child['id']} ({child.get('status')})" for child in children
+    )
+
+
 def _dispatch_locked(ticket, agent_name, actor, roster):
     """Startet oder weckt ein Ticket; der Aufrufer hält `store.locked()`.
 
@@ -301,29 +316,60 @@ def cmd_new(args):
     if not sentence:
         raise FabError("Der Satz für das Ticket ist leer")
     author = _actor(args) or "mensch"
-    if args.repo:
-        repo = _abs_repo(args.repo)
-    else:
-        repo = git.main_toplevel(os.getcwd())
-    if not repo:
-        raise FabError(
-            "Repo fehlt: --repo PFAD angeben oder in einem Git-Checkout ausführen"
-        )
     roster = agents.load(required=False)
-    if roster is not None and teams.team_for_repo(roster, repo) is None:
-        raise FabError(teams.no_team_message(repo))
-    if roster is None and not args.no_wake:
-        print(f"Warnung: Roster fehlt ({agents.roster_path()}); @orchestrator wird nicht geweckt",
-              file=sys.stderr)
     title = sentence[:80]
     body = f"## Auftrag\n{sentence}"
     with store.locked():
+        parent = None
+        if args.parent:
+            parent = store.load(args.parent)
+            if parent.get("parent"):
+                raise FabError(
+                    f"{parent['id']} ist selbst ein Unter-Ticket; "
+                    f"Unter-Tickets gehen nur eine Ebene tief"
+                )
+            if not parent.get("repo"):
+                raise FabError(
+                    f"{parent['id']} hat kein Repo; Unter-Tickets erben das Repo "
+                    f"des Eltern-Tickets"
+                )
+            repo = _abs_repo(parent["repo"])
+            if args.repo and _abs_repo(args.repo) != repo:
+                raise FabError(
+                    f"{parent['id']}: Unter-Tickets erben das Repo des Eltern-Tickets "
+                    f"({repo}); --repo weglassen"
+                )
+            open_children = _open_children(parent)
+            if len(open_children) >= store.MAX_CHILDREN:
+                raise FabError(
+                    f"{parent['id']}: höchstens {store.MAX_CHILDREN} offene "
+                    f"Unter-Tickets; offen: "
+                    + ", ".join(child["id"] for child in open_children)
+                )
+        else:
+            if args.repo:
+                repo = _abs_repo(args.repo)
+            else:
+                repo = git.main_toplevel(os.getcwd())
+            if not repo:
+                raise FabError(
+                    "Repo fehlt: --repo PFAD angeben oder in einem Git-Checkout ausführen"
+                )
+        if roster is not None and teams.team_for_repo(roster, repo) is None:
+            raise FabError(teams.no_team_message(repo))
+        if roster is None and not args.no_wake:
+            print(f"Warnung: Roster fehlt ({agents.roster_path()}); @orchestrator wird nicht geweckt",
+                  file=sys.stderr)
         tid = store.next_id()
         ticket = store.blank_ticket(tid, title=title, body=body, repo=repo, created_by=author)
+        if parent is not None:
+            ticket["parent"] = parent["id"]
         store.save(ticket)
         events.append("created", tid, author, "", sentence)
         if not args.no_wake:
             text = "@orchestrator bitte ausformulieren und verteilen"
+            if parent is not None:
+                text += f" (Unter-Ticket von {parent['id']})"
             _add_comment(ticket, author, text)
             if roster is not None:
                 wake.process(ticket, ["orchestrator"], author, text, roster)
@@ -352,6 +398,8 @@ def cmd_list(args):
     if args.json:
         print(json.dumps([index.entry(ticket) for ticket in tickets],
                          ensure_ascii=False, indent=2))
+    elif args.tree:
+        print(render.ticket_tree(tickets))
     else:
         for ticket in tickets:
             print(render.ticket_line(ticket))
@@ -363,7 +411,8 @@ def cmd_show(args):
     if args.json:
         print(render.ticket_json(ticket))
     else:
-        sys.stdout.write(render.ticket_text(ticket))
+        children = store.children_of(store.all_tickets(), ticket["id"])
+        sys.stdout.write(render.ticket_text(ticket, children=children))
     return 0
 
 
@@ -749,6 +798,9 @@ def cmd_handover(args):
                     f"Urteil gilt für HEAD {_short(verdict.get('head'))}, "
                     f"Worktree-HEAD ist {_short(head)}"
                 )
+        children = _open_children(ticket)
+        if children:
+            reasons.append(_children_reason(children))
         files = None
         if not reasons and ticket.get("base") and ticket.get("branch") and ticket.get("repo"):
             try:
@@ -800,6 +852,11 @@ def cmd_accept(args):
             raise FabError(
                 f"{ticket['id']}: Abnahme nur im Status review (jetzt {ticket['status']}); "
                 f"erst fab handover"
+            )
+        children = _open_children(ticket)
+        if children:
+            raise FabError(
+                f"{ticket['id']}: Abnahme verweigert: {_children_reason(children)}"
             )
         repo = ticket.get("repo")
         branch_name = ticket.get("branch")
@@ -1510,6 +1567,7 @@ def build_parser():
     item = command("new", "Ticket aus einem Satz anlegen und den Orchestrator wecken", cmd_new)
     item.add_argument("sentence", metavar="SATZ", help="der Auftrag in einem Satz")
     item.add_argument("--repo", metavar="PFAD", help="Checkout, Standard: Git-Wurzel des aktuellen Ordners")
+    item.add_argument("--parent", metavar="ID", help="Eltern-Ticket; das Unter-Ticket erbt dessen Repo")
     item.add_argument("--from", dest="from_", metavar="NAME", default="mensch", help="Autor (Standard: mensch)")
     item.add_argument("--no-wake", action="store_true",
                       help="nur den Entwurf anlegen, ohne @orchestrator-Kommentar")
@@ -1517,6 +1575,8 @@ def build_parser():
     item = command("list", "Tickets auflisten", cmd_list)
     item.add_argument("--status", metavar="S", help="nur dieser Status")
     item.add_argument("--team", metavar="NAME", help="nur Tickets dieses Teams")
+    item.add_argument("--tree", action="store_true",
+                      help="Unter-Tickets unter ihrem Eltern-Ticket einrücken")
     item.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe")
 
     item = command("show", "Ein Ticket mit Verlauf zeigen", cmd_show)

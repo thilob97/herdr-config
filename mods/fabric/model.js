@@ -197,6 +197,28 @@ export function actionBar(ticket, tickets = []) {
   return actions;
 }
 
+// ---------- Unter-Tickets ----------
+
+const ticketNumber = (id) => {
+  const match = /(\d+)\s*$/.exec(String(id ?? ""));
+  return match ? Number(match[1]) : Number.MAX_SAFE_INTEGER;
+};
+
+/** Kinder eines Tickets, numerisch nach ID sortiert (T-2 vor T-10). */
+export function childrenOf(tickets, id) {
+  return (tickets ?? [])
+    .filter((row) => row?.parent === id)
+    .sort((a, b) => ticketNumber(a.id) - ticketNumber(b.id)
+      || String(a.id ?? "").localeCompare(String(b.id ?? "")));
+}
+
+/** Fortschritt der Kinder: erledigt sind done und dropped. */
+export function childProgress(children) {
+  const total = (children ?? []).length;
+  const closed = (children ?? []).filter((row) => row?.status === "done" || row?.status === "dropped").length;
+  return { total, closed, open: total - closed };
+}
+
 // ---------- Board und Filter ----------
 
 const text = (value) => String(value ?? "").toLowerCase();

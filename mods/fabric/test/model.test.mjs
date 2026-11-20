@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 
 import {
   groupByStage, mentionSegments, sortInbox, timelineFeed, eventSummary, relativeTime,
-  wakeLine, sessionChips, sessionStatus,
+  wakeLine, sessionChips, sessionStatus, childrenOf, childProgress,
 } from "../model.js";
 
 test("Tickets werden nach Stufe gruppiert, in Stufenreihenfolge", () => {
@@ -287,6 +287,32 @@ test("Tabellensortierung: Kopf dreht die Richtung, leere Werte ans Ende", async 
   assert.deepEqual(sortTickets(tickets, { key: "comment_count", dir: "desc" }).map((ticket) => ticket.id), ["T-2", "T-3", "T-1"]);
   assert.deepEqual(nextSort({ key: "title", dir: "asc" }, "title"), { key: "title", dir: "desc" });
   assert.deepEqual(nextSort({ key: "title", dir: "asc" }, "updated_at"), { key: "updated_at", dir: "desc" });
+});
+
+// ---------- Unter-Tickets ----------
+
+test("Unter-Tickets: nach parent gefiltert, numerisch sortiert, fremde ignoriert", () => {
+  const tickets = [
+    { id: "T-10", parent: "T-1", status: "draft" },
+    { id: "T-2", parent: "T-1", status: "doing" },
+    { id: "T-1", parent: null, status: "doing" },
+    { id: "T-3", parent: "T-9", status: "draft" },
+    { id: "T-4", status: "draft" },
+  ];
+  assert.deepEqual(childrenOf(tickets, "T-1").map((row) => row.id), ["T-2", "T-10"]);
+  assert.deepEqual(childrenOf(tickets, "T-9").map((row) => row.id), ["T-3"]);
+  assert.deepEqual(childrenOf(tickets, "T-404"), []);
+  assert.deepEqual(childrenOf(undefined, "T-1"), []);
+});
+
+test("Unter-Tickets: Fortschritt zählt done und dropped als erledigt", () => {
+  assert.deepEqual(childProgress([]), { total: 0, closed: 0, open: 0 });
+  assert.deepEqual(childProgress([
+    { id: "T-2", status: "done" },
+    { id: "T-3", status: "dropped" },
+    { id: "T-4", status: "doing" },
+  ]), { total: 3, closed: 2, open: 1 });
+  assert.deepEqual(childProgress([{ id: "T-5", status: "draft" }]), { total: 1, closed: 0, open: 1 });
 });
 
 // ---------- Erwähnungen und Vorschau ----------

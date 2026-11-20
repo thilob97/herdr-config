@@ -16,6 +16,7 @@ from .errors import FabError
 
 DEFAULT_HOME = "~/.config/herdr-app/data/fabric"
 STATUSES = ("draft", "todo", "doing", "review", "done", "dropped")
+MAX_CHILDREN = 3
 _ID_RE = re.compile(r"^[Tt]-(\d+)$")
 
 
@@ -129,6 +130,7 @@ def blank_ticket(tid, title="", body="", repo=None, created_by=""):
         "title": title,
         "status": "draft",
         "body": body,
+        "parent": None,
         "repo": repo,
         "base": None,
         "branch": None,
@@ -209,3 +211,8 @@ def all_tickets():
             # Eine kaputte Datei darf die Ansicht nicht blockieren.
             continue
     return tickets
+
+
+def children_of(tickets, parent_id):
+    """Tickets, die `parent_id` als Eltern-Ticket nennen; Reihenfolge der Eingabe."""
+    return [ticket for ticket in tickets if ticket.get("parent") == parent_id]
