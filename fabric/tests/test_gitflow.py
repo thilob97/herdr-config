@@ -225,3 +225,56 @@ class GitflowTests(FabricCase):
         self.assertTrue(self.ticket(tid)["comments"])
         self.assertTrue(self.hc_calls("kill"))
         self.assertEqual([row["kind"] for row in self.events()][-1], "drop")
+
+    def konflikt_ticket(self):
+        repo, tid, worktree = self.ready_ticket()
+        self.commit_in(worktree, "aenderung.txt", "vom branch\n")
+        self.write_file(os.path.join(repo, "aenderung.txt"), "von main\n")
+        self.git(repo, "add", "aenderung.txt")
+        commit = self.git(repo, "commit", "-qm", "main ändert aenderung.txt")
+        self.assertEqual(commit.returncode, 0, commit.stderr)
+        self.passing_verify(worktree)
+        self.ok("verify", tid)
+        self.ok("verdict", tid, "pass", "--from", "ada", "Sieht gut aus")
+        return repo, tid, worktree
+
+    def test_handover_verweigert_merge_konflikt(self):
+        repo, tid, worktree = self.konflikt_ticket()
+        status_before = self.git_out(repo, "status", "--porcelain", "--untracked-files=no")
+        main_before = self.git_out(repo, "rev-parse", "main")
+        branch_before = self.git_out(repo, "rev-parse", "fab/T-1-kurzer-titel")
+        result = self.cli("handover", tid, "--from", "zap", "Fertig")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Merge-Konflikt mit main", result.stderr)
+        self.assertIn("aenderung.txt", result.stderr)
+        ticket = self.ticket(tid)
+        self.assertEqual(ticket["status"], "doing")
+        self.assertNotIn("mensch", ticket["waiting"])
+        comment = ticket["comments"][-1]["text"]
+        self.assertIn("aenderung.txt", comment)
+        self.assertIn("einmergen", comment)
+        self.assertEqual(
+            self.git_out(repo, "status", "--porcelain", "--untracked-files=no"),
+            status_before,
+        )
+        self.assertEqual(self.git_out(repo, "rev-parse", "main"), main_before)
+        self.assertEqual(
+            self.git_out(repo, "rev-parse", "fab/T-1-kurzer-titel"), branch_before
+        )
+
+    def test_handover_konflikt_weckt_den_zustaendigen(self):
+        repo, tid, worktree = self.konflikt_ticket()
+        self.set_live({"fab-zap-t-1": "t7"})
+        self.clear_log()
+        mark = self.mark()
+        result = self.cli("handover", tid, "--from", "ada", "Fertig")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Merge-Konflikt mit main", result.stderr)
+        sends = self.hc_calls("send")
+        self.assertEqual(len(sends), 1)
+        self.assertEqual(sends[0][1], "t7")
+        self.assertIn("Merge-Konflikt mit main", sends[0][2])
+        self.assertIn("aenderung.txt", sends[0][2])
+        wakes = self.wake_since(mark, tid)
+        self.assertEqual([row["target"] for row in wakes], ["zap"])
+        self.assertEqual(wakes[-1]["text"], "geweckt")

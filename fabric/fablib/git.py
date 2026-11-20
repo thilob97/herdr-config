@@ -90,6 +90,36 @@ def diff_paths(repo, base, branch_name):
     return [name for name in result.stdout.split("\0") if name]
 
 
+def merge_conflicts(repo_top, base, branch_name):
+    """Konfliktdateien beim Mergen von branch_name in base; schreibt nichts.
+
+    Nutzt `git merge-tree --write-tree`; das ändert weder Worktree noch Refs.
+    Rückgabe [] bedeutet konfliktfrei. Scheitert die Prüfung selbst
+    (z. B. unbekannte Basis), FabError.
+    """
+    result = git(
+        ["merge-tree", "--write-tree", base, branch_name], repo_top, timeout=600
+    )
+    if result.returncode == 0:
+        return []
+    paths = []
+    for line in result.stdout.splitlines():
+        meta, tab, path = line.partition("\t")
+        if not tab or not path:
+            continue
+        fields = meta.split()
+        if len(fields) != 3 or fields[2] not in ("1", "2", "3"):
+            continue
+        if path not in paths:
+            paths.append(path)
+    if paths:
+        return paths
+    detail = (result.stderr or result.stdout).strip() or "unbekannter Fehler"
+    raise FabError(
+        f"Merge-Prüfung von {branch_name} gegen {base} ist fehlgeschlagen: {detail}"
+    )
+
+
 def base_branch(path):
     """Standard-Basisbranch des Repos: origin/HEAD, sonst main, sonst master."""
     top = toplevel(path)

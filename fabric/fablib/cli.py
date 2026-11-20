@@ -49,24 +49,7 @@ def _worktree_for(repo_top, branch_name):
 
 
 def _add_comment(ticket, author, text, roster=None):
-    at = store.now_ms()
-    if roster is None:
-        roster = agents.load(required=False)
-    found = wake.mentions(text, wake.known_names(roster))
-    ticket["comments"].append(
-        {
-            "n": len(ticket["comments"]) + 1,
-            "at": at,
-            "author": author,
-            "text": text,
-            "mentions": found,
-        }
-    )
-    ticket["waiting"] = [
-        waiting for waiting in ticket["waiting"] if waiting.lower() != author.lower()
-    ]
-    events.append("comment", ticket["id"], author, "", text)
-    return found
+    return wake.add_comment(ticket, author, text, roster)
 
 
 def _has_criteria(body):
@@ -623,7 +606,36 @@ def cmd_handover(args):
                     f"Urteil gilt für HEAD {_short(verdict.get('head'))}, "
                     f"Worktree-HEAD ist {_short(head)}"
                 )
+        files = None
+        if not reasons and ticket.get("base") and ticket.get("branch") and ticket.get("repo"):
+            try:
+                files = git.merge_conflicts(
+                    ticket["repo"], ticket["base"], ticket["branch"]
+                )
+            except FabError as exc:
+                reasons.append(str(exc))
+        if not reasons and files:
+            base = ticket["base"]
+            reasons.append(
+                f"Merge-Konflikt mit {base}:\n  - " + "\n  - ".join(files)
+            )
         if reasons:
+            if files:
+                roster = agents.load()
+                text = wake.conflict_text(ticket, ticket["base"], files)
+                wake.add_comment(ticket, actor, text, roster)
+                results = []
+                assignee = ticket.get("assignee")
+                if assignee:
+                    results = wake.process(
+                        ticket, [assignee], actor, text, roster,
+                        message_for=lambda name: wake.conflict_wake_text(
+                            ticket, ticket["base"], files
+                        ),
+                    )
+                store.save(ticket)
+                index.rebuild()
+                _print_wake_results(results)
             raise FabError(
                 f"{ticket['id']}: Übergabe verweigert:\n- " + "\n- ".join(reasons)
             )
