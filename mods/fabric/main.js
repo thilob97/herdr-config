@@ -2215,7 +2215,6 @@ export default class Fabric extends View {
     const form = this.teamForms[name];
     if (!form) return;
     form.members = form.members.filter((member) => member.blueprint !== blueprint);
-    if (form.reviewer === blueprint) form.reviewer = "";
     cx?.notify();
   }
 

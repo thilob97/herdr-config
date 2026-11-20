@@ -798,7 +798,8 @@ test("teamSaveArgs verlangt Repos, Mitglieder und einen Prüfer aus dem Team", a
   assert.equal(teamSaveArgs(TEAM, { ...base, repos: [] }).error, "Team braucht mindestens ein Repo.");
   assert.equal(teamSaveArgs(TEAM, { ...base, members: [] }).error, "Team braucht mindestens ein Mitglied.");
   assert.equal(teamSaveArgs(TEAM, { ...base, reviewer: "" }).error, "Bitte eine Prüferin oder einen Prüfer wählen.");
-  assert.equal(teamSaveArgs(TEAM, { ...base, reviewer: "bo" }).error, "Prüfer muss Mitglied des Teams sein.");
+  // Ein Prüfer außerhalb der Mitglieder geht an fab; dort kommt die Meldung her.
+  assert.equal(teamSaveArgs(TEAM, { ...base, reviewer: "bo" }).error, undefined);
   assert.equal(teamSaveArgs(TEAM, { ...base, max_sessions: 0 }).error, "Sitzungen müssen zwischen 1 und 16 liegen.");
   assert.equal(teamSaveArgs(TEAM, { ...base, members: [{ blueprint: "zap" }, { blueprint: "ada", max_cost: "viel" }] }).error,
     "max-cost für ada muss eine ganze Zahl ≥ 0 sein.");

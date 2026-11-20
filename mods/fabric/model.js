@@ -587,9 +587,7 @@ export function teamSaveArgs(team, form) {
   if (!repos.length) return { error: "Team braucht mindestens ein Repo." };
   if (!members.length) return { error: "Team braucht mindestens ein Mitglied." };
   if (!reviewer) return { error: "Bitte eine Prüferin oder einen Prüfer wählen." };
-  if (!members.some((member) => member.blueprint === reviewer)) {
-    return { error: "Prüfer muss Mitglied des Teams sein." };
-  }
+  // Ob der Prüfer Mitglied ist, entscheidet fab (`Prüfer muss Mitglied des Teams sein`).
   for (const member of members) {
     if (member.max_cost !== "" && typeof member.max_cost !== "number") {
       return { error: `max-cost für ${member.blueprint} muss eine ganze Zahl ≥ 0 sein.` };
