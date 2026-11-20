@@ -56,17 +56,35 @@ def ensure():
             pass
 
 
+_lock_depth = 0
+_lock_handle = None
+
+
 @contextlib.contextmanager
 def locked():
-    """Exklusives flock für alle Schreibvorgänge."""
-    ensure()
-    handle = open(lock_path(), "a+", encoding="utf-8")
+    """Exklusives flock für alle Schreibvorgänge; im selben Prozess reentrant."""
+    global _lock_depth, _lock_handle
+    if _lock_depth == 0:
+        ensure()
+        handle = open(lock_path(), "a+", encoding="utf-8")
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        except BaseException:
+            handle.close()
+            raise
+        _lock_handle = handle
+    _lock_depth += 1
     try:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
         yield
     finally:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-        handle.close()
+        _lock_depth -= 1
+        if _lock_depth == 0:
+            handle = _lock_handle
+            _lock_handle = None
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            finally:
+                handle.close()
 
 
 def atomic_write(path, text, mode=None):
