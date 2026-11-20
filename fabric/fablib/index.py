@@ -17,6 +17,7 @@ def entry(ticket):
         "id": ticket["id"],
         "title": ticket["title"],
         "status": ticket["status"],
+        "parent": ticket.get("parent"),
         "assignee": ticket.get("assignee"),
         "repo": ticket.get("repo"),
         "branch": ticket.get("branch"),

@@ -19,7 +19,7 @@ def ticket_json(ticket):
     return json.dumps(ticket, ensure_ascii=False, indent=2)
 
 
-def ticket_text(ticket):
+def ticket_text(ticket, children=None):
     lines = [f"# {ticket['id']} {ticket['title']}", ""]
     meta = [
         f"Status: {ticket['status']}",
@@ -29,6 +29,8 @@ def ticket_text(ticket):
         f"Branch: {ticket.get('branch') or '—'}",
         f"Worktree: {ticket.get('worktree') or '—'}",
     ]
+    if ticket.get("parent"):
+        meta.append(f"Eltern-Ticket: {ticket['parent']}")
     lines.extend(meta)
     if ticket.get("waiting"):
         lines.append("Wartet auf: " + ", ".join(ticket["waiting"]))
@@ -55,6 +57,15 @@ def ticket_text(ticket):
             lines.append(f"- ![{item.get('name')}]({item.get('path')})")
     if ticket.get("checks") and ticket["checks"].get("tail"):
         lines.extend(["", "## Letzter Prüflauf", "", "```", ticket["checks"]["tail"], "```"])
+    if children:
+        done = sum(
+            1 for child in children if child.get("status") in ("done", "dropped")
+        )
+        lines.extend(["", f"## Unter-Tickets ({done}/{len(children)} erledigt)"])
+        for child in children:
+            lines.append(
+                f"- {child['id']} · {child.get('status')} · {child.get('title')}"
+            )
     if ticket.get("sessions"):
         lines.extend(["", "## Sessions"])
         for session in ticket["sessions"]:
@@ -76,6 +87,33 @@ def ticket_line(ticket):
         f"{ticket['id']:<6} {ticket['status']:<8} "
         f"{(ticket.get('assignee') or '—'):<10} {ticket['title']}"
     )
+
+
+def ticket_tree(tickets):
+    """Tickets als eingerückte Liste; Kinder unter ihrem Eltern-Ticket."""
+    by_parent = {}
+    for ticket in tickets:
+        by_parent.setdefault(ticket.get("parent"), []).append(ticket)
+    present = {ticket["id"] for ticket in tickets}
+    lines = []
+    seen = set()
+
+    def walk(ticket, depth):
+        if ticket["id"] in seen:
+            return
+        seen.add(ticket["id"])
+        lines.append("  " * depth + ticket_line(ticket))
+        for child in by_parent.get(ticket["id"], []):
+            walk(child, depth + 1)
+
+    for ticket in tickets:
+        parent = ticket.get("parent")
+        if parent and parent in present:
+            continue
+        walk(ticket, 0)
+    for ticket in tickets:
+        walk(ticket, 0)
+    return "\n".join(lines)
 
 
 def inbox_line(entry):
