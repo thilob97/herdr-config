@@ -97,7 +97,10 @@ Bei `wake` steht in `text` genau eines von: `geweckt`, `gestartet`, `an orchestr
     {"kind": "review", "ticket": "T-2", "at": 0, "from": "zap", "text": "Zusammenfassung"},
     {"kind": "attention", "ticket": "T-3", "at": 0, "from": "fab", "text": "Ping-Pong zwischen zap und ada"}
   ],
-  "roster": [{"name": "zap", "role": "umsetzer", "color": "c1"}],
+  "roster": [{"name": "zap", "role": "umsetzer", "color": "c1", "program": "omp",
+              "model": "…", "teams": ["herdr-app"]}],
+  "teams": [{"name": "herdr-app", "reviewer": "ada", "max_sessions": 10,
+             "orchestrator": {"argv": ["omp"], "prompt": "prompts/orchestrator.md"}}],
   "events": [ "die letzten 300 Ereignisse, älteste zuerst" ]
 }
 ```
@@ -147,11 +150,18 @@ Das UI pflegt alles über diese Befehle. Alle schreiben atomar (tmp + `os.replac
 | `fab agent edit NAME [--rename NEU] [--role R] [--color cN] [--argv-json JSON] [--prompt-text T] --from N` | Ändern. `--rename` nur, wenn kein offenes Ticket den Agenten nennt (`assignee`) und keine Session läuft; benennt die Promptdatei mit um und passt `reviewer` an. |
 | `fab agent rm NAME --from N` | Entfernen. Verweigert bei offenen Tickets, laufender Session oder wenn er `reviewer` ist (Gründe in der Meldung). Die Promptdatei bleibt erhalten. |
 | `fab settings set KEY VALUE --from N` | `max_sessions` (1–16), `reviewer` (Roster-Name), `orchestrator_argv` (JSON-Liste, nicht leer) |
+| `fab blueprint add NAME --role R [--color cN] --argv-json JSON [--prompt-text T] --from N` | Blaupause anlegen; Name wie `fab agent add`, Farbe sonst die nächste freie, Prompt `prompts/<name>.md` |
+| `fab blueprint edit NAME [--rename NEU] [--role R] [--color cN] [--argv-json JSON] [--prompt-text T] --from N` | Blaupause ändern; `--rename` zieht Teams und Prüfer mit |
+| `fab blueprint rm NAME --from N` | Entfernen; verweigert, solange die Blaupause Mitglied eines Teams ist. Der Prompt bleibt |
+| `fab team add NAME --repo PFAD… --members-json JSON --reviewer NAME [--max-sessions N] [--orchestrator-argv-json JSON] [--orchestrator-prompt PFAD] --from N` | Team anlegen; ein Repo gehört höchstens einem Team, der Prüfer muss Mitglied sein |
+| `fab team edit NAME [--rename NEU] [--repo PFAD…] [--members-json JSON] [--reviewer NAME] [--max-sessions N] [--orchestrator-argv-json JSON] [--orchestrator-prompt PFAD] --from N` | Team ändern; Repos und Mitglieder werden als ganze Liste ersetzt. Mitglieder: `[{"blueprint": "zap", "model": "…", "max_cost": 5}]` |
+| `fab team rm NAME --from N` | Team entfernen |
+| `fab team list [--json]` | Teams mit Repos, Mitgliedern (inkl. Übersteuerungen), Prüfer, Limit und Orchestrator |
 | `fab prompt list --json` | `[{name, kind: orchestrator\|preamble\|agent, path, bytes, placeholders: [...]}]` |
-| `fab prompt show NAME` | Rohtext (`orchestrator`, `preamble` oder Agentname) |
-| `fab prompt set NAME --text T --from N` | Speichern. Bei unbekannten Platzhaltern (nicht in Abschnitt 5) Warnung auf stderr, gespeichert wird trotzdem. |
-| `fab orchestrator status --json` | `{live, name, terminal, status, started_at}`. `status` = herdr-Status aus `hc ls --json`, sonst `null` |
-| `fab orchestrator restart --from N` | stop + start |
+| `fab prompt show NAME [--team TEAM]` | Rohtext (`orchestrator`, `preamble` oder Blaupause); `--team` wählt den Orchestrator-Prompt dieses Teams |
+| `fab prompt set NAME --text T [--team TEAM] --from N` | Speichern. Bei unbekannten Platzhaltern (nicht in Abschnitt 5) Warnung auf stderr, gespeichert wird trotzdem. |
+| `fab orchestrator status [TEAM] --json` | `{live, name, terminal, status, started_at}`. `status` = herdr-Status aus `hc ls --json`, sonst `null` |
+| `fab orchestrator start\|stop\|restart [TEAM] [--from N]` | Orchestrator des Teams starten, stoppen oder neu starten |
 | `fab repos --json` | Bekannte Repos aus Tickets und `--add PFAD…` (das UI gibt die Space-Ordner mit): `[{path, branch, open_tickets, verify_exists, lessons_exists}]`, nur Git-Wurzeln, ohne Doppelte |
 | `fab repo show PFAD --json` | `{path, branch, verify: {exists, text}, lessons: {exists, text}}` |
 | `fab repo set PFAD verify\|lessons --text T --from N` | Schreibt `.fabric/verify.sh` (ausführbar) bzw. `.fabric/lessons.md` im Haupt-Checkout. Verweigert außerhalb einer Git-Wurzel. |
@@ -160,7 +170,7 @@ Das UI pflegt alles über diese Befehle. Alle schreiben atomar (tmp + `os.replac
 | `fab new "<satz>" [--repo PFAD] [--from NAME] [--no-wake]` | wie oben; `--no-wake` legt nur den Entwurf an, ohne `@orchestrator`-Kommentar |
 | `fab version` | Version (Datum + Git-HEAD des Fabric-Codes) |
 
-`index.json.roster` enthält je Agent `{name, role, color, program, model}`. Das UI liest den vollständigen Roster bei Bedarf über `fab roster --json`.
+`index.json.roster` enthält je Blaupause `{name, role, color, program, model, teams}`; `index.json.teams` nennt Reihenfolge, Prüfer, Limit und Orchestrator je Team für die Seitenleiste. Das UI liest den vollständigen Roster bei Bedarf über `fab roster --json`.
 
 ## 4. Wecken durch Erwähnung
 

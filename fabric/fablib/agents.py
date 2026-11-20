@@ -181,16 +181,32 @@ def at_limit(roster, live_terminals, team_entry):
 
 
 def roster_rows(roster):
+    """Alle Blaupausen mit ihren Teams; vor der Migration die Agenten."""
+    entries = roster.get("blueprints") or roster["agents"]
+    membership = {}
+    for team_entry in roster.get("teams") or []:
+        if not isinstance(team_entry, dict) or not team_entry.get("name"):
+            continue
+        for member in team_entry.get("members") or []:
+            if not isinstance(member, dict) or not member.get("blueprint"):
+                continue
+            membership.setdefault(str(member["blueprint"]), []).append(
+                str(team_entry["name"])
+            )
     rows = []
-    for entry in roster["agents"]:
-        program, model, _flags = split_argv(entry["argv"])
+    for entry in entries:
+        if not isinstance(entry, dict) or not entry.get("name"):
+            continue
+        name = str(entry["name"])
+        program, model, _flags = split_argv(entry.get("argv"))
         rows.append(
             {
-                "name": entry["name"],
-                "role": entry["role"],
-                "color": entry["color"],
+                "name": name,
+                "role": str(entry.get("role") or ""),
+                "color": str(entry.get("color") or ""),
                 "program": program,
                 "model": model,
+                "teams": membership.get(name, []),
             }
         )
     return rows

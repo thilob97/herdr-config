@@ -353,6 +353,7 @@ class CliTests(FabricCase):
         self.assertIn("Prüfer ada", text)
         self.assertIn(os.path.realpath(repo), text)
         self.assertIn("Mitglieder zap, ada", text)
+        self.assertIn("Übersteuerungen zap: model=m2, max-cost=5", text)
 
         result = self.cli(
             "team", "add", "kollision",

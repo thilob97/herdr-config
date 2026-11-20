@@ -26,6 +26,9 @@ class IndexTests(FabricCase):
         self.assertEqual(entry["comment_count"], 1)
         self.assertEqual(entry["last_comment"]["mentions"], ["orchestrator"])
         self.assertEqual({row["name"] for row in payload["roster"]}, {"zap", "ada"})
+        self.assertEqual([row["name"] for row in payload["teams"]], ["herdr-app"])
+        self.assertEqual(payload["teams"][0]["max_sessions"], 4)
+        self.assertEqual(payload["roster"][0]["teams"], ["herdr-app"])
         self.assertEqual(payload["events"][-1]["ticket"], tid)
 
     def test_inbox_question_aus_waiting(self):

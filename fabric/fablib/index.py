@@ -5,7 +5,8 @@
 """
 import json
 
-from . import agents, events, render, store
+from . import agents, events, render, store, teams
+from .errors import FabError
 
 MAX_EVENTS = 300
 
@@ -108,6 +109,26 @@ def _inbox(tickets, rows):
     return entries
 
 
+def _teams(roster):
+    rows = []
+    for entry in roster.get("teams") or []:
+        if not isinstance(entry, dict) or not entry.get("name"):
+            continue
+        try:
+            limit = teams.team_limit(entry)
+        except FabError:
+            limit = teams.DEFAULT_MAX_SESSIONS
+        rows.append(
+            {
+                "name": str(entry["name"]),
+                "reviewer": str(entry.get("reviewer") or ""),
+                "max_sessions": limit,
+                "orchestrator": teams.orchestrator_config(entry),
+            }
+        )
+    return rows
+
+
 def build():
     tickets = store.all_tickets()
     rows = events.read_all()
@@ -118,6 +139,7 @@ def build():
         "tickets": [entry(ticket) for ticket in tickets],
         "inbox": _inbox(tickets, rows),
         "roster": agents.roster_rows(roster) if roster else [],
+        "teams": _teams(roster) if roster else [],
         "events": rows[-MAX_EVENTS:],
     }
     return payload

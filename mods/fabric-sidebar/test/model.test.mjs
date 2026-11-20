@@ -30,6 +30,8 @@ const other = term("t7q", "orchestrator", {}, { status: "working" });
 test("nur Fabric-Terminals werden ausgewählt, der Orchestrator über Label oder Namen", () => {
   assert.equal(fabricEntry(orchestrator).orchestrator, true);
   assert.equal(fabricEntry(term("t1", "fab-orchestrator", {})).orchestrator, true);
+  assert.equal(fabricEntry(term("t1b", "fab-zed-orchestrator", {})).orchestrator, true);
+  assert.equal(fabricEntry(term("t1c", "fab-zed-zap-t-1", { "fab.agent": "zap" })).orchestrator, false);
   assert.deepEqual(fabricEntry(zap), {
     address: "t8x", name: "fab-zap-t-12", agent: "zap", ticket: "T-12", orchestrator: false,
   });
@@ -151,4 +153,93 @@ test("Laufzeit formatiert Minuten, Stunden, Tage; ohne Start leer", () => {
   assert.equal(runtimeText(NOW - 3 * 24 * 60 * MIN, NOW), "3d");
   assert.equal(runtimeText(undefined, NOW), "");
   assert.equal(runtimeText(NOW + MIN, NOW), "");
+});
+
+test("zwei Teams mit eigenem Orchestrator: Team oben, Agenten eingerückt, Subagent erbt", () => {
+  const alphaOrch = term("a1", "fab-alpha-orchestrator", {
+    "fab.role": "orchestrator", "fab.team": "alpha",
+  });
+  const betaOrch = term("b1", "fab-beta-orchestrator", {
+    "fab.role": "orchestrator", "fab.team": "beta",
+  });
+  // Kein `fab.team`: das Team kommt aus dem Terminalnamen.
+  const alphaZap = term("a2", "fab-alpha-zap-t-1", {
+    "fab.agent": "zap", "fab.ticket": "T-1",
+  }, { created_ms: NOW - 5 * MIN });
+  const betaAda = term("b2", "fab-beta-ada-t-2", {
+    "fab.agent": "ada", "fab.ticket": "T-2",
+  });
+  const betaSub = term("b3", "sub", {}, { parent: "b2" });
+
+  const { orchestrator: top, rows, teams } = fabricRows(
+    [betaAda, betaSub, alphaZap, betaOrch, alphaOrch],
+    [],
+    [{ id: "T-1", title: "Eins" }, { id: "T-2", title: "Zwei" }],
+    [
+      { name: "zap", role: "umsetzer", teams: ["alpha"] },
+      { name: "ada", role: "pruefer", teams: ["beta"] },
+    ],
+    NOW,
+    [{ name: "alpha" }, { name: "beta" }],
+  );
+
+  assert.equal(top.address, "a1");
+  assert.deepEqual(teams.map((team) => team.name), ["alpha", "beta"]);
+  assert.deepEqual(teams.map((team) => team.orchestrator.address), ["a1", "b1"]);
+  assert.deepEqual(teams[0].rows.map((row) => [row.address, row.depth, row.team]), [
+    ["a1", 0, "alpha"],
+    ["a2", 1, "alpha"],
+  ]);
+  assert.deepEqual(teams[1].rows.map((row) => [row.address, row.depth, row.team]), [
+    ["b1", 0, "beta"],
+    ["b2", 1, "beta"],
+    ["b3", 2, "beta"],
+  ]);
+  assert.deepEqual(rows.map((row) => row.address), ["a1", "a2", "b1", "b2", "b3"]);
+  assert.equal(teams[0].count, 2);
+  assert.equal(teams[1].count, 3);
+});
+
+test("ohne Team-Label entscheidet der Name, der längste Teamname gewinnt; Legacy-Orchestrator ins erste Team", () => {
+  const legacy = term("o1", "fab-orchestrator", { "fab.role": "orchestrator" });
+  const web = term("w1", "fab-acme-web-ada-t-3", { "fab.agent": "ada", "fab.ticket": "T-3" });
+  const core = term("c1", "fab-acme-zap-t-4", { "fab.agent": "zap", "fab.ticket": "T-4" });
+
+  const { rows, teams } = fabricRows(
+    [legacy, web, core], [], [], [], NOW,
+    [{ name: "acme" }, { name: "acme-web" }],
+  );
+
+  assert.deepEqual(teams.map((team) => team.name), ["acme", "acme-web"]);
+  // Das alte globale `fab-orchestrator` gehört zum ersten (Legacy-)Team.
+  assert.equal(teams[0].orchestrator.address, "o1");
+  assert.deepEqual(teams[0].rows.map((row) => [row.address, row.depth]), [
+    ["o1", 0],
+    ["c1", 1],
+  ]);
+  // Gruppe ohne Orchestrator: Agenten beginnen bei depth 0.
+  assert.equal(teams[1].orchestrator, null);
+  assert.deepEqual(teams[1].rows.map((row) => [row.address, row.depth]), [["w1", 0]]);
+  assert.equal(teams[1].rows[0].team, "acme-web");
+  assert.deepEqual(rows.map((row) => row.address), ["o1", "c1", "w1"]);
+});
+
+test("Gruppen folgen der Team-Reihenfolge, Unbekannte alphabetisch", () => {
+  const zulu = term("z1", "fab-zulu-orchestrator", {
+    "fab.role": "orchestrator", "fab.team": "zulu",
+  });
+  const alpha = term("a1", "fab-alpha-orchestrator", {
+    "fab.role": "orchestrator", "fab.team": "alpha",
+  });
+  const gamma = term("g1", "fab-gamma-x-t-1", {
+    "fab.agent": "x", "fab.ticket": "T-1", "fab.team": "gamma",
+  });
+
+  const { teams } = fabricRows(
+    [gamma, alpha, zulu], [], [], [], NOW,
+    [{ name: "zulu" }, { name: "alpha" }],
+  );
+
+  assert.deepEqual(teams.map((team) => team.name), ["zulu", "alpha", "gamma"]);
+  assert.deepEqual(teams.map((team) => team.orchestrator?.address ?? null), ["z1", "a1", null]);
 });

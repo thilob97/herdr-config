@@ -1192,10 +1192,26 @@ def cmd_team(args):
                 for member in row["members"]
                 if isinstance(member, dict)
             ) or "—"
-            print(
+            overrides = []
+            for member in row["members"]:
+                if not isinstance(member, dict):
+                    continue
+                marks = []
+                if member.get("model"):
+                    marks.append(f"model={member['model']}")
+                if member.get("max_cost") is not None:
+                    marks.append(f"max-cost={member['max_cost']}")
+                if marks:
+                    overrides.append(
+                        f"{member.get('blueprint')}: {', '.join(marks)}"
+                    )
+            line = (
                 f"{row['name']}  Prüfer {row['reviewer'] or '—'} · "
                 f"{row['max_sessions']} Sessions · {repos} · Mitglieder {members}"
             )
+            if overrides:
+                line += " · Übersteuerungen " + "; ".join(overrides)
+            print(line)
         return 0
     actor = _require_actor(args)
     with store.locked():
@@ -1262,11 +1278,13 @@ def cmd_prompt(args):
             print(f"    Platzhalter: {marks}")
         return 0
     if args.action == "show":
-        sys.stdout.write(prompts.show(roster, args.name))
+        sys.stdout.write(prompts.show(roster, args.name, args.team))
         return 0
     actor = _require_actor(args)
     with store.locked():
-        path, size, unknown = prompts.save(roster, args.name, args.text, actor)
+        path, size, unknown = prompts.save(
+            roster, args.name, args.text, actor, args.team
+        )
     if unknown:
         known = ", ".join("{" + name + "}" for name in prompts.KNOWN)
         print(
@@ -1599,10 +1617,14 @@ def build_parser():
                                       description="Prompt roh ausgeben")
     show_item.add_argument("name", metavar="NAME",
                            help="orchestrator, preamble oder Agentenname")
+    show_item.add_argument("--team", metavar="NAME",
+                           help="Team für den Orchestrator-Prompt")
     set_prompt = prompt_sub.add_parser("set", help="Prompt speichern",
                                        description="Prompt speichern")
     set_prompt.add_argument("name", metavar="NAME")
     set_prompt.add_argument("--text", metavar="T", required=True)
+    set_prompt.add_argument("--team", metavar="NAME",
+                            help="Team für den Orchestrator-Prompt")
     set_prompt.add_argument("--from", dest="from_", metavar="NAME", required=True)
 
     item = command("repos", "Bekannte Repos zeigen", cmd_repos)
