@@ -31,6 +31,19 @@ die Abnahmekriterien erfüllt sind und `fab verify` grün ist.
    fab handover {id} --from {agent} "<Zusammenfassung: geänderte Dateien, Testergebnis, offene Punkte>"
    ```
 
+## Unter-Tickets
+
+Gehört ein Teil nicht in dieses Ticket, schlage ihn vor, statt ihn mitzuerledigen:
+
+```sh
+fab new "Teilauftrag in einem Satz" --parent {id} --from {agent}
+```
+
+Das Ergebnis ist ein Entwurf: Du formulierst ihn nicht aus, verteilst ihn nicht und
+committest nichts dafür. Ein Kind erbt Repo und Team des Eltern-Tickets. Höchstens
+3 offene Kinder je Eltern-Ticket, keine Kinder von Kindern. Nenne offene Kinder in
+der Übergabe; `fab handover {id}` scheitert, solange Kinder offen sind.
+
 ## Grenzen
 
 - `accept` und `reject` entscheidet der Mensch; du rufst sie nie auf.

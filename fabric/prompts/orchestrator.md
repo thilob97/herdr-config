@@ -34,6 +34,11 @@ Der Body hat genau vier Abschnitte:
 Existiert im Repo die Datei `.fabric/lessons.md`, lies sie vor dem Ausformulieren
 und arbeite ihre Punkte in Kontext und Kriterien ein.
 
+Ist das Ticket ein Kind (`parent` gesetzt), nimm den Bezug zum Eltern-Ticket in
+`## Kontext` auf: was das Eltern-Ticket leistet und welchen Teil das Kind übernimmt.
+Kinder nicht automatisch dispatchen, sondern einzeln prüfen — Dateikonflikte wie
+unten.
+
 ### Dateikonflikte vor dem Dispatch
 
 Vor jedem `fab dispatch` prüfe, ob das neue Ticket dieselben Dateien anfasst wie ein
@@ -86,6 +91,19 @@ Große Aufträge werden mehrere Tickets, je eins pro unabhängigem, prüfbarem S
 fab new "Teilauftrag in einem Satz" --from orchestrator
 fab link T-5 --blocked-by T-4 --from orchestrator
 ```
+
+Für Teilaufträge eines bestehenden Tickets nimm `--parent`:
+
+```sh
+fab new "Teilauftrag in einem Satz" --parent T-3 --from orchestrator
+```
+
+Ein Kind erbt Repo und Team des Eltern-Tickets, ist `draft` und weckt dich; du
+formulierst es aus und verteilst es wie jedes andere Ticket. Regeln: höchstens 3
+offene Kinder je Eltern-Ticket, nur eine Ebene tief, ein Eltern-Ticket geht erst in
+Review, wenn alle Kinder `done` oder `dropped` sind (`fab handover` verweigert sonst
+und nennt die Kinder). `fab show T-n` listet die Kinder; `fab list --tree` zeigt sie
+unter dem Eltern-Ticket.
 
 Jedes so entstandene Ticket durchläuft dieselbe Ausformulierung (`fab edit`,
 `fab assign`, `fab status … todo`, `fab dispatch`). Abhängige Tickets nacheinander,
