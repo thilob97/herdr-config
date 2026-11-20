@@ -544,6 +544,59 @@ class RowTests(unittest.TestCase):
             row["members"], [{"blueprint": "zap"}, {"blueprint": "ada"}]
         )
         self.assertEqual([a["name"] for a in row["agents"]], ["zap", "ada"])
+        self.assertFalse(row["prompt_shared"])
+        self.assertEqual(row["shared_with"], [])
+
+    def test_team_rows_markiert_geteilte_prompts(self):
+        data = migrated_roster()
+        data["teams"].append(
+            {
+                "name": "zwei",
+                "repos": ["/tmp/zwei"],
+                "orchestrator": {
+                    "argv": ["true"],
+                    "prompt": "prompts/orchestrator.md",
+                },
+                "members": [{"blueprint": "zap"}],
+                "reviewer": "zap",
+                "max_sessions": 2,
+            }
+        )
+        data["teams"].append(
+            {
+                "name": "drei",
+                "repos": ["/tmp/drei"],
+                "orchestrator": {
+                    "argv": ["true"],
+                    "prompt": "prompts/orchestrator-drei.md",
+                },
+                "members": [{"blueprint": "ada"}],
+                "reviewer": "ada",
+                "max_sessions": 2,
+            }
+        )
+        data["teams"].append(
+            {
+                "name": "vier",
+                "repos": ["/tmp/vier"],
+                "members": [{"blueprint": "zap"}],
+                "reviewer": "zap",
+                "max_sessions": 2,
+            }
+        )
+        rows = {row["name"]: row for row in teams.team_rows(data)}
+        self.assertTrue(rows["herdr-app"]["prompt_shared"])
+        self.assertEqual(rows["herdr-app"]["shared_with"], ["zwei", "vier"])
+        self.assertTrue(rows["zwei"]["prompt_shared"])
+        self.assertEqual(rows["zwei"]["shared_with"], ["herdr-app", "vier"])
+        self.assertFalse(rows["drei"]["prompt_shared"])
+        self.assertEqual(rows["drei"]["shared_with"], [])
+        self.assertTrue(rows["vier"]["prompt_shared"])
+        self.assertEqual(rows["vier"]["shared_with"], ["herdr-app", "zwei"])
+        self.assertEqual(
+            rows["vier"]["orchestrator"]["prompt"],
+            teams.DEFAULT_ORCHESTRATOR_PROMPT,
+        )
 
 
 if __name__ == "__main__":

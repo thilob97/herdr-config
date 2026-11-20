@@ -621,12 +621,33 @@ def add_team(name, repos, members_json, orchestrator_argv_json=None,
                 "--orchestrator-argv-json fehlt: Team braucht ein "
                 "Orchestrator-Programm"
             )
-    prompt = str(
-        orchestrator_prompt
-        or legacy.get("prompt")
-        or teams.DEFAULT_ORCHESTRATOR_PROMPT
-    )
+    explicit_prompt = str(orchestrator_prompt or "").strip()
+    if explicit_prompt:
+        prompt = str(orchestrator_prompt)
+        template = None
+    else:
+        prompt = f"prompts/orchestrator-{name}.md"
+        template = str(
+            legacy.get("prompt") or teams.DEFAULT_ORCHESTRATOR_PROMPT
+        )
     teams.validate_team(data, name, normalized, members, reviewer, limit)
+    written = []
+    if template is not None:
+        directory = os.path.dirname(path)
+        source = _abs(directory, template)
+        target = _abs(directory, prompt)
+        if not os.path.exists(target):
+            if not os.path.isfile(source):
+                raise FabError(
+                    f"Orchestrator-Vorlage fehlt: {source}; lege sie an oder "
+                    "gib --orchestrator-prompt PFAD an"
+                )
+            with open(source, encoding="utf-8") as handle:
+                raw = handle.read()
+            store.atomic_write(
+                target, raw, mode=_mode(target, _mode(source, 0o644))
+            )
+            written.append(target)
     entry = {
         "name": name,
         "repos": normalized,
@@ -644,6 +665,7 @@ def add_team(name, repos, members_json, orchestrator_argv_json=None,
         f"Team {name} angelegt: {len(normalized)} Repo(s), Mitglieder "
         f"{', '.join(_member_descriptions(members))}, Prüfer {reviewer}, "
         f"max_sessions {limit}",
+        written=written,
     )
     return entry
 
@@ -769,6 +791,34 @@ def remove_team(name, actor):
     path, data = _load()
     _migrate(data)
     entry = teams.team(data, name)
+    repos = _team_repos(entry)
+    blockers = []
+    tickets = [
+        ticket
+        for ticket in store.all_tickets()
+        if ticket.get("status") in ("todo", "doing", "review")
+        and ticket.get("repo")
+        and teams.normalize_repo(ticket["repo"]) in repos
+    ]
+    if tickets:
+        blockers.append(
+            "offene Tickets "
+            + ", ".join(
+                f"{ticket['id']} ({ticket['status']})" for ticket in tickets
+            )
+        )
+    orchestrator, _row = agents.live_orchestrator(data, name)
+    if orchestrator:
+        blockers.append(
+            f"Orchestrator {orchestrator} läuft (stoppe ihn zuerst mit "
+            f"fab orchestrator stop {name})"
+        )
+    if blockers:
+        raise FabError(
+            f"Team „{name}“ lässt sich nicht löschen: "
+            + "; ".join(blockers)
+            + "."
+        )
     _team_entries(data).remove(entry)
     if teams.is_migrated(data):
         _sync_legacy(data)

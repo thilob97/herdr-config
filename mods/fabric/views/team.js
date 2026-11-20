@@ -344,6 +344,9 @@ function teamCard(app, cx, t, team) {
   const state = app.orchestratorState(team.name);
   const live = ui.orchestratorStatus(t, state);
   const error = app.errorFor(`team:${team.name}`);
+  const promptPath = team.orchestrator?.prompt ?? `prompts/orchestrator-${team.name}.md`;
+  const sharedWith = (team.shared_with ?? []).join(", ");
+  const sharedTip = `Prompt ${promptPath} wird auch von ${sharedWith || "anderen Teams"} verwendet. Änderungen wirken auf diese Teams.`;
   const blockedReason = form.repos.length
     ? (!dirty ? "Keine Änderungen" : "")
     : "Mindestens ein Repo ist nötig.";
@@ -360,9 +363,21 @@ function teamCard(app, cx, t, team) {
         id: `fabric-team-status-${team.name}`,
         tooltip: state?.terminal ? `Terminal ${state.terminal}` : "Orchestrator-Status",
       }))
+      .when(Boolean(team.prompt_shared), (el) => el.child(ui.chip(t, "Prompt geteilt", t.working,
+        `fabric-team-prompt-shared-${team.name}`, { tooltip: sharedTip })))
       .child(div().flex_1())
       .when(dirty, (el) => el.child(ui.chip(t, "ungespeichert", t.working,
-        `fabric-team-dirty-${team.name}`, { tooltip: "Änderungen sind noch nicht gespeichert" }))),
+        `fabric-team-dirty-${team.name}`, { tooltip: "Änderungen sind noch nicht gespeichert" })))
+      .child(ui.button(t, {
+        id: `fabric-team-delete-${team.name}`,
+        label: "Team löschen",
+        icon: "trash",
+        danger: true,
+        small: true,
+        disabled: Boolean(app.busy),
+        tooltip: `Team ${team.name} löschen (fragt nach)`,
+        onClick: (cx) => app.confirmDeleteTeam(team, cx),
+      })),
     orchestratorBlock(app, cx, t, team),
     reposBlock(app, cx, t, team, form),
     membersBlock(app, cx, t, team, form),
@@ -395,6 +410,14 @@ export function renderTeam(app, cx, t) {
       div().text_size(T.xs).text_color(t.dim).child(
         `${blueprints.length} Blaupause${blueprints.length === 1 ? "" : "n"} · ${teams.length} Team${teams.length === 1 ? "" : "s"}`,
       ),
+      ui.button(t, {
+        id: "fabric-team-new",
+        label: "Neues Team",
+        icon: "plus",
+        primary: true,
+        tooltip: "Team anlegen (fab team add)",
+        onClick: (cx) => app.openNewTeam(cx),
+      }),
       ui.button(t, {
         id: "fabric-blueprint-new",
         label: "Neue Blaupause",

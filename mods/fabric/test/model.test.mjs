@@ -831,6 +831,77 @@ test("teamSaveArgs verlangt Repos, Mitglieder und einen Prüfer aus dem Team", a
     "max-cost für ada muss eine ganze Zahl ≥ 0 sein.");
 });
 
+test("teamAddArgs baut die Kommandozeile für ein neues Team", async () => {
+  const { teamAddArgs } = await import("../model.js");
+  const plan = teamAddArgs({
+    name: "  alpha  ",
+    repos: ["/r/a", " /r/c ", "/r/a", ""],
+    members: [{ blueprint: "zap", model: "", max_cost: "" }, { blueprint: "ada", model: "opus" }],
+    reviewer: "  ada  ",
+    max_sessions: "6",
+  });
+  assert.equal(plan.error, undefined);
+  assert.equal(plan.name, "alpha");
+  assert.equal(plan.sessions, 6);
+  assert.deepEqual(plan.args, [
+    "team", "add", "alpha",
+    "--repo", "/r/a",
+    "--repo", "/r/c",
+    "--repo", "/r/a",
+    '--members-json=[{"blueprint":"zap"},{"blueprint":"ada","model":"opus"}]',
+    "--reviewer=ada",
+    "--max-sessions=6",
+    "--from=mensch",
+  ]);
+  // Das Orchestrator-Prompt wählt fab selbst.
+  assert.equal(plan.args.some((arg) => arg.startsWith("--orchestrator-prompt")), false);
+});
+
+test("teamAddArgs meldet fehlende oder ungültige Eingaben", async () => {
+  const { teamAddArgs } = await import("../model.js");
+  const base = {
+    name: "alpha",
+    repos: ["/r/a"],
+    members: [{ blueprint: "zap" }, { blueprint: "ada" }],
+    reviewer: "ada",
+    max_sessions: 4,
+  };
+  const nameError = "Teamname: 1–16 Zeichen, nur Kleinbuchstaben, Ziffern, „_“ und „-“, beginnend mit einem Buchstaben.";
+  assert.equal(teamAddArgs({ ...base, name: "" }).error, "Bitte einen Teamnamen angeben.");
+  assert.equal(teamAddArgs({ ...base, name: "   " }).error, "Bitte einen Teamnamen angeben.");
+  assert.equal(teamAddArgs({ ...base, name: "Alpha" }).error, nameError);
+  assert.equal(teamAddArgs({ ...base, name: "1alpha" }).error, nameError);
+  assert.equal(teamAddArgs({ ...base, name: "a".repeat(17) }).error, nameError);
+  assert.equal(teamAddArgs({ ...base, name: "a".repeat(16) }).error, undefined);
+  assert.equal(teamAddArgs({ ...base, repos: [] }).error, "Team braucht mindestens ein Repo.");
+  assert.equal(teamAddArgs({ ...base, repos: ["  ", ""] }).error, "Team braucht mindestens ein Repo.");
+  assert.equal(teamAddArgs({ ...base, members: [] }).error, "Team braucht mindestens ein Mitglied.");
+  assert.equal(teamAddArgs({ ...base, reviewer: "" }).error, "Bitte eine Prüferin oder einen Prüfer wählen.");
+  assert.equal(teamAddArgs({ ...base, max_sessions: 0 }).error, "Sitzungen müssen zwischen 1 und 16 liegen.");
+  assert.equal(teamAddArgs({ ...base, max_sessions: 17 }).error, "Sitzungen müssen zwischen 1 und 16 liegen.");
+  assert.equal(teamAddArgs({ ...base, members: [{ blueprint: "zap" }, { blueprint: "ada", max_cost: "viel" }] }).error,
+    "max-cost für ada muss eine ganze Zahl ≥ 0 sein.");
+});
+
+test("teamAddArgs schneidet Leerraum ab und nimmt Mitglieder ohne Übersteuerungen", async () => {
+  const { teamAddArgs } = await import("../model.js");
+  const plan = teamAddArgs({
+    name: " alpha ",
+    repos: [" /r/a "],
+    members: [{ blueprint: "zap", model: " ", max_cost: "" }, { blueprint: "ada" }],
+    reviewer: " zap ",
+    max_sessions: 1,
+  });
+  assert.equal(plan.error, undefined);
+  assert.equal(plan.name, "alpha");
+  assert.equal(plan.args[2], "alpha");
+  assert.equal(plan.args[4], "/r/a");
+  assert.equal(plan.args.includes('--members-json=[{"blueprint":"zap"},{"blueprint":"ada"}]'), true);
+  assert.equal(plan.args.includes("--reviewer=zap"), true);
+  assert.equal(plan.args.includes("--max-sessions=1"), true);
+  assert.equal(plan.args.at(-1), "--from=mensch");
+});
+
 test("blueprintMemberOptions bietet nur noch nicht gewählte Blaupausen", async () => {
   const { blueprintMemberOptions } = await import("../model.js");
   const blueprints = [

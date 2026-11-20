@@ -1020,7 +1020,15 @@ class TeamTests(ConfigCase):
         self.assertEqual(entry["max_sessions"], 3)
         self.assertEqual(
             entry["orchestrator"],
-            {"argv": ["omp"], "prompt": "prompts/orchestrator.md"},
+            {"argv": ["omp"], "prompt": "prompts/orchestrator-zwei.md"},
+        )
+        prompt = os.path.join(
+            self.roster_dir, "prompts", "orchestrator-zwei.md"
+        )
+        self.assertTrue(os.path.isfile(prompt))
+        self.assertEqual(
+            self._read(prompt),
+            self._read(os.path.join(self.roster_dir, "prompts", "orchestrator.md")),
         )
         data = self.roster_json()
         self.assertEqual(
@@ -1125,6 +1133,74 @@ class TeamTests(ConfigCase):
         self.assertIsNone(payload["team"])
         self.assertEqual(payload["agents"], [])
         self.assertEqual(self._read(self.roster), raw)
+
+    def test_default_prompt_je_team_und_set_aendert_nur_ein_team(self):
+        repo = self.make_repo()
+        self.config_call(
+            config.add_team, "zwei", [repo], '[{"blueprint": "zap"}]',
+            orchestrator_argv_json='["true"]', reviewer="zap", actor="mensch",
+        )
+        herdr_prompt = self.prompt_path("orchestrator")
+        zwei_prompt = os.path.join(
+            self.roster_dir, "prompts", "orchestrator-zwei.md"
+        )
+        self.assertEqual(
+            (herdr_prompt, zwei_prompt),
+            (
+                os.path.join(self.roster_dir, "prompts", "orchestrator.md"),
+                os.path.join(self.roster_dir, "prompts", "orchestrator-zwei.md"),
+            ),
+        )
+        herdr_before = self._read(herdr_prompt)
+        self.assertEqual(self._read(zwei_prompt), herdr_before)
+
+        self.ok(
+            "prompt", "set", "orchestrator", "--team", "zwei",
+            "--text", "Nur für zwei.\n", "--from", "mensch",
+        )
+        self.assertEqual(self._read(zwei_prompt), "Nur für zwei.\n")
+        self.assertEqual(self._read(herdr_prompt), herdr_before)
+
+    def test_rm_verweigert_offene_tickets_und_laufenden_orchestrator(self):
+        repo = self.make_repo()
+        self.config_call(
+            config.add_team, "zwei", [repo], '[{"blueprint": "zap"}]',
+            orchestrator_argv_json='["true"]', reviewer="zap", actor="mensch",
+        )
+        tid = self.new("Offene Arbeit", repo=repo)
+        self.patch_ticket(tid, status="todo")
+        before = self._read(self.roster)
+
+        with self.assertRaises(FabError) as ctx:
+            self.config_call(config.remove_team, "zwei", "mensch")
+        text = str(ctx.exception)
+        self.assertIn("Team „zwei“ lässt sich nicht löschen", text)
+        self.assertIn(tid, text)
+        self.assertIn("(todo)", text)
+        self.assertEqual(self._read(self.roster), before)
+
+        self.patch_ticket(tid, status="done")
+        self.set_live({"fab-zwei-orchestrator": "t0"})
+        with self.assertRaises(FabError) as ctx:
+            self.config_call(config.remove_team, "zwei", "mensch")
+        text = str(ctx.exception)
+        self.assertIn("fab-zwei-orchestrator", text)
+        self.assertIn("fab orchestrator stop zwei", text)
+        self.assertEqual(self._read(self.roster), before)
+
+        self.set_live({})
+        self.config_call(config.remove_team, "zwei", "mensch")
+        self.assertEqual(
+            [entry["name"] for entry in self.roster_json()["teams"]],
+            ["herdr-app"],
+        )
+        self.assertTrue(
+            os.path.isfile(
+                os.path.join(
+                    self.roster_dir, "prompts", "orchestrator-zwei.md"
+                )
+            )
+        )
 
     def test_uebersteuerungen_stehen_in_der_meldung(self):
         repo = self.make_repo()
