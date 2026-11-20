@@ -132,7 +132,7 @@ Alle Befehle schreiben unter Lock, hängen Ereignisse an und erzeugen danach `in
 | `fab reject ID "<feedback>"` | Nur der Mensch. Kommentar von `mensch`, Status `doing`, weckt `assignee`. |
 | `fab drop ID --from NAME "<grund>"` | Status `dropped`, Sessions beenden, Worktree bleibt. |
 | `fab wake ID NAME --from NAME ["<text>"]` | Wecken von Hand, gleiche Regeln wie bei Erwähnungen |
-| `fab orchestrator start\|stop\|status` | Orchestrator-Terminal verwalten (Abschnitt 5) |
+| `fab orchestrator start\|stop\|status [TEAM]` | Orchestrator-Terminal je Team verwalten (Abschnitt 5) |
 | `fab agents [--json]` | Roster und laufende Sessions |
 | `fab inbox [--json]` | wie `index.json.inbox` |
 | `fab index` | `index.json` neu erzeugen |
@@ -210,12 +210,12 @@ Roster `fabric/roster.json`:
 ```
 
 - Start eines Agenten auf einem Ticket:
-  `hc run --bg --json --name fab-<agent>-<id klein> --cwd <worktree> --label fab.agent=<agent> --label fab.ticket=<ID> --no-parent --outlive-parent <argv…> "<startprompt>"`.
+  `hc run --bg --json --name fab-<team>-<agent>-<id klein> --cwd <worktree> --label fab.agent=<agent> --label fab.ticket=<ID> --label fab.team=<team> --no-parent --outlive-parent <argv…> "<startprompt>"`.
   Der Startprompt ist `prompts/preamble.md`, gefolgt vom Rollenprompt `prompts/<agent>.md` und dem Ticket (`fab show`-Text). Platzhalter in `preamble.md`: `{id} {title} {agent} {role} {worktree} {branch} {base} {reviewer}`.
 - Ist `argv[0]` des Agenten (oder des Orchestrators) `claude`, markiert `fab` vorher das Startverzeichnis (Worktree bzw. Orchestrator-Ordner) als vertraut: `projects["<realpath>"].hasTrustDialogAccepted = true` in `~/.claude.json`. Es wird nur dieser eine Schlüssel geändert; alle anderen Felder bleiben unverändert. Geschrieben wird atomar (tmp im selben Ordner, gleiche Dateirechte, `os.replace`); hat sich die Datei seit dem Lesen geändert, wird bis zu 3-mal neu gelesen. Fehlt die Datei oder ist sie kein gültiges JSON: Warnung auf stderr, Start läuft trotzdem. Pfad über `$FAB_CLAUDE_JSON`, Standard `~/.claude.json`; Tests setzen immer eine Temp-Datei.
 - Ist `max_sessions` erreicht (arbeitende oder auf Antwort wartende `fab-*`-Terminals ohne Orchestrator), wird nicht gestartet. Ergebnis: `unterdrückt: voll`, dazu ein `attention`-Eintrag. Status `working`/`blocked` zählt; `idle`/`done` nicht, und Sessions von `done`/`dropped`-Tickets zählen nicht mehr. Ohne Statuswort gilt eine Session als beschäftigt.
 - Laufend heißt: `hc ls --json` führt ein Terminal mit diesem Namen und `state == "live"`. `fab agents` zeigt je Session das Statuswort, damit untätige Sessions erkennbar bleiben.
-- `fab orchestrator start`: Kopiert `prompts/orchestrator.md` nach `~/.herdr/fabric-orchestrator/AGENTS.md` und startet `hc run --bg --name fab-orchestrator --cwd ~/.herdr/fabric-orchestrator --label fab.role=orchestrator --no-parent --outlive-parent <argv…> "Du bist der Fabric-Orchestrator. Lies AGENTS.md und dann fab inbox und fab list."`.
+- `fab orchestrator start [TEAM]`: Kopiert den Orchestrator-Prompt des Teams nach `~/.herdr/fabric-orchestrator/<team>/AGENTS.md` und startet `hc run --bg --name fab-<team>-orchestrator --cwd ~/.herdr/fabric-orchestrator/<team> --label fab.role=orchestrator --label fab.team=<team> --no-parent --outlive-parent <argv…> "Du bist der Fabric-Orchestrator für Team <team>. Lies AGENTS.md und dann fab inbox --team <team> und fab list --team <team>."`.
 - Alle `hc`-Aufrufe gehen über eine einzige Funktion, die Tests durch einen Stub auf dem `PATH` ersetzen.
 
 ## 6. Ablauf, den die Prompts beschreiben
