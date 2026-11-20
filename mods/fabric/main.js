@@ -167,6 +167,13 @@ export default class Fabric extends View {
     this.teamPrompt = null;
     this.teamPromptId = 0;
     this.teamPromptLoading = false;
+    this.newTeamOpen = false;
+    this.newTeamId = 0;
+    this.newTeamName = null;
+    this.newTeamRepos = [];
+    this.newTeamMembers = [];
+    this.newTeamReviewer = "";
+    this.newTeamSessions = null;
     this.newSentence = null;
     this.newRepo = null;
     this.newWake = true;
@@ -996,6 +1003,7 @@ export default class Fabric extends View {
       cx.stop_propagation();
       if (this.menu) { this.menu = null; this.notifyNow(); return; }
       if (this.inboxOpen) { this.inboxOpen = false; this.notifyNow(); return; }
+      if (this.newTeamOpen) { this.closeNewTeam(cx); return; }
       if (this.newOpen) { this.newOpen = false; this.clearMentions(this.lastCx); this.notifyNow(); return; }
       if (this.blueprintDrawer) { this.closeBlueprintDrawer(cx); return; }
       if (this.teamPrompt) { this.closeTeamPrompt(cx); return; }
@@ -2225,6 +2233,125 @@ export default class Fabric extends View {
     cx?.notify();
   }
 
+  // ---------- Neues Team ----------
+
+  openNewTeam(cx) {
+    this.newTeamId += 1;
+    const id = this.newTeamId;
+    this.newTeamOpen = true;
+    this.newTeamRepos = [];
+    this.newTeamMembers = [];
+    this.newTeamReviewer = "";
+    this.setError("team-add", null);
+    if (this.newTeamName) this.newTeamName.release?.();
+    this.newTeamName = InputState.new({ placeholder: "z. B. zweit" });
+    this.newTeamName.on("change", (_event, cx) => cx.notify());
+    this.track(this.newTeamName);
+    if (this.newTeamSessions) this.newTeamSessions.release?.();
+    this.newTeamSessions = InputState.new({ value: "4" });
+    this.newTeamSessions.set_step(1);
+    this.newTeamSessions.set_min(1);
+    this.newTeamSessions.set_max(16);
+    this.newTeamSessions.on("change", (_event, cx) => cx.notify());
+    this.newTeamSessions.on("submit", (_event, cx) => this.createTeam(cx));
+    this.track(this.newTeamSessions);
+    this.ensureReposQuiet(cx);
+    cx.timer.after(120, () => {
+      if (id === this.newTeamId && this.newTeamOpen) this.newTeamName?.focus();
+    });
+    this.notifyNow();
+  }
+
+  closeNewTeam(cx) {
+    this.newTeamOpen = false;
+    this.setError("team-add", null);
+    this.notifyNow();
+    cx?.notify();
+  }
+
+  addNewTeamRepo(path, cx) {
+    const clean = String(path ?? "").trim();
+    if (!clean || this.newTeamRepos.includes(clean)) return;
+    this.newTeamRepos.push(clean);
+    cx?.notify();
+  }
+
+  removeNewTeamRepo(path, cx) {
+    this.newTeamRepos = this.newTeamRepos.filter((repo) => repo !== path);
+    cx?.notify();
+  }
+
+  async pickNewTeamRepo(cx) {
+    const folder = await pickFolder({ prompt: "Repo für das neue Team wählen" });
+    if (folder) this.addNewTeamRepo(folder, cx);
+  }
+
+  addNewTeamMember(name, cx) {
+    const clean = String(name ?? "").trim();
+    if (!clean || this.newTeamMembers.includes(clean)) return;
+    this.newTeamMembers.push(clean);
+    cx?.notify();
+  }
+
+  removeNewTeamMember(name, cx) {
+    this.newTeamMembers = this.newTeamMembers.filter((member) => member !== name);
+    if (this.newTeamReviewer === name) this.newTeamReviewer = "";
+    cx?.notify();
+  }
+
+  setNewTeamReviewer(name, cx) {
+    this.newTeamReviewer = String(name ?? "");
+    cx?.notify();
+  }
+
+  async createTeam(cx) {
+    if (this.busy) return;
+    const plan = model.teamAddArgs({
+      name: this.newTeamName?.value() ?? "",
+      repos: [...this.newTeamRepos],
+      members: this.newTeamMembers.map((blueprint) => ({ blueprint, model: "", max_cost: "" })),
+      reviewer: this.newTeamReviewer,
+      max_sessions: this.newTeamSessions?.value() ?? "",
+    });
+    if (plan.error) {
+      this.setError("team-add", plan.error);
+      this.notifyNow();
+      return;
+    }
+    const result = await this.action("team-add", plan.args, {
+      success: `Team ${plan.name} angelegt.`,
+      after: () => this.loadRoster(cx),
+    });
+    if (result.ok) {
+      this.newTeamOpen = false;
+      this.setError("team-add", null);
+    }
+    this.notifyNow();
+  }
+
+  confirmDeleteTeam(team, cx) {
+    if (!team?.name) return;
+    this.setError("team-rm", null);
+    this.modal = { kind: "team-delete", team };
+    this.notifyNow();
+    cx?.notify();
+  }
+
+  async deleteTeam(cx) {
+    const team = this.modal?.team;
+    if (!team?.name || this.busy) return;
+    const result = await this.action("team-rm", ["team", "rm", team.name, "--from=mensch"], {
+      success: `Team ${team.name} entfernt.`,
+      after: async () => {
+        if (this.teamPrompt?.team === team.name) this.clearTeamPrompt(cx);
+        await this.loadRoster(cx);
+      },
+    });
+    if (!result.ok) this.modal = { kind: "team-delete", team };
+    else if (this.modal?.kind === "team-delete") this.modal = null;
+    this.notifyNow();
+  }
+
   async saveTeam(name, cx, silent = false) {
     const form = this.teamForms[name];
     const team = this.teamFor(name);
@@ -2665,7 +2792,7 @@ export default class Fabric extends View {
         onClick: (cx) => { this.menu = null; this.inboxOpen = false; this.notifyNow(); },
       }));
     }
-    if (this.newOpen || this.modal) overlay.push(renderDialogs(this, cx, t));
+    if (this.newOpen || this.newTeamOpen || this.modal) overlay.push(renderDialogs(this, cx, t));
     if (this.imageOpen) overlay.push(ui.imageLightbox(t, { ...this.imageOpen, onClose: () => { this.imageOpen = null; this.notifyNow(); } }));
 
     const root = div()

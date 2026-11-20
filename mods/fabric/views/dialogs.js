@@ -11,6 +11,11 @@ const S = ui.SPACE;
 
 const COLORS = ["c1", "c2", "c3", "c4", "c5", "c6"];
 
+function sectionLabel(t, text) {
+  return div().text_size(T.xs).text_color(t.dim).child(text);
+}
+
+
 function newTicketDialog(app, cx, t) {
   const repos = [...new Set([
     ...(app.repos ?? []).map((repo) => repo.path),
@@ -226,12 +231,207 @@ function unsavedDialog(app, cx, t) {
   });
 }
 
+function newTeamDialog(app, cx, t) {
+  const used = new Set(app.newTeamRepos ?? []);
+  const known = (app.repos ?? [])
+    .map((repo) => repo.path)
+    .filter((path) => path && !used.has(path));
+  const repoOptions = [
+    ...known.map((path) => ({
+      value: path,
+      label: model.repoName(path),
+      detail: path,
+      selected: false,
+    })),
+    { value: "__pick", label: "Ordner wählen…", detail: "Systemdialog", selected: false },
+  ];
+  const memberOptions = model.blueprintMemberOptions(
+    app.roster?.blueprints ?? [], app.newTeamMembers ?? [],
+  );
+  const reviewerOptions = (app.newTeamMembers ?? []).map((name) => {
+    const blueprint = app.blueprintFor(name);
+    return {
+      value: name,
+      label: name,
+      detail: blueprint?.role || "",
+      selected: name === app.newTeamReviewer,
+    };
+  });
+  const error = app.errorFor("team-add");
+  return ui.modal(t, {
+    title: "Neues Team",
+    detail: "fab legt ein eigenes Team an und kopiert dafür einen eigenen Orchestrator-Prompt.",
+    width: 620,
+    actions: [
+      ui.button(t, {
+        id: "fabric-team-new-cancel",
+        label: "Abbrechen",
+        tooltip: "Ohne Anlegen schließen (Esc)",
+        onClick: (cx) => app.closeNewTeam(cx),
+      }),
+      ui.button(t, {
+        id: "fabric-team-new-create",
+        label: "Anlegen",
+        icon: "plus",
+        primary: true,
+        busy: app.busy === "team-add",
+        disabled: Boolean(app.busy) || !(app.newTeamName?.value().trim()),
+        tooltip: "Team anlegen (fab team add)",
+        onClick: (cx) => app.createTeam(cx),
+      }),
+    ],
+  }, [
+    v_flex().w_full().gap(S.m)
+      .child(ui.field(t, "Name", app.newTeamName ? ui.input(t, app.newTeamName, { focused: true }) : div(), {
+        hint: "a–z, 0–9, _ und -, höchstens 16 Zeichen",
+      }))
+      .child(v_flex().w_full().gap(S.xs)
+        .child(sectionLabel(t, "Repos"))
+        .children((app.newTeamRepos ?? []).map((path, index) => h_flex()
+          .w_full()
+          .min_h(26)
+          .gap(S.s)
+          .items_center()
+          .child(div().flex_none().text_color(t.dim).child(ui.icon("repo", 12)))
+          .child(div().flex_1().min_w(0).truncate().text_size(T.xs).child(path).tooltip(path))
+          .child(ui.iconButton(t, {
+            id: `fabric-team-new-repo-remove-${index}`,
+            icon: "close",
+            size: 22,
+            iconSize: 11,
+            tooltip: `Repo ${path} entfernen`,
+            onClick: (cx) => app.removeNewTeamRepo(path, cx),
+          }))))
+        .when((app.newTeamRepos ?? []).length === 0, (el) => el.child(ui.hint(t, "Mindestens ein Repo")))
+        .child(ui.dropdown(t, {
+          id: "fabric-team-new-repo-add",
+          value: "",
+          placeholder: "Repo hinzufügen…",
+          options: repoOptions,
+          open: app.menu === "new-team-repos",
+          width: 360,
+          scrollHandle: app.dropdownScroll,
+          empty: app.reposError ?? "Keine bekannten Repos",
+          onToggle: () => {
+            app.menu = app.menu === "new-team-repos" ? null : "new-team-repos";
+            cx.notify();
+          },
+          onPick: (value) => {
+            app.menu = null;
+            if (value === "__pick") app.pickNewTeamRepo(cx);
+            else app.addNewTeamRepo(value, cx);
+          },
+        })))
+      .child(v_flex().w_full().gap(S.xs)
+        .child(sectionLabel(t, "Mitglieder"))
+        .children((app.newTeamMembers ?? []).map((name) => {
+          const blueprint = app.blueprintFor(name) ?? { name, role: "", color: "c1" };
+          return h_flex()
+            .w_full()
+            .min_h(26)
+            .gap(S.s)
+            .items_center()
+            .child(ui.avatar(t, blueprint.name, blueprint.color || "c1", 24))
+            .child(div().flex_1().min_w(0).truncate().text_size(T.xs).font_semibold()
+              .child(blueprint.name).tooltip(blueprint.name))
+            .child(div().flex_none().text_size(T.xs).text_color(t.dim).whitespace_nowrap()
+              .child(blueprint.role || "ohne Rolle"))
+            .child(ui.iconButton(t, {
+              id: `fabric-team-new-member-remove-${name}`,
+              icon: "close",
+              size: 22,
+              iconSize: 11,
+              tooltip: `${name} aus dem Team entfernen`,
+              onClick: (cx) => app.removeNewTeamMember(name, cx),
+            }));
+        }))
+        .child(ui.dropdown(t, {
+          id: "fabric-team-new-member-add",
+          value: "",
+          placeholder: "Mitglied hinzufügen…",
+          options: memberOptions,
+          open: app.menu === "new-team-members",
+          width: 260,
+          scrollHandle: app.dropdownScroll,
+          empty: "Alle Blaupausen sind bereits Mitglied.",
+          onToggle: () => {
+            app.menu = app.menu === "new-team-members" ? null : "new-team-members";
+            cx.notify();
+          },
+          onPick: (value) => {
+            app.menu = null;
+            app.addNewTeamMember(value, cx);
+          },
+        })))
+      .child(h_flex().w_full().gap(S.m).items_end().flex_wrap()
+        .child(v_flex().flex_1().min_w(180).gap(5)
+          .child(sectionLabel(t, "Prüferin / Prüfer (nur Mitglieder)"))
+          .child(ui.dropdown(t, {
+            id: "fabric-team-new-reviewer",
+            value: app.newTeamReviewer || "",
+            placeholder: "Bitte wählen",
+            options: reviewerOptions,
+            open: app.menu === "new-team-reviewer",
+            width: 220,
+            scrollHandle: app.dropdownScroll,
+            empty: "Erst Mitglieder hinzufügen",
+            onToggle: () => {
+              app.menu = app.menu === "new-team-reviewer" ? null : "new-team-reviewer";
+              cx.notify();
+            },
+            onPick: (value) => {
+              app.menu = null;
+              app.setNewTeamReviewer(value, cx);
+            },
+          })))
+        .child(v_flex().w(170).flex_none().gap(5)
+          .child(sectionLabel(t, "Gleichzeitige Sessions (1–16)"))
+          .child(ui.numberInput(t, app.newTeamSessions))))
+      .when(Boolean(error), (el) => el.child(ui.notice(t, error.text, error.level))),
+  ]);
+}
+
+function deleteTeamDialog(app, cx, t) {
+  const team = app.modal.team ?? {};
+  const repos = team.repos ?? [];
+  const detail = [
+    repos.length ? `Repos: ${repos.join(", ")}.` : "Das Team hat keine Repos.",
+    "fab verweigert das Löschen, solange Tickets offen sind (todo, doing, review) oder der Orchestrator läuft.",
+  ].join("\n");
+  const error = app.errorFor("team-rm");
+  return ui.modal(t, {
+    title: `Team ${team.name} löschen?`,
+    detail,
+    width: 540,
+    actions: [
+      ui.button(t, {
+        id: "fabric-team-delete-cancel",
+        label: "Abbrechen",
+        tooltip: "Nicht löschen",
+        onClick: (cx) => { app.modal = null; cx.notify(); },
+      }),
+      ui.button(t, {
+        id: "fabric-team-delete-confirm",
+        label: "Löschen",
+        icon: "trash",
+        danger: true,
+        busy: app.busy === "team-rm",
+        disabled: Boolean(app.busy),
+        tooltip: "Team entfernen (fab team rm)",
+        onClick: (cx) => app.deleteTeam(cx),
+      }),
+    ],
+  }, error ? [ui.notice(t, error.text, error.level)] : []);
+}
+
 export function renderDialogs(app, cx, t) {
   if (app.newOpen) return newTicketDialog(app, cx, t);
+  if (app.newTeamOpen) return newTeamDialog(app, cx, t);
   if (!app.modal) return null;
   if (app.modal.kind === "accept") return acceptDialog(app, cx, t);
   if (app.modal.kind === "drop") return dropDialog(app, cx, t);
   if (app.modal.kind === "delete-blueprint") return deleteBlueprintDialog(app, cx, t);
+  if (app.modal.kind === "team-delete") return deleteTeamDialog(app, cx, t);
   if (app.modal.kind === "unsaved" || app.modal.kind === "unsaved-close") return unsavedDialog(app, cx, t);
   return null;
 }

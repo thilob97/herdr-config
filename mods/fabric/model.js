@@ -607,6 +607,42 @@ export function teamSaveArgs(team, form) {
   return { args, name, sessions };
 }
 
+const TEAM_NAME = /^[a-z][a-z0-9_-]{0,15}$/;
+
+const TEAM_NAME_ERROR = "Teamname: 1–16 Zeichen, nur Kleinbuchstaben, Ziffern, „_“ und „-“, beginnend mit einem Buchstaben.";
+
+/** Anlegeargumente eines neuen Teams. Prüft wie `teamSaveArgs`; das
+ *  Orchestrator-Prompt wählt fab selbst (`prompts/orchestrator-<name>.md`). */
+export function teamAddArgs(form) {
+  const name = String(form?.name ?? "").trim();
+  const repos = (form?.repos ?? []).map((repo) => String(repo ?? "").trim()).filter(Boolean);
+  const members = normalizeMembers(form?.members);
+  const reviewer = String(form?.reviewer ?? "").trim();
+  const sessions = sessionNumber(form?.max_sessions);
+  if (!name) return { error: "Bitte einen Teamnamen angeben." };
+  if (!TEAM_NAME.test(name)) return { error: TEAM_NAME_ERROR };
+  if (!repos.length) return { error: "Team braucht mindestens ein Repo." };
+  if (!members.length) return { error: "Team braucht mindestens ein Mitglied." };
+  if (!reviewer) return { error: "Bitte eine Prüferin oder einen Prüfer wählen." };
+  for (const member of members) {
+    if (member.max_cost !== "" && typeof member.max_cost !== "number") {
+      return { error: `max-cost für ${member.blueprint} muss eine ganze Zahl ≥ 0 sein.` };
+    }
+  }
+  if (!Number.isInteger(sessions) || sessions < 1 || sessions > 16) {
+    return { error: "Sitzungen müssen zwischen 1 und 16 liegen." };
+  }
+  const args = ["team", "add", name];
+  for (const repo of repos) args.push("--repo", repo);
+  args.push(
+    `--members-json=${teamMembersJson(members)}`,
+    `--reviewer=${reviewer}`,
+    `--max-sessions=${sessions}`,
+    "--from=mensch",
+  );
+  return { args, name, sessions };
+}
+
 /** Noch nicht gewählte Blaupausen für das Mitglieder-Dropdown. */
 export function blueprintMemberOptions(blueprints, members) {
   const used = new Set((members ?? [])
