@@ -337,6 +337,7 @@ class AutostartTests(FabricCase):
         self.ok("edit", no_repo, "--body", BODY, "--from", "mensch")
         self.ok("status", no_repo, "todo", "--from", "mensch")
         self.ok("link", no_repo, "--blocked-by", blocker, "--from", "mensch")
+        self.patch_ticket(no_repo, repo=None)
         no_criteria = self.new("Ohne Kriterien")
         self.ok("assign", no_criteria, "zap", "--from", "mensch")
         self.ok("edit", no_criteria, "--repo", repo, "--from", "mensch")
@@ -401,7 +402,7 @@ class AutostartTests(FabricCase):
         self.assertTrue(any("nicht gestartet" in text for text in notes))
 
     def test_link_remove_startet_nach_der_letzten_blockade(self):
-        repo = self.make_repo()
+        repo = self.default_repo()
         blocker = self.new("Blocker")
         follow = self.ready(repo, "Frei", blockers=[blocker])
         self.ok("link", follow, "--remove", blocker, "--from", "mensch")
@@ -422,7 +423,7 @@ class AutostartTests(FabricCase):
         self.assertTrue(os.path.isdir(ticket["worktree"]))
 
     def test_link_remove_mit_weiterem_blocker_startet_nicht(self):
-        repo = self.make_repo()
+        repo = self.default_repo()
         first = self.new("Erster")
         second = self.new("Zweiter")
         follow = self.ready(repo, "Frei", blockers=[first, second])
