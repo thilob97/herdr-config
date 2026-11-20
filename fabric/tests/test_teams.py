@@ -244,6 +244,13 @@ class MigrateTests(unittest.TestCase):
         self.assertFalse(teams.migrate(data))
         self.assertEqual(data, snapshot)
 
+    def test_leeres_teams_verhindert_migration(self):
+        data = legacy_roster()
+        data["teams"] = []
+        snapshot = copy.deepcopy(data)
+        self.assertFalse(teams.migrate(data))
+        self.assertEqual(data, snapshot)
+
     def test_ohne_agents_und_blueprints(self):
         for data in ({}, {"foo": 1}, {"agents": "kaputt"}, []):
             self.assertFalse(teams.migrate(data))

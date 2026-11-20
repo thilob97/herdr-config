@@ -119,6 +119,22 @@ def _member_names(members):
     ]
 
 
+def _member_descriptions(members):
+    """Mitglieder mit Übersteuerungen, damit Änderungen an model/max_cost sichtbar sind."""
+    rows = []
+    for member in members or []:
+        if not isinstance(member, dict) or not member.get("blueprint"):
+            continue
+        extras = []
+        if member.get("model"):
+            extras.append(f"modell {member['model']}")
+        if member.get("max_cost") is not None:
+            extras.append(f"max-cost {member['max_cost']}")
+        suffix = f" ({', '.join(extras)})" if extras else ""
+        rows.append(str(member["blueprint"]) + suffix)
+    return rows
+
+
 def _abs(directory, rel):
     return rel if os.path.isabs(rel) else os.path.join(directory, rel)
 
@@ -382,6 +398,7 @@ def _edit_blueprint(path, data, name, rename, role, color, argv_json,
         if os.path.exists(move[0]):
             os.replace(move[0], move[1])
             written.extend(move)
+    if target != name:
         changes.append(f"Name {name} → {target}")
     if prompt_text is not None:
         prompt_abs = _abs(directory, final_rel)
@@ -613,7 +630,7 @@ def add_team(name, repos, members_json, orchestrator_argv_json=None,
         data,
         actor,
         f"Team {name} angelegt: {len(normalized)} Repo(s), Mitglieder "
-        f"{', '.join(_member_names(members))}, Prüfer {reviewer}, "
+        f"{', '.join(_member_descriptions(members))}, Prüfer {reviewer}, "
         f"max_sessions {limit}",
     )
     return entry
@@ -703,8 +720,8 @@ def edit_team(name, rename=None, repos=None, members_json=None,
         )
     if final_members != old_members:
         changes.append(
-            f"Mitglieder {', '.join(_member_names(old_members)) or '—'} → "
-            f"{', '.join(_member_names(final_members))}"
+            f"Mitglieder {', '.join(_member_descriptions(old_members)) or '—'} → "
+            f"{', '.join(_member_descriptions(final_members))}"
         )
     if final_reviewer != old_reviewer:
         changes.append(
@@ -743,6 +760,10 @@ def remove_team(name, actor):
     _team_entries(data).remove(entry)
     if teams.is_migrated(data):
         _sync_legacy(data)
+    else:
+        # Ohne Team darf die alte Spiegelung keine Agenten wiederbeleben.
+        data["agents"] = []
+        data["reviewer"] = ""
     _commit(path, data, actor, f"Team {name} entfernt")
     return name
 

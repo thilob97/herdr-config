@@ -910,6 +910,21 @@ class BlueprintTests(ConfigCase):
         self.assertTrue(os.path.isfile(self.prompt_path("pruefer")))
         self.assertFalse(os.path.exists(self.prompt_path("ada")))
 
+    def test_rename_mit_eigenem_promptpfad(self):
+        self.ok("roster", "--json")
+        data = self.roster_json()
+        data["blueprints"][0]["prompt"] = "prompts/shared.md"
+        self.write_raw_roster(data)
+        text = self.config_call(
+            config.edit_blueprint, "zap", rename="zoe", actor="mensch"
+        )
+        self.assertIn("Name zap → zoe", text)
+        fresh = self.roster_json()
+        self.assertEqual(
+            [row["name"] for row in fresh["blueprints"]], ["zoe", "ada"]
+        )
+        self.assertEqual(fresh["blueprints"][0]["prompt"], "prompts/shared.md")
+
     def test_rm_verweigert_genutzte_und_entfernt_freie(self):
         self.ok("roster", "--json")
         before = self._read(self.roster)
@@ -1040,6 +1055,32 @@ class TeamTests(ConfigCase):
             [entry["name"] for entry in self.roster_json()["teams"]],
             ["herdr-app"],
         )
+
+    def test_rm_des_letzten_teams_bleibt_entfernt(self):
+        self.ok("roster", "--json")
+        self.ok("team", "rm", "herdr-app", "--from", "mensch")
+        data = self.roster_json()
+        self.assertEqual(data["teams"], [])
+        self.assertEqual(data["agents"], [])
+        self.assertEqual(data["reviewer"], "")
+        raw = self._read(self.roster)
+        payload = json.loads(self.ok("roster", "--json").stdout)
+        self.assertIsNone(payload["team"])
+        self.assertEqual(payload["agents"], [])
+        self.assertEqual(self._read(self.roster), raw)
+
+    def test_uebersteuerungen_stehen_in_der_meldung(self):
+        repo = self.make_repo()
+        self.config_call(
+            config.add_team, "zwei", [repo], '[{"blueprint": "zap"}]',
+            orchestrator_argv_json='["true"]', reviewer="zap", actor="mensch",
+        )
+        text = self.config_call(
+            config.edit_team, "zwei",
+            members_json='[{"blueprint": "zap", "model": "klein", "max_cost": 7}]',
+            actor="mensch",
+        )
+        self.assertIn("zap (modell klein, max-cost 7)", text)
 
 
 class GlobalLimitTests(ConfigCase):

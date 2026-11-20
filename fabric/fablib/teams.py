@@ -252,7 +252,9 @@ def migrate(data):
     has_blueprints = isinstance(data.get("blueprints"), list)
     if not has_agents and not has_blueprints:
         return False
-    if is_migrated(data):
+    if isinstance(data.get("teams"), list):
+        # Auch ein leeres `teams` ist die neue Form; sonst würde `fab team rm`
+        # des letzten Teams die Migration sofort wieder auslösen.
         return False
 
     blueprints = list(data.get("blueprints") or [])
