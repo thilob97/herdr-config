@@ -3,11 +3,53 @@ import json
 import os
 import subprocess
 import sys
+import threading
+from unittest import mock
 
+from fabric.fablib import store
 from fabric.tests.support import FAB, FabricCase
 
 
 class StoreTests(FabricCase):
+    def test_locked_ist_im_prozess_reentrant(self):
+        def scenario():
+            with store.locked():
+                with store.locked():
+                    pass
+            with store.locked():
+                pass
+            try:
+                with store.locked():
+                    with store.locked():
+                        raise RuntimeError("innen")
+            except RuntimeError:
+                pass
+            with store.locked():
+                pass
+            try:
+                with store.locked():
+                    raise RuntimeError("außen")
+            except RuntimeError:
+                pass
+            with store.locked():
+                pass
+
+        errors = []
+
+        def run():
+            try:
+                with mock.patch.dict(os.environ, {"FAB_HOME": self.home}):
+                    scenario()
+            except BaseException as exc:  # noqa: BLE001 - Fehler an den Test weiterreichen
+                errors.append(exc)
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        thread.join(20)
+        self.assertFalse(thread.is_alive(), "verschachteltes locked() blockiert")
+        if errors:
+            raise errors[0]
+
     def test_ids_laufen_auch_parallel_fort(self):
         script = [sys.executable, FAB, "new", "Parallel"]
         first = subprocess.Popen(script, cwd=self.tmp, env=self.env,

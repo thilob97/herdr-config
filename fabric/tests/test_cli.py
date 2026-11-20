@@ -242,3 +242,169 @@ class CliTests(FabricCase):
         self.assertIn("bitte prüfen", sends[-1][2])
         result = self.ok("wake", tid, "zap", "--from", "zap", "selbst")
         self.assertIn("kein Wecken", result.stdout)
+
+    # -- T-17: Blaupausen und Teams
+
+    def _blueprint_rows(self):
+        return {
+            row["name"]: row
+            for row in json.loads(self.ok("blueprint", "list", "--json").stdout)
+        }
+
+    def _team_rows(self):
+        return {
+            row["name"]: row
+            for row in json.loads(self.ok("team", "list", "--json").stdout)
+        }
+
+    def test_hilfe_nennt_blueprint_und_team(self):
+        result = self.ok("--help")
+        self.assertIn("blueprint", result.stdout)
+        self.assertIn("team", result.stdout)
+
+    def test_blueprint_anlegen_aendern_und_entfernen(self):
+        prompt = os.path.join(self.roster_dir, "prompts", "neo.md")
+        result = self.ok(
+            "blueprint", "add", "neo",
+            "--role", "umsetzer",
+            "--color", "c3",
+            "--argv-json", json.dumps(["omp", "--model", "m1"]),
+            "--prompt-text", "Neue Rolle\n",
+            "--from", "mensch",
+        )
+        self.assertIn("Blaupause „neo“ angelegt", result.stdout)
+        self.assertIn("Rolle umsetzer", result.stdout)
+        self.assertIn("Farbe c3", result.stdout)
+        self.assertIn("Prompt prompts/neo.md", result.stdout)
+        self.assertEqual(self._read(prompt), "Neue Rolle\n")
+        rows = self._blueprint_rows()
+        self.assertIn("neo", rows)
+        self.assertEqual(rows["neo"]["role"], "umsetzer")
+        self.assertEqual(rows["neo"]["color"], "c3")
+        self.assertEqual(rows["neo"]["argv"], ["omp", "--model", "m1"])
+        self.assertIn("neo", self.ok("blueprint", "list").stdout)
+
+        result = self.ok(
+            "blueprint", "edit", "neo",
+            "--rename", "nova",
+            "--role", "pruefer",
+            "--argv-json", json.dumps(["true"]),
+            "--from", "mensch",
+        )
+        self.assertIn("Blaupause", result.stdout)
+        self.assertIn("geändert", result.stdout)
+        self.assertIn("pruefer", result.stdout)
+        self.assertIn("nova", result.stdout)
+        rows = self._blueprint_rows()
+        self.assertNotIn("neo", rows)
+        self.assertEqual(rows["nova"]["role"], "pruefer")
+        self.assertEqual(rows["nova"]["argv"], ["true"])
+        self.assertTrue(os.path.isfile(
+            os.path.join(self.roster_dir, "prompts", "nova.md")))
+        self.assertFalse(os.path.exists(prompt))
+
+        result = self.ok("blueprint", "rm", "nova", "--from", "mensch")
+        self.assertIn(
+            "Blaupause „nova“ entfernt; Prompt prompts/nova.md bleibt erhalten",
+            result.stdout,
+        )
+        self.assertNotIn("nova", self._blueprint_rows())
+        self.assertTrue(os.path.isfile(
+            os.path.join(self.roster_dir, "prompts", "nova.md")))
+
+        result = self.cli("blueprint", "rm", "zap", "--from", "mensch")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("herdr-app", result.stderr)
+
+    def test_team_anlegen_aendern_und_entfernen(self):
+        repo = self.make_repo("zweit")
+        members = json.dumps(
+            [{"blueprint": "zap", "model": "m2", "max_cost": 5},
+             {"blueprint": "ada"}]
+        )
+        result = self.ok(
+            "team", "add", "zweit",
+            "--repo", repo,
+            "--members-json", members,
+            "--reviewer", "ada",
+            "--max-sessions", "3",
+            "--orchestrator-argv-json", json.dumps(["true"]),
+            "--from", "mensch",
+        )
+        self.assertIn("Team „zweit“ angelegt", result.stdout)
+        self.assertIn("1 Repo(s)", result.stdout)
+        self.assertIn("Mitglieder zap, ada", result.stdout)
+        self.assertIn("Prüfer ada", result.stdout)
+        self.assertIn("max_sessions 3", result.stdout)
+        rows = self._team_rows()
+        self.assertEqual(rows["zweit"]["repos"], [os.path.abspath(repo)])
+        self.assertEqual(rows["zweit"]["reviewer"], "ada")
+        self.assertEqual(rows["zweit"]["max_sessions"], 3)
+        self.assertEqual(
+            [member["blueprint"] for member in rows["zweit"]["members"]],
+            ["zap", "ada"],
+        )
+        expanded = {item["name"]: item for item in rows["zweit"]["agents"]}
+        self.assertIn("--model=m2", expanded["zap"]["argv"])
+        self.assertIn("--max-cost=5", expanded["zap"]["argv"])
+        text = self.ok("team", "list").stdout
+        self.assertIn("zweit", text)
+        self.assertIn("Prüfer ada", text)
+        self.assertIn(os.path.abspath(repo), text)
+        self.assertIn("Mitglieder zap, ada", text)
+
+        result = self.cli(
+            "team", "add", "kollision",
+            "--repo", repo,
+            "--members-json", json.dumps([{"blueprint": "zap"}]),
+            "--reviewer", "zap",
+            "--from", "mensch",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("zweit", result.stderr)
+
+        other = self.make_repo("drittes")
+        result = self.cli(
+            "team", "add", "schlecht",
+            "--repo", other,
+            "--members-json", json.dumps([{"blueprint": "zap"}]),
+            "--reviewer", "ada",
+            "--from", "mensch",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Prüfer", result.stderr)
+
+        result = self.ok(
+            "team", "edit", "zweit",
+            "--max-sessions", "5",
+            "--members-json", json.dumps(
+                [{"blueprint": "zap"}, {"blueprint": "ada"}]),
+            "--from", "mensch",
+        )
+        self.assertIn("Team", result.stdout)
+        self.assertIn("geändert", result.stdout)
+        self.assertIn("max_sessions 3 → 5", result.stdout)
+        rows = self._team_rows()
+        self.assertEqual(rows["zweit"]["max_sessions"], 5)
+        expanded = {item["name"]: item for item in rows["zweit"]["agents"]}
+        self.assertEqual(expanded["zap"]["argv"], ["true"])
+
+        result = self.ok("team", "rm", "zweit", "--from", "mensch")
+        self.assertIn("Team „zweit“ entfernt", result.stdout)
+        self.assertNotIn("zweit", self._team_rows())
+        self.assertIn("herdr-app", self._team_rows())
+
+        agents = json.loads(self.ok("agents", "--json").stdout)
+        self.assertEqual(
+            [item["name"] for item in agents["agents"]], ["zap", "ada"])
+        roster = json.loads(self.ok("roster", "--json").stdout)
+        self.assertEqual(roster["team"], "herdr-app")
+        self.assertEqual(
+            [item["name"] for item in roster["agents"]], ["zap", "ada"])
+
+    def test_settings_set_max_sessions_total(self):
+        result = self.ok(
+            "settings", "set", "max_sessions_total", "12", "--from", "mensch")
+        self.assertRegex(result.stdout, r"max_sessions_total: .* → 12")
+        roster = json.loads(self.ok("roster", "--json").stdout)
+        self.assertEqual(roster["max_sessions_total"], 12)

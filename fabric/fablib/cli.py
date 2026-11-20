@@ -1039,6 +1039,118 @@ def cmd_agent(args):
     return 0
 
 
+def cmd_blueprint(args):
+    if args.action == "list":
+        payload = config.payload()
+        rows = payload["blueprints"]
+        if args.json:
+            print(json.dumps(rows, ensure_ascii=False, indent=2))
+            return 0
+        for row in rows:
+            program, model, _flags = agents.split_argv(row["argv"])
+            teams = ", ".join(row["teams"]) or "—"
+            print(
+                f"{row['name']}  {row['role']}  {row['color']}  "
+                f"{program or '—'} ({model or '—'})  Teams: {teams}"
+            )
+        return 0
+    actor = _require_actor(args)
+    with store.locked():
+        if args.action == "add":
+            entry = config.add_blueprint(
+                args.name,
+                args.role,
+                args.color,
+                args.argv_json,
+                args.prompt_text,
+                actor,
+            )
+            print(
+                f"Blaupause „{entry['name']}“ angelegt: Rolle {entry['role']}, "
+                f"Farbe {entry['color']}, Prompt {entry['prompt']}"
+            )
+            return 0
+        if args.action == "edit":
+            print(
+                config.edit_blueprint(
+                    args.name,
+                    rename=args.rename,
+                    role=args.role,
+                    color=args.color,
+                    argv_json=args.argv_json,
+                    prompt_text=args.prompt_text,
+                    actor=actor,
+                )
+            )
+            return 0
+        rel = config.remove_blueprint(args.name, actor)
+    print(f"Blaupause „{args.name}“ entfernt; Prompt {rel} bleibt erhalten")
+    return 0
+
+
+def cmd_team(args):
+    if args.action == "list":
+        payload = config.payload()
+        rows = payload["teams"]
+        if args.json:
+            print(json.dumps(rows, ensure_ascii=False, indent=2))
+            return 0
+        for row in rows:
+            repos = ", ".join(row["repos"]) or "—"
+            members = ", ".join(
+                str(member.get("blueprint") or "")
+                for member in row["members"]
+                if isinstance(member, dict)
+            ) or "—"
+            print(
+                f"{row['name']}  Prüfer {row['reviewer'] or '—'} · "
+                f"{row['max_sessions']} Sessions · {repos} · Mitglieder {members}"
+            )
+        return 0
+    actor = _require_actor(args)
+    with store.locked():
+        if args.action == "add":
+            entry = config.add_team(
+                args.name,
+                args.repo,
+                args.members_json,
+                orchestrator_argv_json=args.orchestrator_argv_json,
+                orchestrator_prompt=args.orchestrator_prompt,
+                reviewer=args.reviewer,
+                max_sessions=args.max_sessions,
+                actor=actor,
+            )
+            members = ", ".join(
+                str(member.get("blueprint") or "")
+                for member in entry.get("members") or []
+                if isinstance(member, dict)
+            )
+            print(
+                f"Team „{entry['name']}“ angelegt: {len(entry.get('repos') or [])} "
+                f"Repo(s), Mitglieder {members}, Prüfer {entry.get('reviewer')}, "
+                f"max_sessions {entry.get('max_sessions')}"
+            )
+            return 0
+        if args.action == "edit":
+            print(
+                config.edit_team(
+                    args.name,
+                    rename=args.rename,
+                    repos=args.repo,
+                    members_json=args.members_json,
+                    orchestrator_argv_json=args.orchestrator_argv_json,
+                    orchestrator_prompt=args.orchestrator_prompt,
+                    reviewer=args.reviewer,
+                    max_sessions=args.max_sessions,
+                    actor=actor,
+                )
+            )
+            return 0
+        config.remove_team(args.name, actor)
+    print(f"Team „{args.name}“ entfernt")
+    return 0
+
+
 def cmd_settings(args):
     actor = _require_actor(args)
     with store.locked():
@@ -1311,12 +1423,76 @@ def build_parser():
     remove.add_argument("name", metavar="NAME")
     remove.add_argument("--from", dest="from_", metavar="NAME", required=True)
 
+    item = command("blueprint", "Blaupausen anlegen, ändern und entfernen", cmd_blueprint)
+    blueprint_sub = item.add_subparsers(dest="action", metavar="AKTION", required=True)
+    listing = blueprint_sub.add_parser("list", help="Blaupausen auflisten",
+                                       description="Blaupausen auflisten")
+    listing.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe")
+    add = blueprint_sub.add_parser("add", help="Blaupause anlegen",
+                                   description="Blaupause anlegen")
+    add.add_argument("name", metavar="NAME")
+    add.add_argument("--role", metavar="R", required=True, help="Rolle, z. B. recherche")
+    add.add_argument("--color", metavar="cN", help="c1–c6, sonst die nächste freie")
+    add.add_argument("--argv-json", metavar="JSON", required=True,
+                     help='Startbefehl als JSON-Liste, z. B. ["omp"]')
+    add.add_argument("--prompt-text", metavar="T", help="Rollenprompt; sonst kurze Vorlage")
+    add.add_argument("--from", dest="from_", metavar="NAME", required=True)
+
+    edit = blueprint_sub.add_parser("edit", help="Blaupause ändern",
+                                    description="Blaupause ändern")
+    edit.add_argument("name", metavar="NAME")
+    edit.add_argument("--rename", metavar="NEU", help="neuer Name (nur wenn frei)")
+    edit.add_argument("--role", metavar="R")
+    edit.add_argument("--color", metavar="cN")
+    edit.add_argument("--argv-json", metavar="JSON")
+    edit.add_argument("--prompt-text", metavar="T")
+    edit.add_argument("--from", dest="from_", metavar="NAME", required=True)
+
+    remove = blueprint_sub.add_parser("rm", help="Blaupause entfernen",
+                                      description="Blaupause entfernen")
+    remove.add_argument("name", metavar="NAME")
+    remove.add_argument("--from", dest="from_", metavar="NAME", required=True)
+
+    item = command("team", "Teams anlegen, ändern und entfernen", cmd_team)
+    team_sub = item.add_subparsers(dest="action", metavar="AKTION", required=True)
+    listing = team_sub.add_parser("list", help="Teams auflisten",
+                                  description="Teams auflisten")
+    listing.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe")
+    add = team_sub.add_parser("add", help="Team anlegen", description="Team anlegen")
+    add.add_argument("name", metavar="NAME")
+    add.add_argument("--repo", metavar="PFAD", nargs="+", action="extend",
+                     required=True, help="Checkout-Pfade, mindestens einer")
+    add.add_argument("--members-json", metavar="JSON", required=True,
+                     help='Mitglieder als JSON, z. B. [{"blueprint": "zap"}]')
+    add.add_argument("--reviewer", metavar="NAME", required=True, help="Prüfer im Team")
+    add.add_argument("--max-sessions", metavar="N")
+    add.add_argument("--orchestrator-argv-json", metavar="JSON")
+    add.add_argument("--orchestrator-prompt", metavar="PFAD")
+    add.add_argument("--from", dest="from_", metavar="NAME", required=True)
+
+    edit = team_sub.add_parser("edit", help="Team ändern", description="Team ändern")
+    edit.add_argument("name", metavar="NAME")
+    edit.add_argument("--rename", metavar="NEU", help="neuer Name (nur wenn frei)")
+    edit.add_argument("--repo", metavar="PFAD", nargs="+", action="extend",
+                      help="neue Repo-Liste")
+    edit.add_argument("--members-json", metavar="JSON")
+    edit.add_argument("--reviewer", metavar="NAME")
+    edit.add_argument("--max-sessions", metavar="N")
+    edit.add_argument("--orchestrator-argv-json", metavar="JSON")
+    edit.add_argument("--orchestrator-prompt", metavar="PFAD")
+    edit.add_argument("--from", dest="from_", metavar="NAME", required=True)
+
+    remove = team_sub.add_parser("rm", help="Team entfernen", description="Team entfernen")
+    remove.add_argument("name", metavar="NAME")
+    remove.add_argument("--from", dest="from_", metavar="NAME", required=True)
+
     item = command("settings", "Einstellungen des Rosters setzen", cmd_settings)
     settings_sub = item.add_subparsers(dest="action", metavar="AKTION", required=True)
     set_item = settings_sub.add_parser("set", help="Einstellung setzen",
                                        description="Einstellung setzen")
     set_item.add_argument("key", metavar="SCHLÜSSEL",
-                          help="max_sessions, reviewer oder orchestrator_argv")
+                          help="max_sessions, reviewer, orchestrator_argv oder "
+                               "max_sessions_total")
     set_item.add_argument("value", metavar="WERT")
     set_item.add_argument("--from", dest="from_", metavar="NAME", required=True)
 

@@ -2,8 +2,9 @@
 import json
 import os
 import re
+import stat
 
-from . import claude, hc, herdr, render, store
+from . import claude, hc, herdr, render, store, teams
 from .errors import FabError, HcError, HerdrError
 
 ORCHESTRATOR = hc.ORCHESTRATOR
@@ -18,8 +19,14 @@ def roster_path():
     return os.path.join(FABRIC_DIR, "roster.json")
 
 
-def load(required=True):
-    path = roster_path()
+def _mode(path, fallback):
+    try:
+        return stat.S_IMODE(os.stat(path).st_mode)
+    except OSError:
+        return fallback
+
+
+def _read(path, required):
     try:
         with open(path, encoding="utf-8") as handle:
             data = json.load(handle)
@@ -31,34 +38,59 @@ def load(required=True):
         raise FabError(f"Roster {path} ist kein gültiges JSON: {exc}")
     if not isinstance(data, dict):
         raise FabError(f"Roster {path} ist kein JSON-Objekt")
+    return data
 
-    agents = []
-    for entry in data.get("agents") or []:
-        if not isinstance(entry, dict) or not entry.get("name"):
-            continue
-        name = str(entry["name"])
-        agents.append(
-            {
-                "name": name,
-                "role": str(entry.get("role") or ""),
-                "color": str(entry.get("color") or ""),
-                "prompt": str(entry.get("prompt") or f"prompts/{name}.md"),
-                "argv": [str(part) for part in (entry.get("argv") or [])],
-            }
-        )
-    orchestrator = data.get("orchestrator") or {}
-    if not isinstance(orchestrator, dict):
-        orchestrator = {}
+
+def _migrate(path, data):
+    """Altes Roster einmalig zu Blaupausen und Team `herdr-app` umschreiben.
+
+    Läuft beim ersten Lesen; ein zweiter Lauf findet `teams` und schreibt
+    nichts. Der Schreibvorgang steht unter dem Store-Lock und überschreibt
+    keine parallele Migration: nach dem Lock wird die Datei neu gelesen.
+    """
+    if not teams.migrate(data):
+        return data
+    from . import git, index
+
+    try:
+        with store.locked():
+            fresh = _read(path, required=False) or data
+            if not teams.migrate(fresh):
+                return fresh
+            store.atomic_write(
+                path,
+                json.dumps(fresh, ensure_ascii=False, indent=2) + "\n",
+                mode=_mode(path, 0o644),
+            )
+            git.commit_paths(
+                path,
+                [path],
+                f"chore(roster): Roster zu Team {teams.DEFAULT_TEAM} migriert",
+            )
+            index.rebuild()
+            return fresh
+    except OSError as exc:
+        raise FabError(f"Roster {path} nicht migrierbar: {exc}")
+
+
+def load(required=True):
+    path = roster_path()
+    data = _read(path, required)
+    if data is None:
+        return None
+    data = _migrate(path, data)
+    expanded = teams.expansion(data)
     return {
         "path": path,
         "dir": os.path.dirname(path),
-        "max_sessions": int(data.get("max_sessions") or 4),
-        "reviewer": str(data.get("reviewer") or ""),
-        "agents": agents,
-        "orchestrator": {
-            "argv": [str(part) for part in (orchestrator.get("argv") or [])],
-            "prompt": str(orchestrator.get("prompt") or "prompts/orchestrator.md"),
-        },
+        "max_sessions": expanded["max_sessions"],
+        "max_sessions_total": expanded["max_sessions_total"],
+        "reviewer": expanded["reviewer"],
+        "agents": expanded["agents"],
+        "orchestrator": expanded["orchestrator"],
+        "team": expanded.get("team"),
+        "teams": list(data.get("teams") or []),
+        "blueprints": list(data.get("blueprints") or []),
     }
 
 

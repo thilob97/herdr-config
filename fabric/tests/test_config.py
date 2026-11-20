@@ -2,7 +2,10 @@
 import json
 import os
 import stat
+from unittest import mock
 
+from fabric.fablib import config
+from fabric.fablib.errors import FabError
 from fabric.tests.support import FabricCase
 
 
@@ -20,6 +23,11 @@ class ConfigCase(FabricCase):
 
     def prompt_path(self, name):
         return os.path.join(self.roster_dir, "prompts", f"{name}.md")
+
+    def config_call(self, function, *args, **kwargs):
+        """Ruft die config-API im Fixture-Umfeld auf (ohne Subprozess)."""
+        with mock.patch.dict(os.environ, self.env):
+            return function(*args, **kwargs)
 
 
 class RosterTests(ConfigCase):
@@ -793,3 +801,340 @@ class AutoCommitTests(ConfigCase):
         after = self.git_out(self.roster_dir, "rev-parse", "HEAD")
         self.assertEqual(before, after)
         self.assertIn("roster.json", self.status())
+
+
+class MigrationTests(ConfigCase):
+    """Legacy-Roster wird beim ersten Lesen zu Blaupausen und Team."""
+
+    def git_roster_repo(self):
+        self.git_out(self.roster_dir, "init", "-q", "-b", "main")
+        self.git_out(self.roster_dir, "config", "user.email", "test@example.com")
+        self.git_out(self.roster_dir, "config", "user.name", "Test")
+        self.git_out(self.roster_dir, "add", "roster.json", "prompts")
+        self.git_out(self.roster_dir, "commit", "-qm", "start")
+
+    def test_migration_beim_lesen_schreibt_einmal(self):
+        self.write_roster(max_sessions=10)
+        self.git_roster_repo()
+        self.ok("roster", "--json")
+        data = self.roster_json()
+        self.assertEqual(
+            [entry["name"] for entry in data["blueprints"]], ["zap", "ada"]
+        )
+        team = data["teams"][0]
+        self.assertEqual(team["name"], "herdr-app")
+        self.assertEqual(
+            team["repos"],
+            [os.path.join(self.fake_home, ".config", "herdr-app")],
+        )
+        self.assertEqual(
+            team["members"], [{"blueprint": "zap"}, {"blueprint": "ada"}]
+        )
+        self.assertEqual(team["reviewer"], "ada")
+        self.assertEqual(team["max_sessions"], 10)
+        self.assertEqual(data["max_sessions"], 10)
+        self.assertEqual(data["max_sessions_total"], 10)
+        self.assertEqual([row["name"] for row in data["agents"]], ["zap", "ada"])
+
+        raw = self._read(self.roster)
+        self.ok("roster", "--json")
+        self.assertEqual(self._read(self.roster), raw)
+        self.assertEqual(
+            self.git_out(self.roster_dir, "rev-list", "--count", "HEAD"), "2"
+        )
+        self.assertEqual(
+            self.git_out(self.roster_dir, "log", "-1", "--format=%s"),
+            "chore(roster): Roster zu Team herdr-app migriert",
+        )
+
+
+class BlueprintTests(ConfigCase):
+    def test_add_legt_eintrag_prompt_und_farbe_an(self):
+        mark = self.mark()
+        entry = self.config_call(
+            config.add_blueprint, "mira", "recherche", None, '["pi"]', None,
+            "mensch",
+        )
+        self.assertEqual(
+            entry,
+            {
+                "name": "mira",
+                "role": "recherche",
+                "color": "c3",
+                "prompt": "prompts/mira.md",
+                "argv": ["pi"],
+            },
+        )
+        data = self.roster_json()
+        self.assertEqual(
+            [row["name"] for row in data["blueprints"]], ["zap", "ada", "mira"]
+        )
+        text = self._read(self.prompt_path("mira"))
+        self.assertIn("mira", text)
+        self.assertIn("recherche", text)
+        configs = self.events_since(mark, "config")
+        self.assertEqual(len(configs), 1)
+        self.assertIn("Blaupause mira angelegt", configs[0]["text"])
+
+    def test_edit_erhaelt_zusatzfelder_und_zieht_rename_nach(self):
+        self.ok("roster", "--json")
+        data = self.roster_json()
+        data["blueprints"][0]["note"] = "bleibt"
+        self.write_raw_roster(data)
+
+        text = self.config_call(
+            config.edit_blueprint, "zap",
+            role="bauleiter", argv_json='["claude", "--model", "opus"]',
+            actor="mensch",
+        )
+        self.assertIn("Blaupause „zap“ geändert", text)
+        fresh = self.roster_json()
+        zap = fresh["blueprints"][0]
+        self.assertEqual(zap["note"], "bleibt")
+        self.assertEqual(zap["role"], "bauleiter")
+        self.assertEqual(zap["argv"], ["claude", "--model", "opus"])
+
+        self.config_call(
+            config.edit_blueprint, "ada", rename="pruefer", actor="mensch"
+        )
+        fresh = self.roster_json()
+        team = fresh["teams"][0]
+        self.assertEqual(team["reviewer"], "pruefer")
+        self.assertEqual(
+            team["members"], [{"blueprint": "zap"}, {"blueprint": "pruefer"}]
+        )
+        self.assertEqual(fresh["reviewer"], "pruefer")
+        self.assertEqual(
+            [row["name"] for row in fresh["blueprints"]], ["zap", "pruefer"]
+        )
+        self.assertTrue(os.path.isfile(self.prompt_path("pruefer")))
+        self.assertFalse(os.path.exists(self.prompt_path("ada")))
+
+    def test_rename_mit_eigenem_promptpfad(self):
+        self.ok("roster", "--json")
+        data = self.roster_json()
+        data["blueprints"][0]["prompt"] = "prompts/shared.md"
+        self.write_raw_roster(data)
+        text = self.config_call(
+            config.edit_blueprint, "zap", rename="zoe", actor="mensch"
+        )
+        self.assertIn("Name zap → zoe", text)
+        fresh = self.roster_json()
+        self.assertEqual(
+            [row["name"] for row in fresh["blueprints"]], ["zoe", "ada"]
+        )
+        self.assertEqual(fresh["blueprints"][0]["prompt"], "prompts/shared.md")
+
+    def test_rm_verweigert_genutzte_und_entfernt_freie(self):
+        self.ok("roster", "--json")
+        before = self._read(self.roster)
+        with self.assertRaises(FabError) as ctx:
+            self.config_call(config.remove_blueprint, "zap", "mensch")
+        self.assertIn(
+            "Blaupause „zap“ wird im Team „herdr-app“ genutzt",
+            str(ctx.exception),
+        )
+        self.assertEqual(self._read(self.roster), before)
+
+        self.config_call(
+            config.add_blueprint, "nina", "hilfe", None, '["true"]', None,
+            "mensch",
+        )
+        rel = self.config_call(config.remove_blueprint, "nina", "mensch")
+        self.assertEqual(rel, "prompts/nina.md")
+        self.assertNotIn(
+            "nina", [row["name"] for row in self.roster_json()["blueprints"]]
+        )
+        self.assertTrue(os.path.isfile(self.prompt_path("nina")))
+
+
+class TeamTests(ConfigCase):
+    def test_add_mit_repo_mitgliedern_pruefer_und_limit(self):
+        repo = self.make_repo()
+        entry = self.config_call(
+            config.add_team, "zwei", [repo], '[{"blueprint": "zap"}]',
+            orchestrator_argv_json='["omp"]', reviewer="zap",
+            max_sessions=3, actor="mensch",
+        )
+        self.assertEqual(entry["name"], "zwei")
+        self.assertEqual(entry["repos"], [os.path.abspath(repo)])
+        self.assertEqual(entry["members"], [{"blueprint": "zap"}])
+        self.assertEqual(entry["reviewer"], "zap")
+        self.assertEqual(entry["max_sessions"], 3)
+        self.assertEqual(
+            entry["orchestrator"],
+            {"argv": ["omp"], "prompt": "prompts/orchestrator.md"},
+        )
+        data = self.roster_json()
+        self.assertEqual(
+            [row["name"] for row in data["teams"]], ["herdr-app", "zwei"]
+        )
+        self.assertEqual(data["teams"][0]["max_sessions"], 4)
+
+        second = self.make_repo("zwei-repo")
+        self.config_call(
+            config.add_team, "drei", [second], '[{"blueprint": "ada"}]',
+            orchestrator_argv_json='["true"]', reviewer="ada", actor="mensch",
+        )
+        self.assertEqual(
+            [row["name"] for row in self.roster_json()["teams"]],
+            ["herdr-app", "zwei", "drei"],
+        )
+
+    def test_add_weist_repo_pruefer_und_blueprint_zurueck(self):
+        repo = self.make_repo()
+        self.config_call(
+            config.add_team, "zwei", [repo], '[{"blueprint": "zap"}]',
+            orchestrator_argv_json='["true"]', reviewer="zap", actor="mensch",
+        )
+        before = self._read(self.roster)
+        with self.assertRaises(FabError) as ctx:
+            self.config_call(
+                config.add_team, "drei", [repo], '[{"blueprint": "ada"}]',
+                orchestrator_argv_json='["true"]', reviewer="ada",
+                actor="mensch",
+            )
+        self.assertIn("gehört bereits zu Team zwei", str(ctx.exception))
+        self.assertEqual(self._read(self.roster), before)
+
+        other = self.make_repo("andere")
+        with self.assertRaises(FabError) as ctx:
+            self.config_call(
+                config.add_team, "drei", [other], '[{"blueprint": "zap"}]',
+                orchestrator_argv_json='["true"]', reviewer="ada",
+                actor="mensch",
+            )
+        self.assertIn("Prüfer muss Mitglied des Teams sein", str(ctx.exception))
+        self.assertEqual(self._read(self.roster), before)
+
+        with self.assertRaises(FabError) as ctx:
+            self.config_call(
+                config.add_team, "drei", [other],
+                '[{"blueprint": "gibtsnicht"}]',
+                orchestrator_argv_json='["true"]', reviewer="gibtsnicht",
+                actor="mensch",
+            )
+        self.assertIn("Unbekannte Blaupause", str(ctx.exception))
+        self.assertEqual(self._read(self.roster), before)
+
+    def test_edit_aendert_team_und_rm_entfernt_es(self):
+        repo = self.make_repo()
+        self.config_call(
+            config.add_team, "zwei", [repo], '[{"blueprint": "zap"}]',
+            orchestrator_argv_json='["true"]', reviewer="zap", actor="mensch",
+        )
+        other = self.make_repo("neu-repo")
+        members = '[{"blueprint": "zap", "model": "klein", "max_cost": 7}]'
+        text = self.config_call(
+            config.edit_team, "zwei", repos=[other], members_json=members,
+            reviewer="zap", max_sessions=5,
+            orchestrator_argv_json='["claude"]',
+            orchestrator_prompt="prompts/zwei.md", actor="mensch",
+        )
+        self.assertIn("Team zwei geändert", text)
+
+        payload = json.loads(self.ok("roster", "--json").stdout)
+        self.assertEqual(payload["team"], "herdr-app")
+        row = payload["teams"][1]
+        self.assertEqual(row["name"], "zwei")
+        self.assertEqual(row["repos"], [os.path.abspath(other)])
+        self.assertEqual(
+            row["members"],
+            [{"blueprint": "zap", "model": "klein", "max_cost": 7}],
+        )
+        self.assertEqual(row["reviewer"], "zap")
+        self.assertEqual(row["max_sessions"], 5)
+        self.assertEqual(
+            row["orchestrator"],
+            {"argv": ["claude"], "prompt": "prompts/zwei.md"},
+        )
+        self.assertIn("--model=klein", row["agents"][0]["argv"])
+
+        self.config_call(config.remove_team, "zwei", "mensch")
+        self.assertEqual(
+            [entry["name"] for entry in self.roster_json()["teams"]],
+            ["herdr-app"],
+        )
+
+    def test_rm_des_letzten_teams_bleibt_entfernt(self):
+        self.ok("roster", "--json")
+        self.ok("team", "rm", "herdr-app", "--from", "mensch")
+        data = self.roster_json()
+        self.assertEqual(data["teams"], [])
+        self.assertEqual(data["agents"], [])
+        self.assertEqual(data["reviewer"], "")
+        raw = self._read(self.roster)
+        payload = json.loads(self.ok("roster", "--json").stdout)
+        self.assertIsNone(payload["team"])
+        self.assertEqual(payload["agents"], [])
+        self.assertEqual(self._read(self.roster), raw)
+
+    def test_uebersteuerungen_stehen_in_der_meldung(self):
+        repo = self.make_repo()
+        self.config_call(
+            config.add_team, "zwei", [repo], '[{"blueprint": "zap"}]',
+            orchestrator_argv_json='["true"]', reviewer="zap", actor="mensch",
+        )
+        text = self.config_call(
+            config.edit_team, "zwei",
+            members_json='[{"blueprint": "zap", "model": "klein", "max_cost": 7}]',
+            actor="mensch",
+        )
+        self.assertIn("zap (modell klein, max-cost 7)", text)
+
+
+class GlobalLimitTests(ConfigCase):
+    def test_max_sessions_total_setzen(self):
+        mark = self.mark()
+        result = self.ok(
+            "settings", "set", "max_sessions_total", "12", "--from", "mensch"
+        )
+        self.assertIn("max_sessions_total", result.stdout)
+        self.assertEqual(self.roster_json()["max_sessions_total"], 12)
+        payload = json.loads(self.ok("roster", "--json").stdout)
+        self.assertEqual(payload["max_sessions_total"], 12)
+        configs = self.events_since(mark, "config")
+        self.assertEqual(len(configs), 1)
+        self.assertTrue(configs[0]["text"].endswith("→ 12"))
+
+    def test_ungueltige_werte_lassen_datei_unveraendert(self):
+        self.ok("settings", "set", "max_sessions_total", "12",
+                "--from", "mensch")
+        before = self._read(self.roster)
+        for value in ("0", "65", "viel"):
+            result = self.cli(
+                "settings", "set", "max_sessions_total", value,
+                "--from", "mensch",
+            )
+            self.assertNotEqual(result.returncode, 0, value)
+            self.assertIn("max_sessions_total", result.stderr, value)
+            self.assertEqual(self._read(self.roster), before, value)
+
+
+class LegacyCompatTests(ConfigCase):
+    def test_nach_migration_bleiben_agents_und_grenzen(self):
+        before = self.roster_json()
+        self.ok("roster", "--json")
+        agent_payload = json.loads(self.ok("agents", "--json").stdout)
+        self.assertEqual(
+            [row["name"] for row in agent_payload["agents"]], ["zap", "ada"]
+        )
+        self.assertEqual(
+            [row["role"] for row in agent_payload["agents"]],
+            ["umsetzer", "pruefer"],
+        )
+        self.assertEqual(agent_payload["max_sessions"], 4)
+        self.assertEqual(agent_payload["reviewer"], "ada")
+
+        roster_payload = json.loads(self.ok("roster", "--json").stdout)
+        self.assertEqual(
+            [row["argv"] for row in roster_payload["agents"]],
+            [["true"], ["true"]],
+        )
+        self.assertEqual(roster_payload["max_sessions"], 4)
+        self.assertEqual(roster_payload["reviewer"], "ada")
+        self.assertEqual(
+            roster_payload["orchestrator"],
+            {"argv": ["true"], "prompt": "prompts/orchestrator.md"},
+        )
+        self.assertEqual(self.roster_json()["agents"], before["agents"])
