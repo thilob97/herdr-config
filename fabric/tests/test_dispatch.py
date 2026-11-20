@@ -409,6 +409,18 @@ class AutostartTests(FabricCase):
         self.assertEqual(ticket["status"], "doing")
         self.assertTrue(os.path.isdir(ticket["worktree"]))
 
+    def test_link_remove_startet_trotz_erledigtem_blocker_im_blocked_by(self):
+        repo, blocker = self.review_ticket()
+        other = self.new("Noch offen")
+        follow = self.ready(repo, "Frei", blockers=[blocker, other])
+        self.ok("accept", blocker)
+        self.assertEqual(self.ticket(follow)["status"], "todo")
+        self.assertIsNone(self.ticket(follow)["worktree"])
+        self.ok("link", follow, "--remove", other, "--from", "mensch")
+        ticket = self.ticket(follow)
+        self.assertEqual(ticket["status"], "doing")
+        self.assertTrue(os.path.isdir(ticket["worktree"]))
+
     def test_link_remove_mit_weiterem_blocker_startet_nicht(self):
         repo = self.make_repo()
         first = self.new("Erster")

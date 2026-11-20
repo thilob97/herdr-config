@@ -465,7 +465,7 @@ def cmd_link(args):
             print(
                 f"{ticket['id']}: blockiert durch {', '.join(remaining) or 'nichts'}"
             )
-            if not remaining:
+            if not _open_blockers(ticket):
                 autostart.append(ticket["id"])
         else:
             additions = [store.normalize_id(raw) for raw in args.blocked_by]
