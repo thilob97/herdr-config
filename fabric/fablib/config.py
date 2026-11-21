@@ -156,7 +156,12 @@ def _sync_legacy(data):
     if not teams.is_migrated(data):
         return
     expanded = teams.expansion(data)
-    data["agents"] = expanded["agents"]
+    # `teams` ist abgeleitet und bleibt eine UI-Angabe; die Legacy-Spiegelung
+    # behält die alte Form der `agents`-Einträge.
+    data["agents"] = [
+        {key: value for key, value in row.items() if key != "teams"}
+        for row in expanded["agents"]
+    ]
     data["reviewer"] = expanded["reviewer"]
     data["max_sessions"] = expanded["max_sessions"]
     data[teams.GLOBAL_KEY] = expanded["max_sessions_total"]
