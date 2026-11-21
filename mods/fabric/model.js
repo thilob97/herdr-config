@@ -1799,3 +1799,325 @@ export function dirtyEntries(entries) {
 
 /** Hinweis, wenn noch keine Daten da sind. */
 export const EMPTY_HINT = "Noch keine Tickets – ein Satz im Kopf des Fensters legt das erste an.";
+
+// ---------- Workflows: Läufe, Knotenstatus und Graph-Layout ----------
+
+// Die Engine schreibt je Schritt `done`, `fail`, `pass` oder `wartet`; die
+// Oberfläche kennt nur die vier Knotenzustände und „übersprungen“.
+const FLOW_STATUS_WORDS = {
+  waiting: "wartet",
+  running: "läuft",
+  done: "fertig",
+  failed: "fehlgeschlagen",
+  skipped: "übersprungen",
+};
+
+const FLOW_RUN_WORDS = {
+  running: "läuft",
+  paused: "pausiert",
+  done: "fertig",
+  failed: "fehlgeschlagen",
+  cancelled: "abgebrochen",
+  dry: "trocken",
+};
+
+const FLOW_KIND_WORDS = {
+  trigger: "Auslöser",
+  agent: "Agent",
+  action: "Aktion",
+  condition: "Bedingung",
+  approval: "Freigabe",
+  end: "Ende",
+};
+
+const FLOW_TRIGGER_WORDS = {
+  manual: "manuell",
+  ticket_done: "Ticket fertig",
+  github_issue: "GitHub-Issue",
+  main_red: "main rot",
+};
+
+/** Knotenzustand auf Deutsch. Unbekanntes bleibt stehen. */
+export const flowStatusWord = (status) =>
+  FLOW_STATUS_WORDS[status] ?? (status ? String(status) : "");
+
+/** Laufzustand auf Deutsch. Unbekanntes bleibt stehen. */
+export const flowRunWord = (status) =>
+  FLOW_RUN_WORDS[status] ?? (status ? String(status) : "");
+
+/** Knotentyp auf Deutsch. Unbekanntes bleibt stehen. */
+export const flowKindWord = (type) =>
+  FLOW_KIND_WORDS[type] ?? (type ? String(type) : "");
+
+/** Letzter Schritt je Knoten; die spätere Position gewinnt. */
+export function flowNodeSteps(run) {
+  const steps = Array.isArray(run?.steps) ? run.steps : [];
+  const last = {};
+  const positions = {};
+  steps.forEach((step, index) => {
+    const id = step?.node;
+    if (!id) return;
+    const raw = Number(step.position);
+    const position = Number.isFinite(raw) ? raw : index;
+    if (!(id in last) || position >= positions[id]) {
+      last[id] = step;
+      positions[id] = position;
+    }
+  });
+  return last;
+}
+
+const FLOW_STEP_STATES = { done: "done", pass: "done", fail: "failed", wartet: "waiting" };
+const FLOW_TERMINAL_RUNS = new Set(["done", "failed", "cancelled"]);
+
+/** Ein Schritt ist für eine Bedingung auch bei „fail“ regulär beendet; nur
+ *  Aktionen und Agenten kennen einen echten Fehlschlag. */
+function flowStepState(node, step) {
+  const raw = String(step?.status ?? "");
+  if (node?.type === "condition" && (raw === "pass" || raw === "fail")) return "done";
+  return FLOW_STEP_STATES[raw] ?? null;
+}
+
+/** Ausgänge, die ein besuchter Knoten tatsächlich genommen hat. */
+function flowTakenEdges(node, step, outgoing) {
+  if (!step) return outgoing;
+  const status = String(step.status ?? "");
+  const data = step.data ?? {};
+  if (node?.type === "condition" && (status === "pass" || status === "fail")) {
+    const matched = outgoing.filter((edge) => String(edge.when ?? "") === status);
+    return matched.length ? matched : outgoing;
+  }
+  if (node?.type === "action" && (status === "done" || status === "fail")) {
+    const when = status === "done" ? "pass" : "fail";
+    const matched = outgoing.filter((edge) => String(edge.when ?? "") === when);
+    return matched.length ? matched : outgoing;
+  }
+  if (node?.type === "agent") {
+    const ticketStatus = String(data.status ?? "");
+    if (ticketStatus === "done" || ticketStatus === "dropped") {
+      const matched = outgoing.filter((edge) => String(edge.when ?? "") === ticketStatus);
+      return matched.length ? matched : outgoing;
+    }
+  }
+  return outgoing;
+}
+
+/** Vom Auslöser aus erreichbare Knoten entlang der genommenen Kanten. */
+function flowActiveNodes(definition, steps) {
+  const nodes = Array.isArray(definition?.nodes) ? definition.nodes : [];
+  const edges = Array.isArray(definition?.edges) ? definition.edges : [];
+  const byId = new Map(nodes.filter((node) => node?.id).map((node) => [node.id, node]));
+  const outgoing = new Map();
+  for (const edge of edges) {
+    if (!outgoing.has(edge.from)) outgoing.set(edge.from, []);
+    outgoing.get(edge.from).push(edge);
+  }
+
+  let starts = nodes.filter((node) => node?.type === "trigger" && node.id).map((node) => node.id);
+  if (!starts.length) {
+    const targets = new Set(edges.map((edge) => edge.to));
+    starts = nodes.filter((node) => node?.id && !targets.has(node.id)).map((node) => node.id);
+  }
+  if (!starts.length && nodes.length && nodes[0]?.id) starts = [nodes[0].id];
+
+  const active = new Set();
+  const queue = [...starts];
+  while (queue.length) {
+    const id = queue.shift();
+    if (active.has(id)) continue;
+    active.add(id);
+    const exits = outgoing.get(id) ?? [];
+    for (const edge of flowTakenEdges(byId.get(id), steps[id], exits)) {
+      if (!active.has(edge.to)) queue.push(edge.to);
+    }
+  }
+  return active;
+}
+
+/** Zustand jedes Knotens für die Laufansicht: besuchte Schritte, der aktuelle
+ *  Knoten und die vom Auslöser aus tatsächlich genommene Verzweigung. */
+export function flowNodeStates(definition, run) {
+  const nodes = Array.isArray(definition?.nodes) ? definition.nodes : [];
+  const steps = flowNodeSteps(run);
+  const active = flowActiveNodes(definition, steps);
+  const status = String(run?.status ?? "");
+  const current = String(run?.current ?? "");
+  const terminal = FLOW_TERMINAL_RUNS.has(status);
+  const states = {};
+
+  for (const node of nodes) {
+    if (!node?.id) continue;
+    const step = steps[node.id];
+    if (status === "failed" && node.id === current) {
+      // Der Lauf scheiterte an genau diesem Knoten – auch wenn er keinen oder
+      // nur einen „wartet“-Schritt hat (Ticket fehlt, Limit, kein Ausgang).
+      states[node.id] = "failed";
+    } else if (status === "running" && node.id === current) {
+      states[node.id] = node.type === "approval" ? "waiting" : "running";
+    } else if (status === "paused" && node.id === current) {
+      states[node.id] = "waiting";
+    } else if (step) {
+      states[node.id] = flowStepState(node, step) ?? (active.has(node.id) ? "waiting" : "skipped");
+    } else if (terminal) {
+      states[node.id] = "skipped";
+    } else {
+      states[node.id] = active.has(node.id) ? "waiting" : "skipped";
+    }
+  }
+  return states;
+}
+
+function flowTriggerLabel(node) {
+  const kind = String(node.trigger ?? "");
+  if (kind === "cron") {
+    const every = Number(node.every_minutes);
+    return Number.isFinite(every) && every > 0 ? `cron alle ${every} min` : "cron";
+  }
+  return FLOW_TRIGGER_WORDS[kind] ?? (kind || "manuell");
+}
+
+/** Zwei Zeilen der Knotenkarte; beide bleiben kurz genug für die Karte. */
+function flowNodeText(node) {
+  const kind = node?.type;
+  if (kind === "trigger") {
+    return { label: flowTriggerLabel(node), detail: "" };
+  }
+  if (kind === "agent") {
+    const title = oneLine(node.title, 80);
+    const agent = oneLine(node.agent, 80);
+    return { label: title || agent || "Agent", detail: title && agent ? agent : "" };
+  }
+  if (kind === "action") {
+    const words = { shell: "Shell", fab: "fab", notify: "Benachrichtigung" };
+    const command = node.action === "notify" ? node.text : node.command;
+    return { label: words[node.action] ?? (node.action || "Aktion"), detail: oneLine(command, 80) };
+  }
+  if (kind === "condition") {
+    return { label: oneLine(node.expr, 80) || "Bedingung", detail: "" };
+  }
+  if (kind === "approval") {
+    return { label: oneLine(node.text, 80) || "Freigabe", detail: "" };
+  }
+  return { label: "Ende", detail: "" };
+}
+
+const flowMeasure = (value, fallback) => {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : fallback;
+};
+
+/** Schichten von den Auslösern vorwärts, Knoten einer Schicht in
+ *  Definitionsreihenfolge; Kanten zu früheren Schichten zählen nicht. */
+export function flowLayout(definition, options = {}) {
+  const nodeWidth = flowMeasure(options.nodeWidth, 190);
+  const nodeHeight = flowMeasure(options.nodeHeight, 64);
+  const gapX = flowMeasure(options.gapX, 72);
+  const gapY = flowMeasure(options.gapY, 16);
+  const padding = flowMeasure(options.padding, 20);
+  const vertical = Boolean(options.vertical);
+  const source = Array.isArray(definition?.nodes) ? definition.nodes.filter((node) => node?.id) : [];
+  const sourceEdges = Array.isArray(definition?.edges) ? definition.edges : [];
+
+  const index = new Map(source.map((node, position) => [node.id, position]));
+  const incoming = new Map();
+  for (const edge of sourceEdges) {
+    if (!incoming.has(edge.to)) incoming.set(edge.to, []);
+    incoming.get(edge.to).push(edge.from);
+  }
+
+  const layers = new Map();
+  const visiting = new Set();
+  const layerOf = (node) => {
+    if (layers.has(node.id)) return layers.get(node.id);
+    if (node.type === "trigger") {
+      layers.set(node.id, 0);
+      return 0;
+    }
+    // Eine Kante in einen laufenden Zweig ist ein Rückweg und zählt nicht.
+    if (visiting.has(node.id)) return 0;
+    visiting.add(node.id);
+    let layer = 0;
+    for (const from of incoming.get(node.id) ?? []) {
+      if (!index.has(from)) continue;
+      layer = Math.max(layer, layerOf(source[index.get(from)]) + 1);
+    }
+    visiting.delete(node.id);
+    layers.set(node.id, layer);
+    return layer;
+  };
+  source.forEach(layerOf);
+
+  const ordered = source
+    .map((node, position) => ({ node, position, layer: layers.get(node.id) ?? 0 }))
+    .sort((left, right) => left.layer - right.layer || left.position - right.position);
+
+  const rows = new Map();
+  const nodes = ordered.map(({ node, layer }) => {
+    const row = rows.get(layer) ?? 0;
+    rows.set(layer, row + 1);
+    return {
+      id: node.id,
+      type: node.type,
+      ...flowNodeText(node),
+      x: padding + (vertical ? row * (nodeWidth + gapX) : layer * (nodeWidth + gapX)),
+      y: padding + (vertical ? layer * (nodeHeight + gapY) : row * (nodeHeight + gapY)),
+      w: nodeWidth,
+      h: nodeHeight,
+    };
+  });
+
+  const geometry = new Map(nodes.map((node) => [node.id, node]));
+  const edges = [];
+  for (const edge of sourceEdges) {
+    const from = geometry.get(edge.from);
+    const to = geometry.get(edge.to);
+    if (!from || !to) continue;
+    const x1 = vertical ? from.x + from.w / 2 : from.x + from.w;
+    const y1 = vertical ? from.y + from.h : from.y + from.h / 2;
+    const x2 = vertical ? to.x + to.w / 2 : to.x;
+    const y2 = vertical ? to.y : to.y + to.h / 2;
+    const back = vertical ? to.y <= from.y : to.x <= from.x;
+    edges.push({
+      from: edge.from,
+      to: edge.to,
+      when: edge.when ?? null,
+      x1,
+      y1,
+      x2,
+      y2,
+      mid: back ? (vertical ? y1 + 26 : x1 + 26) : (vertical ? (y1 + y2) / 2 : (x1 + x2) / 2),
+      back,
+      vertical,
+    });
+  }
+
+  const right = nodes.reduce((max, node) => Math.max(max, node.x + node.w), 0);
+  const bottom = nodes.reduce((max, node) => Math.max(max, node.y + node.h), 0);
+  return {
+    nodes,
+    edges,
+    width: nodes.length ? right + padding : nodeWidth + 2 * padding,
+    height: nodes.length ? bottom + padding : nodeHeight + 2 * padding,
+  };
+}
+
+/** Kurzer Text unter dem Knoten: Ticket, Freigabetext oder Ausgabe/Code. */
+export function flowNodeReason(step) {
+  const data = step?.data;
+  if (!data || typeof data !== "object") return "";
+  if (data.ticket) return `Ticket ${data.ticket}`;
+  if (data.text) return oneLine(data.text, 80);
+  if (data.ausgabe) return oneLine(data.ausgabe, 80);
+  if (data.fehler) return oneLine(`Fehler: ${data.fehler}`, 80);
+  if (data.code !== undefined && data.code !== null && String(data.code) !== "0") {
+    return `Code ${data.code}`;
+  }
+  if (data.zusammenfassung) return oneLine(data.zusammenfassung, 80);
+  return "";
+}
+
+/** Ticket-ID eines Schritts als Zeichenkette; ohne Ticket null. */
+export function flowNodeTicket(step) {
+  const ticket = step?.data?.ticket;
+  return ticket === undefined || ticket === null || ticket === "" ? null : String(ticket);
+}

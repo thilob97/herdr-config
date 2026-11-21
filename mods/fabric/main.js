@@ -17,6 +17,7 @@ import { renderTeam, renderTeamPromptDrawer } from "./views/team.js";
 import { renderPrompts } from "./views/prompts.js";
 import { renderTemplates } from "./views/templates.js";
 import { renderRepos } from "./views/repos.js";
+import { renderWorkflowsPage } from "./views/workflows.js";
 import { renderSettings } from "./views/settings.js";
 import { renderTicketsPanel } from "./views/tickets.js";
 import { renderInboxPanel } from "./views/inbox.js";
@@ -24,10 +25,11 @@ import { renderTimelinePanel } from "./views/timeline.js";
 import { renderSwitcher } from "./views/switcher.js";
 import { renderDialogs, renderBlueprintDrawer } from "./views/dialogs.js";
 
-const VIEWS = ["board", "tickets", "ticket", "team", "prompts", "templates", "repos", "settings"];
+const VIEWS = ["board", "tickets", "ticket", "team", "workflows", "prompts", "templates", "repos", "settings"];
 const NAV = [
   { page: "board", icon: "board", label: "Board" },
   { page: "tickets", icon: "tickets", label: "Tickets" },
+  { page: "workflows", icon: "play", label: "Workflows" },
   { page: "team", icon: "team", label: "Team" },
   { page: "prompts", icon: "prompt", label: "Prompts" },
   { page: "templates", icon: "prompt", label: "Vorlagen" },
@@ -172,6 +174,15 @@ export default class Fabric extends View {
     this.lessonsSaved = "";
     this.repoTest = null;
     this.repoTestBusy = false;
+    this.flows = null;
+    this.flowRuns = null;
+    this.flowName = null;
+    this.flowRunId = null;
+    this.flowNode = null;
+    this.flowError = null;
+    this.flowRunsError = null;
+    this.flowAt = 0;
+    this.flowRunsAt = 0;
     this.version = null;
     this.versionError = null;
     this.programs = null;
@@ -1142,6 +1153,19 @@ export default class Fabric extends View {
       } else if (route.path && (!this.repoDetail || this.repoDetail.path !== route.path)) {
         cx.spawn((cx) => this.loadRepo(route.path, cx));
       }
+    } else if (route.page === "workflows") {
+      const flowsStale = !this.flows || Date.now() - this.flowAt > 15000;
+      const runsStale = !this.flowRuns || Date.now() - this.flowRunsAt > 15000;
+      if (flowsStale || runsStale) {
+        cx.spawn(async (cx) => {
+          if (flowsStale) await this.loadFlows(cx);
+          if (runsStale) await this.loadFlowRuns(cx);
+          this.syncFlowSelection(this.currentRoute());
+          cx.notify();
+        });
+      } else {
+        this.syncFlowSelection(route);
+      }
     } else if (route.page === "settings") {
       if (!this.version) cx.spawn((cx) => this.loadVersion(cx));
     }
@@ -1643,6 +1667,121 @@ export default class Fabric extends View {
     };
     if (silent) go();
     else this.guard(go, cx);
+  }
+
+  // ---------- Workflows ----------
+
+  async loadFlows(cx) {
+    try {
+      const result = await this.execFab(["flow", "list", "--json"]);
+      if (result.code !== 0) throw new Error((result.stderr || "").trim() || `Code ${result.code}`);
+      const raw = parseJson(result.stdout, null);
+      if (!Array.isArray(raw)) throw new Error("flow list --json lieferte keine Liste");
+      this.flows = raw;
+      this.flowError = null;
+      this.flowAt = Date.now();
+    } catch (error) {
+      this.flowError = `Workflows nicht lesbar: ${message(error)}`;
+    }
+    this.notifyNow();
+  }
+
+  async loadFlowRuns(cx) {
+    try {
+      const result = await this.execFab(["flow", "runs", "--json"]);
+      if (result.code !== 0) throw new Error((result.stderr || "").trim() || `Code ${result.code}`);
+      const raw = parseJson(result.stdout, null);
+      if (!Array.isArray(raw)) throw new Error("flow runs --json lieferte keine Liste");
+      this.flowRuns = raw;
+      this.flowRunsError = null;
+      this.flowRunsAt = Date.now();
+    } catch (error) {
+      this.flowRunsError = `Läufe nicht lesbar: ${message(error)}`;
+    }
+    this.notifyNow();
+  }
+
+  /** Auswahl aus Route und Bestand zusammenführen: Route gewinnt, sonst bleibt die Wahl. */
+  syncFlowSelection(route = this.currentRoute()) {
+    const flows = this.flows ?? [];
+    let name = this.flowName;
+    if (route.name && flows.some((flow) => flow.name === route.name)) name = route.name;
+    if (!flows.some((flow) => flow.name === name)) {
+      const withRuns = flows.find((flow) => (this.flowRuns ?? []).some((run) => run.workflow === flow.name));
+      name = withRuns?.name ?? flows[0]?.name ?? null;
+    }
+    const runs = (this.flowRuns ?? []).filter((run) => run.workflow === name);
+    let runId = this.flowRunId;
+    if (route.run != null) {
+      const wanted = Number(route.run);
+      if (runs.some((run) => run.id === wanted)) runId = wanted;
+    }
+    if (!runs.some((run) => run.id === runId)) runId = runs[0]?.id ?? null;
+    if (name !== this.flowName || runId !== this.flowRunId) this.flowNode = null;
+    this.flowName = name;
+    this.flowRunId = runId;
+  }
+
+  /** Beide Listen neu holen und die Auswahl an Route/Bestand angleichen. */
+  async reloadFlows(cx) {
+    await this.loadFlows(cx);
+    await this.loadFlowRuns(cx);
+    this.syncFlowSelection(this.currentRoute());
+    this.notifyNow();
+  }
+
+  selectedFlowRun() {
+    return (this.flowRuns ?? []).find(
+      (run) => run.id === this.flowRunId && run.workflow === this.flowName,
+    ) ?? null;
+  }
+
+  selectFlow(name, cx) {
+    if (!name || name === this.flowName) return;
+    this.flowName = name;
+    this.flowNode = null;
+    const runs = (this.flowRuns ?? []).filter((run) => run.workflow === name);
+    this.flowRunId = runs[0]?.id ?? null;
+    const route = { page: "workflows", name };
+    if (this.flowRunId != null) route.run = this.flowRunId;
+    setShared("fabric.route", route);
+    this.notifyNow();
+    if (!this.flowRuns || Date.now() - this.flowRunsAt > 15000) {
+      cx?.spawn?.(async (cx) => {
+        await this.loadFlowRuns(cx);
+        this.syncFlowSelection(this.currentRoute());
+        cx.notify();
+      });
+    }
+  }
+
+  selectFlowRun(id, cx) {
+    const runId = Number(id);
+    if (!Number.isFinite(runId)) return;
+    this.flowRunId = runId;
+    this.flowNode = null;
+    const route = { page: "workflows", run: runId };
+    if (this.flowName) route.name = this.flowName;
+    setShared("fabric.route", route);
+    this.notifyNow();
+  }
+
+  pauseFlowRun(cx) {
+    const run = this.selectedFlowRun();
+    if (!run || this.busy) return;
+    this.action("flow-pause", ["flow", "pause", String(run.id), "--from=mensch"], {
+      success: `Lauf ${run.id} pausiert.`,
+      after: async () => { await this.loadFlowRuns(cx); },
+    });
+  }
+
+  cancelFlowRun(cx) {
+    const run = this.selectedFlowRun();
+    if (!run || this.busy) return;
+    this.action("flow-cancel", ["flow", "cancel", String(run.id), "--from=mensch"], {
+      success: `Lauf ${run.id} abgebrochen.`,
+      after: async () => { await this.loadFlowRuns(cx); },
+    });
   }
 
   async rebuildIndex(cx) {
@@ -3201,7 +3340,8 @@ export default class Fabric extends View {
       : page === "tickets" ? renderTicketsPage(this, cx, t)
         : page === "ticket" ? renderTicket(this, cx, t)
           : page === "team" ? renderTeam(this, cx, t)
-            : page === "prompts" ? renderPrompts(this, cx, t)
+            : page === "workflows" ? renderWorkflowsPage(this, cx, t)
+              : page === "prompts" ? renderPrompts(this, cx, t)
               : page === "templates" ? renderTemplates(this, cx, t)
                 : page === "repos" ? renderRepos(this, cx, t)
                   : renderSettings(this, cx, t);

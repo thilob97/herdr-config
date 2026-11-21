@@ -439,6 +439,8 @@ def runs(workflow=None):
                 "current": data.get("current") or "",
                 "started_at": run.get("started_at"),
                 "updated_at": run.get("updated_at"),
+                "outputs": data.get("outputs") or {},
+                "steps": store.flow_steps(run["id"]),
             }
         )
     return rows
