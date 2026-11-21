@@ -154,6 +154,39 @@ class WakeTests(FabricCase):
         self.assertEqual(sessions[0]["terminal"], "t900")
         self.assertEqual(self.wake_events(tid)[-1]["text"], "gestartet")
 
+    def test_prueferin_wird_gestartet_und_vermerkt(self):
+        tid, _worktree = self.worktree_ticket("Prüfung")
+        self.set_live({})
+        self.clear_log()
+        result = self.ok("comment", tid, "--from", "zap", "@ada bitte prüfen")
+        self.assertIn("gestartet", result.stdout)
+        runs = self.hc_calls("run")
+        self.assertEqual(len(runs), 1)
+        args = runs[0]
+        self.assertEqual(args[args.index("--name") + 1], "fab-herdr-app-ada-t-1")
+        self.assertIn("fab.agent=ada", args)
+        self.assertIn("fab.ticket=" + tid, args)
+        sessions = self.ticket(tid)["sessions"]
+        self.assertEqual(
+            [(row["agent"], row["name"]) for row in sessions],
+            [("ada", "fab-herdr-app-ada-t-1")],
+        )
+        self.assertIn("fab-herdr-app-ada-t-1", self.ok("show", tid).stdout)
+
+    def test_laufende_prueferin_wird_nachgetragen(self):
+        tid, _worktree = self.worktree_ticket("Nachtrag")
+        self.set_live({"fab-herdr-app-ada-t-1": "t1"})
+        self.clear_log()
+        result = self.ok("comment", tid, "--from", "zap", "@ada bitte prüfen")
+        self.assertIn("geweckt", result.stdout)
+        self.assertEqual(self.hc_calls("run"), [])
+        sessions = self.ticket(tid)["sessions"]
+        self.assertEqual(
+            [(row["agent"], row["terminal"], row["name"]) for row in sessions],
+            [("ada", "t1", "fab-herdr-app-ada-t-1")],
+        )
+        self.assertIn("fab-herdr-app-ada-t-1", self.ok("show", tid).stdout)
+
     def test_agent_start_ohne_fenster_meldet_seitenleiste(self):
         tid, _worktree = self.worktree_ticket("Start")
         self.set_live({})

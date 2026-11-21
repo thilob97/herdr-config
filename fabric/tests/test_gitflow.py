@@ -184,6 +184,30 @@ class GitflowTests(FabricCase):
         self.assertTrue(any("t900" in call for call in kills), kills)
         self.assertEqual([row["kind"] for row in self.events()][-1], "accept")
 
+    def test_accept_beendet_sessions_auch_ohne_eintrag(self):
+        repo, tid, worktree = self.review_ticket()
+        self.set_terminals(
+            [
+                {"address": "t7", "name": "fab-herdr-app-ada-t-1",
+                 "state": "live"},
+                {"address": "t8", "name": "frei-name", "state": "live",
+                 "labels": {"fab.ticket": tid}},
+                {"address": "t9", "name": "fab-herdr-app-orchestrator",
+                 "state": "live"},
+                {"address": "t5", "name": "fab-herdr-app-ada-t-2",
+                 "state": "live"},
+            ]
+        )
+        self.clear_log()
+        result = self.ok("accept", tid)
+        self.assertIn("angenommen", result.stdout)
+        kills = [row[1] for row in self.hc_calls("kill")]
+        self.assertIn("fab-herdr-app-ada-t-1", kills)
+        self.assertIn("frei-name", kills)
+        self.assertNotIn("fab-herdr-app-orchestrator", kills)
+        self.assertNotIn("fab-herdr-app-ada-t-2", kills)
+        self.assertEqual(self.ticket(tid)["status"], "done")
+
     def test_accept_mergt_trotz_fremder_lokaler_aenderung(self):
         repo, tid, worktree = self.review_ticket()
         self.write_file(os.path.join(repo, "README.md"), "lokal\n")
@@ -290,6 +314,22 @@ class GitflowTests(FabricCase):
         self.assertTrue(self.ticket(tid)["comments"])
         self.assertTrue(self.hc_calls("kill"))
         self.assertEqual([row["kind"] for row in self.events()][-1], "drop")
+
+    def test_drop_beendet_sessions_auch_ohne_eintrag(self):
+        repo, tid, worktree = self.ready_ticket()
+        self.set_terminals(
+            [
+                {"address": "t7", "name": "fab-herdr-app-ada-t-1",
+                 "state": "live"},
+                {"address": "t8", "name": "frei-name", "state": "live",
+                 "labels": {"fab.ticket": tid}},
+            ]
+        )
+        self.clear_log()
+        self.ok("drop", tid, "--from", "mensch", "nicht mehr nötig")
+        kills = [row[1] for row in self.hc_calls("kill")]
+        self.assertIn("fab-herdr-app-ada-t-1", kills)
+        self.assertIn("frei-name", kills)
 
     def konflikt_ticket(self):
         repo, tid, worktree = self.ready_ticket()

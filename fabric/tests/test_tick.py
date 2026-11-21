@@ -593,6 +593,41 @@ class TickCase(FabricCase):
             self.assertEqual(self.ticket(tid)["stall"], stall)
             self.assertEqual(self.events_since(mark, "tick"), [])
 
+    def test_tick_beendet_sessions_abgeschlossener_tickets(self):
+        done = self.new_ticket(status="done")
+        dropped = self.new_ticket(status="dropped")
+        self.set_terminals(
+            [
+                {"address": "t1", "name": f"fab-herdr-app-ada-{done.lower()}",
+                 "state": "live"},
+                {"address": "t2", "name": "frei-name", "state": "live",
+                 "labels": {"fab.ticket": dropped}},
+                {"address": "t3", "name": "fab-herdr-app-ada-t-3",
+                 "state": "live"},
+            ]
+        )
+        dry = self.ok("tick", "--dry-run")
+        self.assertIn(
+            f"{done}: geplant: Session fab-herdr-app-ada-{done.lower()} beenden",
+            dry.stdout,
+        )
+        self.assertIn(f"{dropped}: geplant: Session frei-name beenden", dry.stdout)
+        self.assertEqual(self.hc_calls("kill"), [])
+
+        self.clear_log()
+        result = self.ok("tick")
+        self.assertIn(
+            f"{done}: Session fab-herdr-app-ada-{done.lower()} beendet",
+            result.stdout,
+        )
+        self.assertIn(f"{dropped}: Session frei-name beendet", result.stdout)
+        kills = [row[1] for row in self.hc_calls("kill")]
+        self.assertEqual(
+            sorted(kills),
+            sorted([f"fab-herdr-app-ada-{done.lower()}", "frei-name"]),
+        )
+        self.assertNotIn("fab-herdr-app-ada-t-3", kills)
+
     # -- launchd
 
     def test_install_und_uninstall(self):
