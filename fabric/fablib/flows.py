@@ -881,9 +881,8 @@ def _ticket_outputs(ticket):
     ticket_id = ticket["id"]
     summary = ""
     try:
-        for row in store.event_rows_for(ticket_id):
-            if row.get("ticket") == ticket_id and row.get("kind") == "handover":
-                summary = str(row.get("text") or "")
+        for row in store.event_rows_for_ticket(ticket_id, "handover"):
+            summary = str(row.get("text") or "")
     except FabError:
         summary = ""
     if not summary and ticket.get("comments"):
