@@ -288,6 +288,7 @@ def _one(ticket, name, author, text, roster, no_wake, message_for, send_text=Non
     for terminal_name in targets:
         if terminal_name in live:
             address = live[terminal_name].get("address") or terminal_name
+            agents.remember_session(ticket, name, terminal_name, address)
             ok, detail = hc.send_detail(address, send_text)
             if ok:
                 return "geweckt", "geweckt", address, ""
@@ -308,13 +309,8 @@ def _one(ticket, name, author, text, roster, no_wake, message_for, send_text=Non
             if reason:
                 line = f"{result} ({reason})"
         elif result == "gestartet":
-            ticket["sessions"].append(
-                {
-                    "agent": name,
-                    "terminal": started["terminal"],
-                    "name": started["name"],
-                    "started_at": store.now_ms(),
-                }
+            agents.remember_session(
+                ticket, name, started["name"], started["terminal"]
             )
             if started.get("warning"):
                 line = f"{result} ({started['warning']})"

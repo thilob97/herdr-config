@@ -89,6 +89,7 @@ def run(roster, dry=False):
         if changed and not dry:
             store.save(ticket)
             result.changed = True
+    _end_closed_sessions(tickets, live, result, dry)
     for team_entry in _teams(roster):
         try:
             if _tick_orchestrator(roster or {}, team_entry, live, result, dry):
@@ -96,6 +97,27 @@ def run(roster, dry=False):
         except (FabError, HcError) as exc:
             result.append(f"{team_entry.get('name')}: Fehler: {exc}")
     return result
+
+
+def _end_closed_sessions(tickets, live, lines, dry):
+    """Lebende Sessions zu done/dropped-Tickets beenden und melden.
+
+    Erfasst auch Sessions ohne Eintrag unter `## Sessions` über das
+    `fab.ticket`-Label oder den Terminalnamen (`fab-…-t-<n>`).
+    """
+    for ticket in tickets:
+        if ticket.get("status") not in ("done", "dropped"):
+            continue
+        for name in agents.ticket_terminals(ticket, live):
+            if dry:
+                lines.append(f"{ticket['id']}: geplant: Session {name} beenden")
+                continue
+            if hc.kill(name):
+                lines.append(f"{ticket['id']}: Session {name} beendet")
+            else:
+                lines.append(
+                    f"{ticket['id']}: Session {name} ließ sich nicht beenden"
+                )
 
 
 def _teams(roster):

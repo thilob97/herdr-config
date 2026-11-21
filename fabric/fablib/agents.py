@@ -434,6 +434,47 @@ def closed_session_names():
     return names
 
 
+def remember_session(ticket, agent, name, terminal=None):
+    """Session unter `## Sessions` nachtragen; eine vorhandene Zeile nur ergänzen.
+
+    Wird auch beim Wecken einer bereits laufenden Session benutzt: so bleibt
+    eine Session auffindbar, die vor einem fehlgeschlagenen Schreibvorgang
+    gestartet wurde.
+    """
+    for session in ticket.get("sessions") or []:
+        if (session or {}).get("name") != name:
+            continue
+        if terminal and not session.get("terminal"):
+            session["terminal"] = terminal
+        return session
+    session = {
+        "agent": agent,
+        "terminal": terminal,
+        "name": name,
+        "started_at": store.now_ms(),
+    }
+    ticket.setdefault("sessions", []).append(session)
+    return session
+
+
+def ticket_terminals(ticket, live_terminals):
+    """Live-Terminals eines Tickets: per `fab.ticket`-Label oder Namensschema."""
+    tid = str(ticket.get("id") or "").upper()
+    if not tid:
+        return {}
+    found = {}
+    for name, row in (live_terminals or {}).items():
+        labels = (row or {}).get("labels")
+        if isinstance(labels, dict) and (
+            str(labels.get("fab.ticket") or "").upper() == tid
+        ):
+            found[name] = row
+            continue
+        if hc.ticket_of(name) == tid:
+            found[name] = row
+    return found
+
+
 def active(live_terminals, roster=None, team=None):
     """Sessions, die einen Platz belegen: arbeitend/wartend, Ticket nicht fertig.
 

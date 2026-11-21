@@ -38,6 +38,20 @@ def terminal_name(agent, tid, team=None):
     return f"fab-{core}{tail}"
 
 
+_TICKET_TAIL = re.compile(r"-t-(\d+)$")
+
+
+def ticket_of(name):
+    """Ticket-ID aus einem Fab-Terminalnamen (`fab-…-t-<n>`), sonst None.
+
+    Der Name bleibt der einzige Rückfall, wenn eine Session nie im Ticket
+    vermerkt wurde: `hc ls --json` liefert keine Labels. Auch lange Namen
+    behalten die Ticket-ID am Ende (siehe `terminal_name`).
+    """
+    match = _TICKET_TAIL.search(str(name or "").lower())
+    return f"T-{match.group(1)}" if match else None
+
+
 def orchestrator_name(team):
     """`fab-<team>-orchestrator`; das alte globale Terminal bleibt `fab-orchestrator`."""
     team = _clean(team)

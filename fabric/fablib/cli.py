@@ -155,6 +155,9 @@ def _dispatch_locked(ticket, agent_name, actor, roster):
         candidates.append(hc.terminal_name(agent_name, ticket["id"]))
     running_name = next((name for name in candidates if name in live), None)
     if running_name is not None:
+        agents.remember_session(
+            ticket, agent_name, running_name, live[running_name].get("address")
+        )
         results = wake.process(
             ticket, [agent_name], actor,
             f"Arbeite an {ticket['id']} weiter.",
@@ -205,13 +208,8 @@ def _dispatch_locked(ticket, agent_name, actor, roster):
         )
     ticket["status"] = "doing"
     ticket.pop("stall", None)
-    ticket["sessions"].append(
-        {
-            "agent": agent_name,
-            "terminal": started["terminal"],
-            "name": started["name"],
-            "started_at": store.now_ms(),
-        }
+    agents.remember_session(
+        ticket, agent_name, started["name"], started["terminal"]
     )
     detail = f"{branch_name} · {folder}"
     warning = started.get("warning")
@@ -311,13 +309,34 @@ def _unblocked_by(trigger_id):
 
 
 def _end_sessions(ticket):
+    """Alle Sessions des Tickets beenden, auch ohne Eintrag unter `## Sessions`.
+
+    Zuerst die vermerkten Terminaladressen und -namen. Danach kommen lebende
+    Terminals hinzu, deren `fab.ticket`-Label oder Name
+    (`fab-<team>-<agent>-t-<n>`) zum Ticket gehört.
+    """
     ended = []
+    try:
+        live = hc.live()
+    except HcError:
+        live = {}
+    done = set()
     for session in ticket.get("sessions") or []:
-        targets = [session.get("terminal"), session.get("name")]
-        for target in dict.fromkeys(item for item in targets if item):
+        name = (session or {}).get("name")
+        for target in dict.fromkeys(
+            item for item in ((session or {}).get("terminal"), name) if item
+        ):
             if hc.kill(target):
                 ended.append(target)
                 break
+        # Ein toter Eintrag wird nicht noch einmal über den Namen versucht.
+        if name:
+            done.add(name)
+    for name in agents.ticket_terminals(ticket, live):
+        if name in done:
+            continue
+        if hc.kill(name):
+            ended.append(name)
     if ticket.get("sessions"):
         ticket["cost"] = costs.collect(ticket)
     return ended
