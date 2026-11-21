@@ -25,6 +25,7 @@ MAX_MINUTES = 1440
 
 OPEN = ("todo", "doing")
 FROZEN = ("draft", "review", "done", "dropped")
+STALLING = ("doing", "review")
 RULE_NUMBERS = {"doing": 1, "mention": 2, "review": 3, "todo": 4, "blocked": 5}
 COOLDOWN = {
     "doing": "doing",
@@ -110,20 +111,18 @@ def _tick_ticket(ticket, roster, live, cfg, by_id, lines, dry):
         if stall and stall.get("rule") != "blocked":
             changed = _dissolve(ticket, lines, dry) or changed
             stall = None
-        old = [
-            blocker
-            for blocker in blockers
-            if now - _stamp(blocker) >= cfg["blocked"] * MINUTES
+        stalled = [
+            blocker for blocker in blockers if _stalled(blocker, now, cfg)
         ]
-        if not old:
+        if not stalled:
             if stall and stall.get("rule") == "blocked":
                 changed = _dissolve(ticket, lines, dry) or changed
             return changed
         agent = _assignee(ticket) or "orchestrator"
-        since = min(_stamp(blocker) for blocker in old)
+        since = min(_stamp(blocker) for blocker in stalled)
         return _attention(
-            ticket, "blocked", agent, _blocked_reason(old, now), lines, dry,
-            since=since,
+            ticket, "blocked", agent, _blocked_reason(stalled, now), lines,
+            dry, since=since,
         ) or changed
 
     if stall and stall.get("rule") == "blocked":
@@ -492,6 +491,22 @@ def _open_blockers(ticket, by_id):
         if blocker.get("status") not in ("done", "dropped"):
             found.append(blocker)
     return found
+
+
+def _stalled(blocker, now, cfg):
+    """Stockt dieser Vorgänger, statt planmäßig in der Kette zu warten?
+
+    Nur ein Ticket, das angeblich bearbeitet wird (`doing`/`review`) und
+    seit der Schwelle unverändert ist, blockiert die Kette. Ein `todo`
+    wartet planmäßig auf seinen eigenen Vorgänger (Regel 4 greift dort am
+    Ticket selbst); ein fehlender Vorgänger bleibt dauerhaft offen.
+    """
+    status = blocker.get("status")
+    if status == "fehlt":
+        return True
+    if status not in STALLING:
+        return False
+    return now - _stamp(blocker) >= cfg["blocked"] * MINUTES
 
 
 def _blocked_reason(blockers, now):
