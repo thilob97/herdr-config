@@ -1,0 +1,93 @@
+{
+  "name": "deps-montag",
+  "nodes": [
+    {
+      "id": "start",
+      "type": "trigger",
+      "trigger": "cron",
+      "every_minutes": 1440
+    },
+    {
+      "id": "montag",
+      "type": "action",
+      "action": "shell",
+      "command": "test \"$(date +%u)\" = 1"
+    },
+    {
+      "id": "deps",
+      "type": "agent",
+      "agent": "zap",
+      "title": "Abhängigkeiten aktualisieren (Montag)",
+      "prompt": "Aktualisiere die Abhängigkeiten dieses Repos auf den neuesten kompatiblen Stand. Halte dich an die vorhandenen Lockfiles und Toolchains, führe die passenden Update-Befehle aus und prüfe die Änderungen. Übergib mit `fab handover` samt Zusammenfassung, geänderten Dateien und dem Verify-Ergebnis."
+    },
+    {
+      "id": "verify",
+      "type": "action",
+      "action": "shell",
+      "command": ".fabric/verify.sh"
+    },
+    {
+      "id": "freigabe",
+      "type": "approval",
+      "text": "Abhängigkeits-Update: {{deps.zusammenfassung}} – bitte freigeben"
+    },
+    {
+      "id": "melden",
+      "type": "action",
+      "action": "notify",
+      "text": "Abhängigkeits-Update rot: verify fehlgeschlagen – {{deps.zusammenfassung}}"
+    },
+    {
+      "id": "ende",
+      "type": "end"
+    },
+    {
+      "id": "ende-rot",
+      "type": "end"
+    }
+  ],
+  "edges": [
+    {
+      "from": "start",
+      "to": "montag"
+    },
+    {
+      "from": "montag",
+      "to": "deps",
+      "when": "pass"
+    },
+    {
+      "from": "montag",
+      "to": "ende",
+      "when": "fail"
+    },
+    {
+      "from": "deps",
+      "to": "verify",
+      "when": "done"
+    },
+    {
+      "from": "deps",
+      "to": "ende",
+      "when": "dropped"
+    },
+    {
+      "from": "verify",
+      "to": "freigabe",
+      "when": "pass"
+    },
+    {
+      "from": "verify",
+      "to": "melden",
+      "when": "fail"
+    },
+    {
+      "from": "freigabe",
+      "to": "ende"
+    },
+    {
+      "from": "melden",
+      "to": "ende-rot"
+    }
+  ]
+}
