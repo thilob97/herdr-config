@@ -4,7 +4,7 @@ import re
 import subprocess
 import sys
 
-from . import agents, events, git, hc, store, teams
+from . import agents, events, git, hc, orchestrator, store, teams
 from .errors import FabError, HcError
 
 # Kein `@` direkt hinter einem E-Mail-Zeichen: `a@b.de` ist keine Erwähnung.
@@ -136,8 +136,11 @@ def _ticket_team(roster, ticket):
     return teams.team_for_repo(roster, repo)
 
 
-def _orchestrator_wake(roster, text, team_entry=None):
+def _orchestrator_wake(roster, text, team_entry=None, actor="fab"):
     """Weckt den Team-Orchestrator; startet ihn, wenn er nicht läuft.
+
+    Ist der Zähler des Teams voll, wird ein laufender Orchestrator vorher neu
+    gestartet; die Weckernachricht geht an die neue Session.
 
     Rückgabe: (ergebnis, adresse, grund). `grund` erklärt einen
     Startfehler und ist sonst "".
@@ -150,9 +153,21 @@ def _orchestrator_wake(roster, text, team_entry=None):
         live = hc.live()
     except HcError:
         live = {}
+    due, reason = orchestrator.restart_due(roster, entry)
     for target in agents.orchestrator_targets(roster, team_name):
         row = live.get(target)
         if row:
+            if due:
+                try:
+                    started = orchestrator.restart(roster, entry, reason, actor)
+                except (FabError, HcError) as exc:
+                    return START_FAILED, None, str(exc)
+                ok, detail = hc.send_detail(
+                    started.get("terminal") or started["name"], text
+                )
+                if ok:
+                    return "gestartet", started["name"], ""
+                return START_FAILED, None, detail
             address = row.get("address") or target
             ok, detail = hc.send_detail(address, text)
             if ok:
@@ -244,7 +259,9 @@ def _one(ticket, name, author, text, roster, no_wake, message_for, send_text=Non
     if name == "orchestrator":
         if team_entry is None:
             return "unterdrückt: kein Team", "unterdrückt: kein Team", None, ""
-        result, address, reason = _orchestrator_wake(roster, send_text, team_entry)
+        result, address, reason = _orchestrator_wake(
+            roster, send_text, team_entry, author
+        )
         line = f"{result} ({reason})" if reason else result
         return result, line, address, reason
 
@@ -303,7 +320,9 @@ def _one(ticket, name, author, text, roster, no_wake, message_for, send_text=Non
         f"aber das Ticket hat keinen Worktree. Lies `fab show {ticket['id']}` und "
         f"entscheide (`fab dispatch {ticket['id']} --agent {name}`)."
     )
-    result, address, reason = _orchestrator_wake(roster, notice, team_entry)
+    result, address, reason = _orchestrator_wake(
+        roster, notice, team_entry, author
+    )
     if result in ("geweckt", "gestartet"):
         return "an orchestrator", "an orchestrator", address, ""
     line = f"{START_FAILED} ({reason})" if reason else START_FAILED

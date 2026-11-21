@@ -175,7 +175,7 @@ Das UI pflegt alles über diese Befehle. Alle schreiben atomar (tmp + `os.replac
 | `fab agent add NAME --role R [--color cN] --argv-json JSON [--prompt-text T] --from N` | Neuer Agent. Name `^[a-z][a-z0-9_-]{0,15}$`, eindeutig, nicht `orchestrator`/`mensch`/`fab`; Farbe `c1`–`c6`, sonst die nächste freie; `argv` nicht leer. Legt `prompts/<name>.md` an (Text oder kurze Vorlage). |
 | `fab agent edit NAME [--rename NEU] [--role R] [--color cN] [--argv-json JSON] [--prompt-text T] --from N` | Ändern. `--rename` nur, wenn kein offenes Ticket den Agenten nennt (`assignee`) und keine Session läuft; benennt die Promptdatei mit um und passt `reviewer` an. |
 | `fab agent rm NAME --from N` | Entfernen. Verweigert bei offenen Tickets, laufender Session oder wenn er `reviewer` ist (Gründe in der Meldung). Die Promptdatei bleibt erhalten. |
-| `fab settings set KEY VALUE --from N` | `max_sessions` (1–16), `reviewer` (Roster-Name), `orchestrator_argv` (JSON-Liste, nicht leer), `max_sessions_total` (1–64), `tick_doing_minutes`, `tick_mention_minutes`, `tick_review_minutes`, `tick_blocked_minutes`, `tick_retry_minutes` (jeweils 0–1440, Minuten; steuern `fab tick`, Abschnitt 4b) |
+| `fab settings set KEY VALUE [--team NAME] --from N` | `max_sessions` (1–16), `reviewer` (Roster-Name), `orchestrator_argv` (JSON-Liste, nicht leer), `max_sessions_total` (1–64), `tick_doing_minutes`, `tick_mention_minutes`, `tick_review_minutes`, `tick_blocked_minutes`, `tick_retry_minutes` (jeweils 0–1440, Minuten; steuern `fab tick`, Abschnitt 4b), `orchestrator_dispatches` (0–100, Standard 5) und `orchestrator_idle_minutes` (0–1440, Standard 30) für den Orchestrator-Neustart (Abschnitt 4c). `--team` schreibt die beiden Orchestrator-Werte in dieses Team; ohne `--team` gilt das erste Team. 0 schaltet die jeweilige Regel ab. |
 | `fab blueprint add NAME --role R [--color cN] --argv-json JSON [--prompt-text T] --from N` | Blaupause anlegen; Name wie `fab agent add`, Farbe sonst die nächste freie, Prompt `prompts/<name>.md` |
 | `fab blueprint edit NAME [--rename NEU] [--role R] [--color cN] [--argv-json JSON] [--prompt-text T] --from N` | Blaupause ändern; `--rename` zieht Teams und Prüfer mit |
 | `fab blueprint rm NAME --from N` | Entfernen; verweigert, solange die Blaupause Mitglied eines Teams ist. Der Prompt bleibt |
@@ -207,7 +207,7 @@ Erwähnung = `@name`, Muster `@([a-z][a-z0-9_-]*)`, ohne Beachtung der Groß-/Kl
 3. `mensch` → kein Wecken. `mensch` kommt in `waiting`, das Ticket erscheint in der Inbox.
 4. Ticket `done` oder `dropped` → `unterdrückt: abgeschlossen`.
 5. Ping-Pong-Bremse: mehr als 8 Weckungen desselben Ziels im selben Ticket innerhalb von 10 min → `unterdrückt: ping-pong`. Der Orchestrator bekommt beim ersten Mal genau eine Nachricht, die Inbox einen `attention`-Eintrag.
-6. `orchestrator` → das Terminal `fab-orchestrator` wecken. Läuft es nicht, wird es gestartet (`gestartet`).
+6. `orchestrator` → das Terminal `fab-orchestrator` wecken. Läuft es nicht, wird es gestartet (`gestartet`). Hat der Orchestrator des Teams seit seinem letzten Start `orchestrator_dispatches` erfolgreiche `fab dispatch`-Aufrufe mit `--from orchestrator` ausgeführt (Standard 5), wird er vorher neu gestartet; die Weckernachricht geht an die neue Session (Abschnitt 4c).
 7. Roster-Agent → sein Terminal für dieses Ticket (Name `fab-<agent>-<id klein>`) wecken (`geweckt`). Läuft es nicht und hat das Ticket einen Worktree: den Agenten im Worktree starten (`gestartet`, Abschnitt 5). Hat das Ticket keinen Worktree: Nachricht an den Orchestrator (`an orchestrator`).
 8. Unbekannter Name → `unterdrückt: unbekannt`.
 
@@ -236,6 +236,14 @@ Jedes Ergebnis wird als `wake`-Ereignis geschrieben, auch jede Unterdrückung. I
 - `attention` erscheint genau einmal pro Ticket in der Inbox: Text `stockt seit <Dauer> – <Grund>`, `agent` für den Knopf „Erneut versuchen“ im Mod. Der Knopf ruft `fab wake … --from mensch "Erneut starten"`; eine zugestellte Weckung oder ein Kommentar löst `stall` auf. Board-Karten zeigen `stockt seit …`.
 - `--dry-run` plant nur: kein Schreiben, kein `hc send`/`hc run`; Ausgabe nennt die geplanten Aktionen.
 - Auslöser: der Mod ruft `fab tick` jede Minute auf, solange das Fenster offen ist. Optional installiert der Mensch einen launchd-Agent (Intervall 60 s) mit `fab tick --install`, entfernt ihn mit `--uninstall`. Automatisch wird nichts installiert. `--install` im Haupt-Checkout ausführen: der Auftrag trägt den absoluten Pfad der aufrufenden `fabric/fab`; aus einem Worktree zeigt er nach dem Aufräumen ins Leere.
+
+## 4c. Neustart des Orchestrators
+
+Der Kontext des Team-Orchestrators bleibt begrenzt. Zähler und Leerlauf werden aus `events.jsonl` gelesen; ein zusätzlicher Zustand entsteht nicht. Ein Neustart ist `hc kill` auf das laufende Orchestrator-Terminal und ein frischer `fab orchestrator start`, gefolgt von einem `orchestrator`-Ereignis mit `text: "neu gestartet"` und `reason` (Zähler oder Leerlauf). Das Ereignis setzt den Zähler zurück.
+
+- **Zähler:** Gezählt werden erfolgreiche `fab dispatch`-Aufrufe mit `--from orchestrator` seit dem letzten Start; Dispatch-Versuche mit `Start fehlgeschlagen` zählen nicht. Beim nächsten Wecken mit `@orchestrator` startet `fab` neu, statt `hc send` an die alte Session zu richten; die Weckernachricht geht an die neue Session. Schwelle `orchestrator_dispatches` (Standard 5, 0 schaltet ab).
+- **Leerlauf:** `fab tick` startet einen laufenden Orchestrator neu, wenn sein Terminal nicht `working`/`blocked` ist und seit `orchestrator_idle_minutes` (Standard 30, 0 schaltet ab) weder ein fab-Aufruf noch eine Ausgabe beobachtet wurde. Ausgabe kommt aus `hc get` (`status_ms`, sonst `created_ms`), fab-Aufrufe aus Ereignissen mit `actor: "orchestrator"` des Teams. Wartet ein offenes Ticket auf ihn (letzte Erwähnung ohne spätere Reaktion oder `orchestrator` in `waiting`), bleibt er stehen; `--dry-run` nennt den geplanten Neustart nur.
+- Der Zähler gilt je Team; `fab settings set … --team NAME` schreibt `orchestrator.dispatches` bzw. `orchestrator.idle_minutes` in das Team.
 
 ## 5. Agenten starten
 

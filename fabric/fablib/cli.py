@@ -1556,7 +1556,7 @@ def cmd_team(args):
 def cmd_settings(args):
     actor = _require_actor(args)
     with store.locked():
-        text = config.set_setting(args.key, args.value, actor)
+        text = config.set_setting(args.key, args.value, actor, team=args.team)
     print(text)
     return 0
 
@@ -1917,8 +1917,11 @@ def build_parser():
                                        description="Einstellung setzen")
     set_item.add_argument("key", metavar="SCHLÜSSEL",
                           help="max_sessions, reviewer, orchestrator_argv, "
-                               "max_sessions_total oder tick_*_minutes")
+                               "max_sessions_total, tick_*_minutes oder "
+                               "orchestrator_dispatches/orchestrator_idle_minutes")
     set_item.add_argument("value", metavar="WERT")
+    set_item.add_argument("--team", metavar="NAME",
+                          help="Team für orchestrator_dispatches/idle_minutes")
     set_item.add_argument("--from", dest="from_", metavar="NAME", required=True)
 
     item = command("prompt", "Prompts auflisten, zeigen und speichern", cmd_prompt)

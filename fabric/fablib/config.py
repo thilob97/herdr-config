@@ -24,12 +24,17 @@ TICK_KEYS = (
     "tick_retry_minutes",
 )
 TICK_MAX_MINUTES = 1440
+ORCHESTRATOR_KEYS = {
+    "orchestrator_dispatches": ("dispatches", 100),
+    "orchestrator_idle_minutes": ("idle_minutes", TICK_MAX_MINUTES),
+}
 SETTINGS = (
     "max_sessions",
     "reviewer",
     "orchestrator_argv",
     "max_sessions_total",
     *TICK_KEYS,
+    *ORCHESTRATOR_KEYS,
 )
 MIN_SESSIONS = teams.MIN_SESSIONS
 MAX_SESSIONS = teams.MAX_SESSIONS
@@ -888,10 +893,14 @@ def remove_team(name, actor):
 
 # ---------------------------------------------------------------- Einstellungen
 
-def set_setting(key, value, actor):
+def set_setting(key, value, actor, team=None):
     raw = "" if value is None else str(value)
     path, data = _load()
     _migrate(data)
+    if team and key not in ORCHESTRATOR_KEYS:
+        raise FabError(
+            f"--team gilt nur für {', '.join(ORCHESTRATOR_KEYS)}"
+        )
     if key == "max_sessions":
         number = teams.check_sessions(raw)
         first = teams.first_team(data)
@@ -949,6 +958,28 @@ def set_setting(key, value, actor):
         old = data.get(key)
         data[key] = number
         text = f"{key}: {old if old is not None else '—'} → {number}"
+    elif key in ORCHESTRATOR_KEYS:
+        field, maximum = ORCHESTRATOR_KEYS[key]
+        try:
+            number = int(raw.strip())
+        except (TypeError, ValueError):
+            raise FabError(
+                f"{key} muss eine ganze Zahl zwischen 0 und {maximum} sein"
+            )
+        if number < 0 or number > maximum:
+            raise FabError(
+                f"{key} muss zwischen 0 und {maximum} liegen, nicht {number}"
+            )
+        entry = teams.team(data, team) if team else teams.first_team(data)
+        if not isinstance(entry, dict) or not entry.get("name"):
+            raise FabError("Kein Team im Roster; fab team add …")
+        orchestrator = _team_orchestrator(entry)
+        old = orchestrator.get(field)
+        orchestrator[field] = number
+        text = (
+            f"{key} ({entry['name']}): {old if old is not None else '—'} "
+            f"→ {number}"
+        )
     else:
         raise FabError(
             f"Unbekannte Einstellung „{key}“; erlaubt: {', '.join(SETTINGS)}"

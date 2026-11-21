@@ -32,6 +32,18 @@ if command == "ls":
     else:
         sys.stdout.write('{"terminals": []}')
     sys.exit(0)
+if command == "get":
+    fixture = os.environ.get("HC_GET")
+    entries = {}
+    if fixture and os.path.isfile(fixture):
+        try:
+            with open(fixture, encoding="utf-8") as handle:
+                entries = json.load(handle)
+        except ValueError:
+            entries = {}
+    row = entries.get(args[1]) if isinstance(entries, dict) else None
+    sys.stdout.write(json.dumps(row or {}))
+    sys.exit(0)
 if command == "run":
     fail = os.environ.get("HC_RUN_FAIL")
     times = os.environ.get("HC_RUN_FAIL_TIMES")
@@ -129,12 +141,14 @@ class FabricCase(unittest.TestCase):
         self.write_roster()
         self.hc_log = os.path.join(self.tmp, "hc.log")
         self.ls_json = os.path.join(self.tmp, "ls.json")
+        self.get_json = os.path.join(self.tmp, "get.json")
         self.claude_json = os.path.join(self.tmp, "claude.json")
         self.herdr_log = os.path.join(self.tmp, "herdr.log")
         self.herdr_ls = os.path.join(self.tmp, "herdr-ls.json")
         self._write(self.hc_log, "")
         self._write(self.herdr_log, "")
         self.set_live({})
+        self.set_gets({})
         self.set_spaces([{"id": "sp-fabric", "name": "Fabric"}])
         stub = os.path.join(self.bin, "hc")
         self._write(stub, STUB_HC)
@@ -150,6 +164,7 @@ class FabricCase(unittest.TestCase):
             FAB_CLAUDE_JSON=self.claude_json,
             HC_LOG=self.hc_log,
             HC_LS=self.ls_json,
+            HC_GET=self.get_json,
             HERDR_LOG=self.herdr_log,
             HERDR_LS=self.herdr_ls,
             PATH=self.bin + os.pathsep + os.environ.get("PATH", ""),
@@ -269,6 +284,10 @@ class FabricCase(unittest.TestCase):
 
     def set_terminals(self, rows):
         self._write(self.ls_json, json.dumps({"terminals": rows}))
+
+    def set_gets(self, rows):
+        """Antworten für `hc get <name> --json` (Name → Dict)."""
+        self._write(self.get_json, json.dumps(rows))
 
     def hc_calls(self, command=None):
         rows = [json.loads(line) for line in self._read(self.hc_log).splitlines() if line.strip()]
