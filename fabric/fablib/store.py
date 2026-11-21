@@ -1063,29 +1063,6 @@ def event_rows_for(tid):
     return [_event_dict(row) for row in rows]
 
 
-def event_rows_for_ticket(tid, kind=None):
-    """Nur Ereignisse dieses Tickets (optional einer Art), über events_ticket."""
-    ensure()
-    tid = normalize_id(tid)
-    if not _db_ready():
-        return [
-            row
-            for row in _legacy_event_rows()
-            if row.get("ticket") == tid
-            and (kind is None or row.get("kind") == kind)
-        ]
-    if kind is None:
-        rows = _connect().execute(
-            "SELECT * FROM events WHERE ticket=? ORDER BY id", (tid,)
-        ).fetchall()
-    else:
-        rows = _connect().execute(
-            "SELECT * FROM events WHERE ticket=? AND kind=? ORDER BY id",
-            (tid, kind),
-        ).fetchall()
-    return [_event_dict(row) for row in rows]
-
-
 def event_has_text(ticket, text):
     ensure()
     if not _db_ready():
