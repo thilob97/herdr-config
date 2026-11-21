@@ -1,11 +1,20 @@
 """Git: Repo prüfen, Branch und Worktree anlegen, mergen, prüfen."""
 import os
+import re
 import subprocess
 
 from . import store
 from .errors import FabError
 
 VERIFY_TIMEOUT = 600
+
+GITHUB_URL = re.compile(
+    r"^(?:https?://(?:[^@/]+@)?github\.com/|ssh://(?:[^@/]+@)?github\.com/"
+    r"|(?:[^@/]+@)?github\.com:)",
+    re.IGNORECASE,
+)
+GH_TIMEOUT = 60
+PUSH_TIMEOUT = 600
 
 
 def git(args, cwd, timeout=120):
@@ -231,6 +240,132 @@ def merge_no_ff(repo_top, branch_name, message):
             )
         raise FabError(f"Merge von {branch_name} scheiterte: {detail}")
     return head(repo_top)
+
+
+def is_github_url(url):
+    return bool(url and GITHUB_URL.match(url.strip()))
+
+
+def github_remote(repo):
+    """Origin-URL des Repos, wenn sie auf github.com zeigt; sonst None.
+
+    `git remote get-url` wendet `url.<…>.insteadOf` an; für die Erkennung zählt
+    die konfigurierte Herkunft, daher zuerst der rohe Config-Wert.
+    """
+    result = git(["config", "--get", "remote.origin.url"], repo)
+    if result.returncode != 0:
+        result = git(["remote", "get-url", "origin"], repo)
+    if result.returncode != 0:
+        return None
+    url = result.stdout.strip()
+    return url if is_github_url(url) else None
+
+
+def _gh(repo, args, timeout=GH_TIMEOUT):
+    try:
+        return subprocess.run(
+            ["gh", *args], cwd=repo, capture_output=True, text=True, timeout=timeout
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+
+
+def gh_authenticated(repo):
+    result = _gh(repo, ["auth", "status"])
+    return result is not None and result.returncode == 0
+
+
+def fetch(repo, remote="origin"):
+    result = git(["fetch", remote], repo, timeout=PUSH_TIMEOUT)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip() or "unbekannter Fehler"
+        raise FabError(f"git fetch {remote} ist fehlgeschlagen: {detail}")
+
+
+def remote_ref(repo, remote, branch_name):
+    result = git(
+        ["rev-parse", "--verify", f"refs/remotes/{remote}/{branch_name}"], repo
+    )
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def is_ancestor(repo, ancestor, descendant):
+    return git(["merge-base", "--is-ancestor", ancestor, descendant], repo).returncode == 0
+
+
+def push(repo, remote, branch_name):
+    result = git(["push", remote, branch_name], repo, timeout=PUSH_TIMEOUT)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip() or "unbekannter Fehler"
+        raise FabError(f"git push {remote} {branch_name} ist fehlgeschlagen: {detail}")
+
+
+def push_delete(repo, remote, branch_name):
+    result = git(["push", remote, "--delete", branch_name], repo, timeout=PUSH_TIMEOUT)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip() or "unbekannter Fehler"
+        if "remote ref does not exist" in detail:
+            return
+        raise FabError(
+            f"git push {remote} --delete {branch_name} ist fehlgeschlagen: {detail}"
+        )
+
+
+def merge_ff_only(repo, ref):
+    result = git(["merge", "--ff-only", ref], repo, timeout=PUSH_TIMEOUT)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip() or "unbekannter Fehler"
+        raise FabError(f"Merge --ff-only {ref} ist fehlgeschlagen: {detail}")
+
+
+def gh_pr_url(repo, branch_name):
+    result = _gh(repo, ["pr", "view", branch_name, "--json", "url", "--jq", ".url"])
+    if result is None or result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def gh_pr_state(repo, url):
+    result = _gh(repo, ["pr", "view", url, "--json", "state", "--jq", ".state"])
+    if result is None or result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
+def gh_pr_create(repo, title, body, base, head):
+    result = _gh(
+        repo,
+        ["pr", "create", "--title", title, "--body", body, "--base", base, "--head", head],
+        timeout=PUSH_TIMEOUT,
+    )
+    if result is None or result.returncode != 0:
+        url = gh_pr_url(repo, head)
+        if url:
+            return url
+        detail = "gh ist nicht verfügbar"
+        if result is not None:
+            detail = (result.stderr or result.stdout).strip() or "unbekannter Fehler"
+        raise FabError(f"GitHub-PR konnte nicht angelegt werden: {detail}")
+    match = re.search(r"https://\S+/pull/\d+", result.stdout)
+    if match:
+        return match.group(0)
+    url = gh_pr_url(repo, head)
+    if url:
+        return url
+    detail = (result.stderr or result.stdout).strip() or "unbekannter Fehler"
+    raise FabError(f"GitHub-PR angelegt, aber URL nicht erkannt: {detail}")
+
+
+def gh_pr_merge(repo, url):
+    result = _gh(repo, ["pr", "merge", url, "--merge"], timeout=PUSH_TIMEOUT)
+    if result is not None and result.returncode == 0:
+        return
+    if gh_pr_state(repo, url) == "MERGED":
+        return
+    detail = "gh ist nicht verfügbar"
+    if result is not None:
+        detail = (result.stderr or result.stdout).strip() or "unbekannter Fehler"
+    raise FabError(f"PR-Merge ist fehlgeschlagen: {detail}")
 
 
 def run_verify(worktree):

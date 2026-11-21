@@ -108,6 +108,14 @@ function acceptDialog(app, cx, t) {
     actions: [
       ui.button(t, { id: "fabric-accept-cancel", label: "Abbrechen", onClick: (cx) => { app.modal = null; cx.notify(); } }),
       ui.button(t, {
+        id: "fabric-accept-pr-open",
+        label: "Nur PR öffnen",
+        icon: "external",
+        disabled: Boolean(app.busy),
+        tooltip: "Erstellt oder öffnet den PR ohne Merge (fab accept --pr-only)",
+        onClick: (cx) => app.acceptPrOnly(cx),
+      }),
+      ui.button(t, {
         id: "fabric-accept-confirm",
         label: "Abnehmen",
         icon: "check",

@@ -866,6 +866,48 @@ def cmd_handover(args):
     return 0
 
 
+def _pr_body(ticket, branch_name):
+    handovers = [
+        row
+        for row in events.read_all()
+        if row.get("ticket") == ticket["id"] and row.get("kind") == "handover"
+    ]
+    summary = (handovers[-1].get("text") or "").strip() if handovers else ""
+    if not summary:
+        summary = f"Ticket {ticket['id']}: {ticket['title']}"
+    checks = ticket.get("checks") or {}
+    verdict = ticket.get("verdict") or {}
+    return "\n".join(
+        [
+            summary,
+            "",
+            "## Checks",
+            f"- {checks.get('state') or '—'} (HEAD {_short(checks.get('head'))})",
+            "",
+            "## Urteil",
+            f"- {verdict.get('state') or '—'} von {verdict.get('by') or '—'}: "
+            f"{(verdict.get('summary') or '').strip() or '—'} "
+            f"(HEAD {_short(verdict.get('head'))})",
+            "",
+            f"Ticket: {ticket['id']} (fab show {ticket['id']})",
+            f"Branch: {branch_name} → {ticket['base']}",
+        ]
+    )
+
+
+def _pr_failure(ticket, reason, url):
+    reason = reason.strip()
+    prefix = "PR-Merge ist fehlgeschlagen: "
+    if reason.startswith(prefix):
+        reason = reason[len(prefix):]
+    text = f"PR-Merge fehlgeschlagen: {reason} — PR: {url}"
+    ticket["pr"] = {"url": url, "state": "open"}
+    _add_comment(ticket, "mensch", text)
+    events.append("pr", ticket["id"], "mensch", "", text)
+    store.save(ticket)
+    index.rebuild()
+
+
 def cmd_accept(args):
     with store.locked():
         ticket = store.load(args.id)
@@ -904,26 +946,92 @@ def cmd_accept(args):
                     f"Haupt-Checkout {top} ist nicht sauber: uncommittete Änderungen "
                     f"an Dateien, die {branch_name} ändert:\n- " + "\n- ".join(overlap)
                 )
-        merged = git.merge_no_ff(
-            top, branch_name, f"Merge {branch_name}: {ticket['title']}"
-        )
-        ended = _end_sessions(ticket)
-        git.remove_worktree(top, worktree)
-        git.delete_branch(top, branch_name)
-        ticket["status"] = "done"
-        ticket.pop("stall", None)
-        ticket["waiting"] = []
-        events.append(
-            "accept", ticket["id"], "mensch", "",
-            f"{branch_name} → {ticket['base']} @ {_short(merged)}",
-        )
-        store.save(ticket)
-        index.rebuild()
-    print(
-        f"{ticket['id']}: angenommen, {branch_name} in {ticket.get('base')} gemergt "
-        f"({_short(merged)}); Worktree und Branch entfernt"
-        + (f"; {len(ended)} Session(s) beendet" if ended else "")
-    )
+        pr_ready = bool(git.github_remote(top)) and git.gh_authenticated(top)
+        failure = None
+        if args.pr_only and not pr_ready:
+            raise FabError(
+                f"{ticket['id']}: --pr-only braucht einen GitHub-Remote (origin) und "
+                f"eine gh-Anmeldung (gh auth status)"
+            )
+        if not pr_ready:
+            merged = git.merge_no_ff(
+                top, branch_name, f"Merge {branch_name}: {ticket['title']}"
+            )
+            ended = _end_sessions(ticket)
+            git.remove_worktree(top, worktree)
+            git.delete_branch(top, branch_name)
+            ticket["status"] = "done"
+            ticket.pop("stall", None)
+            ticket["waiting"] = []
+            events.append(
+                "accept", ticket["id"], "mensch", "",
+                f"{branch_name} → {ticket['base']} @ {_short(merged)}",
+            )
+            store.save(ticket)
+            index.rebuild()
+            print(
+                f"{ticket['id']}: angenommen, {branch_name} in {ticket.get('base')} gemergt "
+                f"({_short(merged)}); Worktree und Branch entfernt"
+                + (f"; {len(ended)} Session(s) beendet" if ended else "")
+            )
+        else:
+            base = ticket["base"]
+            local_base = git.head(top)
+            git.fetch(top)
+            remote_base = git.remote_ref(top, "origin", base)
+            if remote_base and not git.is_ancestor(top, remote_base, base):
+                raise FabError(
+                    f"{ticket['id']}: {base} ist nicht fast-forward-fähig zu "
+                    f"origin/{base}; nichts gepusht."
+                )
+            if not remote_base or remote_base != local_base:
+                git.push(top, "origin", base)
+            git.push(top, "origin", branch_name)
+            url = git.gh_pr_url(repo, branch_name) or git.gh_pr_create(
+                repo,
+                f"{ticket['id']}: {ticket['title']}",
+                _pr_body(ticket, branch_name),
+                base,
+                branch_name,
+            )
+            ticket["pr"] = {"url": url, "state": "open"}
+            _add_comment(ticket, "mensch", f"PR geöffnet: {url}")
+            events.append("pr", ticket["id"], "mensch", "", f"PR geöffnet: {url}")
+            store.save(ticket)
+            index.rebuild()
+            if args.pr_only:
+                print(f"{ticket['id']}: PR geöffnet: {url}")
+                return 0
+            try:
+                git.gh_pr_merge(repo, url)
+                git.fetch(top)
+                git.push_delete(top, "origin", branch_name)
+                git.merge_ff_only(top, f"origin/{base}")
+                merged = git.head(top)
+                ended = _end_sessions(ticket)
+                git.remove_worktree(top, worktree)
+                git.delete_branch(top, branch_name)
+                ticket["status"] = "done"
+                ticket.pop("stall", None)
+                ticket["waiting"] = []
+                ticket["pr"] = {"url": url, "state": "merged"}
+                _add_comment(ticket, "mensch", f"PR gemergt: {url}")
+                events.append(
+                    "accept", ticket["id"], "mensch", "",
+                    f"{branch_name} → {base} via PR {url} @ {_short(merged)}",
+                )
+                store.save(ticket)
+                index.rebuild()
+                print(
+                    f"{ticket['id']}: angenommen, {branch_name} über PR {url} in {base} "
+                    f"gemergt ({_short(merged)}); Worktree und Branch entfernt"
+                    + (f"; {len(ended)} Session(s) beendet" if ended else "")
+                )
+            except FabError as exc:
+                _pr_failure(ticket, str(exc), url)
+                failure = exc
+    if failure is not None:
+        raise failure
     _autostart(_unblocked_by(ticket["id"]))
     return 0
 
@@ -1810,8 +1918,10 @@ def build_parser():
     item.add_argument("--from", dest="from_", metavar="NAME", required=True)
     item.add_argument("summary", metavar="ZUSAMMENFASSUNG")
 
-    item = command("accept", "Abnahme durch den Menschen: mergen, aufräumen, done", cmd_accept)
+    item = command("accept", "Abnahme durch den Menschen: per PR oder lokal mergen, aufräumen, done", cmd_accept)
     item.add_argument("id", metavar="ID")
+    item.add_argument("--pr-only", action="store_true",
+                      help="nur GitHub-PR öffnen, nicht mergen (Status bleibt review)")
 
     item = command("reject", "Als Mensch zurückweisen mit Feedback", cmd_reject)
     item.add_argument("id", metavar="ID")

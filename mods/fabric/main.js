@@ -1863,8 +1863,21 @@ export default class Fabric extends View {
     const id = this.modal?.ticket?.id ?? this.activeTicketId();
     if (!id) return;
     this.modal = null;
-    await this.action("accept", ["accept", id], {
+    await this.action("accept", model.acceptArgs(id), {
       success: `${id} abgenommen.`,
+      timeout: 180000,
+    });
+  }
+
+  async acceptPrOnly(cx) {
+    const id = this.modal?.ticket?.id ?? this.activeTicketId();
+    if (!id) return;
+    this.modal = null;
+    await this.action("accept-pr", model.acceptArgs(id, { prOnly: true }), {
+      success: (result) => {
+        const url = model.prUrl(result?.stdout ?? "");
+        return url ? `PR bereit: ${url}` : `${id}: PR geöffnet.`;
+      },
       timeout: 180000,
     });
   }

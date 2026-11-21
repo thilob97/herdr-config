@@ -34,6 +34,7 @@ export const EVENT_WORDS = {
   verify: "geprüft",
   verdict: "Urteil",
   handover: "übergeben",
+  pr: "PR",
   accept: "abgenommen",
   reject: "zurückgewiesen",
   drop: "verworfen",
@@ -1462,6 +1463,17 @@ export function commentArgs(id, text, from = "mensch", { noWake = false } = {}) 
   if (noWake) args.push("--no-wake");
   args.push("--", text);
   return args;
+}
+
+/** `fab accept`; mit `prOnly` entsteht nur der PR, der Merge bleibt aus. */
+export function acceptArgs(id, { prOnly = false } = {}) {
+  return ["accept", id, ...(prOnly ? ["--pr-only"] : [])];
+}
+
+/** Erste PR-Adresse aus der Ausgabe von `fab accept`; leer, wenn keine. */
+export function prUrl(text) {
+  const match = String(text ?? "").match(/https:\/\/\S+\/pull\/\d+/);
+  return match ? match[0] : "";
 }
 
 export function rejectArgs(id, feedback) {
