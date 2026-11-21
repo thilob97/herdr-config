@@ -329,6 +329,16 @@ def _short(value):
     return (value or "—")[:7]
 
 
+def _lesson_wake_text(ticket, kind, actor, summary):
+    """Wecktext an den Orchestrator: eine Lehre vorschlagen lassen."""
+    return (
+        f"Ticket {ticket['id']} „{ticket['title']}“: {kind} von {actor}: "
+        f"„{(summary or '')[:300]}“. Formuliere daraus eine Lehre als einen "
+        f"imperativen Satz und schlage sie mit "
+        f'`fab lesson propose {ticket["id"]} "…"` vor; der Mensch bestätigt sie im Fenster.'
+    )
+
+
 # ---------------------------------------------------------------- Befehle
 
 def _issue_ticket_body(issue):
@@ -944,24 +954,33 @@ def cmd_verdict(args):
                 if waiting.lower() != "mensch"
             ]
             _add_comment(ticket, actor, summary)
+            reviewer = roster.get("reviewer") or ""
             if assignee:
-                reviewer = roster.get("reviewer") or ""
                 tail = (
                     f"Lies `fab show {ticket['id']}`, behebe die Befunde, dann "
                     f"`fab verify {ticket['id']} --from {assignee}`"
                     + (f" und @{reviewer} erneut erwähnen." if reviewer else ".")
                 )
-                results = wake.process(
-                    ticket,
-                    [assignee],
-                    actor,
-                    summary,
-                    roster,
-                    message_for=lambda name: (
-                        f"Ticket {ticket['id']} „{ticket['title']}“: Urteil fail von "
-                        f"{actor}: „{summary[:300]}“. {tail}"
-                    ),
+            else:
+                tail = ""
+
+            def message_for(name):
+                if name == "orchestrator":
+                    return _lesson_wake_text(ticket, "Urteil fail", actor, summary)
+                return (
+                    f"Ticket {ticket['id']} „{ticket['title']}“: Urteil fail von "
+                    f"{actor}: „{summary[:300]}“. {tail}"
                 )
+
+            targets = [assignee, "orchestrator"] if assignee else ["orchestrator"]
+            results = wake.process(
+                ticket,
+                targets,
+                actor,
+                summary,
+                roster,
+                message_for=message_for,
+            )
         elif assignee:
             results = wake.process(
                 ticket,
@@ -1329,20 +1348,25 @@ def cmd_reject(args):
         ticket.pop("stall", None)
         _add_comment(ticket, "mensch", feedback)
         assignee = ticket.get("assignee")
-        results = []
-        if assignee:
-            results = wake.process(
-                ticket,
-                [assignee],
-                "mensch",
-                feedback,
-                roster,
-                message_for=lambda name: (
-                    f"Ticket {ticket['id']} „{ticket['title']}“: Zurückgewiesen von mensch: "
-                    f"„{feedback[:300]}“. Lies `fab show {ticket['id']}`, arbeite weiter, "
-                    f"dann `fab verify {ticket['id']}` und erneut `fab handover`."
-                ),
+
+        def message_for(name):
+            if name == "orchestrator":
+                return _lesson_wake_text(ticket, "Zurückweisung", "mensch", feedback)
+            return (
+                f"Ticket {ticket['id']} „{ticket['title']}“: Zurückgewiesen von mensch: "
+                f"„{feedback[:300]}“. Lies `fab show {ticket['id']}`, arbeite weiter, "
+                f"dann `fab verify {ticket['id']}` und erneut `fab handover`."
             )
+
+        targets = [assignee, "orchestrator"] if assignee else ["orchestrator"]
+        results = wake.process(
+            ticket,
+            targets,
+            "mensch",
+            feedback,
+            roster,
+            message_for=message_for,
+        )
         events.append("reject", ticket["id"], "mensch", "", feedback)
         store.save(ticket)
         index.rebuild()
@@ -2045,6 +2069,91 @@ def cmd_issue(args):
     return 0
 
 
+def _lesson_proposal(ticket, proposal):
+    wanted = str(proposal or "").strip().upper()
+    for item in ticket.get("lesson_proposals") or []:
+        if isinstance(item, dict) and str(item.get("id") or "").upper() == wanted:
+            return item
+    raise FabError(
+        f"{ticket['id']}: Lehren-Vorschlag {proposal or '—'} gibt es nicht"
+    )
+
+
+def cmd_lesson(args):
+    actor = _require_actor(args)
+    if args.action == "propose":
+        sentence = (args.value or "").strip()
+        if not sentence or "\n" in sentence or "\r" in sentence:
+            raise FabError(
+                "Eine Lehre ist ein Satz: kein leerer Text und kein Zeilenumbruch"
+            )
+        with store.locked():
+            ticket = store.load(args.id)
+            if not ticket.get("repo"):
+                raise FabError(
+                    f"{ticket['id']} hat kein Repo; eine Lehre gehört in einen Checkout"
+                )
+            proposals = ticket.get("lesson_proposals")
+            if not isinstance(proposals, list):
+                proposals = []
+            numbers = []
+            for item in proposals:
+                if not isinstance(item, dict):
+                    continue
+                match = re.fullmatch(r"L(\d+)", str(item.get("id") or ""))
+                if match:
+                    numbers.append(int(match.group(1)))
+            proposal_id = f"L{max(numbers, default=0) + 1}"
+            proposals.append(
+                {
+                    "id": proposal_id,
+                    "text": sentence,
+                    "at": store.now_ms(),
+                    "by": actor,
+                }
+            )
+            ticket["lesson_proposals"] = proposals
+            events.append(
+                "lesson", ticket["id"], actor, "", f"vorschlag: {sentence}"
+            )
+            store.save(ticket)
+            index.rebuild()
+        print(f"{args.id}: Lehren-Vorschlag {proposal_id} angelegt: {sentence}")
+        return 0
+
+    with store.locked():
+        ticket = store.load(args.id)
+        proposal = _lesson_proposal(ticket, args.value)
+        sentence = str(proposal.get("text") or "")
+        if args.action == "confirm" and not ticket.get("repo"):
+            raise FabError(
+                f"{ticket['id']} hat kein Repo; eine Lehre gehört in einen Checkout"
+            )
+        ticket["lesson_proposals"] = [
+            item
+            for item in ticket.get("lesson_proposals") or []
+            if isinstance(item, dict)
+            and str(item.get("id") or "") != str(proposal.get("id") or "")
+        ]
+        target = ""
+        if args.action == "confirm":
+            target = repos.append_lesson(ticket["repo"], sentence)
+            events.append(
+                "lesson", ticket["id"], actor, "", f"bestätigt: {sentence}"
+            )
+        else:
+            events.append(
+                "lesson", ticket["id"], actor, "", f"verworfen: {sentence}"
+            )
+        store.save(ticket)
+        index.rebuild()
+    if args.action == "confirm":
+        print(f"{args.id}: Lehre bestätigt in {target}: {sentence}")
+    else:
+        print(f"{args.id}: Lehren-Vorschlag {proposal.get('id')} verworfen")
+    return 0
+
+
 def cmd_repos(args):
     rows = repos.known(args.add or ())
     if args.json:
@@ -2467,6 +2576,27 @@ def build_parser():
                                     description="Prüfskript ausführen")
     test_repo.add_argument("path", metavar="PFAD")
     test_repo.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe")
+
+    item = command("lesson", "Lehren vorschlagen, bestätigen und verwerfen", cmd_lesson)
+    lesson_sub = item.add_subparsers(dest="action", metavar="AKTION", required=True)
+    propose_lesson = lesson_sub.add_parser(
+        "propose", help="Lehre vorschlagen", description="Lehre vorschlagen"
+    )
+    propose_lesson.add_argument("id", metavar="ID")
+    propose_lesson.add_argument("value", metavar="SATZ")
+    propose_lesson.add_argument("--from", dest="from_", metavar="NAME", required=True)
+    confirm_lesson = lesson_sub.add_parser(
+        "confirm", help="Lehre bestätigen", description="Lehre bestätigen"
+    )
+    confirm_lesson.add_argument("id", metavar="ID")
+    confirm_lesson.add_argument("value", metavar="VORSCHLAG")
+    confirm_lesson.add_argument("--from", dest="from_", metavar="NAME", required=True)
+    discard_lesson = lesson_sub.add_parser(
+        "discard", help="Lehre verwerfen", description="Lehre verwerfen"
+    )
+    discard_lesson.add_argument("id", metavar="ID")
+    discard_lesson.add_argument("value", metavar="VORSCHLAG")
+    discard_lesson.add_argument("--from", dest="from_", metavar="NAME", required=True)
 
     command("version", "Version und Git-HEAD des Fabric-Codes", cmd_version)
     command("index", "index.json neu erzeugen", cmd_index)

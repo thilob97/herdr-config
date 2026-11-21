@@ -2257,6 +2257,32 @@ export default class Fabric extends View {
     }
   }
 
+  /** Offenen Lehren-Vorschlag aus dem Posteingang bestätigen. */
+  async confirmLesson(entry, cx) {
+    const lesson = model.inboxLesson(entry);
+    if (!lesson) return;
+    const result = await this.action("lesson-confirm", lesson.confirm, {
+      success: "Lehre bestätigt.",
+    });
+    if (result.ok) {
+      this.inboxOpen = false;
+      this.notifyNow();
+    }
+  }
+
+  /** Offenen Lehren-Vorschlag aus dem Posteingang verwerfen. */
+  async discardLesson(entry, cx) {
+    const lesson = model.inboxLesson(entry);
+    if (!lesson) return;
+    const result = await this.action("lesson-discard", lesson.discard, {
+      success: "Lehre verworfen.",
+    });
+    if (result.ok) {
+      this.inboxOpen = false;
+      this.notifyNow();
+    }
+  }
+
   async openAcceptModal(cx) {
     const ticket = this.ticket;
     if (!ticket) return;
@@ -3357,6 +3383,7 @@ export default class Fabric extends View {
         this.inbox.length
           ? v_flex().max_h(360).overflow_y_scrollbar().children(model.sortInbox(this.inbox).map((entry, index) => {
             const retry = model.inboxRetry(entry);
+            const lesson = model.inboxLesson(entry);
             return h_flex()
               .id(`fabric-inbox-pop-${entry.ticket}-${index}`)
               .w_full()
@@ -3394,7 +3421,24 @@ export default class Fabric extends View {
                   small: true,
                   tooltip: "Den Agenten erneut starten und den Hinweis bei Erfolg entfernen",
                   onClick: (cx) => this.retryAgent(entry, cx),
-                })))));
+                })))))
+                .when(Boolean(lesson), (el) => el.child(h_flex().w_full().gap(4)
+                  .child(ui.button(t, {
+                    id: `fabric-inbox-pop-lesson-confirm-${entry.ticket}-${index}`,
+                    label: "Bestätigen",
+                    icon: "check",
+                    small: true,
+                    tooltip: "Diesen Lehren-Vorschlag bestätigen",
+                    onClick: (cx) => this.confirmLesson(entry, cx),
+                  }))
+                  .child(ui.button(t, {
+                    id: `fabric-inbox-pop-lesson-discard-${entry.ticket}-${index}`,
+                    label: "Verwerfen",
+                    icon: "close",
+                    small: true,
+                    tooltip: "Diesen Lehren-Vorschlag verwerfen",
+                    onClick: (cx) => this.discardLesson(entry, cx),
+                  }))));
           }))
           : ui.emptyState(t, { title: "Nichts zu tun", text: "Der Posteingang ist leer." }),
       );

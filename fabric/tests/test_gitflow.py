@@ -81,7 +81,11 @@ class GitflowTests(FabricCase):
         self.ok("verdict", tid, "pass", "--from", "ada", "gut")
         self.ok("verdict", tid, "fail", "--from", "ada", "doch nicht")
         self.assertEqual(self.hc_calls("send"), [])
-        self.assertEqual(self.wake_since(mark, tid), [])
+        # Der Zuständige weckt sich nicht selbst; der Orchestrator soll die Lehre
+        # vorschlagen und wird deshalb zusätzlich geweckt.
+        wakes = self.wake_since(mark, tid)
+        self.assertEqual([row["target"] for row in wakes], ["orchestrator"])
+        self.assertIn(wakes[-1]["text"], ("gestartet", "geweckt"))
 
     def test_verdict_fail_weckt_den_zustaendigen(self):
         repo, tid, worktree = self.ready_ticket()
@@ -100,7 +104,9 @@ class GitflowTests(FabricCase):
         self.assertEqual(len(sends), 1)
         self.assertEqual(sends[0][1], "t7")
         self.assertIn("Urteil fail", sends[0][2])
-        self.assertEqual(self.wake_events(tid)[-1]["text"], "geweckt")
+        wakes = self.wake_events(tid)
+        self.assertEqual(wakes[-1]["target"], "orchestrator")
+        self.assertIn(wakes[-1]["text"], ("gestartet", "geweckt"))
 
     def test_verdict_fail_raeumt_mensch_aus_waiting(self):
         repo, tid, worktree = self.review_ticket()
@@ -265,7 +271,9 @@ class GitflowTests(FabricCase):
         sends = self.hc_calls("send")
         self.assertEqual(len(sends), 1)
         self.assertEqual(sends[0][1], "t7")
-        self.assertEqual(self.wake_events(tid)[-1]["text"], "geweckt")
+        wakes = self.wake_events(tid)
+        self.assertEqual(wakes[-1]["target"], "orchestrator")
+        self.assertIn(wakes[-1]["text"], ("gestartet", "geweckt"))
         self.assertEqual([row["kind"] for row in self.events()][-1], "reject")
 
     def test_drop_beendet_sessions_und_behaelt_worktree(self):

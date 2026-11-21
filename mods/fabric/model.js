@@ -40,6 +40,7 @@ export const EVENT_WORDS = {
   drop: "verworfen",
   orchestrator: "Orchestrator",
   config: "Konfiguration",
+  lesson: "Lehre",
 };
 
 export const eventWord = (kind) => EVENT_WORDS[kind] ?? kind ?? "";
@@ -51,6 +52,7 @@ export const INBOX_WORDS = {
   question: "Frage",
   review: "Prüfung",
   attention: "Aufmerksamkeit",
+  lesson: "Lehre",
 };
 
 // Erlaubte Wechsel. `done` gibt es nur über `fab accept`; `dropped` lässt sich
@@ -1165,6 +1167,24 @@ export function inboxRetry(entry) {
   if (typeof ticket !== "string" || !ticket) return null;
   if (typeof agent !== "string" || !agent) return null;
   return { agent, args: wakeArgs(ticket, agent, "mensch", "Erneut starten") };
+}
+
+/** `fab lesson`-Argumente für „Bestätigen“ und „Verwerfen“. */
+export function lessonArgs(id, action, value, from = "mensch") {
+  return ["lesson", action, id, value, `--from=${from}`];
+}
+
+/** Offener Lehren-Vorschlag: Argumente für „Bestätigen“ und „Verwerfen“. */
+export function inboxLesson(entry) {
+  if (entry?.kind !== "lesson") return null;
+  const ticket = entry?.ticket;
+  const proposal = entry?.proposal;
+  if (typeof ticket !== "string" || !ticket) return null;
+  if (typeof proposal !== "string" || !proposal) return null;
+  return {
+    confirm: lessonArgs(ticket, "confirm", proposal),
+    discard: lessonArgs(ticket, "discard", proposal),
+  };
 }
 
 // ---------- Verlauf ----------

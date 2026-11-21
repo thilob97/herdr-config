@@ -31,6 +31,13 @@ fab preview shot {id}    # PNG landet über `fab attach` am Ticket
 fab preview stop {id}
 ```
 
+## Lehren aus früheren Tickets
+
+Diese bestätigten Lehren stammen aus `.fabric/lessons.md` des Repos. Prüfe sie
+gegen deine Aufgabe und arbeite sie ein:
+
+{lessons}
+
 ## Verboten
 
 Kein `hc send`, kein Chat mit anderen Agenten, kein Push, kein Merge. Nichts

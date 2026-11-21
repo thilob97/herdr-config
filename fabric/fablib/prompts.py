@@ -8,7 +8,10 @@ from .errors import FabError
 
 PLACEHOLDER_RE = re.compile(r"\{([a-z][a-z0-9_-]*)\}")
 # Platzhalter, die `agents.start_prompt` füllt (Abschnitt 5 des Vertrags).
-KNOWN = ("id", "title", "agent", "role", "worktree", "branch", "base", "reviewer")
+KNOWN = (
+    "id", "title", "agent", "role", "worktree", "branch", "base", "reviewer",
+    "lessons",
+)
 ORCHESTRATOR = "orchestrator"
 PREAMBLE = "preamble"
 PREAMBLE_PATH = "prompts/preamble.md"

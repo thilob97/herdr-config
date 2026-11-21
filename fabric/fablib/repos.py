@@ -1,5 +1,6 @@
 """Repo-Dateien: `.fabric/verify.sh` und `.fabric/lessons.md` (Abschnitt 3b)."""
 import os
+import re
 import stat
 import subprocess
 
@@ -11,6 +12,9 @@ TAIL_LINES = 40
 VERIFY = "verify.sh"
 LESSONS = "lessons.md"
 KINDS = ("verify", "lessons")
+LESSON_LIMIT = 8
+EMPTY_LESSONS = "- noch keine bestätigten Lehren"
+_LESSON_MARKER = re.compile(r"^(?:[-*+]|\d+\.)\s+")
 
 
 def _checkout(path):
@@ -151,6 +155,100 @@ def show(raw):
         "verify": {"exists": os.path.isfile(script), "text": _read(script)},
         "lessons": {"exists": os.path.isfile(lessons), "text": _read(lessons)},
     }
+
+
+def _lessons_path(raw):
+    """(Repo-Wurzel, lessons.md) eines vorhandenen Repos; sonst (None, None)."""
+    if not raw:
+        return None, None
+    path = os.path.abspath(os.path.expanduser(str(raw)))
+    if not os.path.isdir(path):
+        return None, None
+    try:
+        top = _checkout(path)
+    except (FabError, OSError):
+        return None, None
+    if not top:
+        return None, None
+    _script, target, _folder = _paths(top)
+    return top, target
+
+
+def _lesson_lines(text):
+    """Sätze aus einer lessons.md: ohne Leerzeilen/Überschriften und ohne Marker."""
+    lines = []
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        line = _LESSON_MARKER.sub("", line).strip()
+        if line:
+            lines.append(line)
+    return lines
+
+
+def lessons(raw, limit=LESSON_LIMIT):
+    """Bestätigte Lehren eines Repos, letzte `limit` in Dateireihenfolge."""
+    _top, target = _lessons_path(raw)
+    if not target:
+        return []
+    try:
+        text = _read(target)
+    except FabError:
+        return []
+    lines = _lesson_lines(text)
+    return lines[-limit:] if limit else []
+
+
+def lessons_text(raw, limit=LESSON_LIMIT):
+    """Lehren als Prompt-Block; ohne Einträge ein Platzhalter."""
+    lines = lessons(raw, limit=limit)
+    if not lines:
+        return EMPTY_LESSONS
+    return "\n".join(f"- {line}" for line in lines)
+
+
+def lessons_many(paths, limit=LESSON_LIMIT):
+    """Lehren aller Repos, letzte `limit` insgesamt.
+
+    Bei mehr als einem Repo mit Lehren wird jede Zeile mit
+    `- <basename>: <satz>` gekennzeichnet, sonst bleibt der Satz nackt.
+    """
+    groups = []
+    for raw in paths or ():
+        top, _target = _lessons_path(raw)
+        if not top:
+            continue
+        lines = lessons(raw, limit=limit)
+        if lines:
+            groups.append((os.path.basename(top), lines))
+    if not groups:
+        return []
+    flattened = []
+    for name, lines in groups:
+        for line in lines:
+            flattened.append(f"- {name}: {line}" if len(groups) > 1 else line)
+    return flattened[-limit:]
+
+
+def append_lesson(raw, sentence):
+    """Eine bestätigte Lehre als `- <Satz>` atomar an lessons.md anhängen."""
+    top = _root(raw)
+    folder = _fabric_folder(top)
+    target = os.path.join(folder, LESSONS)
+    root = os.path.realpath(top)
+    real = os.path.realpath(target)
+    if os.path.commonpath([root, real]) != root:
+        raise FabError(
+            f"{target} zeigt nach {real} außerhalb von {root}; "
+            f".fabric-Dateien bleiben im Repo"
+        )
+    text = _read(target) or ""
+    if text and not text.endswith("\n"):
+        text += "\n"
+    text += f"- {sentence}\n"
+    store.atomic_write(target, text, mode=0o644)
+    return target
 
 
 def set_file(raw, kind, text, actor):
