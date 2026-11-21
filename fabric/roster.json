@@ -17,8 +17,7 @@
       "argv": [
         "omp",
         "--model=opencode-go/deepseek-v4.1-flash",
-        "--approval-mode=yolo",
-        "--max-cost=5"
+        "--approval-mode=yolo"
       ]
     },
     {
@@ -43,8 +42,7 @@
       "argv": [
         "omp",
         "--model=opencode-go/deepseek-v4.1-flash",
-        "--approval-mode=yolo",
-        "--max-cost=5"
+        "--approval-mode=yolo"
       ]
     },
     {
