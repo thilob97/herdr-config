@@ -657,6 +657,7 @@ export function dropdown(t, {
   // bringt ihren eigenen Positions-Handle mit. Nur damit wirkt
   // `scroll_to_item` auch in der Popup-Ebene (F-13).
   const listHeight = options.length ? Math.min(320, options.length * 28) : 0;
+  const needsScroll = model.dropdownNeedsScroll(options.length);
   const byKey = new Map(options.map((option) => [String(option.value), option]));
   const row = (option) => h_flex()
     .id(`${id}-option-${option.value}`)
@@ -692,14 +693,14 @@ export function dropdown(t, {
     // Bis elf Zeilen passt die Liste ohne Scrollen: dann bleiben die Zeilen
     // direkt klickbar. Erst darüber braucht es die virtuelle Liste, deren
     // eigener Handle `scroll_to_item` auch in der Popup-Ebene ausführt.
-    .when(options.length > 0 && options.length <= 11, (el) => el.child(
+    .when(options.length > 0 && !needsScroll, (el) => el.child(
       v_flex().w_full().p(SPACE.xs).gap(1).children(options.map((option) => row(option)
         .when(!option.disabled, (line) => still(line).on_click((_event, cx) => {
           cx.stop_propagation();
           onPick(option.value);
         })))),
     ))
-    .when(options.length > 11, (el) => el.child(
+    .when(needsScroll, (el) => el.child(
       v_virtual_list(listId, options.length, 28,
         (index) => String(options[index].value),
         (range) => options.slice(range.start, range.end).map(row))

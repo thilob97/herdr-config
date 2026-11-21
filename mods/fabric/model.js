@@ -1490,6 +1490,20 @@ export function repoSetArgs(path, key, text, from = "mensch") {
 // ---------- Layout-Helfer ----------
 
 export const COMPACT_WIDTH = 760;
+/** Ab dieser Optionszahl scrollt ein Dropdown; darunter passt die Liste. */
+export const DROPDOWN_SCROLL_FROM = 12;
+
+export function dropdownNeedsScroll(count) {
+  return Number(count) >= DROPDOWN_SCROLL_FROM;
+}
+
+/** Letzter direkter Kind-Index im Eigenschaften-Scrollbereich: eingebettet
+ *  folgt er dem Verlauf, sonst ist er das letzte Feld der Spalte. */
+export function propertiesEndIndex(historyLastIndex, fieldCount, compact) {
+  return compact
+    ? Number(historyLastIndex) + Number(fieldCount)
+    : Number(fieldCount) - 1;
+}
 
 /** Schmale Fenster (< 760 logische px) brauchen das einspaltige UI. */
 export function compactWidth(width) {

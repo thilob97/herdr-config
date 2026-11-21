@@ -648,6 +648,17 @@ test("Ungespeicherte Änderungen werden erkannt, Zeilenenden zählen nicht", asy
   ]), [{ key: "body", label: "Beschreibung" }]);
 });
 
+
+test("Eigenschaften-Ende und Dropdown-Schwelle", async () => {
+  const { propertiesEndIndex, dropdownNeedsScroll } = await import("../model.js");
+  assert.equal(propertiesEndIndex(4, 14, true), 18, "eingebettet hinter dem Verlauf");
+  assert.equal(propertiesEndIndex(4, 14, false), 13, "letztes Feld der Spalte");
+  assert.equal(propertiesEndIndex(2, 1, false), 0);
+  assert.equal(dropdownNeedsScroll(0), false);
+  assert.equal(dropdownNeedsScroll(11), false);
+  assert.equal(dropdownNeedsScroll(12), true);
+});
+
 test("Schmales Fenster: unter 760 px einspaltig, sonst nicht", async () => {
   const { compactWidth, COMPACT_WIDTH } = await import("../model.js");
   assert.equal(COMPACT_WIDTH, 760);

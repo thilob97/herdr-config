@@ -581,10 +581,10 @@ function properties(app, cx, t, ticket, { compact = false } = {}) {
 
   if (compact) {
     const embedded = fields.map((field) => div().w_full().px(S.l).py(S.xs).child(field));
-    app.propsEndIndex = app.historyLastIndex + embedded.length;
+    app.propsEndIndex = model.propertiesEndIndex(app.historyLastIndex, embedded.length, true);
     return embedded;
   }
-  app.propsEndIndex = fields.length - 1;
+  app.propsEndIndex = model.propertiesEndIndex(0, fields.length, false);
   return v_flex()
     .flex_none()
     .w(PROPS)
