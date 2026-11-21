@@ -44,6 +44,37 @@ _TICKET_FILE_RE = re.compile(r"^T-(\d+)\.json$")
 _MIGRATION_MARKER = "legacy_migrated"
 _TABLES = ("tickets", "comments", "sessions", "attachments", "events", "counter", "meta")
 
+_FLOW_SCHEMA = (
+    """CREATE TABLE IF NOT EXISTS workflows (
+        name TEXT PRIMARY KEY,
+        data TEXT NOT NULL,
+        created_at INTEGER,
+        updated_at INTEGER
+    )""",
+    """CREATE TABLE IF NOT EXISTS flow_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        workflow TEXT NOT NULL,
+        status TEXT NOT NULL,
+        reason TEXT,
+        dry INTEGER NOT NULL DEFAULT 0,
+        data TEXT NOT NULL,
+        started_at INTEGER,
+        updated_at INTEGER
+    )""",
+    "CREATE INDEX IF NOT EXISTS flow_runs_workflow ON flow_runs(workflow)",
+    "CREATE INDEX IF NOT EXISTS flow_runs_status ON flow_runs(status)",
+    """CREATE TABLE IF NOT EXISTS flow_steps (
+        run INTEGER NOT NULL,
+        position INTEGER NOT NULL,
+        node TEXT,
+        kind TEXT,
+        status TEXT,
+        data TEXT,
+        at INTEGER,
+        PRIMARY KEY (run, position)
+    )""",
+)
+
 _SCHEMA = (
     """CREATE TABLE IF NOT EXISTS tickets (
         id TEXT PRIMARY KEY,
@@ -109,6 +140,7 @@ _SCHEMA = (
         value INTEGER NOT NULL
     )""",
     "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)",
+    *_FLOW_SCHEMA,
 )
 
 
@@ -238,6 +270,8 @@ def _connect():
             conn.execute("ALTER TABLE comments ADD COLUMN data TEXT")
         except sqlite3.OperationalError:
             pass
+    for statement in _FLOW_SCHEMA:
+        conn.execute(statement)
     _conn = conn
     _conn_home = current
     return conn
@@ -1161,6 +1195,208 @@ def meta_set(key, value):
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             (key, str(value)),
         )
+
+
+# ---------------------------------------------------------------- Workflows
+
+
+def _flow_json(data):
+    return json.dumps(data, ensure_ascii=False)
+
+
+def _flow_parse(raw, default=None):
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def flow_definition_save(name, data):
+    """Workflow-Definition anlegen/ersetzen; data ist das JSON-Objekt."""
+    ensure()
+    at = now_ms()
+    with _auto_tx():
+        _connect().execute(
+            "INSERT INTO workflows(name,data,created_at,updated_at) VALUES (?,?,?,?) "
+            "ON CONFLICT(name) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at",
+            (name, _flow_json(data), at, at),
+        )
+
+
+def flow_definition_load(name):
+    ensure()
+    row = _connect().execute(
+        "SELECT name,data,updated_at FROM workflows WHERE name=?", (name,)
+    ).fetchone()
+    if row is None:
+        return None
+    data = _flow_parse(row["data"], {})
+    if not isinstance(data, dict):
+        data = {}
+    data["name"] = row["name"]
+    data["updated_at"] = row["updated_at"]
+    return data
+
+
+def flow_definitions():
+    ensure()
+    rows = _connect().execute(
+        "SELECT name,data,updated_at FROM workflows ORDER BY name"
+    ).fetchall()
+    definitions = []
+    for row in rows:
+        data = _flow_parse(row["data"])
+        if not isinstance(data, dict):
+            continue
+        data["name"] = row["name"]
+        data["updated_at"] = row["updated_at"]
+        definitions.append(data)
+    return definitions
+
+
+def flow_definition_delete(name):
+    ensure()
+    with _auto_tx():
+        cursor = _connect().execute("DELETE FROM workflows WHERE name=?", (name,))
+    return cursor.rowcount > 0
+
+
+def _flow_run_dict(row):
+    data = _flow_parse(row["data"], {})
+    if not isinstance(data, dict):
+        data = {}
+    return {
+        "id": row["id"],
+        "workflow": row["workflow"],
+        "status": row["status"],
+        "reason": row["reason"] or "",
+        "dry": bool(row["dry"]),
+        "data": data,
+        "started_at": row["started_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+_RUN_COLUMNS = "id,workflow,status,reason,dry,data,started_at,updated_at"
+
+
+def flow_run_new(workflow, data, dry=False):
+    ensure()
+    at = now_ms()
+    with _auto_tx():
+        cursor = _connect().execute(
+            "INSERT INTO flow_runs(workflow,status,reason,dry,data,started_at,updated_at) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (workflow, "running", "", 1 if dry else 0, _flow_json(data), at, at),
+        )
+        return int(cursor.lastrowid)
+
+
+def flow_run_load(run_id):
+    ensure()
+    row = _connect().execute(
+        f"SELECT {_RUN_COLUMNS} FROM flow_runs WHERE id=?", (run_id,)
+    ).fetchone()
+    return _flow_run_dict(row) if row is not None else None
+
+
+def flow_run_save(run):
+    ensure()
+    with _auto_tx():
+        _connect().execute(
+            "UPDATE flow_runs SET data=?, status=?, reason=?, updated_at=? WHERE id=?",
+            (
+                _flow_json(run.get("data")),
+                run.get("status") or "",
+                run.get("reason") or "",
+                now_ms(),
+                run.get("id"),
+            ),
+        )
+
+
+def flow_run_list(workflow=None):
+    ensure()
+    conn = _connect()
+    if workflow is None:
+        rows = conn.execute(
+            f"SELECT {_RUN_COLUMNS} FROM flow_runs ORDER BY id"
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            f"SELECT {_RUN_COLUMNS} FROM flow_runs WHERE workflow=? ORDER BY id",
+            (workflow,),
+        ).fetchall()
+    return [_flow_run_dict(row) for row in rows]
+
+
+def flow_step_add(run_id, node, kind, status, data=None):
+    ensure()
+    with _auto_tx():
+        conn = _connect()
+        row = conn.execute(
+            "SELECT COALESCE(MAX(position),-1)+1 FROM flow_steps WHERE run=?",
+            (run_id,),
+        ).fetchone()
+        position = int(row[0])
+        conn.execute(
+            "INSERT INTO flow_steps(run,position,node,kind,status,data,at) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (run_id, position, node or "", kind or "", status or "", _flow_json(data), now_ms()),
+        )
+        return position
+
+
+def flow_steps(run_id):
+    ensure()
+    rows = _connect().execute(
+        "SELECT run,position,node,kind,status,data,at FROM flow_steps "
+        "WHERE run=? ORDER BY position",
+        (run_id,),
+    ).fetchall()
+    return [
+        {
+            "run": row["run"],
+            "position": row["position"],
+            "node": row["node"],
+            "kind": row["kind"],
+            "status": row["status"],
+            "data": _flow_parse(row["data"], {}),
+            "at": row["at"],
+        }
+        for row in rows
+    ]
+
+
+def flow_approvals():
+    """Offene Freigaben: nur Läufe, die genau an einem Freigabe-Knoten pausieren."""
+    ensure()
+    rows = []
+    for row in _connect().execute(
+        "SELECT id,workflow,status,reason,data,updated_at FROM flow_runs "
+        "WHERE status='paused' ORDER BY id"
+    ):
+        data = _flow_parse(row["data"], {})
+        paused = data.get("paused_at") if isinstance(data, dict) else None
+        if not isinstance(paused, dict) or paused.get("kind") != "approval":
+            continue
+        text = row["reason"] or ""
+        prefix = "Freigabe offen: "
+        if text.startswith(prefix):
+            text = text[len(prefix):]
+        rows.append(
+            {
+                "id": row["id"],
+                "at": row["updated_at"],
+                "kind": "flow",
+                "ticket": "",
+                "actor": "flow",
+                "target": paused.get("node") or "",
+                "text": text,
+                "reason": row["workflow"],
+            }
+        )
+    return rows
 
 
 # ---------------------------------------------------------------- Anhänge

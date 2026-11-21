@@ -11,7 +11,7 @@ import os
 import plistlib
 import subprocess
 
-from . import agents, costs, events, hc, orchestrator, store, teams, wake
+from . import agents, costs, events, flows, hc, orchestrator, store, teams, wake
 from .errors import FabError, HcError
 
 DEFAULTS = {"doing": 10, "mention": 5, "review": 5, "blocked": 30, "retry": 5}
@@ -96,6 +96,15 @@ def run(roster, dry=False):
                 result.changed = True
         except (FabError, HcError) as exc:
             result.append(f"{team_entry.get('name')}: Fehler: {exc}")
+    try:
+        lines = flows.tick(roster or {}, dry=dry)
+    except FabError as exc:
+        result.append(f"flow: Fehler: {exc}")
+    else:
+        for line in lines:
+            result.append(line)
+            if not dry:
+                result.changed = True
     return result
 
 
