@@ -66,12 +66,12 @@ class CollectTests(CostsCase):
         claude = self.claude_key(worktree)
         real_key = self.claude_key(os.path.realpath(worktree))
 
-        # omp: usage-Kosten, cost-Kosten ohne model_usage, model_usage ignoriert.
+        # omp: echte Hauptkosten in message.usage.cost, Altform oben, model_usage-Summe.
         self.write_jsonl(
             self.omp, key, "o_a.jsonl",
             [
                 {"type": "session", "timestamp": _iso(a)},
-                {"type": "assistant", "usage": {"cost": {"total": 1.5}}},
+                {"type": "message", "message": {"usage": {"cost": {"total": 1.5}}}},
                 {"type": "model_usage", "cost": {"total": 99}},
                 {"type": "assistant", "cost": {"total": 0.25}},
                 "kaputt",
@@ -81,14 +81,14 @@ class CollectTests(CostsCase):
             self.omp, key, "o_b.jsonl",
             [
                 {"type": "session", "timestamp": _iso(now - 65 * 60_000)},
-                {"type": "assistant", "usage": {"cost": {"total": 0.5}}},
+                {"type": "message", "message": {"usage": {"cost": {"total": 0.5}}}},
             ],
         )
         self.write_jsonl(
             self.omp, key, "o_c.jsonl",
             [
                 {"type": "session", "timestamp": _iso(c)},
-                {"type": "assistant", "usage": {"cost": {"total": 9.0}}},
+                {"type": "message", "message": {"usage": {"cost": {"total": 9.0}}}},
             ],
         )
         # ältere Datei vor dem ersten Fenster landet in der ersten Session
@@ -96,7 +96,7 @@ class CollectTests(CostsCase):
             self.omp, key, "o_early.jsonl",
             [
                 {"type": "session", "timestamp": _iso(now - 20 * hour)},
-                {"type": "assistant", "usage": {"cost": {"total": 0.2}}},
+                {"type": "message", "message": {"usage": {"cost": {"total": 0.2}}}},
             ],
         )
         # spätere Datei nach dem letzten Start landet in der letzten Session

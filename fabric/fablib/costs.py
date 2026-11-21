@@ -101,19 +101,31 @@ def _lines(path):
         return
 
 
+def _usage_cost(container):
+    """Kosten aus `usage.cost.total`, falls vorhanden."""
+    usage = container.get("usage") if isinstance(container, dict) else None
+    if isinstance(usage, dict):
+        entry = usage.get("cost")
+        if isinstance(entry, dict):
+            return _cost_of(entry.get("total"))
+    return None
+
+
 def _omp_record(path):
-    """omp: Kosten je Zeile summieren, Start aus Session-Kopf oder Dateiname."""
+    """omp: Kosten je Zeile summieren, Start aus Session-Kopf oder Dateiname.
+
+    Die Hauptunterhaltung trägt ihre Kosten in `message.usage.cost.total`,
+    Subagenten und Richter in `usage.cost.total` auf oberster Ebene.
+    """
     cost = 0.0
     start = None
     for obj in _lines(path):
         if start is None and obj.get("type") == "session":
             start = _iso_ms(obj.get("timestamp"))
-        total = None
-        usage = obj.get("usage")
-        if isinstance(usage, dict):
-            entry = usage.get("cost")
-            if isinstance(entry, dict):
-                total = _cost_of(entry.get("total"))
+        message = obj.get("message")
+        total = _usage_cost(message) if isinstance(message, dict) else None
+        if total is None:
+            total = _usage_cost(obj)
         if total is None and obj.get("type") != "model_usage":
             entry = obj.get("cost")
             if isinstance(entry, dict):

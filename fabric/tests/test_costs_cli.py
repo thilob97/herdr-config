@@ -60,7 +60,8 @@ class CostsCliCase(FabricCase):
         iso = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(started_at / 1000))
         lines = [
             {"type": "session", "timestamp": iso + ".000Z"},
-            {"type": "model_usage", "usage": {"cost": {"total": cost}}},
+            {"type": "message", "message": {"usage": {"cost": {"total": cost * 0.7}}}},
+            {"type": "model_usage", "usage": {"cost": {"total": cost * 0.3}}},
         ]
         self._write(
             os.path.join(folder, name),
