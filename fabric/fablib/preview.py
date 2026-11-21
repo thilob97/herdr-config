@@ -164,19 +164,110 @@ def _copy_worktree(worktree, target):
             shutil.copy2(source, destination)
 
 
-def _seed_window(state):
-    """Erste Ansicht ohne Willkommens-Overlay: Board des Fabric-Mods."""
+def _seed_window(state, page="board"):
+    """Erste Ansicht ohne Willkommens-Overlay: gewünschte Fabric-Seite."""
     path = os.path.join(state["home"], "shared.json")
     if os.path.exists(path):
         return
     payload = {
         "frame.welcomed": "finished",
         "layout": "fabric",
-        "fabric.route": {"page": "board"},
+        "fabric.route": {"page": page or "board"},
         "fabric.selected": "T-1",
+        "fabric.previewWindow": True,
     }
     with open(path, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, ensure_ascii=False)
+
+
+def _seed_metrics(state):
+    """Demokosten und -liegezeiten in der Vorschau-Datenbank anlegen.
+
+    Nur in der DB, nicht in den Lesemodellen: `fab tick` baut `index.json` aus
+    der DB neu und würde injizierte Werte sonst wieder verlieren.
+    """
+    from . import events, index, store
+
+    now = int(time.time() * 1000)
+    sessions = [
+        {
+            "agent": "zap",
+            "name": "fab-herdr-app-zap-t-1",
+            "terminal": "t1",
+            "started_at": now - 3300000,
+        },
+        {
+            "agent": "ada",
+            "name": "fab-herdr-app-ada-t-1",
+            "terminal": "t2",
+            "started_at": now - 1500000,
+        },
+    ]
+    cost = {
+        "currency": "USD",
+        "total": 0.42,
+        "today": 0.42,
+        "sessions": [
+            {
+                "agent": "zap",
+                "name": sessions[0]["name"],
+                "started_at": sessions[0]["started_at"],
+                "cost": 0.31,
+                "source": "omp",
+                "files": 1,
+            },
+            {
+                "agent": "ada",
+                "name": sessions[1]["name"],
+                "started_at": sessions[1]["started_at"],
+                "cost": 0.11,
+                "source": "claude",
+                "files": 1,
+            },
+        ],
+        "at": now,
+    }
+    keys = {
+        "HOME": state["userhome"],
+        "FAB_HOME": state["fab_home"],
+        "FAB_ROSTER": os.path.join(state["home"], "fabric", "roster.json"),
+    }
+    previous = {key: os.environ.get(key) for key in keys}
+    os.environ.update(keys)
+    try:
+        with store.locked():
+            try:
+                ticket = store.load("T-1")
+            except FabError:
+                return
+            ticket.update(
+                sessions=sessions,
+                max_cost=5,
+                cost=cost,
+                status="review",
+                assignee="zap",
+                waiting=["mensch"],
+            )
+            store.save(ticket, touch=False)
+            for row in (
+                {"kind": "dispatch", "at": now - 3300000},
+                {"kind": "wake", "target": "ada", "text": "gestartet", "at": now - 2700000},
+                {"kind": "verdict", "text": "pass: Demo", "at": now - 2100000},
+                {"kind": "handover", "text": "Demo", "at": now - 1500000},
+                {"kind": "comment", "actor": "mensch", "text": "Demo", "at": now - 900000},
+            ):
+                store.event_append(
+                    row["kind"], "T-1", actor=row.get("actor", "fab"),
+                    target=row.get("target", ""), text=row.get("text", ""),
+                    at=row["at"],
+                )
+            index.rebuild()
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 def _seed(state, ticket, worktree):
@@ -235,7 +326,7 @@ def _wait_ready(state, ticket_id):
         time.sleep(POLL)
 
 
-def start(ticket):
+def start(ticket, page="board"):
     ticket_id = ticket["id"]
     worktree = ticket.get("worktree")
     if not worktree or not os.path.isdir(worktree):
@@ -256,6 +347,7 @@ def start(ticket):
         "userhome": os.path.join(base, "userhome"),
         "fab_home": fab_home(ticket_id),
         "log": os.path.join(base, "app.log"),
+        "page": page or "board",
         "started_at": int(time.time() * 1000),
     }
     for folder in (
@@ -267,8 +359,9 @@ def start(ticket):
     ):
         os.makedirs(folder, exist_ok=True)
     _copy_worktree(worktree, state["home"])
-    _seed_window(state)
+    _seed_window(state, page)
     _seed(state, ticket, worktree)
+    _seed_metrics(state)
     with open(state["log"], "a", encoding="utf-8") as log:
         try:
             process = subprocess.Popen(

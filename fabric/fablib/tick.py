@@ -11,7 +11,7 @@ import os
 import plistlib
 import subprocess
 
-from . import agents, events, hc, orchestrator, store, teams, wake
+from . import agents, costs, events, hc, orchestrator, store, teams, wake
 from .errors import FabError, HcError
 
 DEFAULTS = {"doing": 10, "mention": 5, "review": 5, "blocked": 30, "retry": 5}
@@ -140,6 +140,9 @@ def _tick_ticket(ticket, roster, live, cfg, by_id, lines, dry):
     status = ticket.get("status")
     if status in FROZEN or status not in OPEN:
         return False
+    blocked, cost_changed = _cost_limit(ticket, lines, dry)
+    if blocked:
+        return cost_changed
     now = store.now_ms()
     changed = False
     stall = ticket.get("stall")
@@ -278,6 +281,42 @@ def _tick_ticket(ticket, roster, live, cfg, by_id, lines, dry):
 
     lines.append(_line(ticket, number, rule, result, reason))
     return changed
+
+
+def _cost_limit(ticket, lines, dry):
+    """Kostenlimit prüfen; (blockiert, geändert) – blockiert überspringt die Regeln."""
+    limit = ticket.get("max_cost")
+    if limit is None:
+        return False, False
+    try:
+        limit = float(limit)
+    except (TypeError, ValueError):
+        return False, False
+    total = float(costs.collect(ticket).get("total") or 0)
+    if total <= limit:
+        return False, False
+    reason = (
+        f"Kostenlimit überschritten: {costs.format_cost(total)} > "
+        f"{costs.format_cost(limit)}"
+    )
+    if dry:
+        lines.append(_line(ticket, 6, "doing", "geplant: attention", reason))
+        return True, False
+    for session in ticket.get("sessions") or []:
+        targets = [session.get("terminal"), session.get("name")]
+        for target in dict.fromkeys(item for item in targets if item):
+            if hc.kill(target):
+                break
+    changed = False
+    waiting = list(ticket.get("waiting") or [])
+    if "mensch" not in waiting:
+        waiting.append("mensch")
+        ticket["waiting"] = waiting
+        changed = True
+    agent = _assignee(ticket) or "mensch"
+    return True, _attention(
+        ticket, "doing", agent, reason, lines, False, number=6
+    ) or changed
 
 
 def _plan(ticket, rule, payload, now):

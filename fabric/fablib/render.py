@@ -2,7 +2,7 @@
 import json
 import time
 
-from . import store
+from . import costs, store
 
 
 def fmt_ms(ms):
@@ -19,7 +19,61 @@ def ticket_json(ticket):
     return json.dumps(ticket, ensure_ascii=False, indent=2)
 
 
-def ticket_text(ticket, children=None):
+def _cost_rows(ticket, cost):
+    """Kostenzeilen zu Sessions: gleicher Name, sonst gleiche Position."""
+    rows = list(cost.get("sessions") or [])
+    used = [False] * len(rows)
+    pairs = []
+    for index, session in enumerate(ticket.get("sessions") or []):
+        row = None
+        name = session.get("name")
+        if name:
+            for position, candidate in enumerate(rows):
+                if not used[position] and candidate.get("name") == name:
+                    used[position] = True
+                    row = candidate
+                    break
+        if row is None and index < len(rows) and not used[index]:
+            used[index] = True
+            row = rows[index]
+        if row is None:
+            for position in range(len(rows)):
+                if not used[position]:
+                    used[position] = True
+                    row = rows[position]
+                    break
+        pairs.append((session, row))
+    return pairs
+
+
+def _cost_section(ticket, cost):
+    lines = ["", "## Kosten"]
+    for session, row in _cost_rows(ticket, cost):
+        source = (row or {}).get("source")
+        text = (
+            f"- {session.get('agent') or '—'} · {session.get('name') or '—'} · "
+            f"{costs.format_cost((row or {}).get('cost'))}"
+        )
+        if source:
+            text += f" · {source}"
+        lines.append(text)
+    summary = f"Summe: {costs.format_cost(cost.get('total'))}"
+    if ticket.get("max_cost") is not None:
+        summary += f" · Limit: {costs.format_cost(ticket.get('max_cost'))}"
+    lines.extend(["", summary])
+    return lines
+
+
+def _wait_section(waits):
+    lines = ["", "## Liegezeiten"]
+    for stage in waits.get("stages") or []:
+        lines.append(
+            f"- {stage.get('label')}: {costs.format_duration(stage.get('ms'))}"
+        )
+    return lines
+
+
+def ticket_text(ticket, children=None, cost=None, waits=None):
     lines = [f"# {ticket['id']} {ticket['title']}", ""]
     meta = [
         f"Status: {ticket['status']}",
@@ -73,6 +127,14 @@ def ticket_text(ticket, children=None):
                 f"- {session.get('agent')} · {session.get('name')} · "
                 f"{session.get('terminal')} · {fmt_ms(session.get('started_at'))}"
             )
+    snapshot = cost if cost is not None else ticket.get("cost")
+    if isinstance(snapshot, dict):
+        lines.extend(_cost_section(ticket, snapshot))
+    elif ticket.get("max_cost") is not None:
+        lines.extend(_cost_section(ticket, {}))
+    spans = waits if waits is not None else ticket.get("waits")
+    if isinstance(spans, dict) and spans.get("stages"):
+        lines.extend(_wait_section(spans))
     if ticket.get("comments"):
         lines.extend(["", "## Verlauf"])
         for comment in ticket["comments"]:

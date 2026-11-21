@@ -11,6 +11,7 @@ import {
   teamForTicket, teamAgents,
   NOTIFY_SETTINGS_KEY, NOTIFY_SEEN_KEY, NOTIFY_DEFAULTS, normalizeNotifySettings, inQuietHours, minuteOfDay,
   INBOX_LEVELS, inboxNotifyLevel, inboxNotifySound, inboxEntryId, inboxNotifications,
+  formatCost, formatDuration, ticketCost, costTotals,
 } from "../model.js";
 
 test("Tickets werden nach Stufe gruppiert, in Stufenreihenfolge", () => {
@@ -1338,4 +1339,48 @@ test("Benachrichtigung: inboxEntryId fällt ohne id auf Art, Ticket und Zeit zur
     inboxEntryId({ kind: "error", ticket: "T-1", at: 1000, agent: "ada" }),
     "error:T-1:1000:ada",
   );
+});
+
+// ---------- Kosten und Liegezeiten ----------
+
+test("Kosten werden ab einem Dollar zweistellig, kleine Beträge vierstellig gezeigt", () => {
+  assert.equal(formatCost(1.234), "$1.23");
+  assert.equal(formatCost(2), "$2.00");
+  assert.equal(formatCost(0.0012), "$0.0012");
+  assert.equal(formatCost(0), "$0.00");
+  assert.equal(formatCost(undefined), "—");
+});
+
+test("Dauern auf Deutsch: Minuten, Stunden und die Grenzfälle", () => {
+  assert.equal(formatDuration(0), "0 min");
+  assert.equal(formatDuration(30_000), "< 1 min");
+  assert.equal(formatDuration(5 * 60_000), "5 min");
+  assert.equal(formatDuration(3_600_000 + 5 * 60_000), "1 h 05 min");
+  assert.equal(formatDuration(undefined), "—");
+});
+
+test("ticketCost füllt fehlende Kostendaten mit 0 und USD", () => {
+  assert.deepEqual(ticketCost(undefined), { total: 0, today: 0, currency: "USD" });
+  assert.deepEqual(ticketCost({}), { total: 0, today: 0, currency: "USD" });
+  assert.deepEqual(ticketCost({ cost: { total: 1.5, today: 0.25, currency: "EUR" } }),
+    { total: 1.5, today: 0.25, currency: "EUR" });
+});
+
+test("costTotals summiert je Team, heute getrennt, und zählt Limitüberschreitungen", () => {
+  const tickets = [
+    { id: "T-1", team: "rot", max_cost: 1, cost: { total: 2, today: 0.5 } },
+    { id: "T-2", team: "rot", cost: { total: 1, today: 0.25 } },
+    { id: "T-3", team: "blau", max_cost: 5, cost: { total: 1, today: 0 } },
+    { id: "T-4", cost: { total: 0.5, today: 0.5 } },
+  ];
+  const totals = costTotals(tickets);
+
+  assert.equal(totals.total, 4.5);
+  assert.equal(totals.today, 1.25);
+  assert.equal(totals.overLimit, 1);
+  assert.deepEqual(totals.teams, [
+    { name: "blau", total: 1, today: 0, tickets: 1 },
+    { name: "ohne Team", total: 0.5, today: 0.5, tickets: 1 },
+    { name: "rot", total: 3, today: 0.75, tickets: 2 },
+  ]);
 });

@@ -57,6 +57,7 @@ function normalizeIndex(raw) {
     tickets: Array.isArray(raw?.tickets) ? raw.tickets : [],
     inbox: Array.isArray(raw?.inbox) ? raw.inbox : [],
     roster: Array.isArray(raw?.roster) ? raw.roster : [],
+    teams: Array.isArray(raw?.teams) ? raw.teams : [],
     events: Array.isArray(raw?.events) ? raw.events : [],
   };
 }
@@ -260,6 +261,12 @@ export default class Fabric extends View {
     cx.spawn(async (cx) => {
       this.asyncCx = cx;
       await this.refresh(cx);
+      // Vorschau: das Fabric-Fenster nach dem Start einmal öffnen, damit
+      // Screenshots ohne Mausklick dieselbe Ansicht wie im Alltag zeigen.
+      if (!this.isApp && shared("fabric.previewWindow")) {
+        setShared("fabric.previewWindow", null);
+        this.openInWindow(this.currentRoute(), cx);
+      }
       if (this.isApp) {
         this.appFocus.focus();
         cx.timer.after(120, () => this.appFocus.focus());

@@ -5,13 +5,31 @@
 """
 import json
 
-from . import agents, events, render, store, teams
+from . import agents, costs, events, render, store, teams
 from .errors import FabError
 
 MAX_EVENTS = 300
 
 
-def entry(ticket):
+def _cost_snapshot(ticket):
+    raw = ticket.get("cost")
+    if not isinstance(raw, dict):
+        raw = {}
+    return {
+        "currency": str(raw.get("currency") or "USD"),
+        "total": float(raw.get("total") or 0),
+        "today": float(raw.get("today") or 0),
+    }
+
+
+def _reviewer():
+    roster = agents.load(required=False)
+    return str((roster or {}).get("reviewer") or "ada")
+
+
+def entry(ticket, waits=None, team=None):
+    if waits is None:
+        waits = costs.waits(ticket, store.event_rows_for(ticket["id"]), _reviewer())
     last = ticket["comments"][-1] if ticket["comments"] else None
     return {
         "id": ticket["id"],
@@ -46,6 +64,10 @@ def entry(ticket):
             }
             for session in ticket.get("sessions") or []
         ],
+        "team": str(team or ""),
+        "max_cost": ticket.get("max_cost"),
+        "cost": _cost_snapshot(ticket),
+        "waits": waits,
     }
 
 
@@ -215,6 +237,29 @@ def _teams(roster):
 def build():
     tickets = store.all_tickets()
     rows = events.read_all()
+    roster = agents.load(required=False)
+    reviewer = str((roster or {}).get("reviewer") or "ada")
+    grouped = {}
+    shared = []
+    for row in rows:
+        ticket_id = row.get("ticket") or ""
+        if ticket_id:
+            grouped.setdefault(ticket_id, []).append(row)
+        else:
+            shared.append(row)
+    entries = []
+    for ticket in tickets:
+        ticket_rows = list(grouped.get(ticket["id"]) or [])
+        if shared:
+            ticket_rows = shared + ticket_rows
+        team_entry = agents.ticket_team(roster, ticket) if roster else None
+        entries.append(
+            entry(
+                ticket,
+                waits=costs.waits(ticket, ticket_rows, reviewer),
+                team=str((team_entry or {}).get("name") or ""),
+            )
+        )
     inbox = _inbox(
         store.stalled_tickets(),
         store.question_tickets(),
@@ -222,11 +267,10 @@ def build():
         store.attention_event_rows(events.ATTENTION_TEXTS),
         tickets,
     )
-    roster = agents.load(required=False)
     payload = {
         "version": 1,
         "generated_at": store.now_ms(),
-        "tickets": [entry(ticket) for ticket in tickets],
+        "tickets": entries,
         "inbox": inbox,
         "roster": agents.roster_rows(roster) if roster else [],
         "teams": _teams(roster) if roster else [],

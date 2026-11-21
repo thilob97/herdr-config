@@ -8,6 +8,31 @@ import * as ui from "../ui.js";
 const T = ui.FONT;
 const S = ui.SPACE;
 
+function waitTotal(ticket) {
+  return (ticket?.waits?.stages ?? [])
+    .reduce((sum, stage) => sum + (Number.isFinite(stage?.ms) ? stage.ms : 0), 0);
+}
+
+function costChip(t, ticket) {
+  const cost = model.ticketCost(ticket);
+  if (!(cost.total > 0)) return null;
+  const limit = Number.isFinite(ticket.max_cost) ? ` · Limit ${model.formatCost(ticket.max_cost)}` : "";
+  return ui.chip(t, model.formatCost(cost.total), t.done, `fabric-card-cost-${ticket.id}`, {
+    tooltip: `Kosten ${model.formatCost(cost.total)} · heute ${model.formatCost(cost.today)}${limit}`,
+  });
+}
+
+function waitChip(t, ticket) {
+  const ms = waitTotal(ticket);
+  if (!(ms > 0)) return null;
+  const stages = (ticket.waits?.stages ?? [])
+    .map((stage) => `${stage.label} ${model.formatDuration(stage.ms)}${stage.open ? " (offen)" : ""}`)
+    .join(" · ");
+  return ui.chip(t, `wartet ${model.formatDuration(ms)}`, t.working, `fabric-card-wait-${ticket.id}`, {
+    tooltip: stages,
+  });
+}
+
 function miniState(app, t, ticket, key, state, label) {
   if (!state) return null;
   const color = state === "pass" ? t.done : t.blocked;
@@ -52,6 +77,8 @@ function card(app, cx, t, ticket) {
   const comments = ticket.comment_count ?? 0;
   const waiting = ticket.waiting?.includes("mensch") || ticket.status === "review";
   const selected = app.cursorId === ticket.id;
+  const cost = costChip(t, ticket);
+  const wait = waitChip(t, ticket);
   return v_flex()
     .id(`fabric-card-${ticket.id}`)
     .w_full()
@@ -107,7 +134,9 @@ function card(app, cx, t, ticket) {
       h_flex().w_full().gap(8).items_center().flex_wrap()
         .when(Boolean(ticket.checks), (el) => el.child(miniState(app, t, ticket, "CHECK_WORDS", ticket.checks, "Checks")))
         .when(Boolean(ticket.verdict), (el) => el.child(miniState(app, t, ticket, "VERDICT_WORDS", ticket.verdict, "Urteil")))
-        .when(Boolean(ticket.branch), (el) => el.child(div().text_size(T.xs).text_color(t.dim).truncate().child(ticket.branch))),
+        .when(Boolean(ticket.branch), (el) => el.child(div().text_size(T.xs).text_color(t.dim).truncate().child(ticket.branch)))
+        .when(Boolean(cost), (el) => el.child(cost))
+        .when(Boolean(wait), (el) => el.child(wait)),
     );
 }
 
@@ -117,6 +146,7 @@ function filterBar(app, cx, t) {
 
 function columnHead(t, col) {
   const attention = col.attention;
+  const cost = model.costTotals(col.tickets).total;
   return h_flex()
     .flex_none()
     .w_full()
@@ -130,6 +160,8 @@ function columnHead(t, col) {
     .child(div().text_size(T.xs).font_semibold().text_color(attention ? t.accent : t.muted).child(col.label))
     .child(div().flex_none().text_size(T.xs).text_color(attention ? t.accent : t.dim).child(String(col.count)))
     .child(div().flex_1())
+    .when(cost > 0, (el) => el.child(div().flex_none().text_size(T.xs).text_color(t.dim)
+      .child(model.formatCost(cost)).tooltip("Summe der sichtbaren Tickets")))
     .when(attention, (el) => el.child(ui.chip(t, "wartet", t.accent)));
 }
 
