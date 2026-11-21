@@ -213,6 +213,8 @@ def lessons_many(paths, limit=LESSON_LIMIT):
 
     Bei mehr als einem Repo mit Lehren wird jede Zeile mit
     `- <basename>: <satz>` gekennzeichnet, sonst bleibt der Satz nackt.
+    Die Reihenfolge folgt bewusst der Team-Repo-Liste, nicht der Zeit: die
+    Dateien tragen keine Zeitstempel je Zeile.
     """
     groups = []
     for raw in paths or ():

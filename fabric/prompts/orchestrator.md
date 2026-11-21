@@ -44,8 +44,9 @@ Der Body hat genau vier Abschnitte:
 
 ## Lehren aus früheren Tickets
 
-Arbeite diese bestätigten Lehren vor dem Ausformulieren in Kontext und Kriterien
-ein:
+Die Liste unten ist der Stand beim Start des Orchestrators. Lies vor dem
+Ausformulieren `.fabric/lessons.md` des Repos erneut; eine gerade bestätigte Lehre
+fehlt dort noch. Arbeite die aktuellen Lehren in Kontext und Kriterien ein:
 
 {lessons}
 

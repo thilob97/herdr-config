@@ -149,6 +149,30 @@ class LessonTests(FabricCase):
         self.assertIn("imperativen Satz", sends[1][2])
         self.assertIn("Mensch bestätigt", sends[1][2])
 
+    def test_verdict_fail_nach_kaltstart_sendet_lehren_auftrag(self):
+        """Ohne laufenden Orchestrator geht der Auftrag nach dem Start nach."""
+        repo, tid, worktree = self.ready_ticket()
+        self.set_live({"fab-zap-t-1": "t7"})
+        self.clear_log()
+        self.ok("verdict", tid, "fail", "--from", "ada", "Tests fehlen")
+        sends = self.hc_calls("send")
+        self.assertEqual(sends[0][1], "t7")
+        started = [row for row in sends if row[1] == "t900"]
+        self.assertEqual(len(started), 1, sends)
+        self.assertIn(f"fab lesson propose {tid}", started[0][2])
+        self.assertIn("imperativen Satz", started[0][2])
+
+    def test_orchestrator_prompt_verlangt_frisches_lesen(self):
+        path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "prompts",
+            "orchestrator.md",
+        )
+        text = self._read(path)
+        self.assertIn("{lessons}", text)
+        self.assertIn(".fabric/lessons.md", text)
+        self.assertIn("erneut", text)
+
     def test_reject_weckt_orchestrator_mit_lehren_auftrag(self):
         repo, tid, worktree = self.review_ticket()
         self.set_live({"fab-zap-t-1": "t7", "fab-orchestrator": "t0"})
