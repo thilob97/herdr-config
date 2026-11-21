@@ -107,6 +107,13 @@ class CollectTests(CostsCase):
                 {"type": "assistant", "usage": {"cost": {"total": 0.1}}},
             ],
         )
+        # Subagenten-Protokoll im Unterordner der Session; Start aus dem Ordnernamen
+        self.write_jsonl(
+            self.omp, key + "/2026-11-21T09-00-00-000Z_sub", "SubAgent.jsonl",
+            [
+                {"type": "message", "message": {"usage": {"cost": {"total": 0.5}}}},
+            ],
+        )
         # claude: letztes totalCostUSD gewinnt
         self.write_jsonl(
             self.claude, claude, "c_a.jsonl",
@@ -162,8 +169,8 @@ class CollectTests(CostsCase):
         result, _ticket, now, a, b, c = self.fixture(link)
         self.assertEqual(result["currency"], "USD")
         self.assertEqual(result["at"], now)
-        self.assertEqual(result["total"], 15.55)
-        self.assertEqual(result["today"], 6.35)
+        self.assertEqual(result["total"], 16.05)
+        self.assertEqual(result["today"], 6.85)
         self.assertEqual(
             result["sessions"],
             [
@@ -171,9 +178,9 @@ class CollectTests(CostsCase):
                     "agent": "zap",
                     "name": "fab-zap-1",
                     "started_at": a,
-                    "cost": 5.75,
+                    "cost": 6.25,
                     "source": "omp+claude",
-                    "files": 4,
+                    "files": 5,
                 },
                 {
                     "agent": "ada",

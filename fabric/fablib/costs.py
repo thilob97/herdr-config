@@ -135,6 +135,8 @@ def _omp_record(path):
     if start is None:
         start = _name_ms(path)
     if start is None:
+        start = _name_ms(os.path.dirname(path))
+    if start is None:
         start = _mtime_ms(path)
     return {"start": start, "cost": cost, "source": "omp"}
 
@@ -206,7 +208,7 @@ def _keys(worktree, keyfn):
 
 
 def _records(worktree):
-    """Alle Protokolldateien des Worktrees, ohne doppelte Ordner."""
+    """Alle Protokolldateien des Worktrees, auch Unterordner von Subagenten."""
     found = []
     for root, parse, keyfn in _roots():
         seen = set()
@@ -216,16 +218,14 @@ def _records(worktree):
             if real in seen or not os.path.isdir(directory):
                 continue
             seen.add(real)
-            try:
-                names = sorted(os.listdir(directory))
-            except OSError:
-                continue
-            for name in names:
-                if not name.endswith(".jsonl"):
-                    continue
-                path = os.path.join(directory, name)
-                if os.path.isfile(path):
-                    found.append(parse(path))
+            for folder, names, files in os.walk(directory):
+                names.sort()
+                for name in sorted(files):
+                    if not name.endswith(".jsonl"):
+                        continue
+                    path = os.path.join(folder, name)
+                    if os.path.isfile(path):
+                        found.append(parse(path))
     return found
 
 
