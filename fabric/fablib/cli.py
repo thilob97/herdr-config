@@ -4,6 +4,7 @@ import json
 import os
 import re
 import sys
+import time
 import unicodedata
 
 from . import agents, config, events, git, hc, index, prompts, render, repos, store, teams, wake
@@ -973,9 +974,15 @@ def cmd_wake(args):
     actor = _require_actor(args)
     roster = agents.load()
     text = (args.text or "").strip() or "manuell geweckt"
+    attempt = 2 if args.retry else 1
+    if args.retry:
+        time.sleep(wake.retry_delay())
     with store.locked():
         ticket = store.load(args.id)
-        results = wake.process(ticket, [args.name.lower()], actor, text, roster)
+        results = wake.process(
+            ticket, [args.name.lower()], actor, text, roster,
+            attempt=attempt, direct=args.retry,
+        )
         store.save(ticket)
         index.rebuild()
     _print_wake_results(results)
@@ -1687,6 +1694,7 @@ def build_parser():
     item.add_argument("id", metavar="ID")
     item.add_argument("name", metavar="NAME")
     item.add_argument("--from", dest="from_", metavar="NAME", required=True)
+    item.add_argument("--retry", action="store_true", help=argparse.SUPPRESS)
     item.add_argument("text", metavar="TEXT", nargs="?", default=None)
 
     item = command("orchestrator", "Team-Orchestrator starten, beenden, prüfen", cmd_orchestrator)
@@ -1873,7 +1881,7 @@ def _normalize_argv(argv):
             options.extend(body[index:index + 2])
             index += 2
             continue
-        if token.startswith("--from=") or token in ("-h", "--help"):
+        if token.startswith("--from=") or token in ("-h", "--help", "--retry"):
             options.append(token)
             index += 1
             continue

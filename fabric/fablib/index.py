@@ -90,12 +90,20 @@ def _inbox(tickets, rows):
         if not candidate:
             continue
         text = candidate.get("text") or ""
+        target = candidate.get("target") or ""
+        reason = candidate.get("reason") or ""
+        agent = ""
         if text == "unterdrückt: ping-pong":
             summary = f"Ping-Pong zwischen {candidate.get('actor')} und {candidate.get('target')}"
         elif text == "unterdrückt: voll":
             summary = f"Start fehlgeschlagen: {candidate.get('target')} (voll)"
         else:
-            summary = f"Start fehlgeschlagen: {candidate.get('target')}"
+            summary = f"Start fehlgeschlagen: {target}" + (
+                f" — {reason}" if reason else ""
+            )
+            agent = target
+        if not agent:
+            reason = ""
         entries.append(
             {
                 "kind": "attention",
@@ -103,6 +111,8 @@ def _inbox(tickets, rows):
                 "at": candidate.get("at"),
                 "from": "fab",
                 "text": summary,
+                "agent": agent,
+                "reason": reason,
             }
         )
 

@@ -358,3 +358,163 @@ class WakeTests(FabricCase):
         self.assertTrue(
             any(row["kind"] == "question" for row in self.index()["inbox"])
         )
+
+    # -- Fehlgeschlagener Agentenstart (T-27)
+
+    def fail_counter(self, count):
+        path = os.path.join(self.tmp, "run-fails")
+        self._write(path, str(count))
+        return path
+
+    def start_failures(self, tid, target=None):
+        rows = [
+            row
+            for row in self.wake_events(tid)
+            if row["text"] == "unterdrückt: start fehlgeschlagen"
+        ]
+        if target:
+            rows = [row for row in rows if row["target"] == target]
+        return rows
+
+    def attention(self):
+        return [row for row in self.index()["inbox"] if row["kind"] == "attention"]
+
+    def fab_comments(self, tid):
+        return [row for row in self.ticket(tid)["comments"] if row["author"] == "fab"]
+
+    def test_startfehler_nennt_grund(self):
+        tid, _worktree = self.worktree_ticket("Startfehler")
+        self.set_live({})
+        self.clear_log()
+        env = {"HC_RUN_FAIL": "1", "FAB_WAKE_RETRY_DELAY": "0"}
+        result = self.ok("comment", tid, "--from", "mensch", "@zap los", env=env)
+        self.assertIn("start fehlgeschlagen", result.stdout)
+        self.assertIn("hc run:", result.stdout)
+        # Den zweiten Versuch abwarten, damit kein Hintergrundprozess übrig bleibt.
+        self.wait_for(lambda: len(self.start_failures(tid)) >= 2)
+        first = self.start_failures(tid)[0]
+        self.assertIn("hc run:", first["reason"])
+        self.assertTrue(
+            any(
+                "hc run:" in row["text"] and "Zweiter Versuch" in row["text"]
+                for row in self.fab_comments(tid)
+            )
+        )
+
+    def test_zweiter_versuch_gelingt_genau_einmal(self):
+        tid, _worktree = self.worktree_ticket("Wiederholung")
+        self.set_live({})
+        self.clear_log()
+        env = {
+            "HC_RUN_FAIL_TIMES": self.fail_counter(1),
+            "FAB_WAKE_RETRY_DELAY": "0",
+        }
+        self.ok("comment", tid, "--from", "mensch", "@zap los", env=env)
+        self.wait_for(
+            lambda: any(
+                row["text"] == "zweiter Versuch erfolgreich"
+                for row in self.wake_events(tid)
+            )
+            and bool(self.ticket(tid)["sessions"])
+        )
+        retry = [
+            row
+            for row in self.wake_events(tid)
+            if row["text"] == "zweiter Versuch erfolgreich"
+        ]
+        self.assertEqual(len(retry), 1)
+        self.assertEqual(retry[0]["target"], "zap")
+        self.assertEqual(retry[0]["reason"], "gestartet")
+        self.assertEqual(len(self.hc_calls("run")), 2)
+        self.assertTrue(
+            any(
+                "zweiter Versuch erfolgreich" in row["text"]
+                for row in self.fab_comments(tid)
+            )
+        )
+        sessions = self.ticket(tid)["sessions"]
+        self.assertEqual(len(sessions), 1)
+        self.assertEqual(sessions[0]["agent"], "zap")
+        self.assertEqual(self.attention(), [])
+        # Genau ein Versuch: auch später kommt kein dritter Start dazu.
+        time.sleep(0.3)
+        self.assertEqual(len(self.hc_calls("run")), 2)
+
+    def test_zweiter_fehlschlag_legt_attention_an(self):
+        tid, _worktree = self.worktree_ticket("Dauerfehler")
+        self.set_live({})
+        self.clear_log()
+        env = {"HC_RUN_FAIL": "1", "FAB_WAKE_RETRY_DELAY": "0"}
+        result = self.ok("comment", tid, "--from", "mensch", "@zap los", env=env)
+        self.assertIn("start fehlgeschlagen", result.stdout)
+        self.wait_for(
+            lambda: len(self.start_failures(tid)) >= 2
+            and any(
+                "endgültig" in row["text"] for row in self.fab_comments(tid)
+            )
+        )
+        failures = self.start_failures(tid)
+        self.assertEqual(len(failures), 2)
+        for row in failures:
+            self.assertIn("hc run:", row["reason"])
+        self.assertEqual(len(self.hc_calls("run")), 2)
+        attention = [row for row in self.attention() if row["ticket"] == tid]
+        self.assertEqual(len(attention), 1)
+        self.assertEqual(attention[0]["agent"], "zap")
+        self.assertIn("hc run:", attention[0]["reason"])
+        self.assertIn("Start fehlgeschlagen: zap", attention[0]["text"])
+        self.assertIn("hc run:", attention[0]["text"])
+        self.assertTrue(
+            any("endgültig" in row["text"] for row in self.fab_comments(tid))
+        )
+
+    def test_orchestrator_startfehler_legt_attention_an(self):
+        tid = self.new("Orch-Fehler")
+        self.set_live({})
+        self.clear_log()
+        env = {"HC_RUN_FAIL": "1", "FAB_WAKE_RETRY_DELAY": "0"}
+        self.ok("comment", tid, "--from", "zap", "@orchestrator bitte", env=env)
+        self.wait_for(
+            lambda: len(self.start_failures(tid, "orchestrator")) >= 2
+            and any(
+                "endgültig" in row["text"] for row in self.fab_comments(tid)
+            )
+        )
+        failures = self.start_failures(tid, "orchestrator")
+        self.assertEqual(len(failures), 2)
+        for row in failures:
+            self.assertIn("hc run:", row["reason"])
+        self.assertEqual(len(self.hc_calls("run")), 2)
+        attention = [row for row in self.attention() if row["ticket"] == tid]
+        self.assertEqual(len(attention), 1)
+        self.assertEqual(attention[0]["agent"], "orchestrator")
+        self.assertIn("hc run:", attention[0]["reason"])
+        self.assertIn("Start fehlgeschlagen: orchestrator", attention[0]["text"])
+
+    def test_attention_verschwindet_nach_erneutem_start(self):
+        tid = self.new("Wieder da")
+        now = int(time.time() * 1000)
+        self.add_events(
+            [
+                {
+                    "at": now,
+                    "kind": "wake",
+                    "ticket": tid,
+                    "actor": "mensch",
+                    "target": "zap",
+                    "text": "unterdrückt: start fehlgeschlagen",
+                    "reason": "hc run: kaputt",
+                }
+            ]
+        )
+        self.ok("index")
+        attention = [row for row in self.attention() if row["ticket"] == tid]
+        self.assertEqual(len(attention), 1)
+        self.assertEqual(attention[0]["agent"], "zap")
+        self.assertIn("hc run: kaputt", attention[0]["reason"])
+        self.assertIn("Start fehlgeschlagen: zap", attention[0]["text"])
+        self.set_live({"fab-zap-t-1": "t5"})
+        result = self.ok("wake", tid, "zap", "--from", "mensch", "wieder")
+        self.assertIn("geweckt", result.stdout)
+        attention = [row for row in self.attention() if row["ticket"] == tid]
+        self.assertEqual(attention, [])

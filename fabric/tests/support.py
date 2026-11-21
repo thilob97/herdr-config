@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 FAB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "fab")
@@ -33,7 +34,18 @@ if command == "ls":
     sys.exit(0)
 if command == "run":
     fail = os.environ.get("HC_RUN_FAIL")
-    if fail:
+    times = os.environ.get("HC_RUN_FAIL_TIMES")
+    left = 0
+    if times and os.path.isfile(times):
+        with open(times, encoding="utf-8") as handle:
+            try:
+                left = int((handle.read() or "0").strip() or 0)
+            except ValueError:
+                left = 0
+    if fail or left > 0:
+        if left > 0:
+            with open(times, "w", encoding="utf-8") as handle:
+                handle.write(str(left - 1))
         print("hc run: Start fehlgeschlagen", file=sys.stderr)
         sys.exit(1)
     print(json.dumps({"address": "t900", "name": "stub", "state": "live"}))
@@ -236,6 +248,15 @@ class FabricCase(unittest.TestCase):
         result = self.cli(*args, **kwargs)
         self.assertEqual(result.returncode, 0, result.stderr)
         return result
+
+    def wait_for(self, predicate, timeout=10.0):
+        """Alle 0,05 s prüfen, bis `predicate` etwas Wahreres liefert."""
+        deadline = time.time() + timeout
+        while True:
+            value = predicate()
+            if value or time.time() >= deadline:
+                return value
+            time.sleep(0.05)
 
     # -- Fixtures
 
