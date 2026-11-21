@@ -12,6 +12,7 @@ from . import (
     config,
     costs,
     events,
+    flows,
     git,
     hc,
     index,
@@ -2130,6 +2131,74 @@ def cmd_team(args):
     return 0
 
 
+def cmd_flow(args):
+    if args.action == "list":
+        rows = flows.definitions()
+        if args.json:
+            print(json.dumps(rows, ensure_ascii=False, indent=2))
+            return 0
+        if not rows:
+            print("Keine Workflows.")
+            return 0
+        for row in rows:
+            print(
+                f"{row['name']}  {len(row.get('nodes') or [])} Knoten · "
+                f"{len(row.get('edges') or [])} Kanten · "
+                f"geändert {render.fmt_ms(row.get('updated_at'))}"
+            )
+        return 0
+    if args.action == "runs":
+        rows = flows.runs(args.workflow)
+        if args.json:
+            print(json.dumps(rows, ensure_ascii=False, indent=2))
+            return 0
+        if not rows:
+            print("Keine Läufe.")
+            return 0
+        for row in rows:
+            line = (
+                f"{row['id']:>3}  {row['workflow']:<20} {row['status']:<9} "
+                f"{row.get('current') or '—':<12} {row.get('reason') or ''}"
+            )
+            print(line.rstrip())
+        return 0
+    actor = _actor(args) or "mensch"
+    if args.action == "add":
+        definition = flows.add_file(args.datei, actor)
+        print(
+            f"Workflow „{definition['name']}“ gespeichert: "
+            f"{len(definition.get('nodes') or [])} Knoten, "
+            f"{len(definition.get('edges') or [])} Kanten"
+        )
+        return 0
+    if args.action == "edit":
+        definition = flows.edit(args.name, args.datei, actor)
+        print(
+            f"Workflow „{definition['name']}“ gespeichert: "
+            f"{len(definition.get('nodes') or [])} Knoten, "
+            f"{len(definition.get('edges') or [])} Kanten"
+        )
+        return 0
+    if args.action == "rm":
+        flows.remove(args.name, actor)
+        print(f"Workflow „{args.name}“ entfernt")
+        return 0
+    if args.action == "run":
+        result = flows.start(args.name, actor, dry=args.dry)
+        for line in result["lines"]:
+            print(line)
+        return 0
+    if args.action == "pause":
+        row = flows.pause(args.run, actor)
+        print(f"Lauf {row['id']} pausiert")
+        return 0
+    if args.action == "cancel":
+        row = flows.cancel(args.run, actor)
+        print(f"Lauf {row['id']} abgebrochen")
+        return 0
+    raise FabError(f"unbekannte Aktion: {args.action}")
+
+
 def cmd_settings(args):
     actor = _require_actor(args)
     with store.locked():
@@ -2636,6 +2705,50 @@ def build_parser():
     remove = team_sub.add_parser("rm", help="Team entfernen", description="Team entfernen")
     remove.add_argument("name", metavar="NAME")
     remove.add_argument("--from", dest="from_", metavar="NAME", required=True)
+
+    item = command("flow", "Workflows als JSON-Graph verwalten und ausführen", cmd_flow)
+    flow_sub = item.add_subparsers(dest="action", metavar="AKTION", required=True)
+    listing = flow_sub.add_parser("list", help="Workflows auflisten",
+                                  description="Workflows auflisten")
+    listing.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe")
+    add = flow_sub.add_parser("add", help="Workflow aus Datei anlegen",
+                              description="Workflow aus Datei anlegen")
+    add.add_argument("datei", metavar="DATEI", help="JSON-Datei mit der Definition")
+    add.add_argument("--from", dest="from_", metavar="NAME", default="mensch",
+                     help="Autor (Standard: mensch)")
+    edit = flow_sub.add_parser("edit", help="Workflow aus Datei ersetzen",
+                               description="Workflow aus Datei ersetzen")
+    edit.add_argument("name", metavar="NAME")
+    edit.add_argument("datei", metavar="DATEI", help="JSON-Datei mit der Definition")
+    edit.add_argument("--from", dest="from_", metavar="NAME", default="mensch",
+                      help="Autor (Standard: mensch)")
+    remove = flow_sub.add_parser("rm", help="Workflow entfernen",
+                                 description="Workflow entfernen")
+    remove.add_argument("name", metavar="NAME")
+    remove.add_argument("--from", dest="from_", metavar="NAME", default="mensch",
+                        help="Autor (Standard: mensch)")
+    run_item = flow_sub.add_parser("run", help="Workflow starten",
+                                   description="Workflow starten")
+    run_item.add_argument("name", metavar="NAME")
+    run_item.add_argument("--dry", action="store_true",
+                          help="nur zeigen, nichts anlegen")
+    run_item.add_argument("--from", dest="from_", metavar="NAME", default="mensch",
+                          help="Autor (Standard: mensch)")
+    runs_item = flow_sub.add_parser("runs", help="Läufe auflisten",
+                                    description="Läufe auflisten")
+    runs_item.add_argument("--workflow", metavar="NAME",
+                           help="nur Läufe dieses Workflows")
+    runs_item.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe")
+    pause_item = flow_sub.add_parser("pause", help="Lauf pausieren",
+                                     description="Lauf pausieren")
+    pause_item.add_argument("run", metavar="LAUF")
+    pause_item.add_argument("--from", dest="from_", metavar="NAME", default="mensch",
+                            help="Autor (Standard: mensch)")
+    cancel_item = flow_sub.add_parser("cancel", help="Lauf abbrechen",
+                                      description="Lauf abbrechen")
+    cancel_item.add_argument("run", metavar="LAUF")
+    cancel_item.add_argument("--from", dest="from_", metavar="NAME", default="mensch",
+                             help="Autor (Standard: mensch)")
 
     item = command("tick", "Stillstand prüfen, wecken oder melden", cmd_tick)
     item.add_argument("--dry-run", action="store_true",

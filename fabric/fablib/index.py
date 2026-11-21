@@ -119,7 +119,7 @@ def _waiting_entries(questions, reviews):
             )
 
 
-def _inbox(stalled, questions, reviews, rows, tickets=()):
+def _inbox(stalled, questions, reviews, rows, tickets=(), approvals=()):
     entries = []
     stalled_ids = set()
     now = store.now_ms()
@@ -190,6 +190,20 @@ def _inbox(stalled, questions, reviews, rows, tickets=()):
                 "text": summary,
                 "agent": agent,
                 "reason": reason,
+            }
+        )
+
+    for row in approvals:
+        entries.append(
+            {
+                "id": f"approval:{row['id']}",
+                "kind": "approval",
+                "ticket": "",
+                "at": row.get("at"),
+                "from": row.get("actor") or "fab",
+                "text": row.get("text") or "",
+                "run": row.get("target") or "",
+                "reason": row.get("reason") or "",
             }
         )
 
@@ -266,6 +280,7 @@ def build():
         store.review_tickets(),
         store.attention_event_rows(events.ATTENTION_TEXTS),
         tickets,
+        approvals=store.flow_approvals(),
     )
     payload = {
         "version": 1,

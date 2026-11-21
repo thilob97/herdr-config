@@ -85,6 +85,12 @@ def ticket_text(ticket, children=None, cost=None, waits=None):
     ]
     if ticket.get("parent"):
         meta.append(f"Eltern-Ticket: {ticket['parent']}")
+    flow = ticket.get("flow")
+    if isinstance(flow, dict) and flow.get("workflow"):
+        meta.append(
+            f"gehört zu Workflow {flow['workflow']}, Lauf {flow['run']}, "
+            f"Schritt {flow['step']}"
+        )
     lines.extend(meta)
     if ticket.get("waiting"):
         lines.append("Wartet auf: " + ", ".join(ticket["waiting"]))
