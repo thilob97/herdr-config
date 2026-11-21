@@ -120,7 +120,7 @@ Alle Befehle schreiben unter Lock, hängen Ereignisse an und erzeugen danach `in
 | `fab list [--status S] [--json]` / `fab show ID [--json]` | lesen |
 | `fab edit ID [--title T] [--body T \| --body-file F] [--repo PFAD] [--base B] --from NAME` | ändern |
 | `fab status ID STATUS --from NAME` | Statuswechsel. `done` nur über `accept`. |
-| `fab assign ID NAME --from NAME` | Zuständigen setzen (Roster-Name) |
+| `fab assign ID NAME --from NAME` | Zuständigen auf ein Mitglied des Teams setzen, zu dem das Ticket-Repo gehört; ein Nicht-Mitglied wird mit Team und Mitgliederliste abgelehnt |
 | `fab link ID --blocked-by ID… --from NAME` | Abhängigkeiten, ohne Zyklen. `--remove ID…` entfernt sie; fällt die letzte weg, startet `fab` das Ticket wie nach einer Abnahme (Abschnitt `fab accept`). |
 | `fab comment ID --from NAME [--no-wake] "<text>"` | Kommentar; jede `@erwähnung` weckt (Abschnitt 4). Gibt pro genanntem Namen eine Zeile mit dem Ergebnis aus. |
 | `fab attach ID DATEI [--no-edit] [--from NAME]` | Bild als Anhang: `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp` (Groß/klein egal). Kopiert nach `data/fabric/attachments/<ID>/<name>` (Name aus der Datei, bereinigt; gleicher Inhalt wird wiederverwendet, sonst `-2`, `-3`, …). Gibt die Zeile `![<name>](data/fabric/attachments/<ID>/<name>)` aus, hängt den Anhang an `attachments` und standardmäßig den Link an den Body; `--no-edit` lässt den Body unverändert. Akteur: `--from`, Standard `mensch`. |
@@ -133,7 +133,7 @@ Alle Befehle schreiben unter Lock, hängen Ereignisse an und erzeugen danach `in
 | `fab drop ID --from NAME "<grund>"` | Status `dropped`, Sessions beenden, Worktree bleibt. |
 | `fab wake ID NAME --from NAME ["<text>"]` | Wecken von Hand, gleiche Regeln wie bei Erwähnungen |
 | `fab orchestrator start\|stop\|status [TEAM]` | Orchestrator-Terminal je Team verwalten (Abschnitt 5) |
-| `fab agents [--json]` | Roster und laufende Sessions |
+| `fab agents [--json]` | Mitglieder aller Teams mit Teamzuordnung (`teams`) und laufende Sessions |
 | `fab inbox [--json]` | wie `index.json.inbox` |
 | `fab index` | `index.json` neu erzeugen |
 
@@ -145,7 +145,7 @@ Das UI pflegt alles über diese Befehle. Alle schreiben atomar (tmp + `os.replac
 
 | Befehl | Wirkung |
 |---|---|
-| `fab roster --json` | Kompletter Roster: `max_sessions`, `reviewer`, `orchestrator {argv, prompt}`, `agents[] {name, role, color, argv, prompt}` und je Agent die abgeleiteten Felder `program` (= `argv[0]`), `model` (Wert von `--model=`/`--model`), `flags` (übrige argv), `open_tickets`, `sessions` (laufende Terminals mit `name`, `terminal`, `status`) |
+| `fab roster --json` | Kompletter Roster: `max_sessions`, `reviewer`, `orchestrator {argv, prompt}`, `agents[] {name, role, color, argv, prompt, teams[]}` (Mitglieder aller Teams, je Name einmal) und je Agent die abgeleiteten Felder `program` (= `argv[0]`), `model` (Wert von `--model=`/`--model`), `flags` (übrige argv), `open_tickets`, `sessions` (laufende Terminals mit `name`, `terminal`, `status`) |
 | `fab agent add NAME --role R [--color cN] --argv-json JSON [--prompt-text T] --from N` | Neuer Agent. Name `^[a-z][a-z0-9_-]{0,15}$`, eindeutig, nicht `orchestrator`/`mensch`/`fab`; Farbe `c1`–`c6`, sonst die nächste freie; `argv` nicht leer. Legt `prompts/<name>.md` an (Text oder kurze Vorlage). |
 | `fab agent edit NAME [--rename NEU] [--role R] [--color cN] [--argv-json JSON] [--prompt-text T] --from N` | Ändern. `--rename` nur, wenn kein offenes Ticket den Agenten nennt (`assignee`) und keine Session läuft; benennt die Promptdatei mit um und passt `reviewer` an. |
 | `fab agent rm NAME --from N` | Entfernen. Verweigert bei offenen Tickets, laufender Session oder wenn er `reviewer` ist (Gründe in der Meldung). Die Promptdatei bleibt erhalten. |
@@ -154,8 +154,8 @@ Das UI pflegt alles über diese Befehle. Alle schreiben atomar (tmp + `os.replac
 | `fab blueprint edit NAME [--rename NEU] [--role R] [--color cN] [--argv-json JSON] [--prompt-text T] --from N` | Blaupause ändern; `--rename` zieht Teams und Prüfer mit |
 | `fab blueprint rm NAME --from N` | Entfernen; verweigert, solange die Blaupause Mitglied eines Teams ist. Der Prompt bleibt |
 | `fab team add NAME --repo PFAD… --members-json JSON --reviewer NAME [--max-sessions N] [--orchestrator-argv-json JSON] [--orchestrator-prompt PFAD] --from N` | Team anlegen; ein Repo gehört höchstens einem Team, der Prüfer muss Mitglied sein. Ohne `--orchestrator-prompt` bekommt das Team `prompts/orchestrator-<name>.md` als Kopie der aktuellen Vorlage (`orchestrator.prompt`, sonst `prompts/orchestrator.md`); eine vorhandene Datei wird nicht überschrieben. Ein expliziter `--orchestrator-prompt` wird unverändert übernommen und nicht kopiert. |
-| `fab team edit NAME [--rename NEU] [--repo PFAD…] [--members-json JSON] [--reviewer NAME] [--max-sessions N] [--orchestrator-argv-json JSON] [--orchestrator-prompt PFAD] --from N` | Team ändern; Repos und Mitglieder werden als ganze Liste ersetzt. Mitglieder: `[{"blueprint": "zap", "model": "…", "max_cost": 5}]` |
-| `fab team rm NAME --from N` | Team entfernen. Verweigert mit einer Meldung, die alle Gründe nennt, solange offene Tickets (`todo`, `doing`, `review`) in seinen Repos liegen oder sein Orchestrator läuft (Hinweis `fab orchestrator stop <name>`). Die Promptdatei bleibt erhalten. |
+| `fab team edit NAME [--rename NEU] [--repo PFAD…] [--members-json JSON] [--reviewer NAME] [--max-sessions N] [--orchestrator-argv-json JSON] [--orchestrator-prompt PFAD] --from N` | Team ändern; Repos und Mitglieder werden als ganze Liste ersetzt. Mitglieder: `[{"blueprint": "zap", "model": "…", "max_cost": 5}]`. `--rename` wird abgelehnt, solange ein Orchestrator (`fab orchestrator stop <name>`) oder eine Agenten-Session (`hc kill <terminal>`) des Teams läuft; erfolgreiche Umbenennungen merken sich den alten Namen, damit laufende Terminals weiter zugeordnet werden. |
+| `fab team rm NAME --from N` | Team entfernen. Verweigert mit einer Meldung, die alle Gründe nennt, solange offene Tickets (`todo`, `doing`, `review`) in seinen Repos liegen, sein Orchestrator (`fab orchestrator stop <name>`) oder eine Agenten-Session (`hc kill <terminal>`) des Teams läuft. Die Laufzeitprüfung erkennt auch Terminals unter einem früheren Teamnamen. Die Promptdatei bleibt erhalten. |
 | `fab team list [--json]` | Teams mit Repos, Mitgliedern (inkl. Übersteuerungen), Prüfer, Limit und Orchestrator. `prompt_shared` markiert einen von mehreren Teams genutzten Promptpfad, `shared_with` nennt die anderen Teams |
 | `fab prompt list --json` | `[{name, kind: orchestrator\|preamble\|agent, path, bytes, placeholders: [...]}]` |
 | `fab prompt show NAME [--team TEAM]` | Rohtext (`orchestrator`, `preamble` oder Blaupause); `--team` wählt den Orchestrator-Prompt dieses Teams |

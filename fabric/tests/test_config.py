@@ -4,7 +4,7 @@ import os
 import stat
 from unittest import mock
 
-from fabric.fablib import config
+from fabric.fablib import agents, config
 from fabric.fablib.errors import FabError
 from fabric.tests.support import FabricCase
 
@@ -1006,6 +1006,20 @@ class BlueprintTests(ConfigCase):
 
 
 class TeamTests(ConfigCase):
+    def add_team(self, name="zwei", repo=None):
+        repo = repo or self.make_repo(name)
+        self.config_call(
+            config.add_team, name, [repo], '[{"blueprint": "zap"}]',
+            orchestrator_argv_json='["true"]', reviewer="zap", actor="mensch",
+        )
+        return repo
+
+    def set_previous_names(self, name, previous):
+        data = self.roster_json()
+        entry = next(item for item in data["teams"] if item["name"] == name)
+        entry["previous_names"] = list(previous)
+        self.write_raw_roster(data)
+
     def test_add_mit_repo_mitgliedern_pruefer_und_limit(self):
         repo = self.make_repo()
         entry = self.config_call(
@@ -1214,6 +1228,162 @@ class TeamTests(ConfigCase):
             actor="mensch",
         )
         self.assertIn("zap (modell klein, max-cost 7)", text)
+
+    def test_rename_verweigert_live_orchestrator_und_merkt_alten_namen(self):
+        repo = self.add_team()
+        before = self._read(self.roster)
+        self.set_live({"fab-zwei-orchestrator": "t0"})
+        with self.assertRaises(FabError) as ctx:
+            self.config_call(
+                config.edit_team, "zwei", rename="drei", actor="mensch"
+            )
+        text = str(ctx.exception)
+        self.assertIn("lässt sich nicht umbenennen", text)
+        self.assertIn("fab-zwei-orchestrator", text)
+        self.assertIn("fab orchestrator stop zwei", text)
+        self.assertEqual(self._read(self.roster), before)
+
+        self.set_live({})
+        message = self.config_call(
+            config.edit_team, "zwei", rename="drei", actor="mensch"
+        )
+        self.assertIn("Name zwei → drei", message)
+        data = self.roster_json()
+        self.assertEqual(
+            [entry["name"] for entry in data["teams"]], ["herdr-app", "drei"]
+        )
+        entry = data["teams"][1]
+        self.assertEqual(entry["previous_names"], ["zwei"])
+        self.assertEqual(entry["repos"], [os.path.realpath(repo)])
+        self.assertEqual(entry["members"], [{"blueprint": "zap"}])
+        self.assertEqual(entry["reviewer"], "zap")
+        self.assertEqual(
+            entry["orchestrator"],
+            {"argv": ["true"], "prompt": "prompts/orchestrator-zwei.md"},
+        )
+
+    def test_rename_verweigert_live_agent_session(self):
+        self.add_team()
+        before = self._read(self.roster)
+        self.set_live({"fab-zwei-zap-t-1": "t5"})
+        with self.assertRaises(FabError) as ctx:
+            self.config_call(
+                config.edit_team, "zwei", rename="drei", actor="mensch"
+            )
+        text = str(ctx.exception)
+        self.assertIn("lässt sich nicht umbenennen", text)
+        self.assertIn("fab-zwei-zap-t-1", text)
+        self.assertIn("hc kill", text)
+        self.assertNotIn("fab orchestrator stop", text)
+        self.assertEqual(self._read(self.roster), before)
+
+    def test_rename_ohne_sessions_bleibt_wie_bisher(self):
+        self.add_team()
+        herdr_prompt = self.prompt_path("orchestrator")
+        before = self._read(herdr_prompt)
+        drei_prompt = os.path.join(
+            self.roster_dir, "prompts", "orchestrator-drei.md"
+        )
+        self.assertFalse(os.path.exists(drei_prompt))
+
+        message = self.config_call(
+            config.edit_team, "zwei", rename="drei", actor="mensch"
+        )
+        self.assertIn("Team zwei geändert: Name zwei → drei", message)
+        data = self.roster_json()
+        self.assertEqual(
+            [entry["name"] for entry in data["teams"]], ["herdr-app", "drei"]
+        )
+        self.assertEqual(data["teams"][0]["name"], "herdr-app")
+        self.assertEqual(self._read(herdr_prompt), before)
+        self.assertFalse(os.path.exists(drei_prompt))
+
+    def test_rm_verweigert_live_agent_session(self):
+        self.add_team()
+        before = self._read(self.roster)
+        self.set_live({"fab-zwei-zap-t-1": "t5"})
+        with self.assertRaises(FabError) as ctx:
+            self.config_call(config.remove_team, "zwei", "mensch")
+        text = str(ctx.exception)
+        self.assertIn("Team „zwei“ lässt sich nicht löschen", text)
+        self.assertIn("fab-zwei-zap-t-1", text)
+        self.assertEqual(self._read(self.roster), before)
+
+        self.set_live({})
+        self.config_call(config.remove_team, "zwei", "mensch")
+        self.assertEqual(
+            [entry["name"] for entry in self.roster_json()["teams"]],
+            ["herdr-app"],
+        )
+
+    def test_alias_terminale_frueherer_namen_blockieren_rm(self):
+        self.add_team()
+        self.set_previous_names("zwei", ["tmpx"])
+        before = self._read(self.roster)
+
+        self.set_live({"fab-tmpx-orchestrator": "t0"})
+        with self.assertRaises(FabError) as ctx:
+            self.config_call(config.remove_team, "zwei", "mensch")
+        text = str(ctx.exception)
+        self.assertIn("fab-tmpx-orchestrator", text)
+        self.assertIn("fab orchestrator stop zwei", text)
+        self.assertEqual(self._read(self.roster), before)
+
+        with mock.patch.dict(os.environ, self.env):
+            roster = agents.load()
+            name, _row = agents.live_orchestrator(roster, "zwei")
+        self.assertEqual(name, "fab-tmpx-orchestrator")
+
+        self.set_live({"fab-tmpx-zap-t-1": "t5"})
+        with self.assertRaises(FabError) as ctx:
+            self.config_call(config.remove_team, "zwei", "mensch")
+        self.assertIn("fab-tmpx-zap-t-1", str(ctx.exception))
+        self.assertEqual(self._read(self.roster), before)
+
+    def test_praefix_ordnet_terminale_dem_laengsten_teamnamen_zu(self):
+        self.add_team("herdr", self.make_repo("herdr"))
+        self.set_live(
+            {
+                "fab-herdr-app-orchestrator": "t0",
+                "fab-herdr-app-zap-t-25": "t5",
+            }
+        )
+        roster = self.roster_json()
+        self.assertEqual(self.config_call(agents.team_live, roster, "herdr"), {})
+        app_live = self.config_call(agents.team_live, roster, "herdr-app")
+        self.assertEqual(
+            sorted(app_live), ["fab-herdr-app-orchestrator", "fab-herdr-app-zap-t-25"]
+        )
+
+        message = self.config_call(
+            config.edit_team, "herdr", rename="herd", actor="mensch"
+        )
+        self.assertIn("Name herdr → herd", message)
+        self.assertEqual(
+            [entry["name"] for entry in self.roster_json()["teams"]],
+            ["herdr-app", "herd"],
+        )
+
+    def test_team_live_ohne_roster_und_team_wirft_nicht(self):
+        self.assertEqual(agents._team_names(None, "zwei"), ["zwei"])
+        self.assertEqual(agents._team_names({}, None), [])
+        self.assertEqual(agents._team_names({"teams": []}, "zwei"), ["zwei"])
+        self.assertEqual(
+            self.config_call(agents.team_live, None, "zwei"), {}
+        )
+
+    def test_frueherer_name_eines_anderen_teams_ist_kein_alias(self):
+        self.add_team()
+        data = self.roster_json()
+        entry = next(item for item in data["teams"] if item["name"] == "zwei")
+        entry["previous_names"] = ["herdr-app", "zwei", ""]
+        self.write_raw_roster(data)
+        roster = self.roster_json()
+        self.assertEqual(agents._team_names(roster, "zwei"), ["zwei"])
+        self.assertEqual(
+            agents.orchestrator_targets(roster, "zwei"),
+            ["fab-zwei-orchestrator"],
+        )
 
 
 class GlobalLimitTests(ConfigCase):

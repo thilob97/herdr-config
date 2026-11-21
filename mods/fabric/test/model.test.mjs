@@ -5,8 +5,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  groupByStage, mentionSegments, sortInbox, timelineFeed, eventSummary, relativeTime,
+  groupByStage, mentionSegments, sortInbox, inboxRetry, timelineFeed, eventSummary, relativeTime,
   wakeLine, sessionChips, sessionStatus, childrenOf, childProgress,
+  teamForTicket, teamAgents,
 } from "../model.js";
 
 test("Tickets werden nach Stufe gruppiert, in Stufenreihenfolge", () => {
@@ -62,6 +63,20 @@ test("Inbox: neueste oben, gleiche Zeit bleibt in ihrer Reihenfolge", () => {
   assert.deepEqual(sortInbox(inbox).map((entry) => entry.ticket), ["T-2", "T-3", "T-4", "T-1"]);
   assert.deepEqual(sortInbox(null), []);
   assert.equal(inbox[0].ticket, "T-1", "die Eingabe wird nicht verändert");
+});
+
+test("Inbox: „Erneut starten“ nur mit Ticket und Agent", () => {
+  assert.equal(inboxRetry(null), null);
+  assert.equal(inboxRetry({}), null);
+  assert.equal(inboxRetry({ ticket: "T-27" }), null);
+  assert.equal(inboxRetry({ agent: "zap" }), null);
+  assert.equal(inboxRetry({ ticket: "T-27", agent: "" }), null);
+
+  assert.deepEqual(inboxRetry({ ticket: "T-27", agent: "zap" }), {
+    agent: "zap",
+    args: ["wake", "T-27", "zap", "--from=mensch", "--", "Erneut starten"],
+  });
+  assert.equal(inboxRetry({ ticket: "T-27", agent: "orchestrator" }).agent, "orchestrator");
 });
 
 test("Zeitverlauf: neueste zuerst, nach Tagen gruppiert, Filter je Ticket", () => {
@@ -186,6 +201,24 @@ test("Statusübergänge: done nur über Abnehmen, dropped lässt sich wieder öf
     [["done", true]],
   );
   assert.deepEqual(statusOptions("dropped").map((option) => option.key), ["dropped", "draft"]);
+
+  // „Verworfen“ öffnet immer den Dialog (fab drop); andere Wechsel nicht.
+  assert.deepEqual(
+    statusOptions("draft").filter((option) => option.drop).map((option) => option.key),
+    ["dropped"],
+  );
+  assert.deepEqual(
+    statusOptions("doing").filter((option) => option.drop).map((option) => option.key),
+    ["dropped"],
+  );
+  assert.equal(
+    statusOptions("doing").find((option) => option.key === "review").drop,
+    false,
+  );
+  assert.equal(
+    statusOptions("dropped").some((option) => option.drop),
+    false,
+  );
 
   assert.equal(canTransition("draft", "todo"), true);
   assert.equal(canTransition("draft", "done"), false);
@@ -831,6 +864,34 @@ test("teamSaveArgs verlangt Repos, Mitglieder und einen Prüfer aus dem Team", a
     "max-cost für ada muss eine ganze Zahl ≥ 0 sein.");
 });
 
+test("teamSaveArgs hängt einen geänderten Namen als --rename direkt an den alten Namen", async () => {
+  const { teamSaveArgs } = await import("../model.js");
+  const plan = teamSaveArgs(TEAM, {
+    name: "  newname  ",
+    repos: ["/r/a"],
+    members: [{ blueprint: "zap" }, { blueprint: "ada" }],
+    reviewer: "ada",
+    max_sessions: 4,
+  });
+  assert.equal(plan.error, undefined);
+  assert.deepEqual(plan.args.slice(0, 4), ["team", "edit", "herdr-app", "--rename=newname"]);
+});
+
+test("teamSaveArgs sendet ohne Namensänderung kein --rename", async () => {
+  const { teamSaveArgs } = await import("../model.js");
+  const base = {
+    repos: ["/r/a"],
+    members: [{ blueprint: "zap" }, { blueprint: "ada" }],
+    reviewer: "ada",
+    max_sessions: 4,
+  };
+  for (const name of ["herdr-app", "  herdr-app  ", "", "   "]) {
+    const plan = teamSaveArgs(TEAM, { ...base, name });
+    assert.equal(plan.error, undefined);
+    assert.equal(plan.args.some((arg) => arg.startsWith("--rename=")), false, `kein --rename für ${JSON.stringify(name)}`);
+  }
+});
+
 test("teamAddArgs baut die Kommandozeile für ein neues Team", async () => {
   const { teamAddArgs } = await import("../model.js");
   const plan = teamAddArgs({
@@ -928,4 +989,23 @@ test("teamDirty erkennt Änderungen an Repos, Mitgliedern, Prüfer und Sitzungen
   assert.equal(teamDirty(TEAM, { ...form, members: [{ blueprint: "zap" }, { blueprint: "ada" }] }), true);
   assert.equal(teamDirty(TEAM, { ...form, reviewer: "zap" }), true);
   assert.equal(teamDirty(TEAM, { ...form, max_sessions: "5" }), true);
+  assert.equal(teamDirty(TEAM, { ...form, name: "neu" }), true);
+  assert.equal(teamDirty(TEAM, { ...form, name: "  herdr-app  " }), false);
+});
+
+test("teamForTicket und teamAgents wählen das Team nach dem Repo-Pfad", () => {
+  const teams = [
+    { name: "team-a", repos: ["/r/a"], agents: [{ name: "ada" }, { name: "bo" }] },
+    { name: "team-b", repos: ["/r/b/"], agents: [{ name: "cy" }] },
+  ];
+
+  assert.equal(teamForTicket(teams, { repo: "/r/b" }), teams[1]);
+  assert.deepEqual(teamAgents(teams, { repo: "/r/b" }).map((agent) => agent.name), ["cy"]);
+  assert.equal(teamForTicket(teams, { repo: "/r/b/" }), teams[1]);
+
+  assert.equal(teamForTicket(teams, {}), teams[0]);
+  assert.deepEqual(teamAgents(teams, { repo: "" }).map((agent) => agent.name), ["ada", "bo"]);
+
+  assert.equal(teamForTicket(teams, { repo: "/r/unknown" }), null);
+  assert.deepEqual(teamAgents(teams, { repo: "/r/unknown" }), []);
 });

@@ -4,6 +4,7 @@ import json
 import os
 import re
 import sys
+import time
 import unicodedata
 
 from . import agents, config, events, git, hc, index, prompts, render, repos, store, teams, wake
@@ -459,12 +460,14 @@ def cmd_status(args):
         )
     if args.status == "done":
         raise FabError(f"{args.id}: „done“ gibt es nur über fab accept")
+    if args.status == "dropped":
+        raise FabError(
+            f"{args.id}: „dropped“ gibt es nur über fab drop {args.id} mit einem Grund"
+        )
     with store.locked():
         ticket = store.load(args.id)
         old = ticket["status"]
         ticket["status"] = args.status
-        if args.status in ("done", "dropped"):
-            ticket["waiting"] = []
         events.append("status", ticket["id"], actor, "", f"{old} → {args.status}")
         store.save(ticket)
         index.rebuild()
@@ -475,9 +478,10 @@ def cmd_status(args):
 def cmd_assign(args):
     actor = _require_actor(args)
     roster = agents.load()
-    agents.agent(args.name, roster)
     with store.locked():
         ticket = store.load(args.id)
+        team_entry = agents.team_for_ticket(roster, ticket)
+        agents.agent_in_team(roster, team_entry, args.name)
         ticket["assignee"] = args.name
         events.append("assigned", ticket["id"], actor, args.name, args.name)
         store.save(ticket)
@@ -970,9 +974,15 @@ def cmd_wake(args):
     actor = _require_actor(args)
     roster = agents.load()
     text = (args.text or "").strip() or "manuell geweckt"
+    attempt = 2 if args.retry else 1
+    if args.retry:
+        time.sleep(wake.retry_delay())
     with store.locked():
         ticket = store.load(args.id)
-        results = wake.process(ticket, [args.name.lower()], actor, text, roster)
+        results = wake.process(
+            ticket, [args.name.lower()], actor, text, roster,
+            attempt=attempt, direct=args.retry,
+        )
         store.save(ticket)
         index.rebuild()
     _print_wake_results(results)
@@ -1135,6 +1145,18 @@ def cmd_agents(args):
                     "status": agents.status(row),
                 }
             )
+    running_by_agent = {}
+    for item in roster["agents"]:
+        name = item["name"]
+        seen = set()
+        rows = running_by_agent.setdefault(name, [])
+        for session in sessions:
+            if session["agent"] != name or session["name"] not in running:
+                continue
+            if session["name"] in seen:
+                continue
+            seen.add(session["name"])
+            rows.append(session)
     if args.json:
         first = teams.first_team(roster)
         state = _orchestrator_state(roster, first) if first else {
@@ -1154,7 +1176,8 @@ def cmd_agents(args):
                     "name": item["name"],
                     "role": item["role"],
                     "color": item["color"],
-                    "running": [s for s in sessions if s["name"] in running],
+                    "teams": list(item.get("teams") or []),
+                    "running": running_by_agent[item["name"]],
                 }
                 for item in roster["agents"]
             ],
@@ -1184,7 +1207,11 @@ def cmd_agents(args):
                 )
                 for session in mine
             )
-        print(f"{item['name']:<10} {item['role']:<10} {item['color']:<4} {state}")
+        teams_text = ", ".join(item.get("teams") or []) or "—"
+        print(
+            f"{item['name']:<10} {item['role']:<10} {item['color']:<4} {state}"
+            f" · Teams: {teams_text}"
+        )
     first = teams.first_team(roster)
     state = _orchestrator_state(roster, first) if first else {"live": False, "terminal": None}
     print(
@@ -1593,9 +1620,13 @@ def build_parser():
     item.add_argument("--base", metavar="B")
     item.add_argument("--from", dest="from_", metavar="NAME", required=True, help="wer ändert")
 
-    item = command("status", "Status eines Tickets setzen (done nur über accept)", cmd_status)
+    item = command(
+        "status",
+        "Status eines Tickets setzen (done über accept, dropped über drop)",
+        cmd_status,
+    )
     item.add_argument("id", metavar="ID")
-    item.add_argument("status", metavar="STATUS", help="draft, todo, doing, review oder dropped")
+    item.add_argument("status", metavar="STATUS", help="draft, todo, doing oder review")
     item.add_argument("--from", dest="from_", metavar="NAME", required=True)
 
     item = command("assign", "Zuständigen aus dem Roster setzen", cmd_assign)
@@ -1663,6 +1694,7 @@ def build_parser():
     item.add_argument("id", metavar="ID")
     item.add_argument("name", metavar="NAME")
     item.add_argument("--from", dest="from_", metavar="NAME", required=True)
+    item.add_argument("--retry", action="store_true", help=argparse.SUPPRESS)
     item.add_argument("text", metavar="TEXT", nargs="?", default=None)
 
     item = command("orchestrator", "Team-Orchestrator starten, beenden, prüfen", cmd_orchestrator)
@@ -1849,7 +1881,7 @@ def _normalize_argv(argv):
             options.extend(body[index:index + 2])
             index += 2
             continue
-        if token.startswith("--from=") or token in ("-h", "--help"):
+        if token.startswith("--from=") or token in ("-h", "--help", "--retry"):
             options.append(token)
             index += 1
             continue

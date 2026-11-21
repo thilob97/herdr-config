@@ -11,6 +11,7 @@ const S = ui.SPACE;
 function inboxRow(app, cx, t, entry, index) {
   const kind = model.INBOX_WORDS[entry.kind] ?? entry.kind ?? "Hinweis";
   const color = ui.inboxColor(t, entry.kind);
+  const retry = model.inboxRetry(entry);
   return v_flex()
     .id(`fabric-inbox-${entry.ticket}-${index}`)
     .w_full()
@@ -39,8 +40,19 @@ function inboxRow(app, cx, t, entry, index) {
             `fabric-inbox-text-${entry.ticket}-${index}`,
             model.plainMentionMarkdown(model.oneLine(entry.text, 160)),
           ).text_size(T.xs).text_color(t.foreground).whitespace_nowrap())
-          .tooltip(entry.text ?? "")),
-    );
+          .tooltip(entry.text ?? ""))
+        .when(Boolean(retry), (el) => el.child(ui.button(t, {
+          id: `fabric-inbox-retry-${entry.ticket}-${index}`,
+          label: "Erneut starten",
+          small: true,
+          tooltip: "Den Agenten erneut starten und den Hinweis bei Erfolg entfernen",
+          onClick: (cx) => app.retryAgent(entry, cx),
+        }))),
+    )
+    .when(Boolean(retry), (el) => el.child(
+      div().text_size(T.xs).text_color(t.muted)
+        .child(`${entry.agent} · ${model.oneLine(entry.reason || "Grund unbekannt", 120)}`),
+    ));
 }
 
 export function renderInboxPanel(app, cx, t) {

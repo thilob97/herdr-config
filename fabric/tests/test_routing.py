@@ -94,8 +94,9 @@ class RoutingTests(FabricCase):
     def test_dispatch_lehnt_agent_ausserhalb_des_teams_ab(self):
         repo = self.add_team()
         tid = self.new_in(repo)
-        self.ok("assign", tid, "ada", "--from", "mensch")
-        result = self.cli("dispatch", tid, "--from", "mensch")
+        # `assign` prüft die Mitgliedschaft selbst; hier geht es um das
+        # zweite Gate in `dispatch`.
+        result = self.cli("dispatch", tid, "--agent", "ada", "--from", "mensch")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("gehört nicht zu Team zweit", result.stderr)
         self.assertIsNone(self.ticket(tid)["worktree"])

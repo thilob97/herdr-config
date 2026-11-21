@@ -87,12 +87,24 @@ def live():
     }
 
 
-def send(address, text):
-    """hc send; ein blockierter Agent nimmt die Nachricht erst mit --force an."""
+def send_detail(address, text):
+    """hc send; ein blockierter Agent nimmt die Nachricht erst mit --force an.
+
+    Rückgabe: (ok, detail). `detail` ist die knappe Meldung, wenn beide
+    Versuche scheitern, sonst "".
+    """
     result = _run(["send", str(address), text], timeout=120)
     if result.returncode != 0:
         result = _run(["send", str(address), text, "--force"], timeout=120)
-    return result.returncode == 0
+    if result.returncode == 0:
+        return True, ""
+    detail = (result.stderr or result.stdout).strip() or f"Exit {result.returncode}"
+    return False, detail
+
+
+def send(address, text):
+    """hc send; nur das Ergebnis, Details über `send_detail`."""
+    return send_detail(address, text)[0]
 
 
 def run(name, cwd, argv, prompt, labels=None, want_json=True):

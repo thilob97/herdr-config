@@ -317,6 +317,10 @@ export default class Fabric extends View {
     return this.roster?.agents ?? [];
   }
 
+  ticketAgents(ticket = this.ticket) {
+    return model.teamAgents(this.roster?.teams ?? [], ticket);
+  }
+
   selectedId() {
     const value = shared("fabric.selected");
     return typeof value === "string" && value ? value : null;
@@ -1216,6 +1220,7 @@ export default class Fabric extends View {
             flags: agent.flags ?? parts.flags,
             open_tickets: agent.open_tickets ?? 0,
             sessions: agent.sessions ?? [],
+            teams: agent.teams ?? [],
           };
         }),
         blueprints: (raw.blueprints ?? [])
@@ -1553,6 +1558,10 @@ export default class Fabric extends View {
 
   async setStatus(status, cx) {
     if (status === this.ticket?.status) return;
+    if (status === "dropped") {
+      this.openDropModal(cx);
+      return;
+    }
     await this.setStatusOf(this.activeTicketId(), status, cx);
   }
 
@@ -1877,7 +1886,7 @@ export default class Fabric extends View {
   openWake(cx) {
     if (!this.ticket) return;
     this.wakeOpen = true;
-    this.wakeName = this.ticket.assignee || this.agents[0]?.name || "";
+    this.wakeName = this.ticket.assignee || this.ticketAgents()[0]?.name || this.agents[0]?.name || "";
     this.wakeText = InputState.new({ placeholder: "Was soll der Agent tun?" });
     this.wakeText.on("submit", (_event, cx) => {
       if (this.consumeMentionSubmit("wake", cx)) return;
@@ -1909,6 +1918,25 @@ export default class Fabric extends View {
       this.clearMentions();
     }
     this.notifyNow();
+  }
+
+  /** Fehlgeschlagenen Agentenstart aus dem Posteingang wiederholen. */
+  async retryAgent(entry, cx) {
+    const retry = model.inboxRetry(entry);
+    if (!retry) return;
+    const result = await this.action("retry", retry.args, {
+      success: (result) => {
+        const out = result?.stdout ?? "";
+        if (out.includes("start fehlgeschlagen")) {
+          return `Start weiterhin fehlgeschlagen - Grund im Ticket ${entry.ticket}.`;
+        }
+        return `${retry.agent === "orchestrator" ? "Team-Orchestrator" : retry.agent} erneut gestartet.`;
+      },
+    });
+    if (result.ok) {
+      this.inboxOpen = false;
+      this.notifyNow();
+    }
   }
 
   openAcceptModal(cx) {
@@ -2125,6 +2153,9 @@ export default class Fabric extends View {
 
   buildTeamForm(team) {
     const draft = model.teamDraft(team);
+    const name = InputState.new({ value: draft.name, placeholder: "Teamname" });
+    name.on("change", (_event, cx) => cx.notify());
+    this.track(name);
     const maxSessions = InputState.new({ value: String(draft.max_sessions) });
     maxSessions.set_step(1);
     maxSessions.set_min(1);
@@ -2133,7 +2164,7 @@ export default class Fabric extends View {
     maxSessions.on("submit", (_event, cx) => this.saveTeam(team.name, cx));
     this.track(maxSessions);
     return {
-      name: draft.name,
+      name,
       repos: [...draft.repos],
       reviewer: draft.reviewer,
       members: draft.members.map((member) => this.memberForm(member)),
@@ -2146,7 +2177,7 @@ export default class Fabric extends View {
     const form = this.teamForms[name];
     if (!form) return null;
     return {
-      name: form.name,
+      name: form.name.value(),
       repos: [...form.repos],
       members: form.members.map((member) => ({
         blueprint: member.blueprint,
@@ -2863,8 +2894,9 @@ export default class Fabric extends View {
       )
       .child(
         this.inbox.length
-          ? v_flex().max_h(360).overflow_y_scrollbar().children(model.sortInbox(this.inbox).map((entry, index) =>
-            h_flex()
+          ? v_flex().max_h(360).overflow_y_scrollbar().children(model.sortInbox(this.inbox).map((entry, index) => {
+            const retry = model.inboxRetry(entry);
+            return h_flex()
               .id(`fabric-inbox-pop-${entry.ticket}-${index}`)
               .w_full()
               .px(ui.SPACE.m)
@@ -2890,7 +2922,19 @@ export default class Fabric extends View {
                   .child(TextView.markdown(
                     `fabric-inbox-pop-text-${entry.ticket}-${index}`,
                     model.plainMentionMarkdown(model.oneLine(entry.text, 120)),
-                  ).text_size(ui.FONT.s).text_color(t.foreground).whitespace_nowrap())))))
+                  ).text_size(ui.FONT.s).text_color(t.foreground).whitespace_nowrap()))
+                .when(Boolean(retry), (el) => el.child(
+                  div().text_size(ui.FONT.xs).text_color(t.dim)
+                    .child(`${entry.agent} · ${model.oneLine(entry.reason || "Grund unbekannt", 120)}`),
+                ))
+                .when(Boolean(retry), (el) => el.child(h_flex().w_full().child(ui.button(t, {
+                  id: `fabric-inbox-pop-retry-${entry.ticket}-${index}`,
+                  label: "Erneut starten",
+                  small: true,
+                  tooltip: "Den Agenten erneut starten und den Hinweis bei Erfolg entfernen",
+                  onClick: (cx) => this.retryAgent(entry, cx),
+                })))));
+          }))
           : ui.emptyState(t, { title: "Nichts zu tun", text: "Der Posteingang ist leer." }),
       );
 

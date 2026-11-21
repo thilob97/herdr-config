@@ -156,7 +156,12 @@ def _sync_legacy(data):
     if not teams.is_migrated(data):
         return
     expanded = teams.expansion(data)
-    data["agents"] = expanded["agents"]
+    # `teams` ist abgeleitet und bleibt eine UI-Angabe; die Legacy-Spiegelung
+    # behält die alte Form der `agents`-Einträge.
+    data["agents"] = [
+        {key: value for key, value in row.items() if key != "teams"}
+        for row in expanded["agents"]
+    ]
     data["reviewer"] = expanded["reviewer"]
     data["max_sessions"] = expanded["max_sessions"]
     data[teams.GLOBAL_KEY] = expanded["max_sessions_total"]
@@ -277,6 +282,7 @@ def payload():
                 "name": entry["name"],
                 "role": entry["role"],
                 "color": entry["color"],
+                "teams": list(entry.get("teams") or []),
                 "argv": list(entry["argv"]),
                 "prompt": entry["prompt"],
                 "program": program,
@@ -670,6 +676,28 @@ def add_team(name, repos, members_json, orchestrator_argv_json=None,
     return entry
 
 
+def _live_blockers(live, name):
+    """Meldungen für laufende Orchestratoren und Agenten-Sessions eines Teams."""
+    orchestrators = sorted(
+        terminal for terminal in live if hc.is_orchestrator(terminal)
+    )
+    sessions = sorted(
+        terminal for terminal in live if not hc.is_orchestrator(terminal)
+    )
+    blockers = []
+    if orchestrators:
+        blockers.append(
+            f"Orchestrator {', '.join(orchestrators)} läuft (stoppe ihn zuerst "
+            f"mit fab orchestrator stop {name})"
+        )
+    if sessions:
+        blockers.append(
+            "laufende Sessions " + ", ".join(sessions)
+            + " (beende sie zuerst mit hc kill <terminal>)"
+        )
+    return blockers
+
+
 def edit_team(name, rename=None, repos=None, members_json=None,
               orchestrator_argv_json=None, orchestrator_prompt=None,
               reviewer=None, max_sessions=None, actor=""):
@@ -690,6 +718,13 @@ def edit_team(name, rename=None, repos=None, members_json=None,
             ):
                 raise FabError(
                     f"Team „{target}“ gibt es schon; wähle einen anderen Namen"
+                )
+            live = agents.team_live(data, name)
+            if live:
+                raise FabError(
+                    f"Team „{name}“ lässt sich nicht umbenennen: "
+                    + "; ".join(_live_blockers(live, name))
+                    + "."
                 )
 
     old_repos = _team_repos(entry)
@@ -775,6 +810,17 @@ def edit_team(name, rename=None, repos=None, members_json=None,
         )
 
     entry["name"] = target
+    if target != name:
+        raw_previous = entry.get("previous_names")
+        previous = [
+            item.strip()
+            for item in (raw_previous if isinstance(raw_previous, list) else [])
+            if isinstance(item, str) and item.strip()
+        ]
+        previous.append(name)
+        entry["previous_names"] = [
+            alias for alias in dict.fromkeys(previous) if alias != target
+        ]
     entry["repos"] = final_repos
     entry["members"] = final_members
     entry["reviewer"] = final_reviewer
@@ -807,12 +853,8 @@ def remove_team(name, actor):
                 f"{ticket['id']} ({ticket['status']})" for ticket in tickets
             )
         )
-    orchestrator, _row = agents.live_orchestrator(data, name)
-    if orchestrator:
-        blockers.append(
-            f"Orchestrator {orchestrator} läuft (stoppe ihn zuerst mit "
-            f"fab orchestrator stop {name})"
-        )
+    live = agents.team_live(data, name)
+    blockers.extend(_live_blockers(live, name))
     if blockers:
         raise FabError(
             f"Team „{name}“ lässt sich nicht löschen: "

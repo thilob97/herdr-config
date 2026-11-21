@@ -1,5 +1,8 @@
 """Erwähnungen (`@name`) und die Weckregeln aus Abschnitt 4 des Vertrags."""
+import os
 import re
+import subprocess
+import sys
 
 from . import agents, events, git, hc, store, teams
 from .errors import FabError, HcError
@@ -9,6 +12,10 @@ MENTION_RE = re.compile(r"(?<![A-Za-z0-9._%+-])@([a-z][a-z0-9_-]*)", re.IGNORECA
 RESERVED = ("orchestrator", "mensch")
 PING_WINDOW_MS = 10 * 60 * 1000
 PING_LIMIT = 8
+START_FAILED = "unterdrückt: start fehlgeschlagen"
+FIRST_FAILED = "erster Versuch fehlgeschlagen"
+START_RETRY = "zweiter Versuch erfolgreich"
+RETRY_DELAY_DEFAULT = 5.0
 
 
 def known_names(roster=None):
@@ -112,6 +119,14 @@ def message(ticket, author, name, text):
     )
 
 
+def _short_reason(text, limit=280):
+    """Grund einzeilig und höchstens `limit` Zeichen; leer bleibt leer."""
+    if not text:
+        return ""
+    collapsed = " ".join(str(text).split())
+    return collapsed[:limit]
+
+
 def _ticket_team(roster, ticket):
     """Team des Ticket-Repos; ohne Repo das Legacy-Team (erstes Team)."""
     repo = ticket.get("repo")
@@ -121,10 +136,14 @@ def _ticket_team(roster, ticket):
 
 
 def _orchestrator_wake(roster, text, team_entry=None):
-    """Weckt den Team-Orchestrator; startet ihn, wenn er nicht läuft."""
+    """Weckt den Team-Orchestrator; startet ihn, wenn er nicht läuft.
+
+    Rückgabe: (ergebnis, adresse, grund). `grund` erklärt einen
+    Startfehler und ist sonst "".
+    """
     entry = team_entry if isinstance(team_entry, dict) else teams.first_team(roster)
     if not entry:
-        return "unterdrückt: kein Team", None
+        return "unterdrückt: kein Team", None, ""
     team_name = str(entry.get("name") or "")
     try:
         live = hc.live()
@@ -134,14 +153,15 @@ def _orchestrator_wake(roster, text, team_entry=None):
         row = live.get(target)
         if row:
             address = row.get("address") or target
-            if hc.send(address, text):
-                return "geweckt", address
-            return "unterdrückt: start fehlgeschlagen", None
+            ok, detail = hc.send_detail(address, text)
+            if ok:
+                return "geweckt", address, ""
+            return START_FAILED, None, detail
     try:
         started = agents.start_orchestrator(roster, team_name)
-    except (FabError, HcError):
-        return "unterdrückt: start fehlgeschlagen", None
-    return "gestartet", started["name"]
+    except (FabError, HcError) as exc:
+        return START_FAILED, None, str(exc)
+    return "gestartet", started["name"], ""
 
 
 def _notify_orchestrator(roster, text, team_entry=None):
@@ -176,12 +196,15 @@ def _pingpong_notice(ticket, name, author, roster):
     _notify_orchestrator(roster, text, _ticket_team(roster, ticket))
 
 
-def _one(ticket, name, author, text, roster, no_wake, message_for):
-    """Eine Erwähnung. Rückgabe: (wake-text oder None, Zeile fürs Terminal, Adresse)."""
+def _one(ticket, name, author, text, roster, no_wake, message_for, send_text=None):
+    """Eine Erwähnung.
+
+    Rückgabe: (wake-text oder None, Zeile fürs Terminal, Adresse, Grund).
+    """
     if name == (author or "").lower():
-        return None, "kein Wecken: du bist der Autor", None
+        return None, "kein Wecken: du bist der Autor", None, ""
     if no_wake:
-        return None, "kein Wecken (--no-wake)", None
+        return None, "kein Wecken (--no-wake)", None, ""
     if name == "mensch":
         conflict = ticket_conflict(ticket)
         if conflict is not None:
@@ -190,41 +213,46 @@ def _one(ticket, name, author, text, roster, no_wake, message_for):
             add_comment(ticket, author, comment, roster)
             assignee = (ticket.get("assignee") or "").lower()
             if assignee and assignee in known_names(roster) and assignee != "mensch":
-                event_text, line, address = _one(
+                event_text, line, address, reason = _one(
                     ticket, assignee, author, comment, roster, no_wake,
                     lambda _name: conflict_wake_text(ticket, base, files),
                 )
                 if event_text is not None:
-                    events.append("wake", ticket["id"], author, assignee, event_text)
-                return None, f"Merge-Konflikt mit {base}: {line}", address
-            return None, f"Merge-Konflikt mit {base}: kein zuständiger Agent", None
+                    events.append(
+                        "wake", ticket["id"], author, assignee, event_text,
+                        reason=_short_reason(reason),
+                    )
+                return None, f"Merge-Konflikt mit {base}: {line}", address, reason
+            return None, f"Merge-Konflikt mit {base}: kein zuständiger Agent", None, ""
         if "mensch" not in ticket["waiting"]:
             ticket["waiting"].append("mensch")
-        return "unterdrückt: mensch", "unterdrückt: mensch", None
+        return "unterdrückt: mensch", "unterdrückt: mensch", None, ""
     if ticket.get("status") in ("done", "dropped"):
-        return "unterdrückt: abgeschlossen", "unterdrückt: abgeschlossen", None
+        return "unterdrückt: abgeschlossen", "unterdrückt: abgeschlossen", None, ""
 
     now = store.now_ms()
     if events.count_wakes(ticket["id"], name, now - PING_WINDOW_MS) > PING_LIMIT:
         _pingpong_notice(ticket, name, author, roster)
-        return "unterdrückt: ping-pong", "unterdrückt: ping-pong", None
+        return "unterdrückt: ping-pong", "unterdrückt: ping-pong", None, ""
 
-    send_text = message_for(name) if message_for else message(ticket, author, name, text)
+    if send_text is None:
+        send_text = message_for(name) if message_for else message(ticket, author, name, text)
     team_entry = _ticket_team(roster, ticket)
 
     if name == "orchestrator":
         if team_entry is None:
-            return "unterdrückt: kein Team", "unterdrückt: kein Team", None
-        result, address = _orchestrator_wake(roster, send_text, team_entry)
-        return result, result, address
+            return "unterdrückt: kein Team", "unterdrückt: kein Team", None, ""
+        result, address, reason = _orchestrator_wake(roster, send_text, team_entry)
+        line = f"{result} ({reason})" if reason else result
+        return result, line, address, reason
 
     if team_entry is None:
-        return "unterdrückt: kein Team", "unterdrückt: kein Team", None
+        return "unterdrückt: kein Team", "unterdrückt: kein Team", None, ""
     team_name = str(team_entry.get("name") or "")
     try:
         agents.agent_in_team(roster, team_entry, name)
     except FabError:
-        return "unterdrückt: nicht im Team", "unterdrückt: nicht im Team", None
+        return "unterdrückt: nicht im Team", "unterdrückt: nicht im Team", None, ""
 
     targets = [hc.terminal_name(name, ticket["id"], team_name)]
     if team_name == teams.legacy_team_name(roster):
@@ -236,19 +264,26 @@ def _one(ticket, name, author, text, roster, no_wake, message_for):
     for terminal_name in targets:
         if terminal_name in live:
             address = live[terminal_name].get("address") or terminal_name
-            if hc.send(address, send_text):
-                return "geweckt", "geweckt", address
-            return "unterdrückt: start fehlgeschlagen", "unterdrückt: start fehlgeschlagen", None
+            ok, detail = hc.send_detail(address, send_text)
+            if ok:
+                return "geweckt", "geweckt", address, ""
+            line = f"{START_FAILED} ({detail})" if detail else START_FAILED
+            return START_FAILED, line, None, detail
 
     if ticket.get("worktree"):
         try:
             started = agents.start_agent(roster, ticket, name)
-        except (FabError, HcError):
-            result = "unterdrückt: start fehlgeschlagen"
-            return result, result, None
+        except (FabError, HcError) as exc:
+            reason = str(exc)
+            return START_FAILED, f"{START_FAILED} ({reason})", None, reason
         result = started["result"]
+        reason = ""
         line = result
-        if result == "gestartet":
+        if result == START_FAILED:
+            reason = started.get("error") or ""
+            if reason:
+                line = f"{result} ({reason})"
+        elif result == "gestartet":
             ticket["sessions"].append(
                 {
                     "agent": name,
@@ -259,21 +294,72 @@ def _one(ticket, name, author, text, roster, no_wake, message_for):
             )
             if started.get("warning"):
                 line = f"{result} ({started['warning']})"
-        return result, line, started["terminal"]
+        return result, line, started["terminal"], reason
 
     notice = (
         f"Ticket {ticket['id']} „{ticket['title']}“: @{author} hat @{name} erwähnt, "
         f"aber das Ticket hat keinen Worktree. Lies `fab show {ticket['id']}` und "
         f"entscheide (`fab dispatch {ticket['id']} --agent {name}`)."
     )
-    result, address = _orchestrator_wake(roster, notice, team_entry)
+    result, address, reason = _orchestrator_wake(roster, notice, team_entry)
     if result in ("geweckt", "gestartet"):
-        return "an orchestrator", "an orchestrator", address
-    return "unterdrückt: start fehlgeschlagen", "unterdrückt: start fehlgeschlagen", None
+        return "an orchestrator", "an orchestrator", address, ""
+    line = f"{START_FAILED} ({reason})" if reason else START_FAILED
+    return START_FAILED, line, None, reason
 
 
-def process(ticket, names, author, text, roster, no_wake=False, message_for=None):
+def retry_delay():
+    """Sekunden bis zum zweiten Versuch aus `FAB_WAKE_RETRY_DELAY` (Standard 5)."""
+    raw = os.environ.get("FAB_WAKE_RETRY_DELAY")
+    if raw is None:
+        return RETRY_DELAY_DEFAULT
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return RETRY_DELAY_DEFAULT
+    if value != value:  # NaN
+        return RETRY_DELAY_DEFAULT
+    return value if value > 0 else 0.0
+
+
+def schedule_retry(ticket, name, send_text):
+    """Zweiten Versuch im Hintergrund starten; ohne Rückkopplung auf `fab wake`.
+
+    Rückgabe: True, wenn der Prozess gestartet wurde, sonst False.
+    """
+    folder = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+    argv = [
+        sys.executable,
+        os.path.join(folder, "fab"),
+        "wake",
+        ticket["id"],
+        name,
+        "--from",
+        "fab",
+        "--retry",
+        "--",
+        send_text,
+    ]
+    try:
+        subprocess.Popen(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
+    except OSError:
+        return False
+    return True
+
+
+def process(ticket, names, author, text, roster, no_wake=False, message_for=None,
+            attempt=1, direct=False):
     """Jede Erwähnung nach den Regeln behandeln und je Ergebnis ein wake-Ereignis.
+
+    Ein fehlgeschlagener Start wird genau einmal nach `retry_delay()` wiederholt;
+    der zweite Versuch läuft als eigener Prozess mit `attempt=2`.
 
     Rückgabe: Liste von (Name, Ergebniszeile).
     """
@@ -282,14 +368,74 @@ def process(ticket, names, author, text, roster, no_wake=False, message_for=None
     for name in names:
         if name not in known:
             continue
+        send_text = text if direct else (
+            message_for(name) if message_for else message(ticket, author, name, text)
+        )
+        reason = ""
         try:
-            event_text, line, _address = _one(
-                ticket, name, author, text, roster, no_wake, message_for
+            event_text, line, _address, reason = _one(
+                ticket, name, author, text, roster, no_wake, message_for,
+                send_text=send_text,
             )
         except FabError as exc:
-            event_text = "unterdrückt: start fehlgeschlagen"
-            line = f"{event_text} ({exc})"
-        if event_text is not None:
-            events.append("wake", ticket["id"], author, name, event_text)
+            event_text = START_FAILED
+            reason = str(exc)
+            line = f"{event_text} ({reason})"
+        if event_text is None:
+            printed.append((name, line))
+            continue
+        reason = _short_reason(reason)
+        target = "Team-Orchestrator" if name == "orchestrator" else name
+        if attempt == 1 and event_text == START_FAILED:
+            detail = reason or "unbekannt"
+            delay = retry_delay()
+            scheduled = schedule_retry(ticket, name, send_text)
+            if scheduled:
+                add_comment(
+                    ticket,
+                    "fab",
+                    f"Start fehlgeschlagen: {target} wurde nicht gestartet.\n"
+                    f"Grund: {detail}\nZweiter Versuch in {delay:g} s.",
+                    roster,
+                )
+                events.append(
+                    "wake", ticket["id"], author, name, FIRST_FAILED, reason=reason
+                )
+            else:
+                add_comment(
+                    ticket,
+                    "fab",
+                    f"Start fehlgeschlagen: {target} wurde nicht gestartet.\n"
+                    f"Grund: {detail}\nDie Wiederholung konnte nicht gestartet "
+                    f"werden.",
+                    roster,
+                )
+                events.append(
+                    "wake", ticket["id"], author, name, START_FAILED, reason=reason
+                )
+        elif attempt == 2 and event_text == START_FAILED:
+            detail = reason or "unbekannt"
+            add_comment(
+                ticket,
+                "fab",
+                f"Start endgültig fehlgeschlagen: {target} wurde auch im zweiten "
+                f"Versuch nicht gestartet.\nGrund: {detail}\nIm Mod „Erneut "
+                f"starten“ drücken oder `fab wake {ticket['id']} {name} "
+                f"--from mensch`.",
+                roster,
+            )
+            events.append("wake", ticket["id"], author, name, event_text, reason=reason)
+        elif attempt == 2 and event_text in ("geweckt", "gestartet"):
+            add_comment(
+                ticket,
+                "fab",
+                f"zweiter Versuch erfolgreich: {target} läuft wieder.",
+                roster,
+            )
+            events.append(
+                "wake", ticket["id"], author, name, START_RETRY, reason=event_text
+            )
+        else:
+            events.append("wake", ticket["id"], author, name, event_text, reason=reason)
         printed.append((name, line))
     return printed

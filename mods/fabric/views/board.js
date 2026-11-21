@@ -24,7 +24,7 @@ function cardMenu(app, cx, t, ticket) {
   const open = ticket.status !== "done" && ticket.status !== "dropped";
   const options = [
     ...model.statusOptions(ticket.status)
-      .filter((option) => option.key !== ticket.status)
+      .filter((option) => option.key !== ticket.status && !option.drop)
       .map((option) => ({ value: option.key, label: option.label, selected: false })),
     ...(open ? [{ value: "__drop", label: "Verwerfen…", selected: false }] : []),
   ];

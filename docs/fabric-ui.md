@@ -16,6 +16,8 @@ Grundlagen: `docs/concept.md`, Vertrag `docs/fabric.md` (Daten, CLI, Abschnitt 3
 
 Die gewählte Auswahl ist überall dieselbe: `shared("fabric.selected")`. Was das Fenster zeigt, steht in `shared("fabric.route")` (z. B. `{ page: "ticket", id: "T-3" }`).
 
+**Fehlgeschlagener Agentenstart:** Scheitert ein Start beim Wecken, hält `fab` den gekürzten Grund (`hc`/`herdr-app`-stderr) im `wake`-Ereignis und als Kommentar fest. Nach 5 s folgt genau ein automatischer zweiter Versuch im Hintergrund. Scheitert auch der, steht im Posteingang ein Eintrag „Aufmerksamkeit“ mit Ticket, Agent und Grund und dem Knopf **Erneut starten**; ein erfolgreicher Start räumt den Eintrag ab. Beleg: `docs/assets/t27-retry.png`.
+
 ## 2. Fabric-Fenster
 
 **Rahmen**
@@ -37,10 +39,10 @@ Die gewählte Auswahl ist überall dieselbe: `shared("fabric.selected")`. Was da
   - Titel, inline editierbar.
   - Beschreibung im Markdown-Editor mit Umschalter Ansicht/Bearbeiten, Speichern/Verwerfen und einem Hinweis auf ungespeicherte Änderungen.
   - Verlauf: Kommentare mit Avatar, Name, Zeit (relativ, absolut im Tooltip) und hervorgehobenen `@erwähnungen`. Weck-Ergebnisse stehen als dezente Systemzeilen dazwischen. Neueste unten, der Verlauf scrollt beim Öffnen ans Ende.
-  - Kommentarfeld: mehrzeilig, `@` schlägt Namen vor (Roster, `orchestrator`, `mensch`), `cmd-enter` sendet. Unter dem Feld steht, wen der Kommentar wecken wird.
+  - Kommentarfeld: mehrzeilig, `@` schlägt Namen aller Teammitglieder vor (plus `orchestrator`, `mensch`), `cmd-enter` sendet. Unter dem Feld steht, wen der Kommentar wecken wird.
 - Rechts, Eigenschaften:
   - Status: Select mit den erlaubten Übergängen; `done` nur über Abnehmen.
-  - Zuständig: Select aus dem Roster.
+  - Zuständig: Select aus den Mitgliedern des Teams, zu dem das Ticket-Repo gehört.
   - Repo: Ordnerwahl mit `pickFolder` plus Liste bekannter Repos.
   - Basis.
   - Branch und Worktree: nur lesen, kopierbar.
@@ -66,10 +68,11 @@ Die gewählte Auswahl ist überall dieselbe: `shared("fabric.selected")`. Was da
   - Repos als Liste mit Entfernen; Hinzufügen aus bekannten Repos oder per Ordnerwahl.
   - Mitglieder aus den Blaupausen; je Mitglied optionale Übersteuerungen für Modell und `max-cost`.
   - Prüfer (Select, nur Mitglieder) und maximale gleichzeitige Sessions (`NumberInput`, 1–16).
-  - Speichern ersetzt Repos und Mitglieder als ganze Liste über `fab team edit`; Fehler von `fab` (Repo vergeben, Prüfer kein Mitglied) stehen inline an der Karte.
+  - Der Teamname steht als Feld in der Karte; ein geänderter Name wird als `--rename` mitgespeichert.
+  - Speichern ersetzt Repos und Mitglieder als ganze Liste über `fab team edit`; Fehler von `fab` (Repo vergeben, Prüfer kein Mitglied, laufende Sessions beim Umbenennen) stehen inline an der Karte.
   - Orchestrator: Status, Start / Stopp / Neu starten, „Terminal öffnen“ (Peek), Programm und Prompt-Pfad; „Prompt bearbeiten“ öffnet den Prompt dieses Teams (`fab prompt show/set orchestrator --team …`). Nutzen mehrere Teams denselben Promptpfad (`prompt_shared`), markiert die Karte den Pfad als geteilt und nennt per Tooltip die anderen Teams (`shared_with`); „Prompt bearbeiten“ wirkt dann auf alle diese Teams.
 - **Neues Team** (Knopf über der Teamliste): Dialog mit Name, Repos, Mitgliedern, Prüfer und maximalen Sessions. `fab team add` legt automatisch `prompts/orchestrator-<name>.md` als Kopie der aktuellen Vorlage an. Fehler von `fab` stehen inline im Dialog.
-- Team löschen über „Team löschen“ an der Karte mit Bestätigungsdialog, der die Repos nennt. `fab team rm` verweigert mit Begründung, solange offene Tickets in den Repos des Teams liegen oder sein Orchestrator läuft; die Meldung steht verbatim im Dialog (inkl. `fab orchestrator stop <name>`). Die Promptdatei bleibt nach dem Löschen erhalten.
+- Team löschen über „Team löschen“ an der Karte mit Bestätigungsdialog, der die Repos nennt. `fab team rm` verweigert mit Begründung, solange offene Tickets in den Repos des Teams liegen, sein Orchestrator (`fab orchestrator stop <name>`) oder eine Agenten-Session (`hc kill <terminal>`) läuft; die Meldung steht verbatim im Dialog. Die Promptdatei bleibt nach dem Löschen erhalten.
 - Beleg: `docs/assets/t22-teams.png` (Team-Seite mit „Neues Team“-Dialog und „Team löschen“ an der Karte).
 
 **Prompts**

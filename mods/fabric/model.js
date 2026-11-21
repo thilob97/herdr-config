@@ -63,12 +63,14 @@ const TRANSITIONS = {
   dropped: ["draft"],
 };
 
-/** Status, die das Select im Detail anbietet, mit `disabled` und Grund. */
+/** Status, die das Select im Detail anbietet, mit `disabled` und Grund.
+ *  „Verworfen“ trägt `drop: true`: es öffnet immer den Verwerfen-Dialog
+ *  (`fab drop`), nie einen direkten Statuswechsel. */
 export function statusOptions(current) {
   const allowed = TRANSITIONS[current] ?? [];
   const options = [{ key: current, label: statusWord(current), disabled: false, reason: "" }];
   for (const key of allowed) {
-    options.push({ key, label: statusWord(key), disabled: false, reason: "" });
+    options.push({ key, label: statusWord(key), disabled: false, reason: "", drop: key === "dropped" });
   }
   if (current === "done") {
     return [{ key: "done", label: statusWord("done"), disabled: true, reason: "Fertig ist abgeschlossen." }];
@@ -619,6 +621,9 @@ export function teamSaveArgs(team, form) {
     return { error: "Sitzungen müssen zwischen 1 und 16 liegen." };
   }
   const args = ["team", "edit", name];
+  // Ein leerer Feldwert ist kein Rename; fab prüft den neuen Namen selbst.
+  const nextName = String(form?.name ?? "").trim();
+  if (nextName && nextName !== name) args.push(`--rename=${nextName}`);
   for (const repo of repos) args.push("--repo", repo);
   args.push(
     `--members-json=${teamMembersJson(members)}`,
@@ -685,13 +690,29 @@ export function teamDirty(team, form) {
   if (!team || !form) return false;
   const base = teamDraft(team);
   const next = {
-    name: String(form.name ?? base.name),
+    name: String(form.name ?? base.name).trim(),
     repos: (form.repos ?? []).map((repo) => String(repo)),
     members: normalizeMembers(form.members),
     reviewer: String(form.reviewer ?? ""),
     max_sessions: sessionNumber(form.max_sessions),
   };
   return JSON.stringify(base) !== JSON.stringify(next);
+}
+
+// Repo-Pfade ohne abschließende Schrägstriche vergleichen.
+const trimRepo = (value) => String(value ?? "").replace(/\/+$/, "");
+
+/** Team eines Tickets: ohne Repo das erste Team, sonst das Team mit dem Repo-Pfad. */
+export function teamForTicket(teams, ticket) {
+  const list = Array.isArray(teams) ? teams : [];
+  const repo = ticket?.repo ? trimRepo(ticket.repo) : "";
+  if (!repo) return list[0] ?? null;
+  return list.find((team) => (team?.repos ?? []).some((path) => trimRepo(path) === repo)) ?? null;
+}
+
+/** Agenten des Ticket-Teams; ohne Team eine leere Liste. */
+export function teamAgents(teams, ticket) {
+  return teamForTicket(teams, ticket)?.agents ?? [];
 }
 
 /** Ein später `prompt show`-Lauf darf nur das Formular füllen, das ihn startete. */
@@ -1073,6 +1094,15 @@ export function sortInbox(inbox) {
   return [...(inbox ?? [])]
     .filter(Boolean)
     .sort((a, b) => (b.at ?? 0) - (a.at ?? 0));
+}
+
+/** Fehlgeschlagener Agentenstart: Agent und `wake`-Argumente für „Erneut starten“. */
+export function inboxRetry(entry) {
+  const ticket = entry?.ticket;
+  const agent = entry?.agent;
+  if (typeof ticket !== "string" || !ticket) return null;
+  if (typeof agent !== "string" || !agent) return null;
+  return { agent, args: wakeArgs(ticket, agent, "mensch", "Erneut starten") };
 }
 
 // ---------- Verlauf ----------
