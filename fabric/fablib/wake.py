@@ -53,9 +53,15 @@ def add_comment(ticket, author, text, roster=None):
     if roster is None:
         roster = agents.load(required=False)
     found = mentions(text, known_names(roster))
+    numbers = [
+        comment.get("n")
+        for comment in ticket["comments"]
+        if isinstance(comment, dict) and isinstance(comment.get("n"), int)
+        and not isinstance(comment.get("n"), bool)
+    ]
     ticket["comments"].append(
         {
-            "n": len(ticket["comments"]) + 1,
+            "n": max([len(ticket["comments"])] + numbers) + 1,
             "at": at,
             "author": author,
             "text": text,

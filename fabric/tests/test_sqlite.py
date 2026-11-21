@@ -5,6 +5,7 @@ in-process über `store` mit gepatchtem `FAB_HOME`.
 """
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 from unittest import mock
@@ -271,6 +272,54 @@ class SqliteTests(FabricCase):
         self.assertGreater(len(after), len(before))
         self.assertLessEqual(len(after), 14)
         self.assertTrue(after - before)
+
+    def test_sicherung_integritaet_und_zaehlergleich(self):
+        tid = self.new("Sicherungsinhalt")
+        for index in range(3):
+            self.ok("comment", tid, "--from", "zap", "--no-wake",
+                    f"notiz {index}")
+        payload = json.loads(self.ok("backup", "--json").stdout)
+        with self._env():
+            source = store.db_path()
+
+        def snapshot(path):
+            conn = sqlite3.connect(path)
+            try:
+                integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
+                counts = {
+                    name: conn.execute(
+                        f"SELECT COUNT(*) FROM {name}").fetchone()[0]
+                    for name in ("tickets", "comments", "sessions", "events")
+                }
+            finally:
+                conn.close()
+            return integrity, counts
+
+        self.assertEqual(snapshot(payload["path"])[0], "ok")
+        self.assertEqual(snapshot(source), snapshot(payload["path"]))
+
+    def test_kommentar_rohdaten_und_nummern(self):
+        tid = self.new("Rohdaten")
+        with self._env():
+            with store.locked():
+                ticket = store.load(tid)
+                ticket["comments"] = [
+                    {"n": 1, "at": 100, "author": "zap", "text": "eins",
+                     "mentions": [], "edited_at": 150},
+                    {"n": 3, "at": 300, "author": "ada", "text": "drei",
+                     "mentions": ["zap"], "extra": {"felder": [1, 2]}},
+                ]
+                store.save(ticket)
+            loaded = store.load(tid)
+        self.assertEqual([item["n"] for item in loaded["comments"]], [1, 3])
+        self.assertEqual(loaded["comments"][0]["edited_at"], 150)
+        self.assertEqual(loaded["comments"][1]["extra"], {"felder": [1, 2]})
+        self.assertEqual(loaded["comments"][1]["mentions"], ["zap"])
+
+        self.ok("comment", tid, "--from", "zap", "--no-wake", "vier")
+        numbered = self.ticket(tid)
+        self.assertEqual([item["n"] for item in numbered["comments"]],
+                         [1, 3, 4])
 
     @staticmethod
     def today():

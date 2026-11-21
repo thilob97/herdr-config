@@ -97,7 +97,7 @@ Die gesamte Datenhaltung läuft über die schmale Schnittstelle in `fabric/fabli
 ```
 
 - `status`: `draft` → `todo` → `doing` → `review` → `done`; daneben `dropped`. Zeiten in Epoch-Millisekunden.
-- Felder ohne Wert: `null` bzw. `[]`. Kein Feld fehlt. Unbekannte Felder bleiben beim Schreiben erhalten.
+- Felder ohne Wert: `null` bzw. `[]`. Kein Feld fehlt. Unbekannte Felder bleiben beim Schreiben erhalten — auch in einzelnen Kommentaren: deren Rohdaten werden vollständig gespeichert, `n` bleibt die vergebene Nummer, neue Kommentare zählen ab der höchsten vorhandenen Nummer weiter.
 - `checks`/`verdict` gelten nur, solange `head` dem aktuellen HEAD des Worktrees entspricht.
 - `attachments`: nur Bilder (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`), abgelegt von `fab attach` unter `data/fabric/attachments/<ID>/`. `path` ist relativ zur App-Wurzel (`~/.config/herdr-app`), damit der Mod ihn als Bild laden kann; im Body und in Kommentaren steht derselbe Pfad als Markdown-Bildlink `![name](path)`.
 - `stall`: nur von `fab tick` geschrieben, optional. `rule` ∈ `doing mention review todo blocked`, `since` = Beginn des Stillstands, `attempts` = bisherige Weck-/Startversuche, `attention` = nach zwei erfolglosen Versuchen oder Regel 5, `reason` einzeilig ohne „stockt seit“, `agent` = zu weckender Agent oder `orchestrator`. Ein Kommentar im Ticket, jede zugestellte manuelle Weckung und jeder Statuswechsel entfernen `stall`; `fab tick` entfernt ihn, sobald die Bedingung wegfällt. `draft`, `review`, `done` und `dropped` werden von `fab tick` weder gelesen noch verändert.

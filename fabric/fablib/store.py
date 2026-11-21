@@ -75,6 +75,7 @@ _SCHEMA = (
         author TEXT,
         text TEXT,
         mentions TEXT,
+        data TEXT,
         PRIMARY KEY (ticket, n)
     )""",
     """CREATE TABLE IF NOT EXISTS sessions (
@@ -231,6 +232,12 @@ def _connect():
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA journal_mode=WAL")
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(comments)")}
+    if "data" not in columns:
+        try:
+            conn.execute("ALTER TABLE comments ADD COLUMN data TEXT")
+        except sqlite3.OperationalError:
+            pass
     _conn = conn
     _conn_home = current
     return conn
@@ -546,9 +553,19 @@ def _with_defaults(tid, data):
 
 
 def _iter_comments(ticket):
+    """(n, Kommentar); `n` bleibt die gespeicherte Nummer, nur fehlende bekommen die Position."""
+    used = set()
     for index, comment in enumerate(ticket.get("comments") or [], start=1):
-        if isinstance(comment, dict):
-            yield index, comment
+        if not isinstance(comment, dict):
+            continue
+        number = comment.get("n")
+        if (not isinstance(number, int) or isinstance(number, bool)
+                or number < 1 or number in used):
+            number = index
+            while number in used:
+                number += 1
+        used.add(number)
+        yield number, comment
 
 
 def _iter_sessions(ticket):
@@ -614,16 +631,18 @@ ON CONFLICT(id) DO UPDATE SET
 def _write_ticket(conn, tid, ticket):
     conn.execute(_TICKET_UPSERT, _row_values(tid, ticket))
     conn.execute("DELETE FROM comments WHERE ticket=?", (tid,))
-    for index, comment in _iter_comments(ticket):
+    for number, comment in _iter_comments(ticket):
         conn.execute(
-            "INSERT INTO comments(ticket,n,at,author,text,mentions) VALUES (?,?,?,?,?,?)",
+            "INSERT INTO comments(ticket,n,at,author,text,mentions,data) "
+            "VALUES (?,?,?,?,?,?,?)",
             (
                 tid,
-                index,
+                number,
                 comment.get("at"),
                 comment.get("author"),
                 comment.get("text"),
                 json.dumps(comment.get("mentions") or [], ensure_ascii=False),
+                json.dumps(comment, ensure_ascii=False),
             ),
         )
     conn.execute("DELETE FROM sessions WHERE ticket=?", (tid,))
@@ -652,22 +671,30 @@ def _ticket_from_row(conn, row):
 
     comments = []
     for item in conn.execute(
-        "SELECT n,at,author,text,mentions FROM comments WHERE ticket=? ORDER BY n",
+        "SELECT n,at,author,text,mentions,data FROM comments WHERE ticket=? ORDER BY n",
         (tid,),
     ):
-        try:
-            mentions = json.loads(item["mentions"] or "[]")
-        except json.JSONDecodeError:
-            mentions = []
-        comments.append(
-            {
-                "n": item["n"],
+        comment = None
+        if item["data"]:
+            try:
+                parsed = json.loads(item["data"])
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, dict):
+                comment = parsed
+        if comment is None:
+            try:
+                mentions = json.loads(item["mentions"] or "[]")
+            except json.JSONDecodeError:
+                mentions = []
+            comment = {
                 "at": item["at"],
                 "author": item["author"],
                 "text": item["text"],
                 "mentions": mentions if isinstance(mentions, list) else [],
             }
-        )
+        comment["n"] = item["n"]
+        comments.append(comment)
     ticket["comments"] = comments
 
     sessions = []
