@@ -48,25 +48,25 @@ function inboxRow(app, cx, t, entry, index) {
           small: true,
           tooltip: "Den Agenten erneut starten und den Hinweis bei Erfolg entfernen",
           onClick: (cx) => app.retryAgent(entry, cx),
-        })))
-        .when(Boolean(lesson), (el) => el.child(h_flex().gap(4)
-          .child(ui.button(t, {
-            id: `fabric-inbox-lesson-confirm-${entry.ticket}-${index}`,
-            label: "Bestätigen",
-            icon: "check",
-            small: true,
-            tooltip: "Diesen Lehren-Vorschlag bestätigen",
-            onClick: (cx) => app.confirmLesson(entry, cx),
-          }))
-          .child(ui.button(t, {
-            id: `fabric-inbox-lesson-discard-${entry.ticket}-${index}`,
-            label: "Verwerfen",
-            icon: "close",
-            small: true,
-            tooltip: "Diesen Lehren-Vorschlag verwerfen",
-            onClick: (cx) => app.discardLesson(entry, cx),
-          })))),
+        }))),
     )
+    .when(Boolean(lesson), (el) => el.child(h_flex().gap(4)
+      .child(ui.button(t, {
+        id: `fabric-inbox-lesson-confirm-${entry.ticket}-${index}`,
+        label: "Bestätigen",
+        icon: "check",
+        small: true,
+        tooltip: "Diesen Lehren-Vorschlag bestätigen",
+        onClick: (cx) => app.confirmLesson(entry, cx),
+      }))
+      .child(ui.button(t, {
+        id: `fabric-inbox-lesson-discard-${entry.ticket}-${index}`,
+        label: "Verwerfen",
+        icon: "close",
+        small: true,
+        tooltip: "Diesen Lehren-Vorschlag verwerfen",
+        onClick: (cx) => app.discardLesson(entry, cx),
+      }))))
     .when(Boolean(retry), (el) => el.child(
       div().text_size(T.xs).text_color(t.muted)
         .child(`${entry.agent} · ${model.oneLine(entry.reason || "Grund unbekannt", 120)}`),
