@@ -5,6 +5,7 @@ in-process über `store` mit gepatchtem `FAB_HOME`.
 """
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 from unittest import mock
@@ -271,6 +272,133 @@ class SqliteTests(FabricCase):
         self.assertGreater(len(after), len(before))
         self.assertLessEqual(len(after), 14)
         self.assertTrue(after - before)
+
+    def test_sicherung_integritaet_und_zaehlergleich(self):
+        tid = self.new("Sicherungsinhalt")
+        for index in range(3):
+            self.ok("comment", tid, "--from", "zap", "--no-wake",
+                    f"notiz {index}")
+        payload = json.loads(self.ok("backup", "--json").stdout)
+        with self._env():
+            source = store.db_path()
+
+        def snapshot(path):
+            conn = sqlite3.connect(path)
+            try:
+                integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
+                counts = {
+                    name: conn.execute(
+                        f"SELECT COUNT(*) FROM {name}").fetchone()[0]
+                    for name in ("tickets", "comments", "sessions", "events")
+                }
+            finally:
+                conn.close()
+            return integrity, counts
+
+        self.assertEqual(snapshot(payload["path"])[0], "ok")
+        self.assertEqual(snapshot(source), snapshot(payload["path"]))
+
+    def test_kommentar_rohdaten_und_nummern(self):
+        tid = self.new("Rohdaten")
+        with self._env():
+            with store.locked():
+                ticket = store.load(tid)
+                ticket["comments"] = [
+                    {"n": 1, "at": 100, "author": "zap", "text": "eins",
+                     "mentions": [], "edited_at": 150},
+                    {"n": 3, "at": 300, "author": "ada", "text": "drei",
+                     "mentions": ["zap"], "extra": {"felder": [1, 2]}},
+                ]
+                store.save(ticket)
+            loaded = store.load(tid)
+        self.assertEqual([item["n"] for item in loaded["comments"]], [1, 3])
+        self.assertEqual(loaded["comments"][0]["edited_at"], 150)
+        self.assertEqual(loaded["comments"][1]["extra"], {"felder": [1, 2]})
+        self.assertEqual(loaded["comments"][1]["mentions"], ["zap"])
+
+        self.ok("comment", tid, "--from", "zap", "--no-wake", "vier")
+        numbered = self.ticket(tid)
+        self.assertEqual([item["n"] for item in numbered["comments"]],
+                         [1, 3, 4])
+
+    def test_kommentar_nummern_randfaelle(self):
+        tid = self.new("Nummern")
+        with self._env():
+            with store.locked():
+                ticket = store.load(tid)
+                ticket["comments"] = [
+                    {"n": -2, "text": "ungueltig"},
+                    {"n": True, "text": "bool"},
+                    {"n": 1, "text": "eins"},
+                    {"n": 1, "text": "doppelt"},
+                ]
+                store.save(ticket)
+            loaded = store.load(tid)
+        self.assertEqual([item["n"] for item in loaded["comments"]],
+                         [1, 2, 3, 4])
+        self.assertEqual([item["text"] for item in loaded["comments"]],
+                         ["ungueltig", "bool", "eins", "doppelt"])
+
+    def test_altdatenbank_bekommt_kommentar_rohdaten(self):
+        """Alte DB ohne comments.data: Spalte nachziehen, NULL-Fallback lesen."""
+        tid = "T-1"
+        path = os.path.join(self.home, "fabric.db")
+        conn = sqlite3.connect(path)
+        try:
+            for statement in store._SCHEMA:
+                if "CREATE TABLE IF NOT EXISTS comments" in statement:
+                    statement = statement.replace("        data TEXT,\n", "")
+                conn.execute(statement)
+            conn.execute(
+                "INSERT INTO tickets(id,number,data,title,status) "
+                "VALUES (?,?,?,?,?)",
+                (tid, 1, json.dumps({"id": tid, "title": "Alt",
+                                     "status": "todo", "comments": []}),
+                 "Alt", "todo"),
+            )
+            conn.execute(
+                "INSERT INTO comments(ticket,n,at,author,text,mentions) "
+                "VALUES (?,?,?,?,?,?)",
+                (tid, 1, 100, "zap", "alt eins", '["ada"]'),
+            )
+            conn.execute(
+                "INSERT INTO comments(ticket,n,at,author,text,mentions) "
+                "VALUES (?,?,?,?,?,?)",
+                (tid, 3, 300, "ada", "alt drei", "[]"),
+            )
+            conn.execute("INSERT INTO counter(id,value) VALUES (1,2)")
+            conn.execute(
+                "INSERT INTO meta(key,value) VALUES ('last_backup_day',?)",
+                (self.today(),),
+            )
+            conn.commit()
+            columns = [row[1] for row in conn.execute(
+                "PRAGMA table_info(comments)")]
+        finally:
+            conn.close()
+        self.assertNotIn("data", columns)
+
+        with self._env():
+            loaded = store.load(tid)
+        self.assertEqual([item["n"] for item in loaded["comments"]], [1, 3])
+        self.assertEqual(loaded["comments"][0]["mentions"], ["ada"])
+        self.assertEqual(loaded["comments"][1]["text"], "alt drei")
+
+        self.ok("comment", tid, "--from", "zap", "--no-wake", "neu")
+        numbered = self._db_ticket(tid)
+        self.assertEqual([item["n"] for item in numbered["comments"]],
+                         [1, 3, 4])
+
+        conn = sqlite3.connect(path)
+        try:
+            columns = [row[1] for row in conn.execute(
+                "PRAGMA table_info(comments)")]
+            raw = [row[0] for row in conn.execute(
+                "SELECT data FROM comments ORDER BY n")]
+        finally:
+            conn.close()
+        self.assertIn("data", columns)
+        self.assertTrue(all(value for value in raw), raw)
 
     @staticmethod
     def today():
