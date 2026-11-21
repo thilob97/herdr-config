@@ -58,7 +58,7 @@
               "id": "fabric-agents",
               "type": "block",
               "size": {
-                "weight": 8
+                "weight": 9
               },
               "min": 120,
               "content": {
@@ -66,21 +66,10 @@
               }
             },
             {
-              "id": "agents",
-              "type": "block",
-              "size": {
-                "weight": 1
-              },
-              "min": 90,
-              "content": {
-                "mod": "agents-filtered"
-              }
-            },
-            {
               "id": "fabric-inbox",
               "type": "block",
               "size": {
-                "weight": 1
+                "weight": 2
               },
               "min": 90,
               "content": {
