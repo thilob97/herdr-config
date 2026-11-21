@@ -1920,6 +1920,25 @@ export default class Fabric extends View {
     this.notifyNow();
   }
 
+  /** Fehlgeschlagenen Agentenstart aus dem Posteingang wiederholen. */
+  async retryAgent(entry, cx) {
+    const retry = model.inboxRetry(entry);
+    if (!retry) return;
+    const result = await this.action("retry", retry.args, {
+      success: (result) => {
+        const out = result?.stdout ?? "";
+        if (out.includes("start fehlgeschlagen")) {
+          return `Start weiterhin fehlgeschlagen - Grund im Ticket ${entry.ticket}.`;
+        }
+        return `${retry.agent === "orchestrator" ? "Team-Orchestrator" : retry.agent} erneut gestartet.`;
+      },
+    });
+    if (result.ok) {
+      this.inboxOpen = false;
+      this.notifyNow();
+    }
+  }
+
   openAcceptModal(cx) {
     const ticket = this.ticket;
     if (!ticket) return;
@@ -2875,8 +2894,9 @@ export default class Fabric extends View {
       )
       .child(
         this.inbox.length
-          ? v_flex().max_h(360).overflow_y_scrollbar().children(model.sortInbox(this.inbox).map((entry, index) =>
-            h_flex()
+          ? v_flex().max_h(360).overflow_y_scrollbar().children(model.sortInbox(this.inbox).map((entry, index) => {
+            const retry = model.inboxRetry(entry);
+            return h_flex()
               .id(`fabric-inbox-pop-${entry.ticket}-${index}`)
               .w_full()
               .px(ui.SPACE.m)
@@ -2902,7 +2922,19 @@ export default class Fabric extends View {
                   .child(TextView.markdown(
                     `fabric-inbox-pop-text-${entry.ticket}-${index}`,
                     model.plainMentionMarkdown(model.oneLine(entry.text, 120)),
-                  ).text_size(ui.FONT.s).text_color(t.foreground).whitespace_nowrap())))))
+                  ).text_size(ui.FONT.s).text_color(t.foreground).whitespace_nowrap()))
+                .when(Boolean(retry), (el) => el.child(
+                  div().text_size(ui.FONT.xs).text_color(t.dim)
+                    .child(`${entry.agent} · ${model.oneLine(entry.reason || "Grund unbekannt", 120)}`),
+                ))
+                .when(Boolean(retry), (el) => el.child(h_flex().w_full().child(ui.button(t, {
+                  id: `fabric-inbox-pop-retry-${entry.ticket}-${index}`,
+                  label: "Erneut starten",
+                  small: true,
+                  tooltip: "Den Agenten erneut starten und den Hinweis bei Erfolg entfernen",
+                  onClick: (cx) => this.retryAgent(entry, cx),
+                })))));
+          }))
           : ui.emptyState(t, { title: "Nichts zu tun", text: "Der Posteingang ist leer." }),
       );
 

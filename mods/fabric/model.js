@@ -1096,6 +1096,15 @@ export function sortInbox(inbox) {
     .sort((a, b) => (b.at ?? 0) - (a.at ?? 0));
 }
 
+/** Fehlgeschlagener Agentenstart: Agent und `wake`-Argumente für „Erneut starten“. */
+export function inboxRetry(entry) {
+  const ticket = entry?.ticket;
+  const agent = entry?.agent;
+  if (typeof ticket !== "string" || !ticket) return null;
+  if (typeof agent !== "string" || !agent) return null;
+  return { agent, args: wakeArgs(ticket, agent, "mensch", "Erneut starten") };
+}
+
 // ---------- Verlauf ----------
 
 /** `wake`-Zeilen zwischen den Kommentaren, z. B. `→ ada geweckt`. */

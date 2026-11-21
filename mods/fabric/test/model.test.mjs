@@ -5,7 +5,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  groupByStage, mentionSegments, sortInbox, timelineFeed, eventSummary, relativeTime,
+  groupByStage, mentionSegments, sortInbox, inboxRetry, timelineFeed, eventSummary, relativeTime,
   wakeLine, sessionChips, sessionStatus, childrenOf, childProgress,
   teamForTicket, teamAgents,
 } from "../model.js";
@@ -63,6 +63,20 @@ test("Inbox: neueste oben, gleiche Zeit bleibt in ihrer Reihenfolge", () => {
   assert.deepEqual(sortInbox(inbox).map((entry) => entry.ticket), ["T-2", "T-3", "T-4", "T-1"]);
   assert.deepEqual(sortInbox(null), []);
   assert.equal(inbox[0].ticket, "T-1", "die Eingabe wird nicht verändert");
+});
+
+test("Inbox: „Erneut starten“ nur mit Ticket und Agent", () => {
+  assert.equal(inboxRetry(null), null);
+  assert.equal(inboxRetry({}), null);
+  assert.equal(inboxRetry({ ticket: "T-27" }), null);
+  assert.equal(inboxRetry({ agent: "zap" }), null);
+  assert.equal(inboxRetry({ ticket: "T-27", agent: "" }), null);
+
+  assert.deepEqual(inboxRetry({ ticket: "T-27", agent: "zap" }), {
+    agent: "zap",
+    args: ["wake", "T-27", "zap", "--from=mensch", "--", "Erneut starten"],
+  });
+  assert.equal(inboxRetry({ ticket: "T-27", agent: "orchestrator" }).agent, "orchestrator");
 });
 
 test("Zeitverlauf: neueste zuerst, nach Tagen gruppiert, Filter je Ticket", () => {
