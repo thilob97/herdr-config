@@ -3,6 +3,7 @@ import json
 import os
 import re
 import time
+from datetime import datetime, time as dtime
 from unittest import mock
 
 from fabric.tests.support import FabricCase
@@ -72,14 +73,21 @@ class CostsCliCase(FabricCase):
         tid = self.new("Kosten")
         folder = self.worktree(tid)
         os.makedirs(folder, exist_ok=True)
-        started = self.now() - 3_600_000
+        # "heute" ist der lokale Kalendertag: kurz nach Mitternacht liegt
+        # `now - 1 h` gestern. Die Abstände schrumpfen deshalb auf den seit
+        # Mitternacht verstrichenen Anteil, bleiben aber positiv.
+        now = self.now()
+        day = datetime.fromtimestamp(now / 1000).date()
+        day_start = int(datetime.combine(day, dtime.min).timestamp() * 1000)
+        span = min(3_600_000, max(1, (now - day_start) // 4))
+        started = now - span
         self.add_events(
             [
                 {"kind": "status", "ticket": tid, "text": "todo → doing",
                  "at": started},
-                {"kind": "handover", "ticket": tid, "at": started + 1_800_000},
+                {"kind": "handover", "ticket": tid, "at": started + span // 2},
                 {"kind": "wake", "ticket": tid, "target": "ada",
-                 "at": started + 2_400_000},
+                 "at": started + (span * 2) // 3},
             ]
         )
         self.write_omp(folder, started, cost)
