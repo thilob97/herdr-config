@@ -246,6 +246,17 @@ function rowView(t, row) {
     .when(Boolean(row.ticket), (el) => el.child(ticketChip(t, row.ticket)));
 }
 
+// Andere Mods (agents-filtered) bekommen die Kartenadressen nur über den
+// Shared-State; die Regel selbst bleibt hier. Nur bei echter Änderung schreiben,
+// damit der Snapshot keine überflüssigen Render-Schleifen auslöst.
+function publishHiddenAgents(terms, listed) {
+  if (checking()) return;
+  const snapshot = model.hiddenAgentAddresses(terms, listed);
+  if (JSON.stringify(shared("fabric.hiddenAgents")) !== JSON.stringify(snapshot)) {
+    setShared("fabric.hiddenAgents", snapshot);
+  }
+}
+
 export default class FabricSidebar extends View {
   init(_props, cx) {
     this.index = null;
@@ -298,15 +309,18 @@ export default class FabricSidebar extends View {
 
   render(cx) {
     const t = theme();
+    const terms = terminals();
+    const listed = agents();
+    publishHiddenAgents(terms, listed);
     const { rows, teams: groups } = model.fabricRows(
-      terminals(),
-      agents(),
+      terms,
+      listed,
       this.index?.tickets ?? [],
       this.index?.roster ?? [],
       Date.now(),
       this.index?.teams ?? [],
     );
-    const free = model.freeAgentCards(terminals(), agents(), spaces());
+    const free = model.freeAgentCards(terms, listed, spaces());
     const sections = [];
     if (free.cards.length > 0) {
       const mono = monoFont();

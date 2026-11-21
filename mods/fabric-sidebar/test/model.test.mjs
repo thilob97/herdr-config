@@ -5,8 +5,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  busyLabel, costOf, costText, fabricEntry, fabricRows, freeAgentCards, freeCornerIcon,
-  freeSpriteKey, freeStatusWord, runtimeText, statusWord, ticketFromName, truncateTask,
+  busyLabel, costOf, costText, fabricAddresses, fabricEntry, fabricRows, freeAgentCards,
+  freeCornerIcon, freeSpriteKey, freeStatusWord, hiddenAgentAddresses, runtimeText, statusWord,
+  ticketFromName, truncateTask,
 } from "../model.js";
 
 const NOW = 1_800_000_000_000;
@@ -330,4 +331,88 @@ test("Kürzung langer Aufgaben, Gruppenzähler 0/3 und N BUSY", () => {
     ["REMOTE", 1, 1],
   ]);
   assert.deepEqual(mixed.groups[1].cards[0].click, { kind: "terminal", terminal: "remote/w2" });
+});
+
+// --- Veröffentlichter Snapshot für andere Mods ------------------------------
+
+test("hiddenAgentAddresses: Fabric samt Nachfahren und freie Karten, reine Shells nicht", () => {
+  const orch = term("t8k", "fab-orchestrator", { "fab.role": "orchestrator" });
+  const agent = term("t8x", "fab-zap-t-12", { "fab.agent": "zap", "fab.ticket": "T-12" });
+  const sub = term("t8z", "kind", {}, { parent: "t8x" });
+  const grand = term("t8g", "enkel", {}, { parent: "t8z" });
+  const space = term("t7q", "orchestrator", { "hub.role": "orchestrator" }, { status: "done" });
+  const reported = term("t7r", "autopilot", {}, { status: "working" });
+  const shell = term("shell", "zsh", {}, { status: null });
+
+  const snapshot = hiddenAgentAddresses(
+    [orch, agent, sub, grand, space, reported, shell],
+    [{ address: "t7r", status: "working" }],
+  );
+
+  assert.deepEqual(snapshot.fabric.sort(), ["t8g", "t8k", "t8x", "t8z"]);
+  // Dieselbe Auswahl wie die freien Karten; die Shell bleibt sichtbar.
+  assert.deepEqual(snapshot.free.sort(), ["t7q", "t7r"]);
+  assert.equal(snapshot.fabric.some((address) => snapshot.free.includes(address)), false);
+  assert.equal(snapshot.fabric.includes("shell"), false);
+  assert.equal(snapshot.free.includes("shell"), false);
+  assert.deepEqual(
+    freeAgentCards([orch, agent, sub, grand, space, reported, shell], [], []).cards.map((card) => card.address).sort(),
+    ["t7q", "t7r"],
+  );
+  assert.deepEqual(hiddenAgentAddresses(), { fabric: [], free: [] });
+});
+
+// --- Kartenname und Aufgabenzeile -------------------------------------------
+
+test("Kartenname kommt vom Label, die Aufgabe aus dem bereinigten Titel", () => {
+  const [card] = freeAgentCards([
+    term("o1", "orchestrator", { "hub.role": "orchestrator" }, {
+      status: "working", title: "π > FABRIC: Build fab tick ✨",
+    }),
+  ], [], []).cards;
+  assert.equal(card.name, "orchestrator");
+  assert.equal(card.task, "FABRIC: Build fab tick");
+});
+
+test("Label vor Terminalname; Programmpräfix vor Statusglyphe und Emoji fallen weg", () => {
+  const byLabel = freeAgentCards(
+    [term("t77", "t-77", { "hub.role": "orchestrator" }, { status: "idle" })], [], [],
+  ).cards;
+  assert.equal(byLabel[0].name, "orchestrator");
+
+  const [cost] = freeAgentCards([
+    term("t78", "t-78", {}, { status: "working", title: "π ⠼ 💰 COST: Add per-ticket costs" }),
+  ], [], []).cards;
+  assert.equal(cost.name, "t-78");
+  assert.equal(cost.task, "COST: Add per-ticket costs");
+});
+
+test("ein Titel, der nur den Namen wiederholt, lässt die Aufgabe leer", () => {
+  const [card] = freeAgentCards([
+    term("t79", "orchestrator", { "hub.role": "orchestrator" }, {
+      status: "idle", title: "orchestrator",
+    }),
+  ], [], []).cards;
+  assert.equal(card.name, "orchestrator");
+  assert.equal(card.task, "");
+});
+
+// --- Abgrenzung der Fabric-Terminals ---------------------------------------
+
+test("fabricAddresses: Labels, fab-Name, Nachfahrenkette, fremde Eltern, Zyklus", () => {
+  const byAgent = term("a1", "x", { "fab.agent": "zap" });
+  const byRole = term("a2", "x", { "fab.role": "orchestrator" });
+  const byName = term("a3", "fab-ada-t-9", {});
+  const child = term("a4", "kind", {}, { parent: "a1" });
+  const grand = term("a5", "enkel", {}, { parent: "a4" });
+  const foreignParent = term("b0", "orchestrator", {});
+  const foreignChild = term("b1", "kind", {}, { parent: "b0" });
+  const cyc1 = term("c1", "c1", {}, { parent: "c2" });
+  const cyc2 = term("c2", "c2", {}, { parent: "c1" });
+
+  const hidden = fabricAddresses([
+    byAgent, byRole, byName, child, grand, foreignParent, foreignChild, cyc1, cyc2,
+  ]);
+  assert.deepEqual([...hidden].sort(), ["a1", "a2", "a3", "a4", "a5"]);
+  assert.deepEqual([...fabricAddresses()], []);
 });
