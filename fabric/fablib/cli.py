@@ -524,10 +524,12 @@ def cmd_stats(args):
             f"{row['tickets']:>9}"
         )
     count = sum(row["tickets"] for row in payload["teams"])
+    total = sum(row["total"] for row in payload["teams"])
+    today = sum(row["today"] for row in payload["teams"])
     print(
         f"{'Gesamt':<16}"
-        f"{costs.format_cost(payload['total']):>10}"
-        f"{costs.format_cost(payload['today']):>10}"
+        f"{costs.format_cost(total):>10}"
+        f"{costs.format_cost(today):>10}"
         f"{count:>9}"
     )
     return 0

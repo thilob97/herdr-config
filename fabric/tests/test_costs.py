@@ -48,8 +48,11 @@ class CostsCase(unittest.TestCase):
                     handle.write(json.dumps(line) + "\n")
         return path
 
-    def key(self, path):
-        return re.sub(r"[^A-Za-z0-9]", "-", path)
+    def omp_key(self, path):
+        return str(path).replace("/", "-")
+
+    def claude_key(self, path):
+        return re.sub(r"[^A-Za-z0-9]", "-", str(path))
 
 
 class CollectTests(CostsCase):
@@ -59,8 +62,9 @@ class CollectTests(CostsCase):
         a = now - 3 * hour
         b = now - 1 * hour
         c = now - 13 * hour
-        key = self.key(worktree)
-        real_key = self.key(os.path.realpath(worktree))
+        key = self.omp_key(worktree)
+        claude = self.claude_key(worktree)
+        real_key = self.claude_key(os.path.realpath(worktree))
 
         # omp: usage-Kosten, cost-Kosten ohne model_usage, model_usage ignoriert.
         self.write_jsonl(
@@ -105,7 +109,7 @@ class CollectTests(CostsCase):
         )
         # claude: letztes totalCostUSD gewinnt
         self.write_jsonl(
-            self.claude, key, "c_a.jsonl",
+            self.claude, claude, "c_a.jsonl",
             [
                 {"type": "cost-state", "startTime": a, "modelUsage": {}},
                 {"totalCostUSD": 2.0},
@@ -114,7 +118,7 @@ class CollectTests(CostsCase):
         )
         # claude: ohne totalCostUSD zählt der letzte cost-state-Block
         self.write_jsonl(
-            self.claude, key, "c_fallback.jsonl",
+            self.claude, claude, "c_fallback.jsonl",
             [
                 {
                     "type": "cost-state",
@@ -153,7 +157,7 @@ class CollectTests(CostsCase):
         os.makedirs(real)
         link = os.path.join(self.tmp, "link.wt")
         os.symlink(real, link)
-        self.assertIn("repo-dir-wt", self.key(real))
+        self.assertIn("repo-dir-wt", self.claude_key(real))
 
         result, _ticket, now, a, b, c = self.fixture(link)
         self.assertEqual(result["currency"], "USD")
@@ -231,7 +235,7 @@ class WaitsTests(unittest.TestCase):
             {"kind": "dispatch", "ticket": "T-2", "at": 0},
         ]
         result = costs.waits({"id": "T-1"}, rows, now=60_000)
-        self.assertEqual(result["total_ms"], 80_000)
+        self.assertEqual(result["total_ms"], 50_000)
         self.assertEqual(
             result["stages"],
             [
@@ -239,7 +243,7 @@ class WaitsTests(unittest.TestCase):
                 {
                     "key": "review",
                     "label": "Prüfung bei ada",
-                    "ms": 40_000,
+                    "ms": 10_000,
                     "open": False,
                 },
                 {
@@ -260,9 +264,9 @@ class WaitsTests(unittest.TestCase):
         result = costs.waits({"id": "T-1"}, rows, now=100_000)
         self.assertEqual(
             [(stage["key"], stage["ms"], stage["open"]) for stage in result["stages"]],
-            [("doing", 20_000, False), ("review", 95_000, True), ("mensch", 80_000, True)],
+            [("doing", 20_000, False), ("review", 15_000, False), ("mensch", 80_000, True)],
         )
-        self.assertEqual(result["total_ms"], 195_000)
+        self.assertEqual(result["total_ms"], 115_000)
 
 
 class StatsTests(unittest.TestCase):

@@ -2,11 +2,12 @@
 
 Die Kosten stehen in den JSONL-Dateien von omp (`FAB_OMP_SESSIONS`, sonst
 `~/.omp/agent/sessions`) und Claude (`FAB_CLAUDE_PROJECTS`, sonst
-`~/.claude/projects`). Beide Wurzeln enthalten je Projekt einen Ordner, dessen
-Name der bereinigte Worktree-Pfad ist (jedes Zeichen außer `[A-Za-z0-9]` wird
-zu `-`). Dateien werden über ihr Startdatum dem passenden Session-Fenster
-zugeordnet: Fenster i beginnt zehn Minuten vor dem i-ten Session-Start und
-endet mit dem nächsten Start, das letzte Fenster reicht bis jetzt.
+`~/.claude/projects`). Beide Wurzeln enthalten je Projekt einen Ordner: omp
+zieht das Home-Präfix ab und ersetzt nur `/` durch `-`, Claude ersetzt jedes
+Zeichen außer `[A-Za-z0-9]` durch `-`. Dateien werden über ihr Startdatum dem
+passenden Session-Fenster zugeordnet: Fenster i beginnt zehn Minuten vor dem
+i-ten Session-Start und endet mit dem nächsten Start, das letzte Fenster
+reicht bis jetzt.
 
 `waits()` spielt die Ereignisse eines Tickets nach und misst die Zeit in den
 drei Stufen „doing“, „review“ und „mensch“. Offene Intervalle enden bei `now`
@@ -158,17 +159,35 @@ def _root(name, default):
     return os.path.expanduser(os.environ.get(name) or default)
 
 
+def _omp_key(path):
+    """omp: Home-Präfix abziehen, dann nur `/` durch `-` ersetzen.
+
+    `~/.omp/agent/sessions/-.herdr-…` entsteht aus `~/.herdr/…`; Punkte
+    bleiben stehen. Außerhalb des Homes bleibt der absolute Pfad.
+    """
+    value = str(path)
+    home = os.path.expanduser("~").rstrip(os.sep)
+    if home and (value == home or value.startswith(home + os.sep)):
+        value = value[len(home):]
+    return value.replace(os.sep, "-")
+
+
+def _claude_key(path):
+    """claude: jedes Zeichen außer `[A-Za-z0-9]` wird zu `-`."""
+    return FOLDER_RE.sub("-", str(path))
+
+
 def _roots():
     return (
-        (_root("FAB_OMP_SESSIONS", "~/.omp/agent/sessions"), _omp_record),
-        (_root("FAB_CLAUDE_PROJECTS", "~/.claude/projects"), _claude_record),
+        (_root("FAB_OMP_SESSIONS", "~/.omp/agent/sessions"), _omp_record, _omp_key),
+        (_root("FAB_CLAUDE_PROJECTS", "~/.claude/projects"), _claude_record, _claude_key),
     )
 
 
-def _keys(worktree):
+def _keys(worktree, keyfn):
     keys = []
     for path in (worktree, os.path.realpath(worktree)):
-        key = FOLDER_RE.sub("-", str(path))
+        key = keyfn(path)
         if key not in keys:
             keys.append(key)
     return keys
@@ -177,9 +196,9 @@ def _keys(worktree):
 def _records(worktree):
     """Alle Protokolldateien des Worktrees, ohne doppelte Ordner."""
     found = []
-    for root, parse in _roots():
+    for root, parse, keyfn in _roots():
         seen = set()
-        for key in _keys(worktree):
+        for key in _keys(worktree, keyfn):
             directory = os.path.join(root, key)
             real = os.path.realpath(directory)
             if real in seen or not os.path.isdir(directory):
@@ -310,10 +329,11 @@ def waits(ticket, rows, reviewer="ada", now=None):
             open_stage("doing", at)
         elif kind == "handover":
             close_stage("doing", at)
+            close_stage("review", at)
             open_stage("mensch", at)
         elif kind == "verdict":
+            close_stage("review", at)
             if str(row.get("text") or "").startswith("fail"):
-                close_stage("review", at)
                 close_stage("mensch", at)
                 open_stage("doing", at)
         elif kind == "wake":
@@ -372,8 +392,13 @@ def stats(tickets, roster=None, team=None, today=False, now=None):
         if team is not None and name != team:
             continue
         snapshot = _snapshot(ticket)
-        total = _cost_of(snapshot.get("total")) or 0.0
-        day = _cost_of(snapshot.get("today")) or 0.0
+        if ticket.get("worktree") and ticket.get("sessions"):
+            fresh = collect(ticket, now=now)
+            total = fresh["total"]
+            day = fresh["today"]
+        else:
+            total = _cost_of(snapshot.get("total")) or 0.0
+            day = _cost_of(snapshot.get("today")) or 0.0
         bucket = buckets.setdefault(name, {"total": 0.0, "today": 0.0, "tickets": 0})
         bucket["total"] += total
         bucket["today"] += day

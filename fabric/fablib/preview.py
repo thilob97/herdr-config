@@ -174,17 +174,20 @@ def _seed_window(state, page="board"):
         "layout": "fabric",
         "fabric.route": {"page": page or "board"},
         "fabric.selected": "T-1",
+        "fabric.previewWindow": True,
     }
     with open(path, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, ensure_ascii=False)
 
 
 def _seed_metrics(state):
-    """Demodaten für Kosten und Liegezeiten; nur im Vorschau-Home."""
-    folder = os.path.join(state["fab_home"], "tickets")
-    path = os.path.join(folder, "T-1.json")
-    if not os.path.isfile(path):
-        return
+    """Demokosten und -liegezeiten in der Vorschau-Datenbank anlegen.
+
+    Nur in der DB, nicht in den Lesemodellen: `fab tick` baut `index.json` aus
+    der DB neu und würde injizierte Werte sonst wieder verlieren.
+    """
+    from . import events, index, store
+
     now = int(time.time() * 1000)
     sessions = [
         {
@@ -224,50 +227,47 @@ def _seed_metrics(state):
         ],
         "at": now,
     }
-    waits = {
-        "total_ms": 5400000,
-        "stages": [
-            {"key": "doing", "label": "In Arbeit", "ms": 3600000, "open": False},
-            {"key": "review", "label": "Prüfung bei ada", "ms": 1200000, "open": True},
-            {"key": "mensch", "label": "wartet auf mensch", "ms": 600000, "open": False},
-        ],
+    keys = {
+        "HOME": state["userhome"],
+        "FAB_HOME": state["fab_home"],
+        "FAB_ROSTER": os.path.join(state["home"], "fabric", "roster.json"),
     }
+    previous = {key: os.environ.get(key) for key in keys}
+    os.environ.update(keys)
     try:
-        with open(path, encoding="utf-8") as handle:
-            ticket = json.load(handle)
-        if isinstance(ticket, dict):
-            ticket["sessions"] = sessions
-            ticket["max_cost"] = 5
-            ticket["cost"] = cost
-            ticket["waits"] = waits
-            with open(path, "w", encoding="utf-8") as handle:
-                json.dump(ticket, handle, ensure_ascii=False, indent=2)
-                handle.write("\n")
-    except (OSError, json.JSONDecodeError):
-        return
-    index_path = os.path.join(state["fab_home"], "index.json")
-    if not os.path.isfile(index_path):
-        return
-    try:
-        with open(index_path, encoding="utf-8") as handle:
-            index = json.load(handle)
-    except (OSError, json.JSONDecodeError):
-        return
-    if not isinstance(index, dict):
-        return
-    for row in index.get("tickets") or []:
-        if isinstance(row, dict) and row.get("id") == "T-1":
-            row["team"] = "herdr-app"
-            row["max_cost"] = 5
-            row["cost"] = {
-                "currency": "USD",
-                "total": cost["total"],
-                "today": cost["today"],
-            }
-            row["waits"] = waits
-    with open(index_path, "w", encoding="utf-8") as handle:
-        json.dump(index, handle, ensure_ascii=False)
-        handle.write("\n")
+        with store.locked():
+            try:
+                ticket = store.load("T-1")
+            except FabError:
+                return
+            ticket.update(
+                sessions=sessions,
+                max_cost=5,
+                cost=cost,
+                status="review",
+                assignee="zap",
+                waiting=["mensch"],
+            )
+            store.save(ticket, touch=False)
+            for row in (
+                {"kind": "dispatch", "at": now - 3300000},
+                {"kind": "wake", "target": "ada", "text": "gestartet", "at": now - 2700000},
+                {"kind": "verdict", "text": "pass: Demo", "at": now - 2100000},
+                {"kind": "handover", "text": "Demo", "at": now - 1500000},
+                {"kind": "comment", "actor": "mensch", "text": "Demo", "at": now - 900000},
+            ):
+                store.event_append(
+                    row["kind"], "T-1", actor=row.get("actor", "fab"),
+                    target=row.get("target", ""), text=row.get("text", ""),
+                    at=row["at"],
+                )
+            index.rebuild()
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 def _seed(state, ticket, worktree):

@@ -37,8 +37,12 @@ class CostsCliCase(FabricCase):
     def now(self):
         return int(time.time() * 1000)
 
-    def escaped(self, path):
-        return re.sub(r"[^A-Za-z0-9]", "-", path)
+    def omp_key(self, path):
+        home = str(self.env.get("HOME") or "").rstrip("/")
+        value = str(path)
+        if home and (value == home or value.startswith(home + "/")):
+            value = value[len(home):]
+        return value.replace("/", "-")
 
     def worktree(self, tid):
         return os.path.join(self.tmp, f"wt-{tid}")
@@ -47,7 +51,7 @@ class CostsCliCase(FabricCase):
         """Eine omp-Protokolldatei im Worker-Fenster des Worktrees."""
         keys = []
         for path in (worktree, os.path.realpath(worktree)):
-            key = self.escaped(path)
+            key = self.omp_key(path)
             if key not in keys:
                 keys.append(key)
         folder = os.path.join(self.omp_root, keys[0])
