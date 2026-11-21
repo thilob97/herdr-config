@@ -1870,6 +1870,14 @@ export function flowNodeSteps(run) {
 const FLOW_STEP_STATES = { done: "done", pass: "done", fail: "failed", wartet: "waiting" };
 const FLOW_TERMINAL_RUNS = new Set(["done", "failed", "cancelled"]);
 
+/** Ein Schritt ist für eine Bedingung auch bei „fail“ regulär beendet; nur
+ *  Aktionen und Agenten kennen einen echten Fehlschlag. */
+function flowStepState(node, step) {
+  const raw = String(step?.status ?? "");
+  if (node?.type === "condition" && (raw === "pass" || raw === "fail")) return "done";
+  return FLOW_STEP_STATES[raw] ?? null;
+}
+
 /** Ausgänge, die ein besuchter Knoten tatsächlich genommen hat. */
 function flowTakenEdges(node, step, outgoing) {
   if (!step) return outgoing;
@@ -1940,12 +1948,16 @@ export function flowNodeStates(definition, run) {
   for (const node of nodes) {
     if (!node?.id) continue;
     const step = steps[node.id];
-    if (status === "running" && node.id === current) {
+    if (status === "failed" && node.id === current) {
+      // Der Lauf scheiterte an genau diesem Knoten – auch wenn er keinen oder
+      // nur einen „wartet“-Schritt hat (Ticket fehlt, Limit, kein Ausgang).
+      states[node.id] = "failed";
+    } else if (status === "running" && node.id === current) {
       states[node.id] = node.type === "approval" ? "waiting" : "running";
     } else if (status === "paused" && node.id === current) {
       states[node.id] = "waiting";
     } else if (step) {
-      states[node.id] = FLOW_STEP_STATES[step.status] ?? (active.has(node.id) ? "waiting" : "skipped");
+      states[node.id] = flowStepState(node, step) ?? (active.has(node.id) ? "waiting" : "skipped");
     } else if (terminal) {
       states[node.id] = "skipped";
     } else {

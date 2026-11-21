@@ -1432,6 +1432,62 @@ test("Workflow-Status: genommener Zweig läuft, der andere wird übersprungen", 
   });
 });
 
+test("Workflow-Status: Bedingung mit fail ist regulär fertig, der fail-Zweig läuft", () => {
+  const run = {
+    id: 4,
+    workflow: "zweig",
+    status: "running",
+    current: "nein",
+    steps: [
+      step(0, "start", "done"),
+      step(1, "bedingung", "fail", { pass: false }),
+    ],
+  };
+
+  assert.deepEqual(flowNodeStates(BRANCH_FLOW, run), {
+    start: "done",
+    bedingung: "done",
+    ja: "skipped",
+    nein: "running",
+    ende: "waiting",
+  });
+});
+
+test("Workflow-Status: gescheiterter Lauf markiert den aktuellen Knoten als fehlgeschlagen", () => {
+  const ohneSchritt = {
+    id: 5,
+    workflow: "zweig",
+    status: "failed",
+    current: "ja",
+    reason: "Ticket T-9 fehlt",
+    steps: [
+      step(0, "start", "done"),
+      step(1, "bedingung", "pass", { pass: true }),
+    ],
+  };
+  assert.deepEqual(flowNodeStates(BRANCH_FLOW, ohneSchritt), {
+    start: "done",
+    bedingung: "done",
+    ja: "failed",
+    nein: "skipped",
+    ende: "skipped",
+  });
+
+  const wartend = {
+    ...ohneSchritt,
+    current: "nein",
+    steps: [
+      step(0, "start", "done"),
+      step(1, "bedingung", "fail", { pass: false }),
+      step(2, "nein", "wartet", { ticket: "T-9" }),
+    ],
+  };
+  const states = flowNodeStates(BRANCH_FLOW, wartend);
+  assert.equal(states.nein, "failed");
+  assert.equal(states.ja, "skipped");
+  assert.equal(states.ende, "skipped");
+});
+
 test("Workflow-Status: fertiger Lauf überspringt den nicht genommenen Zweig", () => {
   const run = {
     id: 2,
