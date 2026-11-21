@@ -4,7 +4,7 @@
 import { div, image, svg } from "gpui-kit";
 import {
   h_flex, v_flex, Input, NumberInput, Textarea, Editor, TextView, Checkbox, Switch,
-  Table, TableHeader, TableBody, TableRow, TableHead, TableCell, Popup, Scrollbar,
+  Table, TableHeader, TableBody, TableRow, TableHead, TableCell, Popup, v_virtual_list,
 } from "gpui-base";
 import { theme } from "herdr";
 import * as model from "./model.js";
@@ -123,7 +123,7 @@ export function page(t, children) {
     .children(children);
 }
 
-export function header(t, title, right = [], { iconName = null, subtitle = null } = {}) {
+export function header(t, title, right = [], { iconName = null, subtitle = null, compact = false } = {}) {
   return h_flex()
     .flex_none()
     .w_full()
@@ -139,7 +139,7 @@ export function header(t, title, right = [], { iconName = null, subtitle = null 
         .flex_none()
         .gap(0)
         .child(div().text_size(FONT.l).font_semibold().child(title))
-        .when(Boolean(subtitle), (el) => el.child(div().text_size(FONT.xs).text_color(t.dim).child(subtitle))),
+        .when(Boolean(subtitle) && !compact, (el) => el.child(div().text_size(FONT.xs).text_color(t.dim).child(subtitle))),
     )
     .child(div().flex_1())
     .children(right);
@@ -513,6 +513,7 @@ export function filterBar(t, {
   assignees = [], repos = [], assignee = "all", repo = "all", dropped = false,
   menu = null, onMenu, onAssignee, onRepo, onDropped, onReset,
   active = false, droppedLabel = "Verworfen", iconName = "filter", scrollHandle = null,
+  compact = false,
 }) {
   const select = (id, value, options, onPick, width) => {
     const prefix = id.includes("assignee") ? "Zuständig" : "Repo";
@@ -536,11 +537,12 @@ export function filterBar(t, {
     .py(SPACE.s)
     .gap(SPACE.s)
     .items_center()
+    .when(compact, (el) => el.flex_wrap())
     .border_b(1)
     .border_color(t.border)
     .child(div().flex_none().text_color(t.dim).child(icon(iconName, 12)))
-    .child(div().w(150).child(select("fabric-filter-assignee", assignee, assignees, onAssignee, 160)))
-    .child(div().w(170).child(select("fabric-filter-repo", repo, repos, onRepo, 230)))
+    .child(div().w(compact ? 140 : 150).child(select("fabric-filter-assignee", assignee, assignees, onAssignee, compact ? 140 : 160)))
+    .child(div().w(compact ? 150 : 170).child(select("fabric-filter-repo", repo, repos, onRepo, compact ? 150 : 230)))
     .child(checkbox(t, {
       id: "fabric-filter-dropped",
       checked: dropped,
@@ -575,6 +577,7 @@ export function fabricFilters(t, { app, cx, droppedKey = "showDropped" }) {
     onRepo: (value) => { app.repoFilter = value; cx.notify(); },
     onDropped: (value) => { app[droppedKey] = value; cx.notify(); },
     active,
+    compact: Boolean(app.compact),
     onReset: (cx2) => {
       app.search.set_value("");
       app.assigneeFilter = "all";
@@ -637,14 +640,41 @@ export function dropdown(t, {
   const withClick = still(trigger).on_click((_event, cx) => {
     cx.stop_propagation();
     if (disabled) return;
-    if (!open && scrollHandle) {
-      const selected = options.findIndex((option) => option.selected);
-      if (selected >= 0) scrollHandle.scroll_to_item(selected);
-    }
+    const wasOpen = open;
     onToggle();
+    if (!wasOpen && scrollHandle) {
+      const selected = options.findIndex((option) => option.selected);
+      if (selected >= 0) {
+        try {
+          scrollHandle.scroll_to_item(selected);
+        } catch {}
+      }
+    }
   });
 
   const listId = `${id}-list`;
+  // Die Optionsliste ist eine virtuelle Liste: sie hat eine feste Höhe und
+  // bringt ihren eigenen Positions-Handle mit. Nur damit wirkt
+  // `scroll_to_item` auch in der Popup-Ebene (F-13).
+  const listHeight = options.length ? Math.min(320, options.length * 28) : 0;
+  const byKey = new Map(options.map((option) => [String(option.value), option]));
+  const row = (option) => h_flex()
+    .id(`${id}-option-${option.value}`)
+    .w_full()
+    .min_h(28)
+    .px(7)
+    .gap(SPACE.s)
+    .items_center()
+    .rounded(RADIUS.s)
+    .bg(option.selected ? t.selected : t.surface + "00")
+    .text_size(FONT.s)
+    .text_color(option.warn ? t.blocked : option.disabled ? t.dim : t.foreground)
+    .when(!option.disabled, (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)))
+    .when(Boolean(option.detail), (el) => el.child(div()
+      .flex_none().text_size(FONT.xs)
+      .text_color(option.warn ? t.blocked : t.dim).child(option.detail)))
+    .child(div().flex_1().min_w(0).truncate().child(option.label))
+    .when(option.selected, (el) => el.child(div().flex_none().text_color(t.accent).child(icon("check", 12))));
   // Nur das offene Menü bauen: geschlossene Dropdowns erzeugen keine
   // Optionszeilen. Sonst entstehen bei jedem Render alle Menüs aller
   // Dropdowns (Board: eine pro Karte) und werden sofort verworfen.
@@ -656,42 +686,40 @@ export function dropdown(t, {
     .border_1()
     .border_color(t.border)
     .bg(t.popover)
-    .child(
-      v_flex()
-        .id(listId)
+    .when(options.length === 0, (el) => el.child(
+      div().px(8).py(6).text_size(FONT.s).text_color(t.dim).child(empty),
+    ))
+    // Bis elf Zeilen passt die Liste ohne Scrollen: dann bleiben die Zeilen
+    // direkt klickbar. Erst darüber braucht es die virtuelle Liste, deren
+    // eigener Handle `scroll_to_item` auch in der Popup-Ebene ausführt.
+    .when(options.length > 0 && options.length <= 11, (el) => el.child(
+      v_flex().w_full().p(SPACE.xs).gap(1).children(options.map((option) => row(option)
+        .when(!option.disabled, (line) => still(line).on_click((_event, cx) => {
+          cx.stop_propagation();
+          onPick(option.value);
+        })))),
+    ))
+    .when(options.length > 11, (el) => el.child(
+      v_virtual_list(listId, options.length, 28,
+        (index) => String(options[index].value),
+        (range) => options.slice(range.start, range.end).map(row))
+        .h(listHeight)
         .w_full()
-        .max_h(320)
-        .overflow_y_scroll()
-        .p(SPACE.xs)
-        .gap(1)
-        .when(Boolean(scrollHandle), (el) => el.track_scroll(scrollHandle))
-        .children(options.length ? options.map((option) =>
-          h_flex()
-            .id(`${id}-option-${option.value}`)
-            .w_full()
-            .min_h(28)
-            .px(7)
-            .gap(SPACE.s)
-            .items_center()
-            .rounded(RADIUS.s)
-            .bg(option.selected ? t.selected : t.surface + "00")
-            .text_size(FONT.s)
-            .text_color(option.warn ? t.blocked : option.disabled ? t.dim : t.foreground)
-            .when(!option.disabled, (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)))
-            .when(Boolean(option.detail), (el) => el.child(div()
-              .flex_none().text_size(FONT.xs)
-              .text_color(option.warn ? t.blocked : t.dim).child(option.detail)))
-            .child(div().flex_1().min_w(0).truncate().child(option.label))
-            .when(option.selected, (el) => el.child(div().flex_none().text_color(t.accent).child(icon("check", 12))))
-            .when(!option.disabled, (el) => still(el).on_click((_event, cx) => {
-              cx.stop_propagation();
-              onPick(option.value);
-            }))) : [
-          div().px(8).py(6).text_size(FONT.s).text_color(t.dim).child(empty),
-        ]),
-    )
-    .child(Scrollbar.vertical(listId).absolute().inset_0());
+        .when(Boolean(scrollHandle), (list) => list.track_scroll(scrollHandle))
+        .on_item_click((key, cx) => {
+          cx.stop_propagation();
+          const option = byKey.get(key);
+          if (!option || option.disabled) return;
+          onPick(option.value);
+        }),
+    ));
 
+  if (open && scrollHandle) {
+    const selected = options.findIndex((option) => option.selected);
+    if (selected >= 0) {
+      try { scrollHandle.scroll_to_item(selected); } catch { /* Liste ersetzt */ }
+    }
+  }
   return Popup.new(id, withClick).anchor(align).when(open, (el) => el.content(menu()));
 }
 
@@ -955,14 +983,15 @@ export function table(t, { id, columns, rows, sort, onSort, renderCell, onRow })
 
 // ---------- Navigation ----------
 
-export function navItem(t, { id, icon: iconName, label, active, onClick, badge = null }) {
+export function navItem(t, { id, icon: iconName, label, active, onClick, badge = null, compact = false }) {
   return still(h_flex()
     .id(id)
     .w_full()
     .h(SIZE.nav)
-    .px(10)
+    .px(compact ? 0 : 10)
     .gap(9)
     .items_center()
+    .when(compact, (el) => el.justify_center().tooltip(label))
     .rounded(RADIUS.m)
     .bg(active ? t.selected : t.surface + "00")
     .text_color(active ? t.foreground : t.muted)
@@ -972,7 +1001,7 @@ export function navItem(t, { id, icon: iconName, label, active, onClick, badge =
     .hover((s) => s.bg(active ? t.selected : t.hover))
     .on_click((_event, cx) => { cx.stop_propagation(); onClick(cx); })
     .child(div().flex_none().when(active, (el) => el.text_color(t.accent)).child(icon(iconName, 15)))
-    .child(div().flex_1().min_w(0).truncate().child(label))
+    .when(!compact, (el) => el.child(div().flex_1().min_w(0).truncate().child(label)))
     .when(badge !== null, (el) => el.child(badge)));
 }
 

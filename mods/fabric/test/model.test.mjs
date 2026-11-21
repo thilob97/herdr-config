@@ -127,6 +127,27 @@ test("Zeitverlauf: Ereignisarten werden zu unterscheidbaren Sätzen", () => {
   assert.equal(eventSummary({ kind: "comment", actor: "zap", text: "hallo" }).verb, "kommentierte");
 });
 
+test("Verlaufsende: Text, Kopfzeile, zwei Kommentare, fremde Weckzeilen zählen nicht", async () => {
+  const { history, historyEndIndex } = await import("../model.js");
+  const ticket = {
+    id: "T-1",
+    comments: [{ at: 10, text: "erst" }, { at: 30, text: "dann" }],
+  };
+  const events = [
+    { kind: "wake", ticket: "T-1", at: 20, target: "ada", text: "geweckt" },
+    { kind: "wake", ticket: "T-2", at: 40, target: "zap", text: "geweckt" },
+    { kind: "status", ticket: "T-1", at: 50, text: "todo → doing" },
+  ];
+
+  assert.deepEqual(history(ticket, events).map((row) => row.kind), ["comment", "wake", "comment"]);
+  assert.equal(historyEndIndex(ticket, events), 1 + 3, "Text plus Kopfzeile plus drei Zeilen");
+
+  assert.equal(historyEndIndex({ id: "T-1", comments: [] }, events), 2,
+    "Leerzustand: Text plus Kopfzeile plus eine Zeile");
+  assert.equal(historyEndIndex({ id: "T-9", comments: [] }, events), 2);
+  assert.equal(historyEndIndex(null, null), 2);
+});
+
 test("Zeit und Weckzeilen auf Deutsch", () => {
   const now = 10 * 60 * 60 * 1000;
   assert.equal(relativeTime(now - 30000, now), "gerade eben");
@@ -453,6 +474,17 @@ test("„weckt“-Vorschau: Agenten wecken, mensch landet in der Inbox, Unbekann
   assert.equal(wakeSummary("nur Text", names), "Weckt niemanden.");
 });
 
+test("Offene @-Eingabe zählt nicht als Unbekannt", async () => {
+  const { wakeSummary } = await import("../model.js");
+  const names = ["ada", "zap"];
+  assert.equal(wakeSummary("@a", names, "mensch", { start: 0, end: 2 }), "Weckt niemanden.");
+  assert.equal(wakeSummary("@ada und @a", names, "mensch", { start: 9, end: 11 }), "Weckt ada.");
+  assert.equal(wakeSummary("@a", names, "mensch"), "Unbekannt: a.", "ohne pending bleibt es beim Alten");
+  assert.equal(wakeSummary("@a", names, "mensch", { start: 0, end: 9 }), "Unbekannt: a.",
+    "ein Bereich außerhalb des Textes zählt nicht");
+  assert.equal(wakeSummary("@ada @a", names, "mensch", { start: 5, end: 7 }), "Weckt ada.");
+});
+
 test("Kommentare bleiben reiner Text, nur Erwähnungen werden hervorgehoben", async () => {
   const { plainMentionMarkdown } = await import("../model.js");
   assert.equal(plainMentionMarkdown("__pycache__"), "\\_\\_pycache\\_\\_");
@@ -474,8 +506,23 @@ test("Pfade und Sonderzeichen bleiben in Kommentaren wörtlich", async () => {
   const { plainMentionMarkdown } = await import("../model.js");
   assert.equal(
     plainMentionMarkdown("C:\\pfad\\datei /usr/*/bin a*b*c $x_1$ __init__.py"),
-    "C:\\\\pfad\\\\datei /usr/\\*/bin a\\*b\\*c $x\\_1$ \\_\\_init\\_\\_\\.py",
+    "C:\\\\pfad\\\\datei /usr/\\*/bin a\\*b\\*c $x_1$ \\_\\_init\\_\\_\\.py",
   );
+});
+
+test("Inline-Mathematik bleibt wörtlich, die T-13-Fälle bleiben maskiert", async () => {
+  const { plainMentionMarkdown } = await import("../model.js");
+  assert.equal(plainMentionMarkdown("$x_1$"), "$x_1$");
+  assert.equal(plainMentionMarkdown("Formel $a_1 + b^2$ gilt"), "Formel $a_1 + b^2$ gilt");
+  assert.equal(plainMentionMarkdown("$a\\$b$"), "$a\\$b$", "maskiertes Zeichen beendet die Formel nicht");
+  assert.equal(plainMentionMarkdown("$offen"), "$offen", "ein einzelnes $ bleibt Text");
+  assert.equal(plainMentionMarkdown("$a\nb$"), "$a  \nb$", "Formeln laufen nicht über Zeilen");
+
+  for (const literal of ["C:\\pfad\\datei", "/usr/*/bin", "a*b*c", "__init__.py", "1. "]) {
+    const rendered = plainMentionMarkdown(literal);
+    assert.equal(rendered, literal.replace(/[\\`*_{}\[\]()#+\-.!|>~=&<>]/g, "\\$&"),
+      `${literal} bleibt maskiert`);
+  }
 });
 
 test("Nackte URLs werden zu Links, Satzzeichen bleiben Text", async () => {
@@ -599,6 +646,17 @@ test("Ungespeicherte Änderungen werden erkannt, Zeilenenden zählen nicht", asy
     { key: "body", label: "Beschreibung", value: "neu", saved: "alt" },
     { key: "prompt", label: "Prompt", value: "gleich", saved: "gleich" },
   ]), [{ key: "body", label: "Beschreibung" }]);
+});
+
+test("Schmales Fenster: unter 760 px einspaltig, sonst nicht", async () => {
+  const { compactWidth, COMPACT_WIDTH } = await import("../model.js");
+  assert.equal(COMPACT_WIDTH, 760);
+  assert.equal(compactWidth(520), true);
+  assert.equal(compactWidth(759), true);
+  assert.equal(compactWidth(760), false);
+  assert.equal(compactWidth(1694), false);
+  assert.equal(compactWidth(0), false);
+  assert.equal(compactWidth(null), false);
 });
 
 test("Programm-Auswahl: nur installierte, aktueller Wert bleibt als Ausnahme", async () => {

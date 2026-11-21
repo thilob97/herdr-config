@@ -136,6 +136,7 @@ function detail(app, cx, t) {
   const ticket = app.ticket;
   const review = ticket.status === "review";
   const text = app.commentInput.value();
+  const pending = app.mentionOpen("comment") ? app.mentions : null;
   return v_flex()
     .flex_1()
     .min_h(0)
@@ -197,7 +198,7 @@ function detail(app, cx, t) {
       v_flex().flex_none().w_full().p(S.m).gap(S.s).border_t(1).border_color(t.border)
         .child(ui.textarea(t, app.commentInput, { focused: app.fieldFocused, height: 64 }))
         .when(app.mentionOpen("comment"), (el) => el.child(app.mentionView("comment", t)))
-        .child(ui.hint(t, model.wakeSummary(text, app.agentNames(), "mensch")))
+        .child(ui.hint(t, model.wakeSummary(text, app.agentNames(), "mensch", pending)))
         .when(Boolean(app.errorFor("comment") || app.errorFor("reject") || app.errorFor("accept")), (el) => {
           const problem = app.errorFor("comment") || app.errorFor("reject") || app.errorFor("accept");
           return el.child(ui.notice(t, problem.text, problem.level));

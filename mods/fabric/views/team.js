@@ -36,6 +36,47 @@ function sectionHead(t, title, right = []) {
 function blueprintRow(app, cx, t, blueprint) {
   const parts = model.argvParts(blueprint.argv ?? []);
   const teams = (blueprint.teams ?? []).join(", ") || "—";
+  const summary = model.argvSummary(parts.program, parts.model, parts.flags);
+  if (app.compact) {
+    return v_flex()
+      .id(`fabric-blueprint-${blueprint.name}`)
+      .w_full()
+      .min_w(0)
+      .gap(2)
+      .py(6)
+      .border_b(1)
+      .border_color(t.border)
+      .child(h_flex().w_full().min_w(0).gap(S.s).items_center()
+        .child(ui.avatar(t, blueprint.name, blueprint.color || "c1", 28))
+        .child(div().flex_1().min_w(0).truncate().text_size(T.m).font_semibold()
+          .child(blueprint.name).tooltip(blueprint.name))
+        .child(ui.iconButton(t, {
+          id: `fabric-blueprint-edit-${blueprint.name}`,
+          icon: "edit",
+          size: 22,
+          iconSize: 12,
+          tooltip: `Blaupause ${blueprint.name} bearbeiten`,
+          disabled: Boolean(app.busy),
+          onClick: (cx) => app.openBlueprintDrawer("edit", blueprint, cx),
+        }))
+        .child(ui.iconButton(t, {
+          id: `fabric-blueprint-delete-${blueprint.name}`,
+          icon: "trash",
+          size: 22,
+          iconSize: 12,
+          tooltip: `Blaupause ${blueprint.name} löschen (fragt nach)`,
+          disabled: Boolean(app.busy),
+          onClick: (cx) => app.confirmDeleteBlueprint(blueprint, cx),
+        })))
+      .child(h_flex().w_full().min_w(0).gap(6).items_center().pl(36)
+        .child(ui.chip(t, blueprint.role || "ohne Rolle", t.dim,
+          `fabric-blueprint-role-${blueprint.name}`,
+          { tooltip: blueprint.role || "ohne Rolle" }))
+        .child(div().flex_1().min_w(0).truncate().text_size(T.xs).text_color(t.dim)
+          .child(`Teams: ${teams}`).tooltip(`Teams: ${teams}`)))
+      .child(div().w_full().min_w(0).truncate().pl(36).text_size(T.xs).text_color(t.dim)
+        .child(summary).tooltip(summary));
+  }
   return h_flex()
     .id(`fabric-blueprint-${blueprint.name}`)
     .w_full()
@@ -47,8 +88,9 @@ function blueprintRow(app, cx, t, blueprint) {
     .border_color(t.border)
     .child(ui.avatar(t, blueprint.name, blueprint.color || "c1", 28))
     .child(v_flex().flex_1().min_w(0).gap(1)
-      .child(h_flex().gap(6).items_center()
-        .child(div().text_size(T.m).font_semibold().whitespace_nowrap().child(blueprint.name))
+      .child(h_flex().min_w(0).gap(6).items_center()
+        .child(div().min_w(0).truncate().text_size(T.m).font_semibold().child(blueprint.name)
+          .tooltip(blueprint.name))
         .child(ui.chip(t, blueprint.role || "ohne Rolle", t.dim,
           `fabric-blueprint-role-${blueprint.name}`,
           { tooltip: blueprint.role || "ohne Rolle" })))
@@ -246,6 +288,34 @@ function reposBlock(app, cx, t, team, form) {
 
 function memberRow(app, cx, t, team, form, member) {
   const blueprint = app.blueprintFor(member.blueprint) ?? { name: member.blueprint, role: "", color: "c1" };
+  const remove = ui.iconButton(t, {
+    id: `fabric-team-member-remove-${team.name}-${member.blueprint}`,
+    icon: "close",
+    size: 22,
+    iconSize: 11,
+    tooltip: `${member.blueprint} aus dem Team entfernen`,
+    onClick: (cx) => app.removeTeamMember(team.name, member.blueprint, cx),
+  });
+  const nameLine = app.compact ? h_flex().w_full().gap(S.s).items_center()
+    .child(ui.avatar(t, blueprint.name, blueprint.color || "c1", 24))
+    .child(v_flex().flex_1().min_w(0).gap(0)
+      .child(div().text_size(T.xs).font_semibold().truncate()
+        .child(blueprint.name).tooltip(blueprint.name))
+      .child(div().text_size(T.xs).text_color(t.dim).truncate()
+        .child(blueprint.role || "ohne Rolle").tooltip(blueprint.role || "ohne Rolle")))
+    .child(remove) : null;
+  if (app.compact) {
+    return v_flex()
+      .w_full()
+      .gap(6)
+      .p(S.s)
+      .rounded(ui.RADIUS.m)
+      .border_1()
+      .border_color(t.border)
+      .child(nameLine)
+      .child(ui.input(t, member.model))
+      .child(ui.input(t, member.maxCost));
+  }
   return h_flex()
     .w_full()
     .gap(S.s)
@@ -258,14 +328,7 @@ function memberRow(app, cx, t, team, form, member) {
         .child(blueprint.role || "ohne Rolle").tooltip(blueprint.role || "ohne Rolle")))
     .child(div().flex_1().min_w(120).child(ui.input(t, member.model)))
     .child(div().flex_none().w(92).child(ui.input(t, member.maxCost)))
-    .child(ui.iconButton(t, {
-      id: `fabric-team-member-remove-${team.name}-${member.blueprint}`,
-      icon: "close",
-      size: 22,
-      iconSize: 11,
-      tooltip: `${member.blueprint} aus dem Team entfernen`,
-      onClick: (cx) => app.removeTeamMember(team.name, member.blueprint, cx),
-    }));
+    .child(remove);
 }
 
 function membersBlock(app, cx, t, team, form) {
@@ -350,9 +413,12 @@ function teamCard(app, cx, t, team) {
   const blockedReason = form.repos.length
     ? (!dirty ? "Keine Änderungen" : "")
     : "Mindestens ein Repo ist nötig.";
+  const nameBox = app.compact
+    ? div().flex_1().min_w(0)
+    : div().w(220).flex_none();
   return ui.card(t, [
     h_flex().w_full().gap(S.s).items_center().flex_wrap()
-      .child(div().w(220).flex_none().id(`fabric-team-name-${team.name}`).child(ui.input(t, form.name)))
+      .child(nameBox.id(`fabric-team-name-${team.name}`).child(ui.input(t, form.name)))
       .child(ui.chip(t, `${form.members.length} Mitglied${form.members.length === 1 ? "" : "er"}`,
         t.dim, `fabric-team-members-chip-${team.name}`, { tooltip: "Mitglieder im Team" }))
       .child(ui.chip(t, `${form.repos.length} Repo${form.repos.length === 1 ? "" : "s"}`,
@@ -403,30 +469,48 @@ function teamCard(app, cx, t, team) {
 export function renderTeam(app, cx, t) {
   const teams = app.roster?.teams ?? [];
   const blueprints = app.roster?.blueprints ?? [];
+  const newTeam = app.compact
+    ? ui.iconButton(t, {
+      id: "fabric-team-new",
+      icon: "plus",
+      tooltip: "Neues Team",
+      onClick: (cx) => app.openNewTeam(cx),
+    })
+    : ui.button(t, {
+      id: "fabric-team-new",
+      label: "Neues Team",
+      icon: "plus",
+      primary: true,
+      tooltip: "Team anlegen (fab team add)",
+      onClick: (cx) => app.openNewTeam(cx),
+    });
+  const newBlueprint = app.compact
+    ? ui.iconButton(t, {
+      id: "fabric-blueprint-new",
+      icon: "plus",
+      tooltip: "Neue Blaupause",
+      onClick: (cx) => app.openBlueprintDrawer("new", null, cx),
+    })
+    : ui.button(t, {
+      id: "fabric-blueprint-new",
+      label: "Neue Blaupause",
+      icon: "plus",
+      primary: true,
+      tooltip: "Blaupause anlegen",
+      onClick: (cx) => app.openBlueprintDrawer("new", null, cx),
+    });
   return v_flex()
     .size_full()
     .min_h(0)
     .child(ui.header(t, "Team", [
-      div().text_size(T.xs).text_color(t.dim).child(
-        `${blueprints.length} Blaupause${blueprints.length === 1 ? "" : "n"} · ${teams.length} Team${teams.length === 1 ? "" : "s"}`,
-      ),
-      ui.button(t, {
-        id: "fabric-team-new",
-        label: "Neues Team",
-        icon: "plus",
-        primary: true,
-        tooltip: "Team anlegen (fab team add)",
-        onClick: (cx) => app.openNewTeam(cx),
-      }),
-      ui.button(t, {
-        id: "fabric-blueprint-new",
-        label: "Neue Blaupause",
-        icon: "plus",
-        primary: true,
-        tooltip: "Blaupause anlegen",
-        onClick: (cx) => app.openBlueprintDrawer("new", null, cx),
-      }),
-    ], { iconName: "team", subtitle: "Blaupausen pflegen und Teams steuern" }))
+      ...(app.compact ? [] : [
+        div().text_size(T.xs).text_color(t.dim).child(
+          `${blueprints.length} Blaupause${blueprints.length === 1 ? "" : "n"} · ${teams.length} Team${teams.length === 1 ? "" : "s"}`,
+        ),
+      ]),
+      newTeam,
+      newBlueprint,
+    ], { iconName: "team", subtitle: "Blaupausen pflegen und Teams steuern", compact: app.compact }))
     .when(Boolean(app.rosterError), (el) => el.child(ui.notice(t, app.rosterError)))
     .when(Boolean(app.flash?.text), (el) => el.child(ui.notice(t, app.flash.text, app.flash.level)))
     .child(

@@ -2,7 +2,7 @@
 // Die Ansicht kommt aus props().view; geschrieben wird nur über fabric/fab.
 
 import { View, div } from "gpui-kit";
-import { InputState, TextareaState, EditorState, ScrollHandle, TextView, h_flex, v_flex, Popup } from "gpui-base";
+import { InputState, TextareaState, EditorState, ScrollHandle, VirtualListScrollHandle, TextView, h_flex, v_flex, Popup } from "gpui-base";
 import {
   appHome, checking, closeOverlay, exec, focused, knownAgents, layout, nextCommand, notify,
   openOverlay, pickFolder, props, readTextFile, run, setShared, shared, spaces, terminals, watchFolder,
@@ -112,9 +112,14 @@ export default class Fabric extends View {
     this.wakeText = null;
     this.checksOpen = false;
     this.historyScroll = ScrollHandle.new();
+    this.historyLastIndex = 1;
+    this.propsScroll = ScrollHandle.new();
+    this.propsEndIndex = 0;
     // Ein Dropdown ist zugleich offen; ein gemeinsamer Handle reicht.
-    this.dropdownScroll = ScrollHandle.new();
+    this.dropdownScroll = VirtualListScrollHandle.new();
     this.needsHistoryScroll = false;
+    this.compact = false;
+    this.windowWidth = 0;
     this.baseInput = InputState.new({ placeholder: "Basis-Branch, z. B. main" });
     this.baseInput.on("change", (_event, cx) => cx.notify());
     this.baseInput.on("submit", (_event, cx) => this.setBase(this.baseInput.value(), cx));
@@ -628,7 +633,7 @@ export default class Fabric extends View {
     await this.loadTicket();
     if (this.needsHistoryScroll && this.isApp) {
       this.needsHistoryScroll = false;
-      try { this.historyScroll.scroll_to_bottom(); } catch { /* noch kein Layout */ }
+      try { this.historyScroll.scroll_to_item(this.historyLastIndex); } catch { /* noch kein Layout */ }
     }
     if (this.openId && this.index && !this.ticket
         && !this.index.tickets.some((ticket) => ticket?.id === this.openId)) {
@@ -673,7 +678,7 @@ export default class Fabric extends View {
         this.bodyEditor.on("paste_other", (_event, cx) => { this.pasteImage("body", cx); });
         this.bodyEditing = false;
         this.needsHistoryScroll = true;
-        this.historyLastIndex = 1 + model.history(this.ticket, this.events).length;
+        this.historyLastIndex = model.historyEndIndex(this.ticket, this.events);
       } else if (this.bodyEditor && !model.isDirty(this.bodyEditor.value(), this.bodySaved)) {
         this.bodySaved = this.ticket.body ?? "";
         this.bodyEditor.set_value(this.bodySaved);
@@ -805,9 +810,12 @@ export default class Fabric extends View {
 
   scrollHistory(cx) {
     if (!this.isApp) return;
-    cx?.timer.after(60, () => {
-      try { this.historyScroll.scroll_to_bottom(); } catch { /* noch kein Layout */ }
-    });
+    const toEnd = () => {
+      try { this.historyScroll.scroll_to_item(this.historyLastIndex); } catch { /* noch kein Layout */ }
+    };
+    const timer = cx?.timer;
+    toEnd();
+    timer?.after(60, toEnd);
   }
 
   back(cx) {
@@ -1912,7 +1920,18 @@ export default class Fabric extends View {
     this.wireMentions("wake", this.wakeText);
     this.clearMentions();
     this.notifyNow();
-    cx.timer.after(60, () => this.wakeText?.focus());
+    const revealWake = () => {
+      try {
+        (this.compact ? this.historyScroll : this.propsScroll).scroll_to_item(this.propsEndIndex);
+      } catch { /* noch kein Layout */ }
+    };
+    cx.timer.after(60, () => {
+      this.wakeText?.focus();
+      revealWake();
+    });
+    // Das Textfeld bekommt den Fokus erst nach dem Layout; danach noch einmal
+    // ans Panelende springen, damit das Formular vollständig sichtbar bleibt.
+    cx.timer.after(260, () => { if (this.wakeOpen) revealWake(); });
   }
 
   closeWake(cx) {
@@ -2745,7 +2764,7 @@ export default class Fabric extends View {
     const statusWord = model.orchestratorWord(state);
     const statusColor = ui.orchestratorStatus(t, state).color;
 
-    const nav = v_flex()
+    const nav = this.compact ? null : v_flex()
       .flex_none()
       .w(ui.SIZE.sidebar)
       .min_h(0)
@@ -2785,6 +2804,56 @@ export default class Fabric extends View {
         }),
       );
 
+    const statusTip = state
+      ? `Orchestrator ${statusWord} · ${state.name ?? ""} ${state.terminal ?? ""} · klicken für Team`
+      : "Orchestrator-Status unbekannt · klicken für Team";
+    const compactNav = this.compact ? h_flex()
+      .flex_none()
+      .w_full()
+      .h(ui.SIZE.nav)
+      .px(ui.SPACE.s)
+      .gap(2)
+      .items_center()
+      .border_b(1)
+      .border_color(t.border)
+      .bg(t.chrome)
+      .children(NAV.map((item) => div().flex_1().min_w(0).child(ui.navItem(t, {
+        id: `fabric-nav-${item.page}`,
+        icon: item.icon,
+        label: item.label,
+        active: page === item.page || (page === "ticket" && item.page === "tickets"),
+        onClick: (cx) => this.navigate(item.page, {}, cx),
+        badge: null,
+        compact: true,
+      }))))
+      .child(
+        h_flex()
+          .id("fabric-orchestrator-pill")
+          .flex_none()
+          .size(24)
+          .items_center()
+          .justify_center()
+          .rounded(12)
+          .bg(statusColor + "1f")
+          .cursor_pointer()
+          .tooltip(statusTip)
+          .on_click((_event, cx) => {
+            cx.stop_propagation();
+            this.navigate("team", {}, cx);
+          })
+          .child(ui.dot(t, statusColor)),
+      ) : null;
+
+    const search = this.compact ? null : h_flex()
+      .flex_1()
+      .min_w(0)
+      .max_w(440)
+      .gap(6)
+      .items_center()
+      .child(div().flex_none().text_color(t.dim).child(ui.icon("search", 13)))
+      .child(div().flex_1().min_w(0).child(ui.input(t, this.search, { focused: this.searchFocused })))
+      .child(ui.keyHint(t, "/"));
+
     const top = h_flex()
       .flex_none()
       .w_full()
@@ -2795,27 +2864,23 @@ export default class Fabric extends View {
       .border_b(1)
       .border_color(t.border)
       .bg(t.surface)
-      .child(
-        h_flex()
-          .flex_1()
-          .min_w(0)
-          .max_w(440)
-          .gap(6)
-          .items_center()
-          .child(div().flex_none().text_color(t.dim).child(ui.icon("search", 13)))
-          .child(div().flex_1().min_w(0).child(ui.input(t, this.search, { focused: this.searchFocused })))
-          .child(ui.keyHint(t, "/")),
-      )
+      .when(!this.compact, (el) => el.child(search))
       .child(div().flex_1())
-      .child(ui.button(t, {
+      .when(this.compact, (el) => el.child(ui.iconButton(t, {
+        id: "fabric-new-ticket",
+        icon: "plus",
+        tooltip: "Neues Ticket (⌘N)",
+        onClick: (cx) => this.openNewTicket(cx),
+      })))
+      .when(!this.compact, (el) => el.child(ui.button(t, {
         id: "fabric-new-ticket",
         label: "Neues Ticket",
         icon: "plus",
         primary: true,
         tooltip: "Neues Ticket (⌘N)",
         onClick: (cx) => this.openNewTicket(cx),
-      }))
-      .child(this.inboxButton(t, cx))
+      })))
+      .child(this.inboxButton(t, cx, this.compact))
       .child(ui.iconButton(t, {
         id: "fabric-window-close",
         icon: "close",
@@ -2823,14 +2888,22 @@ export default class Fabric extends View {
         onClick: (cx) => this.closeWindowWithGuard(cx),
       }));
 
-    const body = h_flex()
+    const contentPane = v_flex().flex_1().min_w(0).h_full().min_h(0).overflow_hidden().child(content);
+    const body = v_flex()
       .flex_1()
       .min_h(0)
       .items_stretch()
-      .child(nav)
-      .child(v_flex().flex_1().min_w(0).h_full().min_h(0).overflow_hidden().child(content))
-      .when(Boolean(this.blueprintDrawer), (el) => el.child(renderBlueprintDrawer(this, cx, t)))
-      .when(Boolean(this.teamPrompt), (el) => el.child(renderTeamPromptDrawer(this, cx, t)));
+      .when(this.compact, (el) => el.child(compactNav))
+      .child(
+        h_flex()
+          .flex_1()
+          .min_h(0)
+          .items_stretch()
+          .when(!this.compact, (el) => el.child(nav))
+          .child(contentPane)
+          .when(Boolean(this.blueprintDrawer), (el) => el.child(renderBlueprintDrawer(this, cx, t)))
+          .when(Boolean(this.teamPrompt), (el) => el.child(renderTeamPromptDrawer(this, cx, t))),
+      );
 
     const overlay = [];
     if (this.menu || this.inboxOpen) {
@@ -2851,6 +2924,14 @@ export default class Fabric extends View {
       .border_color(t.border)
       .bg(t.background)
       .overflow_hidden()
+      .on_size_change((size, cx) => {
+        this.windowWidth = size.width;
+        const compact = model.compactWidth(size.width);
+        if (compact !== this.compact) {
+          this.compact = compact;
+          cx.notify();
+        }
+      })
       .track_focus(this.appFocus)
       .on_key_down((event, cx) => this.keys(event, cx))
       .child(
@@ -2870,7 +2951,7 @@ export default class Fabric extends View {
     return this.mentionActions(root);
   }
 
-  inboxButton(t, cx) {
+  inboxButton(t, cx, compact = false) {
     const trigger = h_flex()
       .id("fabric-inbox-button")
       .flex_none()
@@ -2892,7 +2973,7 @@ export default class Fabric extends View {
         this.notifyNow();
       })
       .child(div().flex_none().text_color(t.muted).child(ui.icon("inbox", 14)))
-      .child(div().text_size(ui.FONT.s).text_color(t.muted).child("Inbox"))
+      .when(!compact, (el) => el.child(div().text_size(ui.FONT.s).text_color(t.muted).child("Inbox")))
       .child(ui.badge(t, this.inbox.length, this.inbox.length ? t.accent : t.dim))
       .tooltip("Posteingang");
 
