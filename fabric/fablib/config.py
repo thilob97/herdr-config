@@ -697,6 +697,15 @@ def edit_team(name, rename=None, repos=None, members_json=None,
                 raise FabError(
                     f"Team „{target}“ gibt es schon; wähle einen anderen Namen"
                 )
+            live = agents.team_live(data, name)
+            if live:
+                names = ", ".join(sorted(live))
+                verb = "läuft" if len(live) == 1 else "laufen"
+                raise FabError(
+                    f"Team „{name}“ lässt sich nicht umbenennen: "
+                    f"{names} {verb} noch (stoppe zuerst mit "
+                    f"fab orchestrator stop {name})."
+                )
 
     old_repos = _team_repos(entry)
     final_repos = old_repos
@@ -781,6 +790,17 @@ def edit_team(name, rename=None, repos=None, members_json=None,
         )
 
     entry["name"] = target
+    if target != name:
+        raw_previous = entry.get("previous_names")
+        previous = [
+            item.strip()
+            for item in (raw_previous if isinstance(raw_previous, list) else [])
+            if isinstance(item, str) and item.strip()
+        ]
+        previous.append(name)
+        entry["previous_names"] = [
+            alias for alias in dict.fromkeys(previous) if alias != target
+        ]
     entry["repos"] = final_repos
     entry["members"] = final_members
     entry["reviewer"] = final_reviewer
@@ -813,11 +833,22 @@ def remove_team(name, actor):
                 f"{ticket['id']} ({ticket['status']})" for ticket in tickets
             )
         )
-    orchestrator, _row = agents.live_orchestrator(data, name)
-    if orchestrator:
+    live = agents.team_live(data, name)
+    orchestrators = sorted(
+        terminal for terminal in live if hc.is_orchestrator(terminal)
+    )
+    sessions = sorted(
+        terminal for terminal in live if not hc.is_orchestrator(terminal)
+    )
+    if orchestrators:
         blockers.append(
-            f"Orchestrator {orchestrator} läuft (stoppe ihn zuerst mit "
-            f"fab orchestrator stop {name})"
+            f"Orchestrator {', '.join(orchestrators)} läuft (stoppe ihn zuerst "
+            f"mit fab orchestrator stop {name})"
+        )
+    if sessions:
+        blockers.append(
+            "laufende Sessions " + ", ".join(sessions)
+            + f" (stoppe sie zuerst mit fab orchestrator stop {name})"
         )
     if blockers:
         raise FabError(
