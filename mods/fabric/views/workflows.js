@@ -295,11 +295,12 @@ function nodeCard(app, cx, t, node, status, run) {
 function graph(app, cx, t, definition, run) {
   // Von oben nach unten: ein Lauf bleibt auch im schmalen Fenster ohne
   // waagerechtes Scrollen vollständig sichtbar; Zweige stehen nebeneinander.
+  // 160 px je Karte, damit zwei Zweige neben dem 340-px-Ausgabefenster passen.
   const layout = model.flowLayout(definition, {
     vertical: true,
-    nodeWidth: 170,
+    nodeWidth: 160,
     nodeHeight: 72,
-    gapX: 16,
+    gapX: 12,
     gapY: 12,
     padding: 16,
   });
