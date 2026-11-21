@@ -217,6 +217,42 @@ class GitflowTests(FabricCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("nur im Status review", result.stderr)
 
+    def test_accept_rot_setzt_merge_zurueck(self):
+        repo, tid, worktree = self.review_ticket()
+        self.write_file(
+            os.path.join(worktree, "mods", "demo", "main.js"), "export default {}\n"
+        )
+        self.write_file(os.path.join(worktree, "mods", "demo", "mod.json"), "{}\n")
+        self.git_out(worktree, "add", "mods")
+        commit = self.git(worktree, "commit", "-qm", "mods")
+        self.assertEqual(commit.returncode, 0, commit.stderr)
+        main_before = self.git_out(repo, "rev-parse", "main")
+
+        result = self.cli("accept", tid, env={"HERDR_APP_FAIL": "1"})
+        self.assertNotEqual(result.returncode, 0)
+
+        ticket = self.ticket(tid)
+        self.assertEqual(ticket["status"], "review")
+        self.assertEqual(self.git_out(repo, "rev-parse", "main"), main_before)
+        self.assertFalse(os.path.isfile(os.path.join(repo, "aenderung.txt")))
+        self.assertTrue(os.path.isdir(worktree))
+        self.assertTrue(
+            self.git_out(repo, "branch", "--list", "fab/T-1-kurzer-titel")
+        )
+        self.assertFalse(
+            [row for row in self.events() if row["kind"] == "accept"]
+        )
+
+        rows = json.loads(self.ok("inbox", "--json").stdout)
+        attention = [
+            row
+            for row in rows
+            if row.get("kind") == "attention" and row.get("ticket") == tid
+        ]
+        self.assertEqual(len(attention), 1, rows)
+        self.assertTrue(attention[0]["text"].startswith("Merge zurückgesetzt:"))
+        self.assertIn("kein Fenster", attention[0]["text"])
+
     def test_reject_weckt_den_zustaendigen(self):
         repo, tid, worktree = self.review_ticket()
         self.set_live({"fab-zap-t-1": "t7"})

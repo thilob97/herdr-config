@@ -11,6 +11,7 @@ ATTENTION_TEXTS = (
     "unterdrückt: ping-pong",
     "unterdrückt: voll",
     "unterdrückt: start fehlgeschlagen",
+    "rücksetzen: check rot",
 )
 
 DELIVERED = ("geweckt", "gestartet", "an orchestrator", "zweiter Versuch erfolgreich")

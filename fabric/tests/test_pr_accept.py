@@ -71,7 +71,34 @@ if args[:2] == ["pr", "merge"]:
             ["git", "--git-dir", bare, "rev-parse", f"refs/heads/{head}"],
             capture_output=True, text=True,
         )
-        if sha.returncode == 0:
+        if sha.returncode == 0 and os.environ.get("GH_MERGE_COMMIT"):
+            base = subprocess.run(
+                ["git", "--git-dir", bare, "rev-parse", "refs/heads/main"],
+                capture_output=True, text=True,
+            )
+            tree = subprocess.run(
+                ["git", "--git-dir", bare, "rev-parse", f"{sha.stdout.strip()}^{{tree}}"],
+                capture_output=True, text=True,
+            )
+            if base.returncode == 0 and tree.returncode == 0:
+                commit = subprocess.run(
+                    [
+                        "git", "--git-dir", bare,
+                        "-c", "user.name=Test", "-c", "user.email=test@example.com",
+                        "commit-tree", tree.stdout.strip(),
+                        "-p", base.stdout.strip(),
+                        "-p", sha.stdout.strip(),
+                        "-m", "Merge PR",
+                    ],
+                    capture_output=True, text=True,
+                )
+                if commit.returncode == 0:
+                    subprocess.run(
+                        ["git", "--git-dir", bare, "update-ref",
+                         "refs/heads/main", commit.stdout.strip()],
+                        check=False,
+                    )
+        elif sha.returncode == 0:
             subprocess.run(
                 ["git", "--git-dir", bare, "update-ref",
                  "refs/heads/main", sha.stdout.strip()],
@@ -208,6 +235,43 @@ class PrAcceptTests(FabricCase):
         pr_rows = [row for row in self.events() if row["kind"] == "pr"]
         self.assertIn("pull/7", pr_rows[-1]["text"])
         self.assertIn("merge abgelehnt", pr_rows[-1]["text"])
+
+    def test_accept_rot_setzt_pr_merge_zurueck(self):
+        repo, tid, worktree = self.review_ticket()
+        self.write_file(
+            os.path.join(worktree, "mods", "demo", "main.js"), "export default {}\n"
+        )
+        self.write_file(os.path.join(worktree, "mods", "demo", "mod.json"), "{}\n")
+        self.git_out(worktree, "add", "mods")
+        commit = self.git(worktree, "commit", "-qm", "mods")
+        self.assertEqual(commit.returncode, 0, commit.stderr)
+        bare = self.setup_origin(repo)
+
+        result = self.cli(
+            "accept",
+            tid,
+            env=self.gh_env(bare, HERDR_APP_FAIL="1", GH_MERGE_COMMIT="1"),
+        )
+        self.assertNotEqual(result.returncode, 0)
+
+        self.assertEqual(self.ticket(tid)["status"], "review")
+        self.assertTrue(os.path.isdir(worktree))
+        self.assertTrue(self.bare_branch(bare, BRANCH))
+        self.assertTrue(self.git_out(repo, "branch", "--list", BRANCH))
+        self.assertNotEqual(
+            self.git(bare, "cat-file", "-e", "refs/heads/main:aenderung.txt").returncode,
+            0,
+        )
+
+        rows = json.loads(self.ok("inbox", "--json").stdout)
+        attention = [
+            row
+            for row in rows
+            if row.get("kind") == "attention" and row.get("ticket") == tid
+        ]
+        self.assertEqual(len(attention), 1, rows)
+        self.assertTrue(attention[0]["text"].startswith("Merge zurückgesetzt:"))
+        self.assertIn("kein Fenster", attention[0]["text"])
 
     def test_ohne_gh_anmeldung_lokaler_merge(self):
         repo, tid, worktree = self.review_ticket()
