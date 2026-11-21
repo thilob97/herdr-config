@@ -607,7 +607,7 @@ function properties(app, cx, t, ticket, { compact = false } = {}) {
 
 function actionBar(app, cx, t, ticket) {
   const actions = model.actionBar(ticket, app.tickets);
-  const error = ["accept", "reject", "drop", "verify", "wake", "status", "dispatch", "formulate"]
+  const error = ["accept", "accept-pr", "reject", "drop", "verify", "wake", "status", "dispatch", "formulate"]
     .map((key) => app.errorFor(key)).find(Boolean);
   return v_flex()
     .flex_none()

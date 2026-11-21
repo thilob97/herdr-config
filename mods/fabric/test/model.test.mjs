@@ -757,8 +757,15 @@ test("Live-Sessions eines Agenten kommen aus den Terminals", async () => {
 
 test("Freitexte stehen hinter --, Optionen tragen =", async () => {
   const {
-    editArgs, newArgs, commentArgs, rejectArgs, dropArgs, wakeArgs, promptSetArgs, repoSetArgs,
+    editArgs, newArgs, commentArgs, acceptArgs, prUrl, rejectArgs, dropArgs, wakeArgs, promptSetArgs, repoSetArgs,
   } = await import("../model.js");
+
+  assert.deepEqual(acceptArgs("T-1"), ["accept", "T-1"]);
+  assert.deepEqual(acceptArgs("T-1", { prOnly: true }), ["accept", "T-1", "--pr-only"]);
+  assert.equal(prUrl("PR bereit: https://github.com/o/r/pull/12\n"), "https://github.com/o/r/pull/12");
+  assert.equal(prUrl("https://github.com/o/r/pull/7 wurde geöffnet."), "https://github.com/o/r/pull/7");
+  assert.equal(prUrl("kein Link hier"), "");
+  assert.equal(prUrl(null), "");
 
   assert.deepEqual(editArgs("T-1", { title: "---", body: "-wichtig" }), [
     "edit", "T-1", "--title=---", "--body=-wichtig", "--from=mensch",

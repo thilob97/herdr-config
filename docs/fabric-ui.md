@@ -9,7 +9,7 @@ Grundlagen: `docs/concept.md`, Vertrag `docs/fabric.md` (Daten, CLI, Abschnitt 3
 | Fläche | Wo | Zweck |
 |---|---|---|
 | **Fabric-Fenster** | `openOverlay({ mod: "fabric", kind: "window", key: "fabric", keep: true, width: 0.86, height: 0.86, props: { view: "app" } })`, Taste `cmd-shift-f`, Knopf in jedem Panel-Kopf | Die Arbeitsfläche, in der alles gepflegt wird |
-| Panel `tickets` | Sidepanel | Schnellzugriff: Liste, kompaktes Detail, Kommentar, Abnahme; Knopf „Im Fenster öffnen“ |
+| Panel `tickets` | Sidepanel | Schnellzugriff: Liste, kompaktes Detail, Kommentar, Abnahme („Abnehmen“ oder „Nur PR öffnen“ → `fab accept --pr-only`, ohne Merge); Knopf „Im Fenster öffnen“ |
 | Panel `timeline` | Sidepanel | Zeitverlauf |
 | `inbox` | Seitenleiste | Was auf den Menschen wartet; Klick öffnet das Ticket im Fenster |
 | **Fabric-Agenten** | Seitenleiste, Block `fabric-agents` (Mod `fabric-sidebar`) in `layouts/fabric.json` | Nach Team gruppiert, je Team der Orchestrator mit Badge zuerst, Agenten eingerückt mit Rolle, Status und Laufzeit; Klick öffnet das Terminal, der Ticket-Chip das Ticket |
