@@ -12,6 +12,8 @@ import {
   NOTIFY_SETTINGS_KEY, NOTIFY_SEEN_KEY, NOTIFY_DEFAULTS, normalizeNotifySettings, inQuietHours, minuteOfDay,
   INBOX_LEVELS, inboxNotifyLevel, inboxNotifySound, inboxEntryId, inboxNotifications,
   formatCost, formatDuration, ticketCost, costTotals,
+  flowNodeStates, flowLayout, flowStatusWord, flowRunWord, flowNodeSteps,
+  flowNodeReason, flowNodeTicket, flowKindWord,
 } from "../model.js";
 
 test("Tickets werden nach Stufe gruppiert, in Stufenreihenfolge", () => {
@@ -1383,4 +1385,202 @@ test("costTotals summiert je Team, heute getrennt, und zählt Limitüberschreitu
     { name: "ohne Team", total: 0.5, today: 0.5, tickets: 1 },
     { name: "rot", total: 3, today: 0.75, tickets: 2 },
   ]);
+});
+
+// ---------- Workflows: Knotenstatus und Graph-Layout ----------
+
+const BRANCH_FLOW = {
+  name: "zweig",
+  nodes: [
+    { id: "start", type: "trigger", trigger: "manual" },
+    { id: "bedingung", type: "condition", expr: "{{start.ok}} == ja" },
+    { id: "ja", type: "agent", agent: "zap", title: "Pruefen" },
+    { id: "nein", type: "agent", agent: "ada" },
+    { id: "ende", type: "end" },
+  ],
+  edges: [
+    { from: "start", to: "bedingung" },
+    { from: "bedingung", to: "ja", when: "pass" },
+    { from: "bedingung", to: "nein", when: "fail" },
+    { from: "ja", to: "ende" },
+    { from: "nein", to: "ende" },
+  ],
+};
+
+const step = (position, node, status, data = {}) => ({
+  run: 1, position, node, kind: "agent", status, data, at: position,
+});
+
+test("Workflow-Status: genommener Zweig läuft, der andere wird übersprungen", () => {
+  const run = {
+    id: 1,
+    workflow: "zweig",
+    status: "running",
+    current: "ja",
+    steps: [
+      step(0, "start", "done"),
+      step(1, "bedingung", "pass", { pass: true }),
+    ],
+  };
+
+  assert.deepEqual(flowNodeStates(BRANCH_FLOW, run), {
+    start: "done",
+    bedingung: "done",
+    ja: "running",
+    nein: "skipped",
+    ende: "waiting",
+  });
+});
+
+test("Workflow-Status: fertiger Lauf überspringt den nicht genommenen Zweig", () => {
+  const run = {
+    id: 2,
+    workflow: "zweig",
+    status: "done",
+    current: "ende",
+    steps: [
+      step(0, "start", "done"),
+      step(1, "bedingung", "pass", { pass: true }),
+      step(2, "ja", "done", { status: "done", ticket: "T-2" }),
+      step(3, "ende", "done"),
+    ],
+  };
+
+  assert.deepEqual(flowNodeStates(BRANCH_FLOW, run), {
+    start: "done",
+    bedingung: "done",
+    ja: "done",
+    nein: "skipped",
+    ende: "done",
+  });
+});
+
+test("Workflow-Status: pausierte Freigabe wartet, Zyklen hängen nicht", () => {
+  const flow = {
+    name: "schleife",
+    nodes: [
+      { id: "start", type: "trigger", trigger: "manual" },
+      { id: "a", type: "approval", text: "Bitte freigeben" },
+      { id: "b", type: "action", action: "shell", command: "make" },
+      { id: "ende", type: "end" },
+    ],
+    edges: [
+      { from: "start", to: "a" },
+      { from: "a", to: "b" },
+      { from: "b", to: "a" },
+      { from: "b", to: "ende" },
+    ],
+  };
+  const run = {
+    id: 3,
+    status: "paused",
+    current: "a",
+    steps: [
+      step(0, "start", "done"),
+      step(1, "a", "wartet", { text: "Bitte freigeben" }),
+      step(2, "b", "done", { code: 0 }),
+    ],
+  };
+  const states = flowNodeStates(flow, run);
+
+  assert.equal(states.a, "waiting");
+  assert.equal(states.ende, "waiting");
+  assert.equal(states.start, "done");
+  assert.equal(states.b, "done");
+
+  const running = { ...run, status: "running", current: "a" };
+  assert.equal(flowNodeStates(flow, running).a, "waiting");
+});
+
+test("Workflow-Layout: Verzweigung in einer Schicht, Ende später, Kanten erhalten", () => {
+  const layout = flowLayout(BRANCH_FLOW);
+  const at = (id) => layout.nodes.find((node) => node.id === id);
+
+  assert.equal(layout.nodes.length, 5);
+  assert.equal(layout.edges.length, BRANCH_FLOW.edges.length);
+  assert.equal(at("ja").x, at("nein").x);
+  assert.ok(at("ja").y < at("nein").y);
+  assert.ok(at("ende").x > at("ja").x);
+  assert.deepEqual(layout.nodes.filter((node) => node.x === at("ja").x).map((node) => node.id), ["ja", "nein"]);
+  assert.ok(layout.nodes.every((node) => node.x >= 0 && node.y >= 0));
+  assert.ok(layout.width >= at("ende").x + at("ende").w);
+  assert.ok(layout.height >= at("nein").y + at("nein").h);
+
+  const branchEdge = layout.edges.find((edge) => edge.from === "bedingung" && edge.to === "ja");
+  assert.equal(branchEdge.when, "pass");
+  assert.equal(branchEdge.back, false);
+  assert.equal(branchEdge.x1, at("bedingung").x + at("bedingung").w);
+  assert.equal(branchEdge.x2, at("ja").x);
+  assert.equal(branchEdge.mid, (branchEdge.x1 + branchEdge.x2) / 2);
+  assert.equal(layout.edges.find((edge) => edge.to === "nein").when, "fail");
+  assert.equal(layout.edges.find((edge) => edge.from === "start").when, null);
+
+  assert.equal(at("ja").label, "Pruefen");
+  assert.equal(at("ja").detail, "zap");
+  assert.equal(at("start").label, "manuell");
+  assert.equal(at("ende").label, "Ende");
+
+  const empty = flowLayout({ nodes: [], edges: [] });
+  assert.equal(empty.nodes.length, 0);
+  assert.ok(empty.width > 0 && empty.height > 0);
+});
+
+test("Workflow-Layout vertikal: Schichten untereinander, Zweige nebeneinander", () => {
+  const layout = flowLayout(BRANCH_FLOW, { vertical: true });
+  const at = (id) => layout.nodes.find((node) => node.id === id);
+
+  assert.equal(at("ja").y, at("nein").y);
+  assert.ok(at("ja").x < at("nein").x);
+  assert.ok(at("ende").y > at("ja").y);
+  assert.ok(at("bedingung").y < at("ja").y);
+  assert.ok(layout.height >= at("ende").y + at("ende").h);
+  assert.ok(layout.width >= at("nein").x + at("nein").w);
+
+  const edge = layout.edges.find((row) => row.from === "bedingung" && row.to === "ja");
+  assert.equal(edge.vertical, true);
+  assert.equal(edge.x1, at("bedingung").x + at("bedingung").w / 2);
+  assert.equal(edge.y1, at("bedingung").y + at("bedingung").h);
+  assert.equal(edge.x2, at("ja").x + at("ja").w / 2);
+  assert.equal(edge.y2, at("ja").y);
+  assert.equal(edge.mid, (edge.y1 + edge.y2) / 2);
+});
+
+test("Workflow-Wörter, letzter Schritt und Knotengrund", () => {
+  assert.equal(flowStatusWord("waiting"), "wartet");
+  assert.equal(flowStatusWord("running"), "läuft");
+  assert.equal(flowStatusWord("done"), "fertig");
+  assert.equal(flowStatusWord("failed"), "fehlgeschlagen");
+  assert.equal(flowStatusWord("skipped"), "übersprungen");
+  assert.equal(flowRunWord("running"), "läuft");
+  assert.equal(flowRunWord("paused"), "pausiert");
+  assert.equal(flowRunWord("done"), "fertig");
+  assert.equal(flowRunWord("failed"), "fehlgeschlagen");
+  assert.equal(flowRunWord("cancelled"), "abgebrochen");
+  assert.equal(flowRunWord("dry"), "trocken");
+  assert.equal(flowKindWord("trigger"), "Auslöser");
+  assert.equal(flowKindWord("agent"), "Agent");
+  assert.equal(flowKindWord("action"), "Aktion");
+  assert.equal(flowKindWord("condition"), "Bedingung");
+  assert.equal(flowKindWord("approval"), "Freigabe");
+  assert.equal(flowKindWord("end"), "Ende");
+
+  const run = {
+    steps: [
+      step(0, "a", "fail"),
+      step(5, "b", "done", { ticket: "T-7" }),
+      step(2, "a", "done"),
+    ],
+  };
+  const steps = flowNodeSteps(run);
+  assert.equal(steps.a.status, "done");
+  assert.equal(steps.b.status, "done");
+
+  assert.equal(flowNodeReason(steps.b), "Ticket T-7");
+  assert.equal(flowNodeTicket(steps.b), "T-7");
+  assert.equal(flowNodeTicket(steps.a), null);
+  assert.equal(flowNodeReason(steps.a), "");
+  assert.equal(flowNodeReason({ data: { code: 1 } }), "Code 1");
+  assert.equal(flowNodeReason({ data: { ausgabe: "fertig" } }), "fertig");
+  assert.equal(flowNodeReason({ data: { text: "Bitte freigeben" } }), "Bitte freigeben");
+  assert.equal(flowNodeTicket(undefined), null);
 });

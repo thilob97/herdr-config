@@ -2552,7 +2552,8 @@ def build_parser():
     start = preview_sub.add_parser("start", help="Vorschau starten",
                                    description="Vorschau starten")
     start.add_argument("id", metavar="ID")
-    start.add_argument("--page", choices=("board", "ticket", "settings"),
+    start.add_argument("--page",
+                       choices=("board", "ticket", "settings", "workflows"),
                        default="board", help="Startseite im Fenster")
     shot = preview_sub.add_parser("shot", help="Screenshot der Vorschau anhängen",
                                   description="Screenshot der Vorschau anhängen")

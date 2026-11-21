@@ -237,6 +237,34 @@ class FlowCase(FabricCase):
 
     # -- pause/cancel/runs
 
+    def test_runs_json_include_steps_and_outputs(self):
+        self.add(self.base())
+        self.ok("flow", "run", "beispiel")
+        self.done("T-1")
+        self.ok("tick")
+        self.ok("flow", "run", "beispiel")
+
+        rows = self.runs()
+        self.assertEqual([row["status"] for row in rows], ["done", "running"])
+        for row in rows:
+            steps = row["steps"]
+            self.assertIsInstance(steps, list)
+            self.assertTrue(steps)
+            positions = [step["position"] for step in steps]
+            self.assertEqual(positions, sorted(positions))
+            for step in steps:
+                self.assertIsInstance(step["node"], str)
+                self.assertIsInstance(step["kind"], str)
+                self.assertIsInstance(step["status"], str)
+                self.assertIsInstance(step["data"], dict)
+            self.assertIsInstance(row["outputs"], dict)
+
+        finished = rows[0]
+        self.assertEqual(finished["outputs"]["a"]["status"], "done")
+        history = [(step["node"], step["status"]) for step in finished["steps"]]
+        self.assertIn(("b", "pass"), history)
+        self.assertIn(("ende", "done"), history)
+
     def test_pause_and_cancel(self):
         self.add(self.base())
         self.ok("flow", "run", "beispiel")
