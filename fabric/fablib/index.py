@@ -112,6 +112,7 @@ def _inbox(stalled, questions, reviews, rows, tickets=()):
         ticket_id = ticket["id"]
         entries.append(
             {
+                "id": f"attention:{ticket_id}:{since}",
                 "kind": "attention",
                 "ticket": ticket_id,
                 "at": since,
@@ -126,6 +127,7 @@ def _inbox(stalled, questions, reviews, rows, tickets=()):
     for kind, ticket, last, at in _waiting_entries(questions, reviews):
         entries.append(
             {
+                "id": f"{kind}:{ticket['id']}:{at}",
                 "kind": kind,
                 "ticket": ticket["id"],
                 "at": at,
@@ -158,6 +160,7 @@ def _inbox(stalled, questions, reviews, rows, tickets=()):
             reason = ""
         entries.append(
             {
+                "id": f"attention:{ticket_id}:{candidate.get('at')}:{target}:{summary}",
                 "kind": "attention",
                 "ticket": ticket_id,
                 "at": candidate.get("at"),
@@ -174,6 +177,7 @@ def _inbox(stalled, questions, reviews, rows, tickets=()):
                 continue
             entries.append(
                 {
+                    "id": f"lesson:{ticket['id']}:{proposal.get('id')}",
                     "kind": "lesson",
                     "ticket": ticket["id"],
                     "at": proposal.get("at"),

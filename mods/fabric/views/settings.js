@@ -2,7 +2,7 @@
 
 import { div } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { notify } from "herdr";
+import { notify, shared } from "herdr";
 import * as model from "../model.js";
 import * as ui from "../ui.js";
 
@@ -97,7 +97,49 @@ function keysCard(app, cx, t) {
   ], { id: "fabric-settings-keys", padding: S.m, gap: S.xs });
 }
 
+function notifyCard(app, cx, t, settings) {
+  const hour = (value) => `${String(value).padStart(2, "0")}:00`;
+  const stepper = (field, label) => {
+    const id = `fabric-notify-${field.replace("_", "-")}`;
+    const title = `Ruhezeit ${label === "bis" ? "bis" : "von"}`;
+    return h_flex()
+      .w_full()
+      .min_h(28)
+      .gap(S.s)
+      .items_center()
+      .child(div().w(150).flex_none().text_size(T.xs).text_color(t.dim).child(label))
+      .child(ui.button(t, {
+        id: `${id}-minus`,
+        label: "−",
+        small: true,
+        tooltip: `${title}: eine Stunde früher`,
+        onClick: (cx) => app.stepNotify(field, -1, cx),
+      }))
+      .child(div().w(52).text_size(T.s).text_color(t.foreground).child(hour(settings[field])))
+      .child(ui.button(t, {
+        id: `${id}-plus`,
+        label: "+",
+        small: true,
+        tooltip: `${title}: eine Stunde später`,
+        onClick: (cx) => app.stepNotify(field, 1, cx),
+      }));
+  };
+  return ui.card(t, [
+    ui.sectionTitle(t, "Benachrichtigungen", [], "Neue Inbox-Einträge melden sich einmal, mit Ton."),
+    ui.switchRow(t, {
+      id: "fabric-notify-enabled",
+      checked: settings.enabled,
+      label: "Toasts für neue Inbox-Einträge",
+      detail: "In der Ruhezeit kommen keine Toasts; der Eintrag bleibt in der Inbox.",
+      onChange: (enabled) => app.setNotify({ enabled }, cx),
+    }),
+    stepper("quiet_from", "Ruhezeit von"),
+    stepper("quiet_to", "bis"),
+  ], { id: "fabric-settings-notify", padding: S.m, gap: S.xs });
+}
+
 export function renderSettings(app, cx, t) {
+  const settings = model.normalizeNotifySettings(shared(model.NOTIFY_SETTINGS_KEY));
   return v_flex()
     .size_full()
     .min_h(0)
@@ -117,6 +159,7 @@ export function renderSettings(app, cx, t) {
         .child(h_flex().w_full().gap(S.m).items_start().flex_wrap()
           .child(div().w(440).child(dataCard(app, cx, t)))
           .child(div().w(440).child(versionCard(app, cx, t))))
+        .child(div().w_full().max_w(900).child(notifyCard(app, cx, t, settings)))
         .child(div().w_full().max_w(900).child(keysCard(app, cx, t))),
     );
 }

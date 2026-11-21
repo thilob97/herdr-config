@@ -112,9 +112,9 @@ Bei `tick` steht in `text` eines von: `geweckt`, `gestartet`, `an orchestrator`,
      "stall": {"rule": "doing", "since": 0, "attempts": 2, "attention": true, "reason": "…"}}
   ],
   "inbox": [
-    {"kind": "question", "ticket": "T-1", "at": 0, "from": "zap", "text": "…"},
-    {"kind": "review", "ticket": "T-2", "at": 0, "from": "zap", "text": "Zusammenfassung"},
-    {"kind": "attention", "ticket": "T-3", "at": 0, "from": "fab",
+    {"id": "question:T-1:0", "kind": "question", "ticket": "T-1", "at": 0, "from": "zap", "text": "…"},
+    {"id": "review:T-2:0", "kind": "review", "ticket": "T-2", "at": 0, "from": "zap", "text": "Zusammenfassung"},
+    {"id": "attention:T-3:0", "kind": "attention", "ticket": "T-3", "at": 0, "from": "fab",
      "text": "stockt seit 12 min – Regel 1 (doing): …", "agent": "zap",
      "reason": "Regel 1 (doing): …", "since": 0}
   ],
@@ -129,6 +129,7 @@ Bei `tick` steht in `text` eines von: `geweckt`, `gestartet`, `an orchestrator`,
 - `inbox` wird **nur** in `fab` berechnet: `question` = Ticket nicht done, `mensch` in `waiting`; `review` = Status `review`; `attention` = Wecken unterdrückt durch Ping-Pong-Bremse oder Start fehlgeschlagen, solange danach nichts Neues im Ticket passiert ist. Hat ein `todo`/`doing`-Ticket `stall.attention`, gilt genau **ein** `attention`-Eintrag aus dem Stillstand (`stockt seit …`, Grund und `agent` für „Erneut versuchen“); der aus `wake` abgeleitete Eintrag entfällt dann.
 - Pro Ticket höchstens **ein** Eintrag aus `question` und `review`: Steht das Ticket auf `review`, gilt nur `review`, `question` entfällt (auch wenn `mensch` in `waiting` steht). `attention` darf daneben stehen.
 - Der Mod zählt nichts selbst: Inbox-Zahl = `inbox.length`, Stufen = Tickets nach `status`.
+- Jeder Inbox-Eintrag trägt eine stabile `id`; sie bleibt über Neuberechnungen von `index.json` gleich, solange der Eintrag besteht.
 - `index.json` bleibt unter 1 MiB: Ticket-Einträge ohne `body` und ohne `comments`, höchstens 300 Ereignisse.
 
 ## 3. CLI
@@ -315,4 +316,5 @@ Ein einziger Mod, mehrfach im Layout, Ansicht über `props().view`:
 - Gemeinsamer Zustand: `shared("fabric.selected")` (gewähltes Ticket).
 - Aufbau: `main.js` (View, verteilt nach `view`), `model.js` (reine Logik ohne herdr-/gpui-Importe: Gruppieren, Kürzel, Zeitformat, Erwähnungen markieren, Zeitverlauf-Feed: Tagesgruppen und Ereignissätze), `ui.js` (Token und Bausteine), `views/*.js`. `model.js` hat node-Tests.
 - Texte deutsch. Farben nur über `theme()`. Status- und Stufenwörter stehen genau einmal in `model.js`.
+- **Benachrichtigungen.** Jeder neue menschliche Inbox-Eintrag (`question`, `review`, `attention`, `lesson`) erzeugt genau **einen** Toast mit Ton und dem Knopf **„Öffnen“**, der das zugehörige Ticket im Fabric-Fenster zeigt. Den Toast rendert der Mod `fabric-toast` (Layout-Wurzel `"toast": "fabric-toast"`); er läuft nur über den gemeinsamen Zustand, nicht über eigene Timer. Bereits gemeldete Einträge stehen in `shared("fabric.notify.seen")`. Einstellungen stehen in `shared("fabric.notify")` als `{enabled, quiet_from, quiet_to}` (Stunden 0–23, Standard `22`–`8`); in der Ruhezeit oder bei `enabled: false` unterdrückte Einträge wandern trotzdem in `seen` und werden später **nicht** nachgeholt.
 - Layout `layouts/fabric.json`: Klon von `main`. Im Stack `panel-body` die Kinder `fabric-tickets` (`{"mod":"fabric","props":{"view":"tickets"}}`) und `fabric-timeline`, `files` und `changes` bleiben. In der Seitenleiste unter `agents` ein Block `fabric-inbox`; über `agents` der Block `fabric-agents` (Mod `fabric-sidebar`: eigener Abschnitt „Fabric“ mit Orchestrator, Rolle/Status/Laufzeit, Ticket-Chip). Der Block `agents` nutzt den Klon `agents-filtered` der mitgelieferten Liste: Er blendet Fab-Terminals (Labels `fab.agent`/`fab.role`, Name `fab-*`) samt Subagenten aus, die übrigen Agenten bleiben. `main.json` und die mitgelieferte Liste bleiben unverändert. Beleg: `docs/assets/t14-fabric-filtered.png` (nur der normale Agent), Vergleich `docs/assets/t14-main-unfiltered.png` (dieselben Fab-Agenten in der normalen Liste von `main`). Tasten in `keys.json`: Panel Tickets und Timeline umschalten, Fokus auf „Neues Ticket“.

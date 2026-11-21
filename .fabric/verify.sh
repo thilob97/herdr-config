@@ -7,5 +7,6 @@ node --test mods/fabric/test/
 node --test mods/fabric-sidebar/test/
 node --test mods/agents-filtered/test/
 herdr-app check mods/fabric
+herdr-app check mods/fabric-toast
 herdr-app check mods/fabric-sidebar
 herdr-app check mods/agents-filtered
