@@ -361,6 +361,10 @@ class WakeTests(FabricCase):
 
     # -- Fehlgeschlagener Agentenstart (T-27)
 
+    FIRST_FAILED = "erster Versuch fehlgeschlagen"
+    START_FAILED = "unterdrückt: start fehlgeschlagen"
+    START_RETRY_EVENT = "zweiter Versuch erfolgreich"
+
     def fail_counter(self, count):
         path = os.path.join(self.tmp, "run-fails")
         self._write(path, str(count))
@@ -370,7 +374,7 @@ class WakeTests(FabricCase):
         rows = [
             row
             for row in self.wake_events(tid)
-            if row["text"] == "unterdrückt: start fehlgeschlagen"
+            if row["text"] in (self.FIRST_FAILED, self.START_FAILED)
         ]
         if target:
             rows = [row for row in rows if row["target"] == target]
@@ -390,14 +394,22 @@ class WakeTests(FabricCase):
         result = self.ok("comment", tid, "--from", "mensch", "@zap los", env=env)
         self.assertIn("start fehlgeschlagen", result.stdout)
         self.assertIn("hc run:", result.stdout)
+        self.assertNotIn("hc run: hc run:", result.stdout)
         # Den zweiten Versuch abwarten, damit kein Hintergrundprozess übrig bleibt.
         self.wait_for(lambda: len(self.start_failures(tid)) >= 2)
         first = self.start_failures(tid)[0]
+        self.assertEqual(first["text"], self.FIRST_FAILED)
         self.assertIn("hc run:", first["reason"])
+        self.assertNotIn("hc run: hc run:", first["reason"])
         self.assertTrue(
             any(
                 "hc run:" in row["text"] and "Zweiter Versuch" in row["text"]
                 for row in self.fab_comments(tid)
+            )
+        )
+        self.assertFalse(
+            any(
+                "hc run: hc run:" in row["text"] for row in self.fab_comments(tid)
             )
         )
 
@@ -410,6 +422,7 @@ class WakeTests(FabricCase):
             "FAB_WAKE_RETRY_DELAY": "0",
         }
         self.ok("comment", tid, "--from", "mensch", "@zap los", env=env)
+        self.assertEqual(self.attention(), [])
         self.wait_for(
             lambda: any(
                 row["text"] == "zweiter Versuch erfolgreich"
@@ -417,6 +430,11 @@ class WakeTests(FabricCase):
             )
             and bool(self.ticket(tid)["sessions"])
         )
+        failures = self.start_failures(tid)
+        self.assertEqual(len(failures), 1)
+        self.assertEqual(failures[0]["text"], self.FIRST_FAILED)
+        self.assertIn("hc run:", failures[0]["reason"])
+        self.assertNotIn("hc run: hc run:", failures[0]["reason"])
         retry = [
             row
             for row in self.wake_events(tid)
@@ -440,6 +458,31 @@ class WakeTests(FabricCase):
         time.sleep(0.3)
         self.assertEqual(len(self.hc_calls("run")), 2)
 
+    def test_kein_attention_waehrend_der_pause(self):
+        tid, _worktree = self.worktree_ticket("Pause")
+        self.set_live({})
+        self.clear_log()
+        env = {
+            "HC_RUN_FAIL_TIMES": self.fail_counter(1),
+            "FAB_WAKE_RETRY_DELAY": "2",
+        }
+        self.ok("comment", tid, "--from", "mensch", "@zap los", env=env)
+        # Während der Pause: kein Inbox-Eintrag, keine Wiederholung gestartet.
+        self.assertEqual(self.attention(), [])
+        self.assertEqual(len(self.hc_calls("run")), 1)
+        first = self.start_failures(tid)
+        self.assertEqual([row["text"] for row in first], [self.FIRST_FAILED])
+        self.assertIn("hc run:", first[0]["reason"])
+        self.assertNotIn("hc run: hc run:", first[0]["reason"])
+        self.wait_for(
+            lambda: any(
+                row["text"] == self.START_RETRY_EVENT
+                for row in self.wake_events(tid)
+            )
+        )
+        self.assertEqual(self.attention(), [])
+        self.assertEqual(len(self.hc_calls("run")), 2)
+
     def test_zweiter_fehlschlag_legt_attention_an(self):
         tid, _worktree = self.worktree_ticket("Dauerfehler")
         self.set_live({})
@@ -455,15 +498,22 @@ class WakeTests(FabricCase):
         )
         failures = self.start_failures(tid)
         self.assertEqual(len(failures), 2)
+        self.assertEqual(
+            [row["text"] for row in failures],
+            [self.FIRST_FAILED, self.START_FAILED],
+        )
         for row in failures:
             self.assertIn("hc run:", row["reason"])
+            self.assertNotIn("hc run: hc run:", row["reason"])
         self.assertEqual(len(self.hc_calls("run")), 2)
         attention = [row for row in self.attention() if row["ticket"] == tid]
         self.assertEqual(len(attention), 1)
         self.assertEqual(attention[0]["agent"], "zap")
         self.assertIn("hc run:", attention[0]["reason"])
+        self.assertNotIn("hc run: hc run:", attention[0]["reason"])
         self.assertIn("Start fehlgeschlagen: zap", attention[0]["text"])
         self.assertIn("hc run:", attention[0]["text"])
+        self.assertNotIn("hc run: hc run:", attention[0]["text"])
         self.assertTrue(
             any("endgültig" in row["text"] for row in self.fab_comments(tid))
         )
@@ -482,13 +532,19 @@ class WakeTests(FabricCase):
         )
         failures = self.start_failures(tid, "orchestrator")
         self.assertEqual(len(failures), 2)
+        self.assertEqual(
+            [row["text"] for row in failures],
+            [self.FIRST_FAILED, self.START_FAILED],
+        )
         for row in failures:
             self.assertIn("hc run:", row["reason"])
+            self.assertNotIn("hc run: hc run:", row["reason"])
         self.assertEqual(len(self.hc_calls("run")), 2)
         attention = [row for row in self.attention() if row["ticket"] == tid]
         self.assertEqual(len(attention), 1)
         self.assertEqual(attention[0]["agent"], "orchestrator")
         self.assertIn("hc run:", attention[0]["reason"])
+        self.assertNotIn("hc run: hc run:", attention[0]["reason"])
         self.assertIn("Start fehlgeschlagen: orchestrator", attention[0]["text"])
 
     def test_attention_verschwindet_nach_erneutem_start(self):

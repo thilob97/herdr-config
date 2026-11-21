@@ -13,6 +13,7 @@ RESERVED = ("orchestrator", "mensch")
 PING_WINDOW_MS = 10 * 60 * 1000
 PING_LIMIT = 8
 START_FAILED = "unterdrückt: start fehlgeschlagen"
+FIRST_FAILED = "erster Versuch fehlgeschlagen"
 START_RETRY = "zweiter Versuch erfolgreich"
 RETRY_DELAY_DEFAULT = 5.0
 
@@ -388,15 +389,30 @@ def process(ticket, names, author, text, roster, no_wake=False, message_for=None
         if attempt == 1 and event_text == START_FAILED:
             detail = reason or "unbekannt"
             delay = retry_delay()
-            add_comment(
-                ticket,
-                "fab",
-                f"Start fehlgeschlagen: {target} wurde nicht gestartet.\n"
-                f"Grund: {detail}\nZweiter Versuch in {delay:g} s.",
-                roster,
-            )
-            events.append("wake", ticket["id"], author, name, event_text, reason=reason)
-            schedule_retry(ticket, name, send_text)
+            scheduled = schedule_retry(ticket, name, send_text)
+            if scheduled:
+                add_comment(
+                    ticket,
+                    "fab",
+                    f"Start fehlgeschlagen: {target} wurde nicht gestartet.\n"
+                    f"Grund: {detail}\nZweiter Versuch in {delay:g} s.",
+                    roster,
+                )
+                events.append(
+                    "wake", ticket["id"], author, name, FIRST_FAILED, reason=reason
+                )
+            else:
+                add_comment(
+                    ticket,
+                    "fab",
+                    f"Start fehlgeschlagen: {target} wurde nicht gestartet.\n"
+                    f"Grund: {detail}\nDie Wiederholung konnte nicht gestartet "
+                    f"werden.",
+                    roster,
+                )
+                events.append(
+                    "wake", ticket["id"], author, name, START_FAILED, reason=reason
+                )
         elif attempt == 2 and event_text == START_FAILED:
             detail = reason or "unbekannt"
             add_comment(

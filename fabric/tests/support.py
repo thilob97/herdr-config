@@ -46,7 +46,7 @@ if command == "run":
         if left > 0:
             with open(times, "w", encoding="utf-8") as handle:
                 handle.write(str(left - 1))
-        print("hc run: Start fehlgeschlagen", file=sys.stderr)
+        print("Start fehlgeschlagen", file=sys.stderr)
         sys.exit(1)
     print(json.dumps({"address": "t900", "name": "stub", "state": "live"}))
     sys.exit(0)

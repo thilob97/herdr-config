@@ -59,7 +59,7 @@ def tail(limit=300):
     return read_all()[-limit:]
 
 
-DELIVERED = ("geweckt", "gestartet", "an orchestrator")
+DELIVERED = ("geweckt", "gestartet", "an orchestrator", "zweiter Versuch erfolgreich")
 
 
 def count_wakes(ticket, target, since_ms):
