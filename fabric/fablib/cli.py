@@ -745,6 +745,11 @@ def cmd_verdict(args):
         if args.state == "fail":
             ticket["status"] = "doing"
             ticket.pop("stall", None)
+            ticket["waiting"] = [
+                waiting
+                for waiting in ticket["waiting"]
+                if waiting.lower() != "mensch"
+            ]
             _add_comment(ticket, actor, summary)
             if assignee:
                 reviewer = roster.get("reviewer") or ""
@@ -1172,7 +1177,19 @@ def cmd_agents(args):
     running = agents.running(live)
     sessions = []
     for ticket in store.all_tickets():
+        merged = {}
         for session in ticket.get("sessions") or []:
+            key = session.get("name") or session.get("terminal")
+            if not key:
+                continue
+            previous = merged.get(key)
+            if (
+                previous is None
+                or (session.get("started_at") or 0)
+                >= (previous.get("started_at") or 0)
+            ):
+                merged[key] = session
+        for session in merged.values():
             name = session.get("name") or ""
             sessions.append(
                 {

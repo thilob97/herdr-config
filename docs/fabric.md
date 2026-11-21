@@ -137,7 +137,7 @@ Alle Befehle schreiben unter Lock, hängen Ereignisse an und erzeugen danach `in
 | `fab attach ID DATEI [--no-edit] [--from NAME]` | Bild als Anhang: `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp` (Groß/klein egal). Kopiert nach `data/fabric/attachments/<ID>/<name>` (Name aus der Datei, bereinigt; gleicher Inhalt wird wiederverwendet, sonst `-2`, `-3`, …). Gibt die Zeile `![<name>](data/fabric/attachments/<ID>/<name>)` aus, hängt den Anhang an `attachments` und standardmäßig den Link an den Body; `--no-edit` lässt den Body unverändert. Akteur: `--from`, Standard `mensch`. |
 | `fab dispatch ID [--agent NAME] --from NAME` | Verlangt `repo`, einen Abschnitt `## Abnahmekriterien` und keine offenen `blocked_by`. Legt Branch `fab/<ID>-<slug>` vom aktuellen HEAD des Repos und den Worktree an, startet den Agenten (Abschnitt 5), Status `doing`. Läuft er schon für das Ticket: wecken statt starten. |
 | `fab verify ID [--from NAME]` | Führt `<worktree>/.fabric/verify.sh` aus (fehlt sie: Fehler mit Pfad), `sh` im Worktree, Timeout 10 min. Schreibt `checks` auf den HEAD. Akteur des `verify`-Ereignisses ist `--from`, Standard: `assignee`. |
-| `fab verdict ID pass\|fail --from NAME "<zusammenfassung>"` | Urteil des Prüfers auf den HEAD. `fail`: Kommentar mit Zusammenfassung, Status `doing`, weckt `assignee`. `pass`: weckt `assignee` mit dem Hinweis, auf grünen Checks mit `fab handover` zu übergeben. Ist der Prüfer selbst der `assignee`, wird weder bei `pass` noch bei `fail` jemand geweckt. |
+| `fab verdict ID pass\|fail --from NAME "<zusammenfassung>"` | Urteil des Prüfers auf den HEAD. `fail`: Kommentar mit Zusammenfassung, Status `doing`, entfernt `mensch` aus `waiting` (keine Inbox-Frage), weckt `assignee`. `pass`: weckt `assignee` mit dem Hinweis, auf grünen Checks mit `fab handover` zu übergeben. Ist der Prüfer selbst der `assignee`, wird weder bei `pass` noch bei `fail` jemand geweckt. |
 | `fab handover ID --from NAME "<zusammenfassung>"` | Übergabe an den Menschen. Gate: `checks.state == pass` und `verdict.state == pass`, beide auf dem aktuellen HEAD. Sonst Abbruch mit den Gründen. Erfolg: Status `review`, `mensch` in `waiting`, Kommentar. |
 | `fab accept ID` | Nur der Mensch. Merge `--no-ff` des Branch in `base` im Haupt-Checkout (der muss auf `base` stehen; uncommittete Änderungen bleiben erlaubt, solange sie keine Datei des Branchs berühren — sonst Abbruch mit den betroffenen Dateien), beendet alle Sessions des Tickets, entfernt Worktree und Branch, Status `done`. Danach startet `fab` automatisch jedes Ticket, das nur noch durch dieses blockiert war und startbereit ist (`todo`, Zuständiger, Repo, Abnahmekriterien) — mit denselben Regeln wie `fab dispatch`. Entwürfe und unvollständige Tickets bleiben liegen; Grund und Startfehler stehen als `dispatch`-Ereignis im Verlauf, die Abnahme bleibt gültig. |
 | `fab reject ID "<feedback>"` | Nur der Mensch. Kommentar von `mensch`, Status `doing`, weckt `assignee`. |
@@ -145,7 +145,7 @@ Alle Befehle schreiben unter Lock, hängen Ereignisse an und erzeugen danach `in
 | `fab wake ID NAME --from NAME ["<text>"]` | Wecken von Hand, gleiche Regeln wie bei Erwähnungen |
 | `fab tick [--dry-run] [--install\|--uninstall]` | Stillstandswächter (Abschnitt 4b). Ohne Optionen ein Lauf: wecken/starten oder `attention`, sonst nichts. `--dry-run` zeigt nur die geplanten Aktionen. `--install` legt den launchd-Agent `~/Library/LaunchAgents/de.herdr.fabric.tick.plist` (Intervall 60 s) an, `--uninstall` entfernt ihn. Kein `--from`. |
 | `fab orchestrator start\|stop\|status [TEAM]` | Orchestrator-Terminal je Team verwalten (Abschnitt 5) |
-| `fab agents [--json]` | Mitglieder aller Teams mit Teamzuordnung (`teams`) und laufende Sessions |
+| `fab agents [--json]` | Mitglieder aller Teams mit Teamzuordnung (`teams`) und laufende Sessions. Beendete Sessions zeigen `beendet`; je Ticket und Terminalname erscheint nur der neueste Start. |
 | `fab inbox [--json]` | wie `index.json.inbox` |
 | `fab index` | `index.json` neu erzeugen |
 
@@ -188,7 +188,7 @@ Das UI pflegt alles über diese Befehle. Alle schreiben atomar (tmp + `os.replac
 
 Erwähnung = `@name`, Muster `@([a-z][a-z0-9_-]*)`, ohne Beachtung der Groß-/Kleinschreibung. Pro Kommentar wird jeder Name höchstens einmal geweckt. Für jeden genannten Namen gilt in dieser Reihenfolge:
 
-1. Name = Autor → nichts.
+1. Name = Autor → nichts. Zuvor geprüft wird ein Merge-Konflikt des Ticket-Branch mit der Basis: Kommentar mit Dateiliste an den Zuständigen und Wecken, auch wenn `mensch` der Autor ist.
 2. `--no-wake` → nichts.
 3. `mensch` → kein Wecken. `mensch` kommt in `waiting`, das Ticket erscheint in der Inbox.
 4. Ticket `done` oder `dropped` → `unterdrückt: abgeschlossen`.

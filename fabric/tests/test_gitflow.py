@@ -1,4 +1,5 @@
 """Prüfen, Urteil, Übergabe-Gate, Abnahme, Zurückweisen, Verwerfen."""
+import json
 import os
 
 from fabric.tests.support import FabricCase
@@ -100,6 +101,23 @@ class GitflowTests(FabricCase):
         self.assertEqual(sends[0][1], "t7")
         self.assertIn("Urteil fail", sends[0][2])
         self.assertEqual(self.wake_events(tid)[-1]["text"], "geweckt")
+
+    def test_verdict_fail_raeumt_mensch_aus_waiting(self):
+        repo, tid, worktree = self.review_ticket()
+        self.assertIn("mensch", self.ticket(tid)["waiting"])
+        self.set_live({"fab-zap-t-1": "t7"})
+        self.clear_log()
+        self.ok("verdict", tid, "fail", "--from", "ada", "Doku fehlt.")
+        ticket = self.ticket(tid)
+        self.assertEqual(ticket["status"], "doing")
+        self.assertNotIn("mensch", ticket["waiting"])
+        rows = json.loads(self.ok("inbox", "--json").stdout)
+        self.assertFalse(
+            [row for row in rows if row.get("ticket") == tid], rows
+        )
+        sends = self.hc_calls("send")
+        self.assertEqual(len(sends), 1)
+        self.assertEqual(sends[0][1], "t7")
 
     def test_handover_gate_zaehlt_nur_aktuellen_head(self):
         repo, tid, worktree = self.ready_ticket()

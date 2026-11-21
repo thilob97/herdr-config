@@ -202,11 +202,7 @@ def _one(ticket, name, author, text, roster, no_wake, message_for, send_text=Non
 
     Rückgabe: (wake-text oder None, Zeile fürs Terminal, Adresse, Grund).
     """
-    if name == (author or "").lower():
-        return None, "kein Wecken: du bist der Autor", None, ""
-    if no_wake:
-        return None, "kein Wecken (--no-wake)", None, ""
-    if name == "mensch":
+    if name == "mensch" and not no_wake:
         conflict = ticket_conflict(ticket)
         if conflict is not None:
             base, files = conflict
@@ -225,6 +221,11 @@ def _one(ticket, name, author, text, roster, no_wake, message_for, send_text=Non
                     )
                 return None, f"Merge-Konflikt mit {base}: {line}", address, reason
             return None, f"Merge-Konflikt mit {base}: kein zuständiger Agent", None, ""
+    if name == (author or "").lower():
+        return None, "kein Wecken: du bist der Autor", None, ""
+    if no_wake:
+        return None, "kein Wecken (--no-wake)", None, ""
+    if name == "mensch":
         if "mensch" not in ticket["waiting"]:
             ticket["waiting"].append("mensch")
         return "unterdrückt: mensch", "unterdrückt: mensch", None, ""
