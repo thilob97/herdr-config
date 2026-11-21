@@ -1262,7 +1262,51 @@ def _accept_check_failed(ticket, report):
     )
 
 
+_HINT_RE = re.compile(r"^\s*hinweis\b", re.IGNORECASE)
+
+
+def _reviewer_hints(ticket, roster):
+    """Nicht blockierende `hinweis`-Kommentare der Prüferin, in Ticketreihenfolge."""
+    team = _ticket_team(ticket, roster)
+    reviewer = str(
+        (team or {}).get("reviewer") or (roster or {}).get("reviewer") or ""
+    ).strip().lower()
+    if not reviewer:
+        return []
+    hints = []
+    for comment in ticket.get("comments") or []:
+        comment = comment or {}
+        if str(comment.get("author") or "").lower() != reviewer:
+            continue
+        text = str(comment.get("text") or "")
+        if _HINT_RE.match(text):
+            hints.append(text.strip())
+    return hints
+
+
+def _wake_review_hints(ticket, roster):
+    """Weckt den Orchestrator mit den Prüfer-Hinweisen des abgenommenen Tickets."""
+    hints = _reviewer_hints(ticket, roster)
+    if not hints:
+        return []
+    listed = "\n".join(f"- {hint}" for hint in hints)
+
+    def message_for(_name):
+        return (
+            f"Ticket {ticket['id']} „{ticket['title']}“ wurde angenommen und hat "
+            f"{len(hints)} nicht blockierende Prüfer-Hinweis(e):\n{listed}\n"
+            f"Lege dafür genau ein Backlog-Ticket an (Status todo, nicht dispatchen), "
+            f"verweise auf {ticket['id']} und trage die neue ID dort als Kommentar ein "
+            f"(Abschnitt „Prüfer-Hinweise nach Abnahme“ im Orchestrator-Prompt)."
+        )
+
+    return wake.process(
+        ticket, ["orchestrator"], "fab", listed, roster, message_for=message_for
+    )
+
+
 def cmd_accept(args):
+    roster = agents.load()
     with store.locked():
         ticket = store.load(args.id)
         if ticket["status"] != "review":
@@ -1325,6 +1369,7 @@ def cmd_accept(args):
             ended = _end_sessions(ticket)
             git.remove_worktree(top, worktree)
             git.delete_branch(top, branch_name)
+            hint_wakes = _wake_review_hints(ticket, roster)
             ticket["status"] = "done"
             ticket.pop("stall", None)
             ticket["waiting"] = []
@@ -1339,6 +1384,7 @@ def cmd_accept(args):
                 f"({_short(merged)}); Worktree und Branch entfernt"
                 + (f"; {len(ended)} Session(s) beendet" if ended else "")
             )
+            _print_wake_results(hint_wakes)
             issue = ticket.get("issue") or {}
             if isinstance(issue, dict) and issue.get("number"):
                 print(
@@ -1393,6 +1439,7 @@ def cmd_accept(args):
                 ended = _end_sessions(ticket)
                 git.remove_worktree(top, worktree)
                 git.delete_branch(top, branch_name)
+                hint_wakes = _wake_review_hints(ticket, roster)
                 ticket["status"] = "done"
                 ticket.pop("stall", None)
                 ticket["waiting"] = []
@@ -1409,6 +1456,7 @@ def cmd_accept(args):
                     f"gemergt ({_short(merged)}); Worktree und Branch entfernt"
                     + (f"; {len(ended)} Session(s) beendet" if ended else "")
                 )
+                _print_wake_results(hint_wakes)
             except store.PersistError:
                 raise
             except FabError as exc:
