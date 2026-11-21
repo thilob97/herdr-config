@@ -7,7 +7,21 @@ import sys
 import time
 import unicodedata
 
-from . import agents, config, events, git, hc, index, prompts, render, repos, store, teams, wake
+from . import (
+    agents,
+    config,
+    events,
+    git,
+    hc,
+    index,
+    prompts,
+    render,
+    repos,
+    store,
+    teams,
+    tick,
+    wake,
+)
 from .errors import FabError, HcError
 
 
@@ -983,9 +997,41 @@ def cmd_wake(args):
             ticket, [args.name.lower()], actor, text, roster,
             attempt=attempt, direct=args.retry,
         )
+        if any(
+            line.split(" (")[0] in ("geweckt", "gestartet", "an orchestrator")
+            for _name, line in results
+        ):
+            ticket.pop("stall", None)
         store.save(ticket)
         index.rebuild()
     _print_wake_results(results)
+    return 0
+
+
+def cmd_tick(args):
+    if args.install or args.uninstall:
+        if args.dry_run:
+            raise FabError("--dry-run gilt nur für den Prüflauf, nicht für launchd")
+        if args.install:
+            path, ok, detail = tick.install()
+            print(f"launchd-Auftrag installiert: {path}")
+            if not ok:
+                print(f"Hinweis: launchctl bootstrap: {detail}")
+        else:
+            path, ok, detail = tick.uninstall()
+            print(f"launchd-Auftrag entfernt: {path}")
+            if not ok:
+                print(f"Hinweis: launchctl bootout: {detail}")
+        return 0
+    roster = agents.load(required=False)
+    with store.locked():
+        result = tick.run(roster, dry=args.dry_run)
+        if result.changed:
+            index.rebuild()
+    for line in result:
+        print(line)
+    if not result:
+        print("Keine Aktion.")
     return 0
 
 
@@ -1802,13 +1848,22 @@ def build_parser():
     remove.add_argument("name", metavar="NAME")
     remove.add_argument("--from", dest="from_", metavar="NAME", required=True)
 
+    item = command("tick", "Stillstand prüfen, wecken oder melden", cmd_tick)
+    item.add_argument("--dry-run", action="store_true",
+                      help="nur zeigen, nichts schreiben und niemanden wecken")
+    launchd = item.add_mutually_exclusive_group()
+    launchd.add_argument("--install", action="store_true",
+                         help="launchd-Auftrag (alle 60 s) installieren")
+    launchd.add_argument("--uninstall", action="store_true",
+                         help="launchd-Auftrag entfernen")
+
     item = command("settings", "Einstellungen des Rosters setzen", cmd_settings)
     settings_sub = item.add_subparsers(dest="action", metavar="AKTION", required=True)
     set_item = settings_sub.add_parser("set", help="Einstellung setzen",
                                        description="Einstellung setzen")
     set_item.add_argument("key", metavar="SCHLÜSSEL",
-                          help="max_sessions, reviewer, orchestrator_argv oder "
-                               "max_sessions_total")
+                          help="max_sessions, reviewer, orchestrator_argv, "
+                               "max_sessions_total oder tick_*_minutes")
     set_item.add_argument("value", metavar="WERT")
     set_item.add_argument("--from", dest="from_", metavar="NAME", required=True)
 
