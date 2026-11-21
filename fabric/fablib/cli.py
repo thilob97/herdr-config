@@ -745,6 +745,11 @@ def cmd_verdict(args):
         if args.state == "fail":
             ticket["status"] = "doing"
             ticket.pop("stall", None)
+            ticket["waiting"] = [
+                waiting
+                for waiting in ticket["waiting"]
+                if waiting.lower() != "mensch"
+            ]
             _add_comment(ticket, actor, summary)
             if assignee:
                 reviewer = roster.get("reviewer") or ""
