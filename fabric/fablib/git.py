@@ -1,4 +1,5 @@
 """Git: Repo prüfen, Branch und Worktree anlegen, mergen, prüfen."""
+import json
 import os
 import re
 import subprocess
@@ -389,6 +390,74 @@ def _gh(repo, args, timeout=GH_TIMEOUT):
 def gh_authenticated(repo):
     result = _gh(repo, ["auth", "status"])
     return result is not None and result.returncode == 0
+
+
+def require_github_issues(repo):
+    """Bricht ab, wenn `repo` keinen GitHub-Origin oder kein angemeldetes gh hat."""
+    if not github_remote(repo):
+        raise FabError(
+            f"Kein GitHub-Origin in {repo}; GitHub-Issues brauchen einen "
+            f"github.com-Remote (origin)"
+        )
+    result = _gh(repo, ["auth", "status"])
+    if result is None:
+        raise FabError(
+            "gh ist nicht installiert; GitHub-Issues brauchen die GitHub-CLI"
+        )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        detail = f" ({detail})" if detail else ""
+        raise FabError(
+            f"gh ist nicht angemeldet{detail}; bitte `gh auth login` ausführen"
+        )
+
+
+def _gh_json(repo, args, what):
+    """JSON-Ausgabe eines gh-Aufrufs; gh-Fehler als deutsche FabError."""
+    require_github_issues(repo)
+    result = _gh(repo, args)
+    if result is None:
+        raise FabError("gh ist nicht installiert; GitHub-Issues brauchen die GitHub-CLI")
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip() or "unbekannter Fehler"
+        raise FabError(f"{what}: {detail}")
+    try:
+        return json.loads(result.stdout or "null")
+    except ValueError:
+        raise FabError(f"{what}: gh lieferte kein gültiges JSON")
+
+
+def gh_issue_view(repo, number):
+    """Ein Issue als Dict (number, title, body, url, state)."""
+    payload = _gh_json(
+        repo,
+        ["issue", "view", str(number), "--json", "number,title,body,url,state"],
+        f"Issue #{number} nicht lesbar",
+    )
+    if not isinstance(payload, dict):
+        raise FabError(f"Issue #{number} nicht lesbar: gh lieferte kein Objekt")
+    return payload
+
+
+def gh_issue_list(repo):
+    """Offene Issues des Repos als Liste von Dicts."""
+    payload = _gh_json(
+        repo,
+        [
+            "issue",
+            "list",
+            "--state",
+            "open",
+            "--json",
+            "number,title,url",
+            "--limit",
+            "1000",
+        ],
+        "GitHub-Issues nicht lesbar",
+    )
+    if not isinstance(payload, list):
+        raise FabError("GitHub-Issues nicht lesbar: gh lieferte keine Liste")
+    return payload
 
 
 def fetch(repo, remote="origin"):

@@ -215,6 +215,24 @@ class PrAcceptTests(FabricCase):
         self.assertIn("Ticket: T-1", body)
         self.assertIn("fab/T-1-kurzer-titel → main", body)
 
+    def test_pr_body_closes_verknuepftes_issue(self):
+        repo, tid, worktree = self.review_ticket()
+        self.patch_ticket(
+            tid,
+            issue={
+                "number": 12,
+                "url": "https://github.com/test/repo/issues/12",
+                "title": "Knopf defekt",
+            },
+        )
+        bare = self.setup_origin(repo)
+        self.ok("accept", tid, env=self.gh_env(bare))
+        create = next(
+            call for call in self.gh_calls() if call[:2] == ["pr", "create"]
+        )
+        body = create[create.index("--body") + 1]
+        self.assertIn("Closes #12", body)
+
     def test_merge_fehlschlag_laesst_ticket_in_review(self):
         repo, tid, worktree = self.review_ticket()
         bare = self.setup_origin(repo)

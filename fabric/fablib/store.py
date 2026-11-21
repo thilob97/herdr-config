@@ -517,6 +517,7 @@ def blank_ticket(tid, title="", body="", repo=None, created_by=""):
         "sessions": [],
         "checks": None,
         "verdict": None,
+        "issue": None,
     }
 
 

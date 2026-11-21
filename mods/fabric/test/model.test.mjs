@@ -708,6 +708,27 @@ test("Platzhalter, Prompt-Reihenfolge und Vorlagen", async () => {
   assert.match(verifyTemplate(), /set -eu/);
 });
 
+test("Vorlagen: feste Reihenfolge, Labels und Issue-Zeilen", async () => {
+  const { TEMPLATE_ORDER, templateLabel, sortTemplates, issueLabel } = await import("../model.js");
+  assert.deepEqual(TEMPLATE_ORDER, ["bug", "feature", "refactor", "chore"]);
+  assert.equal(templateLabel("bug"), "Bug");
+  assert.equal(templateLabel("feature"), "Feature");
+  assert.equal(templateLabel("refactor"), "Refactor");
+  assert.equal(templateLabel("chore"), "Chore");
+  assert.equal(templateLabel("security"), "security");
+  assert.equal(templateLabel(null), "");
+  assert.deepEqual(
+    sortTemplates([
+      { name: "zeta" }, { name: "chore" }, { name: "alpha" },
+      { name: "bug" }, { name: "feature" }, { name: "refactor" },
+    ]).map((row) => row.name),
+    ["bug", "feature", "refactor", "chore", "alpha", "zeta"],
+  );
+  assert.deepEqual(sortTemplates(null), []);
+  assert.equal(issueLabel({ number: 12, title: "Login-Fehler" }), "#12 Login-Fehler");
+  assert.equal(issueLabel({ title: "ohne Nummer" }), "ohne Nummer");
+});
+
 
 // ---------- Ticketwahl und Live-Status ----------
 
@@ -757,7 +778,8 @@ test("Live-Sessions eines Agenten kommen aus den Terminals", async () => {
 
 test("Freitexte stehen hinter --, Optionen tragen =", async () => {
   const {
-    editArgs, newArgs, commentArgs, acceptArgs, prUrl, rejectArgs, dropArgs, wakeArgs, promptSetArgs, repoSetArgs,
+    editArgs, newArgs, commentArgs, acceptArgs, prUrl, rejectArgs, dropArgs, wakeArgs,
+    promptSetArgs, templateSetArgs, repoSetArgs,
   } = await import("../model.js");
 
   assert.deepEqual(acceptArgs("T-1"), ["accept", "T-1"]);
@@ -772,6 +794,27 @@ test("Freitexte stehen hinter --, Optionen tragen =", async () => {
   ]);
   assert.deepEqual(newArgs("-wichtig", { repo: "/r", wake: false }), [
     "new", "--repo=/r", "--no-wake", "--from=mensch", "--", "-wichtig",
+  ]);
+  assert.deepEqual(newArgs("", { template: "bug" }), [
+    "new", "--template=bug", "--from=mensch",
+  ]);
+  assert.deepEqual(newArgs("Login reparieren", { repo: "/r", template: "bug" }), [
+    "new", "--repo=/r", "--template=bug", "--from=mensch", "--", "Login reparieren",
+  ]);
+  assert.deepEqual(newArgs("", { issue: 12, wake: false }), [
+    "new", "--no-wake", "--issue=12", "--from=mensch",
+  ]);
+  assert.deepEqual(newArgs("Login reparieren", { issue: 7 }), [
+    "new", "--issue=7", "--from=mensch", "--", "Login reparieren",
+  ]);
+  assert.deepEqual(newArgs(null, { issue: 7 }), [
+    "new", "--issue=7", "--from=mensch",
+  ]);
+  assert.deepEqual(templateSetArgs("bug", "## Ziel\n{satz}"), [
+    "template", "set", "bug", "--text=## Ziel\n{satz}", "--from=mensch",
+  ]);
+  assert.deepEqual(templateSetArgs("chore", "-text", "agent"), [
+    "template", "set", "chore", "--text=-text", "--from=agent",
   ]);
   assert.deepEqual(commentArgs("T-1", "-wichtig"), [
     "comment", "T-1", "--from=mensch", "--", "-wichtig",

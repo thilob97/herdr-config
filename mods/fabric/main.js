@@ -14,6 +14,7 @@ import { renderTicket } from "./views/ticket.js";
 import { renderTicketsPage } from "./views/tickets-page.js";
 import { renderTeam, renderTeamPromptDrawer } from "./views/team.js";
 import { renderPrompts } from "./views/prompts.js";
+import { renderTemplates } from "./views/templates.js";
 import { renderRepos } from "./views/repos.js";
 import { renderSettings } from "./views/settings.js";
 import { renderTicketsPanel } from "./views/tickets.js";
@@ -22,12 +23,13 @@ import { renderTimelinePanel } from "./views/timeline.js";
 import { renderSwitcher } from "./views/switcher.js";
 import { renderDialogs, renderBlueprintDrawer } from "./views/dialogs.js";
 
-const VIEWS = ["board", "tickets", "ticket", "team", "prompts", "repos", "settings"];
+const VIEWS = ["board", "tickets", "ticket", "team", "prompts", "templates", "repos", "settings"];
 const NAV = [
   { page: "board", icon: "board", label: "Board" },
   { page: "tickets", icon: "tickets", label: "Tickets" },
   { page: "team", icon: "team", label: "Team" },
   { page: "prompts", icon: "prompt", label: "Prompts" },
+  { page: "templates", icon: "prompt", label: "Vorlagen" },
   { page: "repos", icon: "repo", label: "Repos" },
   { page: "settings", icon: "settings", label: "Einstellungen" },
 ];
@@ -149,6 +151,13 @@ export default class Fabric extends View {
     this.promptSaved = "";
     this.promptWarnings = [];
     this.promptsAt = 0;
+    this.templateList = null;
+    this.templateError = null;
+    this.templateName = null;
+    this.templateBytes = 0;
+    this.templateEditor = null;
+    this.templateSaved = "";
+    this.templatesAt = 0;
     this.repos = null;
     this.reposError = null;
     this.reposAt = 0;
@@ -197,6 +206,10 @@ export default class Fabric extends View {
     this.newWake = true;
     this.newError = null;
     this.newReposLoading = false;
+    this.newTemplate = null;
+    this.newIssue = null;
+    this.newIssues = [];
+    this.issuesError = null;
     this.lastNewRequest = 0;
     this.lastOpenRequest = 0;
     this.lastCloseRequest = 0;
@@ -1048,6 +1061,25 @@ export default class Fabric extends View {
       } else if (route.name && (!this.promptEditor || this.promptName !== route.name)) {
         cx.spawn((cx) => this.loadPrompt(route.name, cx));
       }
+    } else if (route.page === "templates") {
+      if (!this.templateList || Date.now() - this.templatesAt > 15000) {
+        cx.spawn(async (cx) => {
+          await this.loadTemplates(cx);
+          if (!this.currentRoute().name) {
+            const first = model.sortTemplates(this.templateList ?? [])[0];
+            if (first) this.selectTemplate(first.name, cx, true);
+          } else {
+            await this.loadTemplate(this.currentRoute().name, cx);
+          }
+        });
+      } else if (!route.name) {
+        if (!this.templateEditor) {
+          const first = model.sortTemplates(this.templateList ?? [])[0];
+          if (first) this.selectTemplate(first.name, cx, true);
+        }
+      } else if (!this.templateEditor || this.templateName !== route.name) {
+        cx.spawn((cx) => this.loadTemplate(route.name, cx));
+      }
     } else if (route.page === "repos") {
       if (!this.repos || Date.now() - this.reposAt > 15000) {
         cx.spawn(async (cx) => {
@@ -1269,6 +1301,7 @@ export default class Fabric extends View {
     else if (route.page === "ticket" && this.bodyEditor && this.bodyEditing
       && model.isDirty(this.bodyEditor.value(), this.bodySaved)) this.saveBody(cx);
     else if (route.page === "prompts") this.savePrompt(cx);
+    else if (route.page === "templates") this.saveTemplate(cx);
     else if (route.page === "repos") this.saveRepo(cx);
     else if (this.blueprintDrawer) this.saveBlueprint(cx);
     else if (this.teamPrompt) this.saveTeamPrompt(cx);
@@ -1287,6 +1320,9 @@ export default class Fabric extends View {
     }
     if (this.promptEditor && model.isDirty(this.promptEditor.value(), this.promptSaved)) {
       entries.push({ key: "prompt", label: `Prompt ${this.promptName ?? ""}` });
+    }
+    if (this.templateEditor && model.isDirty(this.templateEditor.value(), this.templateSaved)) {
+      entries.push({ key: "template", label: `Vorlage ${this.templateName ?? ""}` });
     }
     if (this.repoDetail) {
       if (this.verifyEditor && model.isDirty(this.verifyEditor.value(), this.verifySaved)) {
@@ -1331,6 +1367,7 @@ export default class Fabric extends View {
       if (entry.key === "title") ok = await this.saveTitle(cx, true);
       if (entry.key === "body") ok = await this.saveBody(cx, true);
       if (entry.key === "prompt") ok = await this.savePrompt(cx, true);
+      if (entry.key === "template") ok = await this.saveTemplate(cx, true);
       if (entry.key === "verify" || entry.key === "lessons") ok = await this.saveRepo(cx, entry.key, true);
       if (entry.key === "blueprint") ok = await this.saveBlueprint(cx, true);
       if (entry.key === "team-prompt") ok = await this.saveTeamPrompt(cx, true);
@@ -1344,6 +1381,7 @@ export default class Fabric extends View {
     if (this.titleEdit) this.titleEdit.set_value(this.titleSaved);
     if (this.bodyEditor) this.bodyEditor.set_value(this.bodySaved);
     if (this.promptEditor) this.promptEditor.set_value(this.promptSaved);
+    if (this.templateEditor) this.templateEditor.set_value(this.templateSaved);
     if (this.verifyEditor) this.verifyEditor.set_value(this.verifySaved);
     if (this.lessonsEditor) this.lessonsEditor.set_value(this.lessonsSaved);
     if (this.blueprintDrawer) this.blueprintDirty = false;
@@ -1629,6 +1667,10 @@ export default class Fabric extends View {
     this.newError = null;
     this.newWake = true;
     this.newRepo = null;
+    this.newTemplate = null;
+    this.newIssue = null;
+    this.newIssues = [];
+    this.issuesError = null;
     if (this.newSentence) this.newSentence.release?.();
     this.newSentence = InputState.new({ placeholder: "Ein Satz genügt, z. B. „Login-Fehler beheben“" });
     this.newSentence.on("submit", (_event, cx) => {
@@ -1639,6 +1681,8 @@ export default class Fabric extends View {
     this.wireMentions("new", this.newSentence);
     this.ensurePrograms(cx);
     this.ensureReposQuiet(cx);
+    this.ensureTemplatesQuiet(cx);
+    cx.spawn((cx) => this.loadNewIssues(cx));
     cx.spawn(async (cx) => {
       const cwd = focused()?.cwd;
       if (!cwd) return;
@@ -1646,6 +1690,7 @@ export default class Fabric extends View {
         const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd });
         if (top.code === 0 && top.stdout.trim() && !this.newRepo) {
           this.newRepo = top.stdout.trim();
+          await this.loadNewIssues(cx);
           if (!this.closed) this.notifyNow();
         }
       } catch {
@@ -1661,15 +1706,55 @@ export default class Fabric extends View {
     cx.spawn((cx) => this.loadRepos(cx));
   }
 
-  async createTicket(cx) {
-    if (this.busy) return;
-    const sentence = (this.newSentence?.value() ?? "").trim();
-    if (!sentence) {
-      this.newError = "Bitte einen Satz eingeben.";
+  ensureTemplatesQuiet(cx) {
+    if (this.templateList && Date.now() - this.templatesAt < 15000) return;
+    cx.spawn((cx) => this.loadTemplates(cx));
+  }
+
+  async loadNewIssues(cx) {
+    const repo = this.newRepo;
+    if (!repo) {
+      this.newIssues = [];
+      this.issuesError = null;
+      this.newIssue = null;
       this.notifyNow();
       return;
     }
-    const args = model.newArgs(sentence, { repo: this.newRepo, wake: this.newWake });
+    try {
+      const result = await this.execFab(["issue", "list", `--repo=${repo}`, "--json"], { timeout: 30000 });
+      if (this.newRepo !== repo) return;
+      if (result.code !== 0) throw new Error((result.stderr || "").trim() || `Code ${result.code}`);
+      const raw = parseJson(result.stdout, null);
+      if (!Array.isArray(raw)) throw new Error("issue list --json lieferte keine Liste");
+      this.newIssues = raw;
+      this.issuesError = null;
+      if (this.newIssue != null && !raw.some((issue) => String(issue.number) === String(this.newIssue))) {
+        this.newIssue = null;
+      }
+    } catch (error) {
+      if (this.newRepo !== repo) return;
+      this.newIssues = [];
+      this.newIssue = null;
+      this.issuesError = `Issues nicht lesbar: ${message(error)}`;
+    }
+    this.notifyNow();
+  }
+
+  async createTicket(cx) {
+    if (this.busy) return;
+    const sentence = (this.newSentence?.value() ?? "").trim();
+    const issue = this.newIssue;
+    if (!sentence && issue == null) {
+      this.newError = "Bitte einen Satz eingeben oder ein Issue wählen.";
+      this.notifyNow();
+      return;
+    }
+    const args = model.newArgs(sentence, {
+      repo: this.newRepo,
+      wake: this.newWake,
+      template: this.newTemplate,
+      issue,
+    });
     const result = await this.action("new", args, {
       success: (r) => {
         const match = /T-\d+/.exec(r.stdout ?? "");
@@ -1697,7 +1782,11 @@ export default class Fabric extends View {
     const folder = await pickFolder({ prompt: "Repo wählen" });
     if (!folder) return;
     this.newRepo = folder;
+    this.newIssue = null;
+    this.newIssues = [];
+    this.issuesError = null;
     this.notifyNow();
+    await this.loadNewIssues(cx);
   }
 
   async comment(cx, textOverride = null) {
@@ -2845,6 +2934,78 @@ export default class Fabric extends View {
     this.notifyNow();
   }
 
+  // ---------- Vorlagen ----------
+
+  async loadTemplates(cx) {
+    try {
+      const result = await this.execFab(["template", "list", "--json"]);
+      if (result.code !== 0) throw new Error((result.stderr || "").trim() || `Code ${result.code}`);
+      const raw = parseJson(result.stdout, null);
+      if (!Array.isArray(raw)) throw new Error("template list --json lieferte keine Liste");
+      this.templateList = model.sortTemplates(raw);
+      this.templateError = null;
+      this.templatesAt = Date.now();
+    } catch (error) {
+      this.templateError = `Vorlagen nicht lesbar: ${message(error)}`;
+    }
+    this.notifyNow();
+  }
+
+  async loadTemplate(name, cx) {
+    if (!name) return;
+    if (this.templateEditor && this.templateName !== name
+      && model.isDirty(this.templateEditor.value(), this.templateSaved)) {
+      return;
+    }
+    const known = (this.templateList ?? []).find((row) => row.name === name);
+    try {
+      const result = await this.execFab(["template", "show", name], { timeout: 20000 });
+      if (result.code !== 0) throw new Error((result.stderr || "").trim() || `Code ${result.code}`);
+      this.templateName = name;
+      this.templateBytes = known?.bytes ?? (result.stdout?.length ?? 0);
+      this.templateSaved = result.stdout ?? "";
+      this.templateEditor = this.newEditor("markdown", this.templateSaved);
+      this.templateError = null;
+    } catch (error) {
+      this.templateError = `Vorlage ${name} nicht lesbar: ${message(error)}`;
+    }
+    this.notifyNow();
+  }
+
+  selectTemplate(name, cx, silent = false) {
+    const go = () => {
+      this.templateName = name;
+      setShared("fabric.route", { page: "templates", name });
+      cx.spawn((cx) => this.loadTemplate(name, cx));
+      this.notifyNow();
+    };
+    if (silent) go();
+    else this.guard(go, cx);
+  }
+
+  async saveTemplate(cx, silent = false) {
+    if (!this.templateEditor || !this.templateName) return false;
+    const text = this.templateEditor.value();
+    const name = this.templateName;
+    const result = await this.action("template", model.templateSetArgs(name, text), {
+      success: `Vorlage ${name} gespeichert.`,
+      after: async () => {
+        await this.loadTemplates(cx);
+        const known = (this.templateList ?? []).find((row) => row.name === name);
+        if (known && this.templateName === name) this.templateBytes = known.bytes ?? 0;
+      },
+    });
+    if (result.ok && this.templateName === name) this.templateSaved = text;
+    if (!silent) this.notifyNow();
+    return result.ok;
+  }
+
+  discardTemplate(cx) {
+    if (this.templateEditor) this.templateEditor.set_value(this.templateSaved);
+    this.setError("template", null);
+    this.notifyNow();
+  }
+
   // ---------- Repos ----------
 
   async saveRepo(cx, only = null, silent = false) {
@@ -2959,8 +3120,9 @@ export default class Fabric extends View {
         : page === "ticket" ? renderTicket(this, cx, t)
           : page === "team" ? renderTeam(this, cx, t)
             : page === "prompts" ? renderPrompts(this, cx, t)
-              : page === "repos" ? renderRepos(this, cx, t)
-                : renderSettings(this, cx, t);
+              : page === "templates" ? renderTemplates(this, cx, t)
+                : page === "repos" ? renderRepos(this, cx, t)
+                  : renderSettings(this, cx, t);
 
     const state = this.orchestratorState();
     const statusWord = model.orchestratorWord(state);

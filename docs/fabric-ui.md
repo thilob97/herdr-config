@@ -23,7 +23,7 @@ Die gewählte Auswahl ist überall dieselbe: `shared("fabric.selected")`. Was da
 ## 2. Fabric-Fenster
 
 **Rahmen**
-- Links eine Navigation (Icon + Wort) mit den Punkten: Board, Tickets, Team, Prompts, Repos, Einstellungen. Unten der Status des Orchestrators als Pill (läuft / wartet auf dich / gestoppt; Klick führt zu Team).
+- Links eine Navigation (Icon + Wort) mit den Punkten: Board, Tickets, Team, Prompts, Vorlagen, Repos, Einstellungen. Unten der Status des Orchestrators als Pill (läuft / wartet auf dich / gestoppt; Klick führt zu Team).
 - Oben eine Leiste mit Suche (`/` fokussiert), dem Primärknopf **Neues Ticket** und dem Inbox-Zähler (öffnet ein Popover mit der Inbox).
 - Das Fenster lässt sich ziehen; Bedienelemente stoppen das Ziehen mit `cx.stop_propagation()` beim Mouse-Down.
 - **Schmales Fenster (< 760 logische px):** Die Navigation wird zur Icon-Leiste über dem Inhalt; Suche und Knopftexte weichen Icons. Das Board stapelt seine Stufen untereinander, das Ticket-Detail wird einspaltig (Verlauf, darunter die Eigenschaften), Namen und lange Zeilen kürzen mit Ellipse und Tooltip. Belege: `docs/assets/t40-narrow-board.png`, `t40-narrow-team.png`, `t40-narrow-ticket.png`.
@@ -62,7 +62,11 @@ Die gewählte Auswahl ist überall dieselbe: `shared("fabric.selected")`. Was da
   - Immer: **Verwerfen…**.
   - Abnehmen und Verwerfen öffnen einen Bestätigungsdialog, der sagt, was passiert: Merge in welche Basis, welcher Worktree und welche Sessions verschwinden.
 
-**Neues Ticket** (Dialog): ein Satz (Pflicht), Repo (vorbelegt mit dem Git-Root des fokussierten Terminals), Schalter „Orchestrator sofort ausformulieren lassen“ (Standard an). Mit Schalter aus wird nur ein Entwurf angelegt, mit `--no-wake` am automatischen Kommentar.
+**Neues Ticket** (Dialog): ein Satz oder ein Issue, Repo (vorbelegt mit dem Git-Root des fokussierten Terminals), Vorlage, Issue und Schalter „Orchestrator sofort ausformulieren lassen“ (Standard an).
+- **Vorlage**: Dropdown „Ohne Vorlage“ plus Bug, Feature, Refactor und Chore aus `fab template list --json`. Eine gewählte Vorlage füllt den Rumpf (`--template=NAME`); im Text wird `{satz}` durch den Satz ersetzt, der Titel ist der Satzanfang. Eine Vorlage und ein Issue schließen sich aus.
+- **Issue**: Dropdown „Ohne Issue“ plus alle offenen Issues des gewählten Repos (`#12 Titel` aus `fab issue list --repo=PFAD --json`). Ein Issue setzt Titel, Rumpf und den Verweis (`--issue=N`) und leert die Vorlage. Fehlt `gh` oder die Authentifizierung, steht der Grund als Hinweis im Dialog; ein Ticket von Hand bleibt möglich. Ohne Repo ist das Issue-Dropdown nicht verfügbar.
+- **Anlegen** ist frei, sobald ein Satz da ist oder ein Issue gewählt wurde.
+- Mit Schalter aus wird nur ein Entwurf angelegt, mit `--no-wake` am automatischen Kommentar.
 
 **Team**
 - Karte **Blaupausen**: je Blaupause Avatar in Rollenfarbe, Name, Rolle, Programm/Modell und die Teams, in denen sie Mitglied ist.
@@ -83,6 +87,12 @@ Die gewählte Auswahl ist überall dieselbe: `shared("fabric.selected")`. Was da
 - Liste: Orchestrator, Präambel, je Blaupause.
 - Rechts ein Editor (`Editor`, Markdown) mit Speichern/Verwerfen, Kennzeichnung ungespeicherter Änderungen und `cmd-s`.
 - Bei der Präambel eine Legende der Platzhalter. `fab` warnt bei unbekannten Platzhaltern.
+
+**Vorlagen**
+- Liste links in fester Reihenfolge: Bug, Feature, Refactor, Chore, danach weitere alphabetisch.
+- Rechts ein Markdown-Editor mit Byte-Anzahl, Kennzeichnung ungespeicherter Änderungen, **Speichern** (`cmd-s`, `fab template set NAME --text=… --from=mensch`) und **Verwerfen**.
+- Hinweis über dem Editor: `{satz}` wird beim Anlegen eines Tickets durch dessen Satz ersetzt. Die Dateien liegen neben dem aktiven Roster (`FAB_TEMPLATES` bzw. `templates/`), mit den mitgelieferten Vorlagen als Rückfall.
+- Ungespeicherte Änderungen gehen beim Wegnavigieren nicht still verloren (Dialog mit Speichern / Verwerfen / Abbrechen).
 
 **Repos**
 - Bekannte Repos: aus Tickets und aus den Ordnern der Herdr-Spaces.
