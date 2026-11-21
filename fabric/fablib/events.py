@@ -16,7 +16,7 @@ ATTENTION_TEXTS = (
 )
 
 
-def append(kind, ticket, actor="", target="", text=""):
+def append(kind, ticket, actor="", target="", text="", reason=""):
     if kind not in KINDS:
         raise ValueError(f"unbekanntes Ereignis: {kind}")
     row = {
@@ -26,6 +26,7 @@ def append(kind, ticket, actor="", target="", text=""):
         "actor": actor or "",
         "target": target or "",
         "text": text or "",
+        "reason": reason or "",
     }
     store.ensure()
     with open(store.events_path(), "a", encoding="utf-8") as handle:
@@ -58,7 +59,7 @@ def tail(limit=300):
     return read_all()[-limit:]
 
 
-DELIVERED = ("geweckt", "gestartet", "an orchestrator")
+DELIVERED = ("geweckt", "gestartet", "an orchestrator", "zweiter Versuch erfolgreich")
 
 
 def count_wakes(ticket, target, since_ms):
