@@ -97,7 +97,7 @@ class CliTests(FabricCase):
         tid = self.new("Zu")
         result = self.cli("assign", tid, "fremd", "--from", "mensch")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Unbekannter Agent", result.stderr)
+        self.assertIn("gehört nicht zu Team herdr-app", result.stderr)
         self.ok("assign", tid, "zap", "--from", "mensch")
         self.assertEqual(self.ticket(tid)["assignee"], "zap")
         assigned = [row for row in self.events() if row["kind"] == "assigned"]
@@ -410,3 +410,86 @@ class CliTests(FabricCase):
         self.assertRegex(result.stdout, r"max_sessions_total: .* → 12")
         roster = json.loads(self.ok("roster", "--json").stdout)
         self.assertEqual(roster["max_sessions_total"], 12)
+
+    # -- T-24: Mitglieder aller Teams
+
+    def _two_team_roster(self):
+        repo1 = os.path.realpath(self.make_repo("repo1"))
+        repo2 = os.path.realpath(self.make_repo("repo2"))
+        self.write_roster(
+            blueprints=[
+                {"name": "zap", "role": "umsetzer", "color": "c1",
+                 "prompt": "prompts/zap.md", "argv": ["true"]},
+                {"name": "ada", "role": "pruefer", "color": "c2",
+                 "prompt": "prompts/ada.md", "argv": ["true"]},
+                {"name": "bob", "role": "umsetzer", "color": "c3",
+                 "prompt": "prompts/bob.md", "argv": ["true"]},
+            ],
+            teams=[
+                {
+                    "name": "herdr-app",
+                    "repos": [repo1],
+                    "members": [{"blueprint": "zap"}],
+                    "orchestrator": {
+                        "argv": ["true"], "prompt": "prompts/orchestrator.md",
+                    },
+                    "reviewer": "zap",
+                    "max_sessions": 4,
+                },
+                {
+                    "name": "zwei",
+                    "repos": [repo2],
+                    "members": [{"blueprint": "bob"}, {"blueprint": "ada"}],
+                    "orchestrator": {
+                        "argv": ["true"], "prompt": "prompts/orchestrator.md",
+                    },
+                    "reviewer": "ada",
+                    "max_sessions": 4,
+                },
+            ],
+        )
+        return repo1, repo2
+
+    def _two_team_ticket(self):
+        _, repo2 = self._two_team_roster()
+        return self.ok(
+            "new", "Ticket im zweiten Team", "--repo", repo2, "--no-wake"
+        ).stdout.strip()
+
+    def test_assign_prueft_das_team_des_tickets(self):
+        tid = self._two_team_ticket()
+        self.ok("assign", tid, "bob", "--from", "mensch")
+        self.assertEqual(self.ticket(tid)["assignee"], "bob")
+        result = self.cli("assign", tid, "zap", "--from", "mensch")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Team zwei", result.stderr)
+        self.assertEqual(self.ticket(tid)["assignee"], "bob")
+
+    def test_agents_json_und_text_nennen_alle_teams(self):
+        self._two_team_ticket()
+        rows = {
+            row["name"]: row
+            for row in json.loads(self.ok("agents", "--json").stdout)["agents"]
+        }
+        self.assertIn("bob", rows)
+        self.assertEqual(rows["bob"]["teams"], ["zwei"])
+        self.assertEqual(rows["zap"]["teams"], ["herdr-app"])
+        text = self.ok("agents").stdout
+        self.assertIn("Teams: zwei", text)
+
+    def test_agents_running_bleibt_beim_eigenen_agenten(self):
+        self._two_team_ticket()
+        self.set_live({"fab-zap-t-1": "t5", "fab-zwei-bob-t-2": "t6"})
+        rows = {
+            row["name"]: row
+            for row in json.loads(self.ok("agents", "--json").stdout)["agents"]
+        }
+        self.assertEqual(
+            [session["name"] for session in rows["zap"]["running"]],
+            ["fab-zap-t-1"],
+        )
+        self.assertEqual(
+            [session["name"] for session in rows["bob"]["running"]],
+            ["fab-zwei-bob-t-2"],
+        )
+        self.assertEqual(rows["ada"]["running"], [])

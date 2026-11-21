@@ -277,6 +277,7 @@ def payload():
                 "name": entry["name"],
                 "role": entry["role"],
                 "color": entry["color"],
+                "teams": list(entry.get("teams") or []),
                 "argv": list(entry["argv"]),
                 "prompt": entry["prompt"],
                 "program": program,

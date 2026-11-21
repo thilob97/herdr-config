@@ -37,10 +37,10 @@ Die gewählte Auswahl ist überall dieselbe: `shared("fabric.selected")`. Was da
   - Titel, inline editierbar.
   - Beschreibung im Markdown-Editor mit Umschalter Ansicht/Bearbeiten, Speichern/Verwerfen und einem Hinweis auf ungespeicherte Änderungen.
   - Verlauf: Kommentare mit Avatar, Name, Zeit (relativ, absolut im Tooltip) und hervorgehobenen `@erwähnungen`. Weck-Ergebnisse stehen als dezente Systemzeilen dazwischen. Neueste unten, der Verlauf scrollt beim Öffnen ans Ende.
-  - Kommentarfeld: mehrzeilig, `@` schlägt Namen vor (Roster, `orchestrator`, `mensch`), `cmd-enter` sendet. Unter dem Feld steht, wen der Kommentar wecken wird.
+  - Kommentarfeld: mehrzeilig, `@` schlägt Namen aller Teammitglieder vor (plus `orchestrator`, `mensch`), `cmd-enter` sendet. Unter dem Feld steht, wen der Kommentar wecken wird.
 - Rechts, Eigenschaften:
   - Status: Select mit den erlaubten Übergängen; `done` nur über Abnehmen.
-  - Zuständig: Select aus dem Roster.
+  - Zuständig: Select aus den Mitgliedern des Teams, zu dem das Ticket-Repo gehört.
   - Repo: Ordnerwahl mit `pickFolder` plus Liste bekannter Repos.
   - Basis.
   - Branch und Worktree: nur lesen, kopierbar.

@@ -458,6 +458,28 @@ def expand_team(data, team_entry):
     return expanded
 
 
+def all_agents(data):
+    """Mitglieder aller Teams, je Name einmal; erste Expansion gewinnt."""
+    rows = []
+    index = {}
+    for entry in _entries(data, "teams"):
+        if not isinstance(entry, dict) or not entry.get("name"):
+            continue
+        team_name = str(entry["name"])
+        for row in expand_team(data, entry):
+            name = str(row.get("name") or "")
+            if not name:
+                continue
+            if name not in index:
+                item = dict(row)
+                item["teams"] = [team_name]
+                index[name] = item
+                rows.append(item)
+            elif team_name not in index[name]["teams"]:
+                index[name]["teams"].append(team_name)
+    return rows
+
+
 def _team_limit(entry):
     limit = entry.get("max_sessions")
     return DEFAULT_MAX_SESSIONS if limit is None else check_sessions(limit)
@@ -506,6 +528,7 @@ def _legacy_agents(data):
                 "color": str(entry.get("color") or ""),
                 "prompt": _prompt(entry, name),
                 "argv": _strings(entry.get("argv")),
+                "teams": [],
             }
         )
     return rows
@@ -520,7 +543,7 @@ def expansion(data):
             "max_sessions_total": _total(data, _team_total(data)),
             "reviewer": str(entry.get("reviewer") or ""),
             "orchestrator": _orchestrator(entry.get("orchestrator")),
-            "agents": expand_team(data, entry),
+            "agents": all_agents(data),
             "team": str(entry.get("name") or "") or None,
         }
 
