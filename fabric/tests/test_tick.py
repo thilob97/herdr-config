@@ -258,6 +258,68 @@ class TickCase(FabricCase):
         self.assertIn("gelöst", result.stdout)
         self.assertNotIn("stall", self.ticket(tid))
 
+    def test_regel5_verkettete_todos_sind_kein_falschalarm(self):
+        first = self.new_ticket(status="doing", assignee="zap")
+        self.patch_ticket(first, updated_at=self.now())
+        second = self.new_ticket(status="todo", blocked_by=[first])
+        third = self.new_ticket(status="todo", blocked_by=[second])
+        mark = self.mark()
+        result = self.ok("tick")
+        self.assertIn("Keine Aktion.", result.stdout)
+        self.assertNotIn("stall", self.ticket(second))
+        self.assertNotIn("stall", self.ticket(third))
+        self.assertEqual(self.events_since(mark, "tick"), [])
+        self.ok("index")
+        self.assertEqual(self.attention(), [])
+
+    def test_regel5_stockendes_glied_erzeugt_genau_einen_eintrag(self):
+        blocker = self.new_ticket(status="doing", assignee="zap")
+        self.live_session(blocker)
+        self.patch_ticket(blocker, updated_at=self.ago(45))
+        tid = self.new_ticket(status="todo", blocked_by=[blocker])
+        third = self.new_ticket(status="todo", blocked_by=[tid])
+        result = self.ok("tick")
+        self.assertIn("Regel 5 (blocked)", result.stdout)
+        attention = self.attention()
+        self.assertEqual([row["ticket"] for row in attention], [tid])
+        self.assertIn(blocker, self.ticket(tid)["stall"]["reason"])
+        self.assertNotIn("stall", self.ticket(third))
+
+    def test_regel5_loest_bestehende_falschalarme(self):
+        first = self.new_ticket(status="doing", assignee="zap")
+        self.patch_ticket(first, updated_at=self.now())
+        second = self.new_ticket(status="todo", blocked_by=[first])
+        third = self.new_ticket(status="todo", blocked_by=[second])
+        for tid in (second, third):
+            self.patch_ticket(
+                tid,
+                stall={
+                    "rule": "blocked",
+                    "since": self.ago(120),
+                    "attempts": 0,
+                    "last_attempt": 0,
+                    "attention": True,
+                    "reason": f"offene Blocker: {first} (todo) seit 120 Min.",
+                    "agent": "zap",
+                },
+            )
+        self.ok("index")
+        self.assertEqual(len(self.attention()), 2)
+        result = self.ok("tick")
+        self.assertIn("gelöst", result.stdout)
+        self.assertNotIn("stall", self.ticket(second))
+        self.assertNotIn("stall", self.ticket(third))
+        self.assertEqual(self.attention(), [])
+
+    def test_regel5_draft_blocker_meldet_nach_schwelle(self):
+        blocker = self.new_ticket(status="draft")
+        self.patch_ticket(blocker, updated_at=self.ago(45))
+        tid = self.new_ticket(status="todo", blocked_by=[blocker])
+        result = self.ok("tick")
+        self.assertIn("Regel 5 (blocked)", result.stdout)
+        self.assertEqual([row["ticket"] for row in self.attention()], [tid])
+        self.assertIn("draft", self.ticket(tid)["stall"]["reason"])
+
     def test_regel6_zweiter_versuch_ist_attention(self):
         tid = self.new_ticket(status="doing", assignee="zap")
         self.patch_ticket(

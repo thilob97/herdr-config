@@ -110,20 +110,18 @@ def _tick_ticket(ticket, roster, live, cfg, by_id, lines, dry):
         if stall and stall.get("rule") != "blocked":
             changed = _dissolve(ticket, lines, dry) or changed
             stall = None
-        old = [
-            blocker
-            for blocker in blockers
-            if now - _stamp(blocker) >= cfg["blocked"] * MINUTES
+        stalled = [
+            blocker for blocker in blockers if _stalled(blocker, by_id, now, cfg)
         ]
-        if not old:
+        if not stalled:
             if stall and stall.get("rule") == "blocked":
                 changed = _dissolve(ticket, lines, dry) or changed
             return changed
         agent = _assignee(ticket) or "orchestrator"
-        since = min(_stamp(blocker) for blocker in old)
+        since = min(_stamp(blocker) for blocker in stalled)
         return _attention(
-            ticket, "blocked", agent, _blocked_reason(old, now), lines, dry,
-            since=since,
+            ticket, "blocked", agent, _blocked_reason(stalled, now), lines,
+            dry, since=since,
         ) or changed
 
     if stall and stall.get("rule") == "blocked":
@@ -492,6 +490,22 @@ def _open_blockers(ticket, by_id):
         if blocker.get("status") not in ("done", "dropped"):
             found.append(blocker)
     return found
+
+
+def _stalled(blocker, by_id, now, cfg):
+    """Stockt dieser Vorgänger, statt planmäßig in der Kette zu warten?
+
+    Planmäßig wartet nur ein `todo`, das selbst noch offene Vorgänger hat;
+    dort greift Regel 4 am Ticket selbst. `doing`, `review`, `draft` und
+    `todo` ohne eigene Blocker gelten nach der Schwelle als stockend,
+    ein fehlender Vorgänger sofort.
+    """
+    status = blocker.get("status")
+    if status == "fehlt":
+        return True
+    if status == "todo" and _open_blockers(blocker, by_id):
+        return False
+    return now - _stamp(blocker) >= cfg["blocked"] * MINUTES
 
 
 def _blocked_reason(blockers, now):
