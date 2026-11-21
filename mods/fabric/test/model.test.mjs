@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 
 import {
   groupByStage, mentionSegments, sortInbox, inboxRetry, timelineFeed, eventSummary, relativeTime,
+  stallLabel, stallReason,
   wakeLine, sessionChips, sessionStatus, childrenOf, childProgress,
   teamForTicket, teamAgents,
 } from "../model.js";
@@ -77,6 +78,18 @@ test("Inbox: „Erneut starten“ nur mit Ticket und Agent", () => {
     args: ["wake", "T-27", "zap", "--from=mensch", "--", "Erneut starten"],
   });
   assert.equal(inboxRetry({ ticket: "T-27", agent: "orchestrator" }).agent, "orchestrator");
+
+  const tick = {
+    kind: "attention",
+    ticket: "T-28",
+    agent: "ada",
+    reason: "Regel 1 (doing): keine Bewegung",
+    since: 100,
+  };
+  assert.deepEqual(inboxRetry(tick), {
+    agent: "ada",
+    args: ["wake", "T-28", "ada", "--from=mensch", "--", "Erneut starten"],
+  });
 });
 
 test("Zeitverlauf: neueste zuerst, nach Tagen gruppiert, Filter je Ticket", () => {
@@ -125,6 +138,19 @@ test("Zeit und Weckzeilen auf Deutsch", () => {
   assert.equal(wakeLine({ target: "ada", text: "geweckt" }), "→ ada geweckt");
   assert.equal(wakeLine({ target: "zap", text: "unterdrückt: ping-pong" }), "→ zap: unterdrückt: ping-pong");
   assert.equal(wakeLine({ target: "", text: "an orchestrator" }), "→ an den Orchestrator");
+});
+
+test("Stillstand: Dauer auf Deutsch, Grund als Tooltip", () => {
+  const now = 10 * 60 * 60 * 1000;
+  assert.equal(stallLabel({ since: now - 30000 }, now), "stockt seit gerade eben");
+  assert.equal(stallLabel({ since: now - 5 * 60000 }, now), "stockt seit 5 min");
+  assert.equal(stallLabel({ since: now - 3 * 60 * 60000 }, now), "stockt seit 3 h");
+  assert.equal(stallLabel({ since: now - 2 * 24 * 60 * 60000 }, now), "stockt seit 2 Tagen");
+  assert.equal(stallLabel(null, now), "");
+  assert.equal(stallLabel({}, now), "");
+
+  assert.equal(stallReason({ reason: "keine Antwort" }), "keine Antwort");
+  assert.equal(stallReason(null), "");
 });
 
 test("Sitzungsstatus: herdr-Status wird zu deutschem Wort und Farbschlüssel", () => {
@@ -284,7 +310,8 @@ test("Board-Spalten: fünf Stufen, Fertig begrenzt, Prüfung hervorgehoben", asy
   }
   tickets.push(
     { id: "T-30", status: "review", title: "prüfen", updated_at: 5 },
-    { id: "T-31", status: "doing", title: "arbeiten", updated_at: 7, repo: "/r/a" },
+    { id: "T-31", status: "doing", title: "arbeiten", updated_at: 7, repo: "/r/a",
+      stall: { rule: "doing", since: 1, attempts: 1, attention: true, reason: "keine Bewegung" } },
     { id: "T-32", status: "dropped", title: "verworfen", updated_at: 9 },
   );
 

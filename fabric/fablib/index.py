@@ -27,6 +27,7 @@ def entry(ticket):
         "blocked_by": list(ticket.get("blocked_by") or []),
         "checks": (ticket.get("checks") or {}).get("state"),
         "verdict": (ticket.get("verdict") or {}).get("state"),
+        "stall": _stall_entry(ticket),
         "last_comment": (
             {
                 "author": last.get("author"),
@@ -48,8 +49,63 @@ def entry(ticket):
     }
 
 
+def _stall_entry(ticket):
+    """Stillstand fürs Lesemodell; nur offene Arbeitsstufen tragen ihn."""
+    if ticket.get("status") not in ("todo", "doing"):
+        return None
+    stall = ticket.get("stall")
+    if not isinstance(stall, dict):
+        return None
+    return {
+        "rule": stall.get("rule"),
+        "since": stall.get("since"),
+        "attempts": stall.get("attempts"),
+        "attention": bool(stall.get("attention")),
+        "reason": stall.get("reason") or "",
+    }
+
+
+def _stall_age(since, now):
+    """Dauer eines Stillstands auf Deutsch, wie `relativeTime` im Mod."""
+    minutes = max(0, now - since) // 60000
+    if minutes < 1:
+        return "gerade eben"
+    if minutes < 60:
+        return f"{minutes} min"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours} h"
+    return f"{hours // 24} Tagen"
+
+
 def _inbox(tickets, rows):
     entries = []
+    stalled = set()
+    now = store.now_ms()
+    for ticket in tickets:
+        stall = ticket.get("stall")
+        if ticket.get("status") not in ("todo", "doing"):
+            continue
+        if not isinstance(stall, dict) or not stall.get("attention"):
+            continue
+        since = stall.get("since")
+        if not isinstance(since, int):
+            continue
+        reason = stall.get("reason") or ""
+        ticket_id = ticket["id"]
+        entries.append(
+            {
+                "kind": "attention",
+                "ticket": ticket_id,
+                "at": since,
+                "from": "fab",
+                "text": f"stockt seit {_stall_age(since, now)} – {reason}",
+                "agent": stall.get("agent") or "orchestrator",
+                "reason": reason,
+                "since": since,
+            }
+        )
+        stalled.add(ticket_id)
     for ticket in tickets:
         status = ticket.get("status")
         closed = status in ("done", "dropped")
@@ -81,6 +137,8 @@ def _inbox(tickets, rows):
     for row in rows:
         per_ticket.setdefault(row.get("ticket"), []).append(row)
     for ticket_id, ticket_rows in per_ticket.items():
+        if ticket_id in stalled:
+            continue
         candidate = None
         for row in ticket_rows:
             if row.get("kind") == "wake" and row.get("text") in events.ATTENTION_TEXTS:

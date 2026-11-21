@@ -72,6 +72,10 @@ function card(app, cx, t, ticket) {
       h_flex().w_full().gap(5).items_center()
         .child(div().flex_none().text_size(T.xs).text_color(t.dim).child(ticket.id))
         .when(Boolean(waiting), (el) => el.child(ui.chip(t, "wartet auf dich", t.accent)))
+        .when(Boolean(ticket.stall), (el) => el.child(
+          ui.chip(t, model.stallLabel(ticket.stall), t.accent, `fabric-card-stall-${ticket.id}`, {
+            tooltip: model.stallReason(ticket.stall),
+          })))
         .child(div().flex_1())
         .child(cardMenu(app, cx, t, ticket)),
     )

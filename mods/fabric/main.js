@@ -90,6 +90,7 @@ export default class Fabric extends View {
     this.watch = null;
     this.refreshing = false;
     this.pending = false;
+    this.tickRunning = false;
     this.fieldFocused = false;
     this.cursorId = null;
     this.assigneeFilter = "all";
@@ -247,6 +248,21 @@ export default class Fabric extends View {
     });
     cx.timer.every(5000, (cx) => { if (!this.closed) this.refresh(cx); });
     if (this.isApp) {
+      // `fab tick` prüft Stillstand und weckt/erinnert; kein Startlauf, damit
+      // das Öffnen des Fensters nichts anstößt. Der 5-s-Refresh liest danach.
+      cx.timer.every(60000, (cx) => {
+        if (this.closed || this.tickRunning) return;
+        this.tickRunning = true;
+        cx.spawn(async () => {
+          try {
+            await this.execFab(["tick"], { timeout: 120000 });
+          } catch {
+            // still: der nächste Lauf versucht es erneut
+          } finally {
+            this.tickRunning = false;
+          }
+        });
+      });
       cx.timer.every(300, (cx) => {
         if (this.closed) return;
         const request = Number(shared("fabric.newRequest") ?? 0);
