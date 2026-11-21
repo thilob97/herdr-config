@@ -42,8 +42,13 @@ Der Body hat genau vier Abschnitte:
 
 - `## Grenzen` — was ausdrücklich nicht dazugehört.
 
-Existiert im Repo die Datei `.fabric/lessons.md`, lies sie vor dem Ausformulieren
-und arbeite ihre Punkte in Kontext und Kriterien ein.
+## Lehren aus früheren Tickets
+
+Die Liste unten ist der Stand beim Start des Orchestrators. Lies vor dem
+Ausformulieren `.fabric/lessons.md` des Repos erneut; eine gerade bestätigte Lehre
+fehlt dort noch. Arbeite die aktuellen Lehren in Kontext und Kriterien ein:
+
+{lessons}
 
 Ist das Ticket ein Kind (`parent` gesetzt), nimm den Bezug zum Eltern-Ticket in
 `## Kontext` auf: was das Eltern-Ticket leistet und welchen Teil das Kind übernimmt.

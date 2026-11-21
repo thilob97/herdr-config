@@ -366,6 +366,8 @@ def _fill(text, values):
 
 
 def start_prompt(roster, ticket, entry, reviewer=None):
+    from . import repos as repos_mod
+
     values = {
         "id": ticket["id"],
         "title": ticket["title"],
@@ -375,6 +377,7 @@ def start_prompt(roster, ticket, entry, reviewer=None):
         "branch": ticket.get("branch") or "",
         "base": ticket.get("base") or "",
         "reviewer": reviewer if reviewer is not None else roster.get("reviewer") or "",
+        "lessons": repos_mod.lessons_text(ticket.get("repo")),
     }
     preamble = _fill(
         prompt_text(roster, os.path.join("prompts", "preamble.md")), values
@@ -550,6 +553,24 @@ def orchestrator_dir(team=None):
     return os.path.join(base, team) if team else base
 
 
+def orchestrator_prompt(roster, team_name):
+    """Orchestrator-Prompt eines Teams mit eingebetteten Lehren seiner Repos."""
+    from . import repos as repos_mod
+
+    entry = teams.team(roster, team_name)
+    lines = repos_mod.lessons_many(entry.get("repos") or ())
+    if lines:
+        text = "\n".join(
+            line if line.startswith("- ") else f"- {line}" for line in lines
+        )
+    else:
+        text = repos_mod.EMPTY_LESSONS
+    return _fill(
+        prompt_text(roster, teams.orchestrator_config(entry)["prompt"]),
+        {"lessons": text},
+    )
+
+
 def start_orchestrator(roster, team_name=None):
     entry = teams.team(roster, team_name) if team_name else teams.first_team(roster)
     if not isinstance(entry, dict) or not entry.get("name"):
@@ -558,7 +579,7 @@ def start_orchestrator(roster, team_name=None):
     config = teams.orchestrator_config(entry)
     folder = orchestrator_dir(team_name)
     os.makedirs(folder, exist_ok=True)
-    text = prompt_text(roster, config["prompt"])
+    text = orchestrator_prompt(roster, team_name)
     with open(os.path.join(folder, "AGENTS.md"), "w", encoding="utf-8") as handle:
         handle.write(text)
     if not config["argv"]:

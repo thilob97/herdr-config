@@ -97,7 +97,7 @@ def _waiting_entries(questions, reviews):
             )
 
 
-def _inbox(stalled, questions, reviews, rows):
+def _inbox(stalled, questions, reviews, rows, tickets=()):
     entries = []
     stalled_ids = set()
     now = store.now_ms()
@@ -168,6 +168,22 @@ def _inbox(stalled, questions, reviews, rows):
             }
         )
 
+    for ticket in tickets:
+        for proposal in ticket.get("lesson_proposals") or []:
+            if not isinstance(proposal, dict):
+                continue
+            entries.append(
+                {
+                    "kind": "lesson",
+                    "ticket": ticket["id"],
+                    "at": proposal.get("at"),
+                    "from": proposal.get("by") or "fab",
+                    "text": str(proposal.get("text") or ""),
+                    "proposal": proposal.get("id"),
+                    "repo": ticket.get("repo") or "",
+                }
+            )
+
     entries.sort(key=lambda item: item.get("at") or 0, reverse=True)
     return entries
 
@@ -200,6 +216,7 @@ def build():
         store.question_tickets(),
         store.review_tickets(),
         store.attention_event_rows(events.ATTENTION_TEXTS),
+        tickets,
     )
     roster = agents.load(required=False)
     payload = {

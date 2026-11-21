@@ -5,7 +5,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  groupByStage, mentionSegments, sortInbox, inboxRetry, timelineFeed, eventSummary, relativeTime,
+  groupByStage, mentionSegments, sortInbox, inboxRetry, inboxLesson, lessonArgs, timelineFeed, eventSummary, relativeTime,
   stallLabel, stallReason,
   wakeLine, sessionChips, sessionStatus, childrenOf, childProgress,
   teamForTicket, teamAgents,
@@ -90,6 +90,24 @@ test("Inbox: „Erneut starten“ nur mit Ticket und Agent", () => {
     agent: "ada",
     args: ["wake", "T-28", "ada", "--from=mensch", "--", "Erneut starten"],
   });
+});
+
+test("Inbox: Lehren-Vorschlag liefert Bestätigen und Verwerfen", () => {
+  assert.equal(inboxLesson(null), null);
+  assert.equal(inboxLesson({}), null);
+  assert.equal(inboxLesson({ kind: "question", ticket: "T-1", proposal: "L1" }), null);
+  assert.equal(inboxLesson({ kind: "lesson", ticket: "T-1" }), null);
+  assert.equal(inboxLesson({ kind: "lesson", proposal: "L1" }), null);
+  assert.equal(inboxLesson({ kind: "lesson", ticket: "", proposal: "L1" }), null);
+  assert.equal(inboxLesson({ kind: "lesson", ticket: "T-1", proposal: "" }), null);
+
+  assert.deepEqual(inboxLesson({ kind: "lesson", ticket: "T-1", proposal: "L1" }), {
+    confirm: ["lesson", "confirm", "T-1", "L1", "--from=mensch"],
+    discard: ["lesson", "discard", "T-1", "L1", "--from=mensch"],
+  });
+  assert.deepEqual(lessonArgs("T-2", "confirm", "L3", "ada"), [
+    "lesson", "confirm", "T-2", "L3", "--from=ada",
+  ]);
 });
 
 test("Zeitverlauf: neueste zuerst, nach Tagen gruppiert, Filter je Ticket", () => {

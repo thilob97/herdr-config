@@ -61,7 +61,11 @@ class RoutingTests(FabricCase):
         self.clear_log()
         result = self.ok("comment", tid, "--from", "mensch", "@orchestrator bitte")
         self.assertIn("gestartet", result.stdout)
-        self.assertEqual(self.hc_calls("send"), [])
+        # Der fremde tz wird nicht geweckt; der frisch gestartete eigene
+        # Orchestrator bekommt den Wecktext nachgesendet.
+        sends = self.hc_calls("send")
+        self.assertEqual([row[1] for row in sends], ["t900"])
+        self.assertIn(f"fab comment {tid} --from orchestrator", sends[0][2])
         runs = self.hc_calls("run")
         self.assertEqual(len(runs), 1)
         self.assertIn("fab-herdr-app-orchestrator", runs[0])
