@@ -36,7 +36,7 @@
       "id": "revert",
       "type": "action",
       "action": "shell",
-      "command": "git revert --no-edit HEAD && touch \"$HOME/.herdr/autopilot-pause\""
+      "command": "mkdir -p \"$HOME/.herdr\"; git revert -m 1 --no-edit HEAD; code=$?; touch \"$HOME/.herdr/autopilot-pause\"; exit $code"
     },
     {
       "id": "wache",
