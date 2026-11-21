@@ -317,6 +317,10 @@ export default class Fabric extends View {
     return this.roster?.agents ?? [];
   }
 
+  ticketAgents(ticket = this.ticket) {
+    return model.teamAgents(this.roster?.teams ?? [], ticket);
+  }
+
   selectedId() {
     const value = shared("fabric.selected");
     return typeof value === "string" && value ? value : null;
@@ -1216,6 +1220,7 @@ export default class Fabric extends View {
             flags: agent.flags ?? parts.flags,
             open_tickets: agent.open_tickets ?? 0,
             sessions: agent.sessions ?? [],
+            teams: agent.teams ?? [],
           };
         }),
         blueprints: (raw.blueprints ?? [])
@@ -1877,7 +1882,7 @@ export default class Fabric extends View {
   openWake(cx) {
     if (!this.ticket) return;
     this.wakeOpen = true;
-    this.wakeName = this.ticket.assignee || this.agents[0]?.name || "";
+    this.wakeName = this.ticket.assignee || this.ticketAgents()[0]?.name || this.agents[0]?.name || "";
     this.wakeText = InputState.new({ placeholder: "Was soll der Agent tun?" });
     this.wakeText.on("submit", (_event, cx) => {
       if (this.consumeMentionSubmit("wake", cx)) return;

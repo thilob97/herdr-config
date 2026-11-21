@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import {
   groupByStage, mentionSegments, sortInbox, timelineFeed, eventSummary, relativeTime,
   wakeLine, sessionChips, sessionStatus, childrenOf, childProgress,
+  teamForTicket, teamAgents,
 } from "../model.js";
 
 test("Tickets werden nach Stufe gruppiert, in Stufenreihenfolge", () => {
@@ -928,4 +929,21 @@ test("teamDirty erkennt Änderungen an Repos, Mitgliedern, Prüfer und Sitzungen
   assert.equal(teamDirty(TEAM, { ...form, members: [{ blueprint: "zap" }, { blueprint: "ada" }] }), true);
   assert.equal(teamDirty(TEAM, { ...form, reviewer: "zap" }), true);
   assert.equal(teamDirty(TEAM, { ...form, max_sessions: "5" }), true);
+});
+
+test("teamForTicket und teamAgents wählen das Team nach dem Repo-Pfad", () => {
+  const teams = [
+    { name: "team-a", repos: ["/r/a"], agents: [{ name: "ada" }, { name: "bo" }] },
+    { name: "team-b", repos: ["/r/b/"], agents: [{ name: "cy" }] },
+  ];
+
+  assert.equal(teamForTicket(teams, { repo: "/r/b" }), teams[1]);
+  assert.deepEqual(teamAgents(teams, { repo: "/r/b" }).map((agent) => agent.name), ["cy"]);
+  assert.equal(teamForTicket(teams, { repo: "/r/b/" }), teams[1]);
+
+  assert.equal(teamForTicket(teams, {}), teams[0]);
+  assert.deepEqual(teamAgents(teams, { repo: "" }).map((agent) => agent.name), ["ada", "bo"]);
+
+  assert.equal(teamForTicket(teams, { repo: "/r/unknown" }), null);
+  assert.deepEqual(teamAgents(teams, { repo: "/r/unknown" }), []);
 });

@@ -694,6 +694,22 @@ export function teamDirty(team, form) {
   return JSON.stringify(base) !== JSON.stringify(next);
 }
 
+// Repo-Pfade ohne abschließende Schrägstriche vergleichen.
+const trimRepo = (value) => String(value ?? "").replace(/\/+$/, "");
+
+/** Team eines Tickets: ohne Repo das erste Team, sonst das Team mit dem Repo-Pfad. */
+export function teamForTicket(teams, ticket) {
+  const list = Array.isArray(teams) ? teams : [];
+  const repo = ticket?.repo ? trimRepo(ticket.repo) : "";
+  if (!repo) return list[0] ?? null;
+  return list.find((team) => (team?.repos ?? []).some((path) => trimRepo(path) === repo)) ?? null;
+}
+
+/** Agenten des Ticket-Teams; ohne Team eine leere Liste. */
+export function teamAgents(teams, ticket) {
+  return teamForTicket(teams, ticket)?.agents ?? [];
+}
+
 /** Ein später `prompt show`-Lauf darf nur das Formular füllen, das ihn startete. */
 export function promptLoadApplies(load, current) {
   return Boolean(load && current)

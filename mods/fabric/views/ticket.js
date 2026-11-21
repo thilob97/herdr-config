@@ -300,7 +300,7 @@ function statusField(app, cx, t, ticket) {
 }
 
 function assigneeField(app, cx, t, ticket) {
-  const options = app.agents.map((agent) => ({
+  const options = app.ticketAgents(ticket).map((agent) => ({
     value: agent.name,
     label: agent.name,
     detail: agent.role,
@@ -314,7 +314,7 @@ function assigneeField(app, cx, t, ticket) {
     open: app.menu === "detail-assignee",
     width: 210,
     scrollHandle: app.dropdownScroll,
-    empty: "Roster ist leer",
+    empty: "Kein Team für dieses Repo",
     onToggle: () => { app.menu = app.menu === "detail-assignee" ? null : "detail-assignee"; cx.notify(); },
     onPick: (value) => { app.menu = null; app.setAssignee(value, cx); },
   }), { hint: app.rosterError ?? null });
@@ -515,7 +515,7 @@ function sessionsField(app, cx, t, ticket) {
           id: "fabric-wake-name",
           value: app.wakeName,
           placeholder: "Agent",
-          options: app.agents.map((agent) => ({
+          options: app.ticketAgents(ticket).map((agent) => ({
             value: agent.name, label: agent.name, detail: agent.role, selected: agent.name === app.wakeName,
           })),
           open: app.menu === "wake-name",

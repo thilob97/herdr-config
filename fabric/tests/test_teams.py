@@ -322,6 +322,38 @@ class ExpansionTests(unittest.TestCase):
         self.assertEqual(result["max_sessions"], 6)
         self.assertEqual([a["name"] for a in result["agents"]], ["zap", "ada"])
 
+    def test_all_agents_ueber_alle_teams(self):
+        data = migrated_roster()
+        data["blueprints"].append(
+            {
+                "name": "bob",
+                "role": "umsetzer",
+                "color": "c3",
+                "prompt": "prompts/bob.md",
+                "argv": ["true"],
+            }
+        )
+        data["teams"].append(
+            {
+                "name": "zwei",
+                "repos": ["/tmp/zwei"],
+                "orchestrator": {"argv": [], "prompt": "prompts/zwei.md"},
+                "members": [
+                    {"blueprint": "ada", "model": "haiku"},
+                    {"blueprint": "bob"},
+                ],
+                "reviewer": "ada",
+                "max_sessions": 2,
+            }
+        )
+        rows = teams.all_agents(data)
+        self.assertEqual([row["name"] for row in rows], ["zap", "ada", "bob"])
+        by_name = {row["name"]: row for row in rows}
+        self.assertEqual(by_name["zap"]["teams"], ["herdr-app"])
+        self.assertEqual(by_name["ada"]["teams"], ["herdr-app", "zwei"])
+        self.assertEqual(by_name["ada"]["argv"], ["claude", "--model", "opus"])
+        self.assertEqual(by_name["bob"]["teams"], ["zwei"])
+
     def test_legacy_fallback(self):
         result = teams.expansion(legacy_roster())
         self.assertIsNone(result["team"])
