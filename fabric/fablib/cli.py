@@ -461,7 +461,7 @@ def cmd_status(args):
         raise FabError(f"{args.id}: „done“ gibt es nur über fab accept")
     if args.status == "dropped":
         raise FabError(
-            f"{args.id}: „dropped“ gibt es nur über fab drop {args.id} --reason …"
+            f"{args.id}: „dropped“ gibt es nur über fab drop {args.id} mit einem Grund"
         )
     with store.locked():
         ticket = store.load(args.id)
