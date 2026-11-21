@@ -3,13 +3,15 @@
 Ein Lauf prüft jedes offene Ticket (`todo`/`doing`) und führt höchstens eine
 Regel aus. `draft`, `review`, `done` und `dropped` bleiben unangetastet.
 Jede Aktion schreibt ein `tick`-Ereignis; zugestellte Aktionen zusätzlich ein
-`wake`-Ereignis, damit die Ping-Pong-Bremse sie zählt.
+`wake`-Ereignis, damit die Ping-Pong-Bremse sie zählt. Ein Neustart des
+Team-Orchestrators wegen Leerlauf schreibt stattdessen ein
+`orchestrator`-Ereignis mit Grund.
 """
 import os
 import plistlib
 import subprocess
 
-from . import agents, events, hc, store, teams, wake
+from . import agents, events, hc, orchestrator, store, teams, wake
 from .errors import FabError, HcError
 
 DEFAULTS = {"doing": 10, "mention": 5, "review": 5, "blocked": 30, "retry": 5}
@@ -64,9 +66,9 @@ def settings(roster):
 def run(roster, dry=False):
     """Alle offenen Tickets prüfen; Rückgabe: eine Zeile je Aktion.
 
-    Unter `store.locked()` aufrufen. Mit `dry` werden nur
-    `hc.live()`/`events.count_wakes`/`agents.at_limit` benutzt und nichts
-    geschrieben.
+    Unter `store.locked()` aufrufen. Mit `dry` werden nur lesende Aufrufe
+    (`hc.live()`/`hc.get`/`events.read_all`/`agents.at_limit`) benutzt und
+    nichts geschrieben.
     """
     result = Result()
     cfg = settings(roster)
@@ -87,7 +89,48 @@ def run(roster, dry=False):
         if changed and not dry:
             store.save(ticket)
             result.changed = True
+    for team_entry in _teams(roster):
+        try:
+            if _tick_orchestrator(roster or {}, team_entry, live, result, dry):
+                result.changed = True
+        except (FabError, HcError) as exc:
+            result.append(f"{team_entry.get('name')}: Fehler: {exc}")
     return result
+
+
+def _teams(roster):
+    return [
+        entry
+        for entry in (roster or {}).get("teams") or []
+        if isinstance(entry, dict) and entry.get("name")
+    ]
+
+
+def _tick_orchestrator(roster, team_entry, live, lines, dry):
+    """Leerlauf eines Team-Orchestrators; Rückgabe: neu gestartet?"""
+    team_name = str(team_entry.get("name") or "")
+    row = None
+    for target in agents.orchestrator_targets(roster, team_name):
+        if target in live:
+            row = live[target]
+            break
+    if row is None:
+        return False
+    due, reason = orchestrator.idle_due(roster, team_entry, row)
+    if not due:
+        return False
+    waiting = orchestrator.waiting_tickets(roster, team_name)
+    if waiting:
+        lines.append(
+            f"{team_name}: Orchestrator bleibt – wartet auf {', '.join(waiting)}"
+        )
+        return False
+    if dry:
+        lines.append(f"{team_name}: geplant: Orchestrator neu starten – {reason}")
+        return False
+    orchestrator.restart(roster, team_entry, reason, "tick")
+    lines.append(f"{team_name}: Orchestrator neu gestartet – {reason}")
+    return True
 
 
 # ---------------------------------------------------------------- Prüfen

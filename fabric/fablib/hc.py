@@ -78,6 +78,19 @@ def ls():
     return rows or []
 
 
+def get(target, timeout=60):
+    """`hc get <t> --json` als Dict; für Zeitstempel der letzten Ausgabe."""
+    result = _run(["get", str(target), "--json"], timeout=timeout)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip() or f"Exit {result.returncode}"
+        raise HcError(f"hc get: {detail}")
+    try:
+        data = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError:
+        raise HcError("hc get --json liefert kein JSON")
+    return data if isinstance(data, dict) else {}
+
+
 def live():
     """Name → Zeile für alle Terminals mit state == live."""
     return {
