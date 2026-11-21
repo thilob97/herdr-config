@@ -57,6 +57,7 @@ function normalizeIndex(raw) {
     tickets: Array.isArray(raw?.tickets) ? raw.tickets : [],
     inbox: Array.isArray(raw?.inbox) ? raw.inbox : [],
     roster: Array.isArray(raw?.roster) ? raw.roster : [],
+    teams: Array.isArray(raw?.teams) ? raw.teams : [],
     events: Array.isArray(raw?.events) ? raw.events : [],
   };
 }

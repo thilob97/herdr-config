@@ -164,19 +164,110 @@ def _copy_worktree(worktree, target):
             shutil.copy2(source, destination)
 
 
-def _seed_window(state):
-    """Erste Ansicht ohne Willkommens-Overlay: Board des Fabric-Mods."""
+def _seed_window(state, page="board"):
+    """Erste Ansicht ohne Willkommens-Overlay: gewünschte Fabric-Seite."""
     path = os.path.join(state["home"], "shared.json")
     if os.path.exists(path):
         return
     payload = {
         "frame.welcomed": "finished",
         "layout": "fabric",
-        "fabric.route": {"page": "board"},
+        "fabric.route": {"page": page or "board"},
         "fabric.selected": "T-1",
     }
     with open(path, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, ensure_ascii=False)
+
+
+def _seed_metrics(state):
+    """Demodaten für Kosten und Liegezeiten; nur im Vorschau-Home."""
+    folder = os.path.join(state["fab_home"], "tickets")
+    path = os.path.join(folder, "T-1.json")
+    if not os.path.isfile(path):
+        return
+    now = int(time.time() * 1000)
+    sessions = [
+        {
+            "agent": "zap",
+            "name": "fab-herdr-app-zap-t-1",
+            "terminal": "t1",
+            "started_at": now - 3300000,
+        },
+        {
+            "agent": "ada",
+            "name": "fab-herdr-app-ada-t-1",
+            "terminal": "t2",
+            "started_at": now - 1500000,
+        },
+    ]
+    cost = {
+        "currency": "USD",
+        "total": 0.42,
+        "today": 0.42,
+        "sessions": [
+            {
+                "agent": "zap",
+                "name": sessions[0]["name"],
+                "started_at": sessions[0]["started_at"],
+                "cost": 0.31,
+                "source": "omp",
+                "files": 1,
+            },
+            {
+                "agent": "ada",
+                "name": sessions[1]["name"],
+                "started_at": sessions[1]["started_at"],
+                "cost": 0.11,
+                "source": "claude",
+                "files": 1,
+            },
+        ],
+        "at": now,
+    }
+    waits = {
+        "total_ms": 5400000,
+        "stages": [
+            {"key": "doing", "label": "In Arbeit", "ms": 3600000, "open": False},
+            {"key": "review", "label": "Prüfung bei ada", "ms": 1200000, "open": True},
+            {"key": "mensch", "label": "wartet auf mensch", "ms": 600000, "open": False},
+        ],
+    }
+    try:
+        with open(path, encoding="utf-8") as handle:
+            ticket = json.load(handle)
+        if isinstance(ticket, dict):
+            ticket["sessions"] = sessions
+            ticket["max_cost"] = 5
+            ticket["cost"] = cost
+            ticket["waits"] = waits
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump(ticket, handle, ensure_ascii=False, indent=2)
+                handle.write("\n")
+    except (OSError, json.JSONDecodeError):
+        return
+    index_path = os.path.join(state["fab_home"], "index.json")
+    if not os.path.isfile(index_path):
+        return
+    try:
+        with open(index_path, encoding="utf-8") as handle:
+            index = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return
+    if not isinstance(index, dict):
+        return
+    for row in index.get("tickets") or []:
+        if isinstance(row, dict) and row.get("id") == "T-1":
+            row["team"] = "herdr-app"
+            row["max_cost"] = 5
+            row["cost"] = {
+                "currency": "USD",
+                "total": cost["total"],
+                "today": cost["today"],
+            }
+            row["waits"] = waits
+    with open(index_path, "w", encoding="utf-8") as handle:
+        json.dump(index, handle, ensure_ascii=False)
+        handle.write("\n")
 
 
 def _seed(state, ticket, worktree):
@@ -235,7 +326,7 @@ def _wait_ready(state, ticket_id):
         time.sleep(POLL)
 
 
-def start(ticket):
+def start(ticket, page="board"):
     ticket_id = ticket["id"]
     worktree = ticket.get("worktree")
     if not worktree or not os.path.isdir(worktree):
@@ -256,6 +347,7 @@ def start(ticket):
         "userhome": os.path.join(base, "userhome"),
         "fab_home": fab_home(ticket_id),
         "log": os.path.join(base, "app.log"),
+        "page": page or "board",
         "started_at": int(time.time() * 1000),
     }
     for folder in (
@@ -267,8 +359,9 @@ def start(ticket):
     ):
         os.makedirs(folder, exist_ok=True)
     _copy_worktree(worktree, state["home"])
-    _seed_window(state)
+    _seed_window(state, page)
     _seed(state, ticket, worktree)
+    _seed_metrics(state)
     with open(state["log"], "a", encoding="utf-8") as log:
         try:
             process = subprocess.Popen(

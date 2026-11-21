@@ -76,6 +76,22 @@ Die gesamte Datenhaltung läuft über die schmale Schnittstelle in `fabric/fabli
     "rule": "doing", "since": 1790000000000, "attempts": 1,
     "last_attempt": 1790000000000, "attention": false,
     "reason": "keine Session, letzter Eintrag von zap", "agent": "zap"
+  },
+  "max_cost": 5,
+  "cost": {
+    "currency": "USD", "total": 0.42, "today": 0.42, "at": 1790000000000,
+    "sessions": [
+      {"agent": "zap", "name": "fab-zap-t-1", "started_at": 1790000000000,
+       "cost": 0.31, "source": "omp", "files": 1}
+    ]
+  },
+  "waits": {
+    "total_ms": 5400000,
+    "stages": [
+      {"key": "doing", "label": "In Arbeit", "ms": 3600000, "open": false},
+      {"key": "review", "label": "Prüfung bei ada", "ms": 1200000, "open": true},
+      {"key": "mensch", "label": "wartet auf mensch", "ms": 600000, "open": false}
+    ]
   }
 }
 ```
@@ -85,6 +101,7 @@ Die gesamte Datenhaltung läuft über die schmale Schnittstelle in `fabric/fabli
 - `checks`/`verdict` gelten nur, solange `head` dem aktuellen HEAD des Worktrees entspricht.
 - `attachments`: nur Bilder (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`), abgelegt von `fab attach` unter `data/fabric/attachments/<ID>/`. `path` ist relativ zur App-Wurzel (`~/.config/herdr-app`), damit der Mod ihn als Bild laden kann; im Body und in Kommentaren steht derselbe Pfad als Markdown-Bildlink `![name](path)`.
 - `stall`: nur von `fab tick` geschrieben, optional. `rule` ∈ `doing mention review todo blocked`, `since` = Beginn des Stillstands, `attempts` = bisherige Weck-/Startversuche, `attention` = nach zwei erfolglosen Versuchen oder Regel 5, `reason` einzeilig ohne „stockt seit“, `agent` = zu weckender Agent oder `orchestrator`. Ein Kommentar im Ticket, jede zugestellte manuelle Weckung und jeder Statuswechsel entfernen `stall`; `fab tick` entfernt ihn, sobald die Bedingung wegfällt. `draft`, `review`, `done` und `dropped` werden von `fab tick` weder gelesen noch verändert.
+- `max_cost`: optionales Kostenlimit in USD (`fab edit --max-cost`), `null` = kein Limit. `cost` ist der zuletzt gespeicherte Stand aus den Session-Protokollen (omp: `FAB_OMP_SESSIONS` oder `~/.omp/agent/sessions`, claude: `FAB_CLAUDE_PROJECTS` oder `~/.claude/projects`, je Worktree-Ordner); `fab show` rechnet frisch, `store.save` schreibt den Stand mit. `waits` wird nur ins Lesemodell geschrieben, nie in die DB: drei Stufen `doing`, `review` (Label mit Prüfername), `mensch` mit Millisekunden und `open`.
 
 ### Ereignis (Zeile in `events`)
 
@@ -109,7 +126,13 @@ Bei `tick` steht in `text` eines von: `geweckt`, `gestartet`, `an orchestrator`,
      "checks": "pass", "verdict": null,
      "last_comment": {"author": "zap", "at": 0, "text": "…", "mentions": ["ada"]},
      "sessions": [{"agent": "zap", "name": "fab-zap-t-1", "terminal": "t9a"}],
-     "stall": {"rule": "doing", "since": 0, "attempts": 2, "attention": true, "reason": "…"}}
+     "stall": {"rule": "doing", "since": 0, "attempts": 2, "attention": true, "reason": "…"},
+     "team": "herdr-app", "max_cost": 5,
+     "cost": {"currency": "USD", "total": 0.42, "today": 0.42},
+     "waits": {"total_ms": 5400000,
+               "stages": [{"key": "doing", "label": "In Arbeit", "ms": 3600000, "open": false},
+                          {"key": "review", "label": "Prüfung bei ada", "ms": 1200000, "open": true},
+                          {"key": "mensch", "label": "wartet auf mensch", "ms": 600000, "open": false}]}}
   ],
   "inbox": [
     {"id": "question:T-1:0", "kind": "question", "ticket": "T-1", "at": 0, "from": "zap", "text": "…"},
@@ -139,15 +162,16 @@ Alle schreibenden Befehle laufen in genau einer Transaktion, hängen Ereignisse 
 | Befehl | Wirkung |
 |---|---|
 | `fab new "<satz>" [--template NAME] [--issue N] [--repo PFAD] [--from NAME]` | Ticket `draft`, Titel = Satz (max. 80 Zeichen), Body `## Auftrag\n<satz>`. Satz und `--issue` sind beide optional, aber eins von beiden ist Pflicht; `--template` und `--issue` schließen sich aus. `--template NAME` setzt den Body aus der Vorlage `NAME` (jedes `{satz}` wird durch den Satz ersetzt), Titel bleibt der Satz. `--issue N` übernimmt Titel und Body eines **offenen** GitHub-Issues, hängt den Issue-Link an den Body und speichert Feld `issue` `{number, url, title}`; ein geschlossenes Issue, ein Repo ohne github.com-Origin oder ein fehlendes/nicht angemeldetes `gh` bricht mit deutscher Meldung ab. `--repo` Standard: Git-Wurzel des aktuellen Ordners, sonst `null`. Danach automatisch Kommentar von `--from` (Standard `mensch`): `@orchestrator bitte ausformulieren und verteilen` → weckt den Orchestrator. Gibt die ID aus. Bei einem Issue-Ticket trägt der PR-Body zusätzlich `Closes #N`. |
-| `fab list [--status S] [--json]` / `fab show ID [--json]` | lesen |
-| `fab edit ID [--title T] [--body T \| --body-file F] [--repo PFAD] [--base B] --from NAME` | ändern |
+| `fab list [--status S] [--json]` / `fab show ID [--json]` | lesen. `show` rechnet Kosten und Liegezeiten frisch und zeigt `## Kosten` (je Session, `Summe: $x · Limit: $y`) sowie `## Liegezeiten`; `--json` ergänzt `cost` (Snapshot aus `costs.collect`) und `waits` nur in der Ausgabe. |
+| `fab stats [--team NAME] [--today] [--json]` | Kosten je Team aus den gespeicherten Ticket-Snapshots: Tabelle mit Team, Summe, Heute, Zahl der Tickets mit Betrag; `--team` filtert (unbekanntes Team = Fehler), `--today` betont die Heute-Summe. `--json` liefert `{generated_at, currency, teams:[{name,total,today,tickets}], total, today}`. |
+| `fab edit ID [--title T] [--body T \| --body-file F] [--repo PFAD] [--base B] [--max-cost USD] --from NAME` | ändern. `--max-cost` setzt das Kostenlimit (Komma als Dezimaltrenner erlaubt, `>= 0`); ein leerer Wert (`--max-cost=`) löscht es. |
 | `fab status ID STATUS --from NAME` | Statuswechsel. `done` nur über `accept`. |
 | `fab assign ID NAME --from NAME` | Zuständigen auf ein Mitglied des Teams setzen, zu dem das Ticket-Repo gehört; ein Nicht-Mitglied wird mit Team und Mitgliederliste abgelehnt |
 | `fab link ID --blocked-by ID… --from NAME` | Abhängigkeiten, ohne Zyklen. `--remove ID…` entfernt sie; fällt die letzte weg, startet `fab` das Ticket wie nach einer Abnahme (Abschnitt `fab accept`). |
 | `fab comment ID --from NAME [--no-wake] "<text>"` | Kommentar; jede `@erwähnung` weckt (Abschnitt 4). Gibt pro genanntem Namen eine Zeile mit dem Ergebnis aus. |
 | `fab attach ID DATEI [--no-edit] [--from NAME]` | Bild als Anhang: `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp` (Groß/klein egal). Kopiert nach `data/fabric/attachments/<ID>/<name>` (Name aus der Datei, bereinigt; gleicher Inhalt wird wiederverwendet, sonst `-2`, `-3`, …). Gibt die Zeile `![<name>](data/fabric/attachments/<ID>/<name>)` aus, hängt den Anhang an `attachments` und standardmäßig den Link an den Body; `--no-edit` lässt den Body unverändert. Akteur: `--from`, Standard `mensch`. |
 | `fab diff ID [--json] [--file PFAD]` | Änderungen vor der Abnahme: Dateien mit `+`/`−` (`git diff --numstat base...branch`), Commits (`git log base..branch`), HEAD sowie Nachweise aus Ticket-Anhängen und im Handover genannten Dateien/Screenshots. `--json` liefert `{id, base, branch, head, merge_base, files, commits, proofs}`; `--file` den Text-Diff einer Datei (mit `--json` als `{path, diff}`). |
-| `fab preview start\|shot\|stop ID` | Eigene Vorschau-Instanz je Ticket-Worktree unter `/tmp/fab-preview/<ID>/`. `start` kopiert `settings.json`, `keys.json`, `layouts/`, `mods/` und die CLI aus dem Ticket-Worktree (nie `data`) nach `/tmp/fab-preview/<ID>/home`, nutzt ein privates `HOME` und `HC_SESSION` `fabp-<id>`, legt ein Demo-Ticket an (nie echte Ticketdaten) und startet ein eigenes Herdr-Fenster mit eigenem Core. `shot` speichert dort ein PNG und hängt es nach denselben Regeln wie `fab attach` an (Feld `attachments`, Link im Body); Akteur: `--from`, sonst `assignee`, sonst `mensch`. `stop` beendet App und Core und entfernt `/tmp/fab-preview/<ID>`. |
+| `fab preview start [--page board\|ticket\|settings]\|shot\|stop ID` | Eigene Vorschau-Instanz je Ticket-Worktree unter `/tmp/fab-preview/<ID>/`. `start` kopiert `settings.json`, `keys.json`, `layouts/`, `mods/` und die CLI aus dem Ticket-Worktree (nie `data`) nach `/tmp/fab-preview/<ID>/home`, nutzt ein privates `HOME` und `HC_SESSION` `fabp-<id>`, legt ein Demo-Ticket an (nie echte Ticketdaten), ergänzt Demokosten und Liegezeiten und startet ein eigenes Herdr-Fenster mit eigenem Core; `--page` wählt die Startseite (Standard `board`). `shot` speichert dort ein PNG und hängt es nach denselben Regeln wie `fab attach` an (Feld `attachments`, Link im Body); Akteur: `--from`, sonst `assignee`, sonst `mensch`. `stop` beendet App und Core und entfernt `/tmp/fab-preview/<ID>`. |
 | `fab dispatch ID [--agent NAME] --from NAME` | Verlangt `repo`, einen Abschnitt `## Abnahmekriterien` und keine offenen `blocked_by`. Legt Branch `fab/<ID>-<slug>` vom aktuellen HEAD des Repos und den Worktree an, startet den Agenten (Abschnitt 5), Status `doing`. Läuft er schon für das Ticket: wecken statt starten. |
 | `fab verify ID [--from NAME]` | Führt `<worktree>/.fabric/verify.sh` aus (fehlt sie: Fehler mit Pfad), `sh` im Worktree, Timeout 10 min. Schreibt `checks` auf den HEAD. Akteur des `verify`-Ereignisses ist `--from`, Standard: `assignee`. |
 | `fab verdict ID pass\|fail --from NAME "<zusammenfassung>"` | Urteil des Prüfers auf den HEAD. `fail`: Kommentar mit Zusammenfassung, Status `doing`, entfernt `mensch` aus `waiting` (keine Inbox-Frage), weckt `assignee`. `pass`: weckt `assignee` mit dem Hinweis, auf grünen Checks mit `fab handover` zu übergeben. Ist der Prüfer selbst der `assignee`, wird weder bei `pass` noch bei `fail` jemand geweckt. |
@@ -254,6 +278,7 @@ Jedes Ergebnis wird als `wake`-Ereignis geschrieben, auch jede Unterdrückung. I
 - Jede Aktion schreibt ein `tick`-Ereignis mit Ticket, Regel und Grund; zugestellte Weckungen zusätzlich ein `wake`-Ereignis. Fällt die Bedingung weg, entfernt `tick` `stall` und schreibt `tick`/`gelöst`.
 - `attention` erscheint genau einmal pro Ticket in der Inbox: Text `stockt seit <Dauer> – <Grund>`, `agent` für den Knopf „Erneut versuchen“ im Mod. Der Knopf ruft `fab wake … --from mensch "Erneut starten"`; eine zugestellte Weckung oder ein Kommentar löst `stall` auf. Board-Karten zeigen `stockt seit …`.
 - `--dry-run` plant nur: kein Schreiben, kein `hc send`/`hc run`; Ausgabe nennt die geplanten Aktionen.
+- Kostenlimit: Ist `max_cost` gesetzt und die frische Summe aus `costs.collect` überschreitet es, beendet `tick` vor allen Regeln jede Session (`hc kill` über Terminal/Name), setzt `mensch` in `waiting` (Regel 1 startet nicht neu) und meldet einmalig `attention` mit `Kostenlimit überschritten: $x > $y` (Regel 6); weitere Ticks ändern nichts. `--dry-run` meldet nur die geplante Aufmerksamkeit.
 - Auslöser: der Mod ruft `fab tick` jede Minute auf, solange das Fenster offen ist. Optional installiert der Mensch einen launchd-Agent (Intervall 60 s) mit `fab tick --install`, entfernt ihn mit `--uninstall`. Automatisch wird nichts installiert. `--install` im Haupt-Checkout ausführen: der Auftrag trägt den absoluten Pfad der aufrufenden `fabric/fab`; aus einem Worktree zeigt er nach dem Aufräumen ins Leere.
 
 ## 4c. Neustart des Orchestrators

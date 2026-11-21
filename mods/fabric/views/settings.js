@@ -68,6 +68,21 @@ function dataCard(app, cx, t) {
   ], { id: "fabric-settings-data", padding: S.m, gap: S.xs });
 }
 
+function metricsCard(app, t) {
+  const totals = model.costTotals(app.tickets);
+  const limitHint = totals.overLimit > 0
+    ? `${totals.overLimit} Ticket${totals.overLimit === 1 ? "" : "s"} über dem Kostenlimit`
+    : "";
+  return ui.card(t, [
+    ui.sectionTitle(t, "Kosten", [], "Aus dem Index; aktualisiert sich mit ihm."),
+    infoRow(t, "Gesamt", model.formatCost(totals.total)),
+    infoRow(t, "Heute", model.formatCost(totals.today)),
+    ...totals.teams.map((team) => infoRow(t, team.name,
+      `${model.formatCost(team.total)} · heute ${model.formatCost(team.today)} · ${team.tickets} Ticket${team.tickets === 1 ? "" : "s"}`)),
+    ...(limitHint ? [div().text_size(T.xs).text_color(t.blocked).whitespace_normal().child(limitHint)] : []),
+  ], { id: "fabric-settings-cost", padding: S.m, gap: S.xs });
+}
+
 function versionCard(app, cx, t) {
   return ui.card(t, [
     ui.sectionTitle(t, "Fabric"),
@@ -158,6 +173,7 @@ export function renderSettings(app, cx, t) {
       v_flex().flex_1().min_h(0).overflow_y_scrollbar().p(S.l).gap(S.m)
         .child(h_flex().w_full().gap(S.m).items_start().flex_wrap()
           .child(div().w(440).child(dataCard(app, cx, t)))
+          .child(div().w(440).child(metricsCard(app, t)))
           .child(div().w(440).child(versionCard(app, cx, t))))
         .child(div().w_full().max_w(900).child(notifyCard(app, cx, t, settings)))
         .child(div().w_full().max_w(900).child(keysCard(app, cx, t))),

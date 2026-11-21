@@ -10,6 +10,7 @@ import unicodedata
 from . import (
     agents,
     config,
+    costs,
     events,
     git,
     hc,
@@ -317,6 +318,8 @@ def _end_sessions(ticket):
             if hc.kill(target):
                 ended.append(target)
                 break
+    if ticket.get("sessions"):
+        ticket["cost"] = costs.collect(ticket)
     return ended
 
 
@@ -475,13 +478,58 @@ def cmd_list(args):
     return 0
 
 
+def _reviewer(roster=None):
+    roster = roster if roster is not None else agents.load(required=False)
+    return str((roster or {}).get("reviewer") or "ada")
+
+
 def cmd_show(args):
     ticket = store.load(args.id)
+    roster = agents.load(required=False)
+    cost = costs.collect(ticket)
+    waits = costs.waits(
+        ticket, store.event_rows_for(ticket["id"]), _reviewer(roster)
+    )
     if args.json:
-        print(render.ticket_json(ticket))
+        data = dict(ticket)
+        data["cost"] = cost
+        data["waits"] = waits
+        print(render.ticket_json(data))
     else:
         children = store.children_of(store.all_tickets(), ticket["id"])
-        sys.stdout.write(render.ticket_text(ticket, children=children))
+        sys.stdout.write(
+            render.ticket_text(ticket, children=children, cost=cost, waits=waits)
+        )
+    return 0
+
+
+def cmd_stats(args):
+    roster = agents.load(required=False)
+    if args.team:
+        if not roster:
+            raise FabError("Kein Team im Roster; fab team add …")
+        teams.team(roster, args.team)
+    payload = costs.stats(
+        store.all_tickets(), roster, team=args.team, today=args.today
+    )
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+    print(f"{'Team':<16}{'Summe':>10}{'Heute':>10}{'Tickets':>9}")
+    for row in payload["teams"]:
+        print(
+            f"{row['name'] or '—':<16}"
+            f"{costs.format_cost(row['total']):>10}"
+            f"{costs.format_cost(row['today']):>10}"
+            f"{row['tickets']:>9}"
+        )
+    count = sum(row["tickets"] for row in payload["teams"])
+    print(
+        f"{'Gesamt':<16}"
+        f"{costs.format_cost(payload['total']):>10}"
+        f"{costs.format_cost(payload['today']):>10}"
+        f"{count:>9}"
+    )
     return 0
 
 
@@ -641,6 +689,20 @@ def cmd_diff(args):
     return 0
 
 
+def _max_cost(raw):
+    """Kostenlimit aus Text; leer löscht, Komma gilt als Dezimaltrenner."""
+    text = str(raw).strip().replace(",", ".")
+    if not text:
+        return None
+    try:
+        value = float(text)
+    except ValueError:
+        raise FabError(f"Ungültiges Kostenlimit: {raw!r}")
+    if not 0 <= value < float("inf"):
+        raise FabError(f"Kostenlimit muss eine Zahl ab 0 sein: {raw!r}")
+    return value
+
+
 def cmd_edit(args):
     actor = _require_actor(args)
     body_text = args.body
@@ -665,9 +727,13 @@ def cmd_edit(args):
         if args.base is not None:
             ticket["base"] = args.base or None
             changed.append("Basis")
+        if args.max_cost is not None:
+            ticket["max_cost"] = _max_cost(args.max_cost)
+            changed.append("Kostenlimit")
         if not changed:
             raise FabError(
-                "Nichts zu ändern: nutze --title, --body, --body-file, --repo oder --base"
+                "Nichts zu ändern: nutze --title, --body, --body-file, --repo, "
+                "--base oder --max-cost"
             )
         events.append("edited", ticket["id"], actor, "", ", ".join(changed))
         store.save(ticket)
@@ -848,7 +914,7 @@ def cmd_preview(args):
     ticket = store.load(args.id)
     tid = ticket["id"]
     if args.action == "start":
-        state = preview.start(ticket)
+        state = preview.start(ticket, page=getattr(args, "page", "board") or "board")
         print(
             f"{tid}: Vorschau läuft in {state['home']} "
             f"(PID {state['pid']}, Core {state['session']})"
@@ -2275,6 +2341,12 @@ def build_parser():
     item.add_argument("id", metavar="ID", help="Ticket-ID, z. B. T-1")
     item.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe")
 
+    item = command("stats", "Kosten je Team und Ticket zeigen", cmd_stats)
+    item.add_argument("--team", metavar="NAME", help="nur dieses Team")
+    item.add_argument("--today", action="store_true",
+                      help="Heute-Kosten statt Gesamtkosten betonen")
+    item.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe")
+
     item = command("diff", "Änderungen des Tickets gegenüber der Basis zeigen", cmd_diff)
     item.add_argument("id", metavar="ID", help="Ticket-ID, z. B. T-1")
     item.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe")
@@ -2288,6 +2360,8 @@ def build_parser():
     body.add_argument("--body-file", metavar="F")
     item.add_argument("--repo", metavar="PFAD")
     item.add_argument("--base", metavar="B")
+    item.add_argument("--max-cost", metavar="USD",
+                      help="Kostenlimit je Ticket; leer löscht es")
     item.add_argument("--from", dest="from_", metavar="NAME", required=True, help="wer ändert")
 
     item = command(
@@ -2336,6 +2410,8 @@ def build_parser():
     start = preview_sub.add_parser("start", help="Vorschau starten",
                                    description="Vorschau starten")
     start.add_argument("id", metavar="ID")
+    start.add_argument("--page", choices=("board", "ticket", "settings"),
+                       default="board", help="Startseite im Fenster")
     shot = preview_sub.add_parser("shot", help="Screenshot der Vorschau anhängen",
                                   description="Screenshot der Vorschau anhängen")
     shot.add_argument("id", metavar="ID")

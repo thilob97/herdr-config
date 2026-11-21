@@ -433,8 +433,17 @@ def defer_index(payload):
 
 
 def _flush_read_models():
+    reviewer = "ada"
+    try:
+        from . import agents
+
+        roster = agents.load(required=False)
+        if roster:
+            reviewer = str(roster.get("reviewer") or "ada")
+    except FabError:
+        pass
     for tid in sorted(_dirty_tickets, key=_number_of):
-        _write_model(load(tid))
+        _write_model(load(tid), reviewer)
     payload = _pending_index
     if payload is None and _index_dirty:
         from . import index as index_mod
@@ -476,8 +485,15 @@ def _ticket_text(ticket):
     return json.dumps(ticket, ensure_ascii=False, indent=2) + "\n"
 
 
-def _write_model(ticket):
-    atomic_write(ticket_path(ticket["id"]), _ticket_text(ticket))
+def _write_model(ticket, reviewer="ada"):
+    """Lesemodell schreiben: Kosten bleiben gespeichert, Liegezeiten kommen dazu."""
+    from . import costs
+
+    model = dict(ticket)
+    model["waits"] = costs.waits(
+        ticket, event_rows_for(ticket["id"]), reviewer
+    )
+    atomic_write(ticket_path(ticket["id"]), _ticket_text(model))
 
 
 # ---------------------------------------------------------------- Ticket-Modell
@@ -518,6 +534,7 @@ def blank_ticket(tid, title="", body="", repo=None, created_by=""):
         "checks": None,
         "verdict": None,
         "issue": None,
+        "max_cost": None,
     }
 
 
@@ -714,6 +731,10 @@ def _save_db(ticket, touch):
     ticket["id"] = tid
     if touch:
         ticket["updated_at"] = now_ms()
+    if ticket.get("sessions") and ticket.get("worktree"):
+        from . import costs
+
+        ticket["cost"] = costs.collect(ticket)
     _write_ticket(_connect(), tid, ticket)
     _dirty_tickets.add(tid)
     _index_dirty = True
@@ -724,6 +745,10 @@ def _legacy_save(ticket, touch):
     ticket["id"] = tid
     if touch:
         ticket["updated_at"] = now_ms()
+    if ticket.get("sessions") and ticket.get("worktree"):
+        from . import costs
+
+        ticket["cost"] = costs.collect(ticket)
     atomic_write(ticket_path(tid), _ticket_text(ticket))
 
 
@@ -959,6 +984,22 @@ def event_rows(limit=None):
 
 def event_tail(limit):
     return event_rows(limit)
+
+
+def event_rows_for(tid):
+    """Alle Ereignisse eines Tickets; Zeilen ohne Ticket-ID gelten mit."""
+    ensure()
+    tid = normalize_id(tid)
+    if not _db_ready():
+        return [
+            row
+            for row in _legacy_event_rows()
+            if not row.get("ticket") or row.get("ticket") == tid
+        ]
+    rows = _connect().execute(
+        "SELECT * FROM events WHERE ticket=? OR ticket='' ORDER BY id", (tid,)
+    ).fetchall()
+    return [_event_dict(row) for row in rows]
 
 
 def event_has_text(ticket, text):

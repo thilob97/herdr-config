@@ -683,19 +683,32 @@ function verdictField(app, cx, t, ticket) {
     .when(!verdict?.state, (el) => el.child(div().text_size(T.xs).text_color(t.dim).child("Noch kein Urteil"))));
 }
 
+function sessionCost(ticket, session, raw) {
+  const rows = Array.isArray(ticket?.cost?.sessions) ? ticket.cost.sessions : [];
+  const byName = session.name ? rows.find((row) => row.name && row.name === session.name) : null;
+  if (byName) return byName;
+  if (!Number.isFinite(raw?.started_at)) return null;
+  return rows.find((row) => row.agent === (session.agent || null) && row.started_at === raw.started_at) ?? null;
+}
+
 function sessionsField(app, cx, t, ticket) {
+  const sources = (ticket.sessions ?? []).filter(Boolean);
   const chips = model.sessionChips(ticket.sessions, terminals(), agents(), ticket.id);
   return ui.field(t, "Sessions", v_flex().w_full().gap(S.s)
     .when(chips.length === 0, (el) => el.child(div().text_size(T.xs).text_color(t.dim).child("Keine Session")))
     .when(chips.length > 0, (el) => el.child(h_flex().w_full().gap(4).flex_wrap()
-      .children(chips.map((session, index) => ui.chip(t,
-        `${session.agent || "Agent"} · ${session.word}`,
-        ui.sessionColor(t, session.color),
-        `fabric-session-${ticket.id}-${session.terminal || session.name || index}`,
-        {
-          tooltip: session.tooltip,
-          onClick: session.ended ? null : (cx) => run("terminal.peek", { terminal: session.terminal }),
-        })))))
+      .children(chips.map((session, index) => {
+        const row = sessionCost(ticket, session, sources[index]);
+        const cost = row ? ` · ${model.formatCost(row.cost)}` : "";
+        return ui.chip(t,
+          `${session.agent || "Agent"} · ${session.word}${cost}`,
+          ui.sessionColor(t, session.color),
+          `fabric-session-${ticket.id}-${session.terminal || session.name || index}`,
+          {
+            tooltip: row ? `${session.tooltip} · ${model.formatCost(row.cost)}` : session.tooltip,
+            onClick: session.ended ? null : (cx) => run("terminal.peek", { terminal: session.terminal }),
+          });
+      }))))
     .child(ui.button(t, {
       id: "fabric-wake-open",
       label: "Wecken…",
@@ -737,6 +750,41 @@ function sessionsField(app, cx, t, ticket) {
           }))))));
 }
 
+function costRow(t, label, value) {
+  return h_flex().w_full().min_h(20).gap(S.s).items_center()
+    .child(div().text_size(T.xs).text_color(t.dim).child(label))
+    .child(div().flex_1())
+    .child(div().text_size(T.xs).text_color(t.foreground).child(value));
+}
+
+function costField(t, ticket) {
+  const cost = model.ticketCost(ticket);
+  const rows = Array.isArray(ticket.cost?.sessions) ? ticket.cost.sessions : [];
+  const limit = Number.isFinite(ticket.max_cost) ? model.formatCost(ticket.max_cost) : "—";
+  return ui.field(t, "Kosten", v_flex().w_full().gap(4)
+    .when(rows.length === 0, (el) => el.child(div().text_size(T.xs).text_color(t.dim).child("Keine Kosten erfasst")))
+    .children(rows.map((row, index) => h_flex().w_full().min_h(20).gap(S.xs).items_center()
+      .child(div().text_size(T.xs).text_color(t.muted).truncate()
+        .child(`${row.agent || "Agent"} · ${row.name || `Session ${index + 1}`}`))
+      .when(Boolean(row.source), (el) => el.child(ui.chip(t, row.source, t.dim)))
+      .child(div().flex_1())
+      .child(div().text_size(T.xs).text_color(t.foreground).child(model.formatCost(row.cost)))))
+    .child(costRow(t, "Summe", `${model.formatCost(cost.total)} · heute ${model.formatCost(cost.today)}`))
+    .child(costRow(t, "Limit", limit)));
+}
+
+function waitsField(t, ticket) {
+  const stages = Array.isArray(ticket.waits?.stages) ? ticket.waits.stages : [];
+  return ui.field(t, "Wartezeiten", v_flex().w_full().gap(4)
+    .when(stages.length === 0, (el) => el.child(div().text_size(T.xs).text_color(t.dim).child("—")))
+    .children(stages.map((stage) => h_flex().w_full().min_h(20).gap(S.xs).items_center()
+      .child(div().text_size(T.xs).text_color(t.muted).child(stage.label))
+      .when(Boolean(stage.open), (el) => el.child(ui.chip(t, "offen", t.working)))
+      .child(div().flex_1())
+      .child(div().text_size(T.xs).text_color(t.dim).child(model.formatDuration(stage.ms)))))
+    .child(costRow(t, "Gesamt", model.formatDuration(ticket.waits?.total_ms))));
+}
+
 function properties(app, cx, t, ticket, { compact = false } = {}) {
   const problem = app.errorFor("status") || app.errorFor("assign") || app.errorFor("repo")
     || app.errorFor("base") || app.errorFor("link");
@@ -755,6 +803,8 @@ function properties(app, cx, t, ticket, { compact = false } = {}) {
   fields.push(checksField(app, cx, t, ticket));
   fields.push(verdictField(app, cx, t, ticket));
   fields.push(sessionsField(app, cx, t, ticket));
+  fields.push(costField(t, ticket));
+  fields.push(waitsField(t, ticket));
   fields.push(div().w_full().h(1).bg(t.border));
   fields.push(h_flex().w_full().gap(S.s).items_center()
     .child(div().text_size(T.xs).text_color(t.dim).child(`Angelegt von ${ticket.created_by ?? "—"}`))

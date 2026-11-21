@@ -1124,6 +1124,68 @@ export function clockTime(at) {
   return `${two(date.getHours())}:${two(date.getMinutes())}`;
 }
 
+// ---------- Kosten und Liegezeiten ----------
+
+/** Kosten für Listen: ab einem Dollar zwei Nachkommastellen, kleine Beträge vier. */
+export function formatCost(value) {
+  if (!Number.isFinite(value)) return "—";
+  if (Math.abs(value) >= 1) return `$${value.toFixed(2)}`;
+  if (value > 0) return `$${value.toFixed(4)}`;
+  return "$0.00";
+}
+
+const durationNumber = (value) => (Number.isFinite(value) ? Math.max(0, value) : 0);
+
+/** Dauer auf Deutsch: „0 min“, „< 1 min“, „12 min“, „1 h 05 min“. */
+export function formatDuration(ms) {
+  if (!Number.isFinite(ms)) return "—";
+  const value = durationNumber(ms);
+  if (value === 0) return "0 min";
+  if (value < 60000) return "< 1 min";
+  if (value < 3600000) return `${Math.floor(value / 60000)} min`;
+  const hours = Math.floor(value / 3600000);
+  const minutes = Math.floor((value % 3600000) / 60000);
+  return `${hours} h ${String(minutes).padStart(2, "0")} min`;
+}
+
+/** Kostenschnappschuss eines Tickets; fehlende Werte zählen als 0. */
+export function ticketCost(ticket) {
+  const raw = ticket?.cost ?? {};
+  const number = (value) => (Number.isFinite(value) ? value : 0);
+  return {
+    total: number(raw.total),
+    today: number(raw.today),
+    currency: typeof raw.currency === "string" && raw.currency ? raw.currency : "USD",
+  };
+}
+
+/** Kosten aller Tickets, je Team zusammengefasst; über dem Limit zählt mit. */
+export function costTotals(tickets) {
+  const teams = new Map();
+  let total = 0;
+  let today = 0;
+  let overLimit = 0;
+  for (const ticket of tickets ?? []) {
+    if (!ticket) continue;
+    const cost = ticketCost(ticket);
+    const name = String(ticket.team ?? "").trim() || "ohne Team";
+    const row = teams.get(name) ?? { name, total: 0, today: 0, tickets: 0 };
+    row.total += cost.total;
+    row.today += cost.today;
+    row.tickets += 1;
+    teams.set(name, row);
+    total += cost.total;
+    today += cost.today;
+    if (Number.isFinite(ticket.max_cost) && cost.total > ticket.max_cost) overLimit += 1;
+  }
+  return {
+    total,
+    today,
+    teams: [...teams.values()].sort((a, b) => a.name.localeCompare(b.name)),
+    overLimit,
+  };
+}
+
 /** Eine Zeile aus mehrzeiligem Text, gekürzt für Listen. */
 export function oneLine(text, max = 140) {
   const flat = String(text ?? "").replace(/\s+/g, " ").trim();
