@@ -26,6 +26,7 @@ Die gewählte Auswahl ist überall dieselbe: `shared("fabric.selected")`. Was da
 - Links eine Navigation (Icon + Wort) mit den Punkten: Board, Tickets, Team, Prompts, Repos, Einstellungen. Unten der Status des Orchestrators als Pill (läuft / wartet auf dich / gestoppt; Klick führt zu Team).
 - Oben eine Leiste mit Suche (`/` fokussiert), dem Primärknopf **Neues Ticket** und dem Inbox-Zähler (öffnet ein Popover mit der Inbox).
 - Das Fenster lässt sich ziehen; Bedienelemente stoppen das Ziehen mit `cx.stop_propagation()` beim Mouse-Down.
+- **Schmales Fenster (< 760 logische px):** Die Navigation wird zur Icon-Leiste über dem Inhalt; Suche und Knopftexte weichen Icons. Das Board stapelt seine Stufen untereinander, das Ticket-Detail wird einspaltig (Verlauf, darunter die Eigenschaften), Namen und lange Zeilen kürzen mit Ellipse und Tooltip. Belege: `docs/assets/t40-narrow-board.png`, `t40-narrow-team.png`, `t40-narrow-ticket.png`.
 
 **Board**
 - Spalten Entwurf · Geplant · In Arbeit · Prüfung · Fertig. „Fertig“ zeigt die letzten 20, „Verworfen“ ist ein Filter.
@@ -51,7 +52,7 @@ Die gewählte Auswahl ist überall dieselbe: `shared("fabric.selected")`. Was da
   - Blockiert durch: Mehrfachauswahl offener Tickets, jede Abhängigkeit einzeln entfernbar.
   - Checks: Zustand, HEAD, Zeit, Ausgabe ausklappbar, Knopf „Prüfen“.
   - Urteil: Zustand, von wem, Zusammenfassung.
-  - Sessions: Chips mit Live-Status; Klick öffnet das Terminal, „Wecken…“ öffnet ein Feld mit Text.
+  - Sessions: Chips mit Live-Status; Klick öffnet das Terminal, „Wecken…“ öffnet ein Feld mit Text und scrollt das Panel vollständig in den sichtbaren Bereich. Beleg: `docs/assets/t40-wake-panel.png`.
 - Aktionsleiste, abhängig vom Status:
   - Entwurf: **Ausformulieren lassen**. Schreibt einen Kommentar „@orchestrator bitte ausformulieren und verteilen“.
   - Geplant: **Verteilen**. Ruft `fab dispatch`. Fehlen Voraussetzungen, nennt der Knopf sie im Tooltip und ist deaktiviert.
