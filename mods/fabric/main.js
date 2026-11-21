@@ -1706,7 +1706,10 @@ export default class Fabric extends View {
     const flows = this.flows ?? [];
     let name = this.flowName;
     if (route.name && flows.some((flow) => flow.name === route.name)) name = route.name;
-    if (!flows.some((flow) => flow.name === name)) name = flows[0]?.name ?? null;
+    if (!flows.some((flow) => flow.name === name)) {
+      const withRuns = flows.find((flow) => (this.flowRuns ?? []).some((run) => run.workflow === flow.name));
+      name = withRuns?.name ?? flows[0]?.name ?? null;
+    }
     const runs = (this.flowRuns ?? []).filter((run) => run.workflow === name);
     let runId = this.flowRunId;
     if (route.run != null) {
