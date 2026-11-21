@@ -74,7 +74,7 @@ IDs kommen aus `counter`, nie aus dem Dateinamen-Maximum: `T-1`, `T-2`, …
 - Felder ohne Wert: `null` bzw. `[]`. Kein Feld fehlt. Unbekannte Felder bleiben beim Schreiben erhalten.
 - `checks`/`verdict` gelten nur, solange `head` dem aktuellen HEAD des Worktrees entspricht.
 - `attachments`: nur Bilder (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`), abgelegt von `fab attach` unter `data/fabric/attachments/<ID>/`. `path` ist relativ zur App-Wurzel (`~/.config/herdr-app`), damit der Mod ihn als Bild laden kann; im Body und in Kommentaren steht derselbe Pfad als Markdown-Bildlink `![name](path)`.
-- `stall`: nur von `fab tick` geschrieben, optional. `rule` ∈ `doing mention review todo blocked`, `since` = Beginn des Stillstands, `attempts` = bisherige Weck-/Startversuche, `attention` = nach zwei erfolglosen Versuchen oder Regel 5, `reason` einzeilig ohne „stockt seit“, `agent` = zu weckender Agent oder `orchestrator`. Ein Kommentar im Ticket und jede zugestellte manuelle Weckung entfernen `stall`; `fab tick` entfernt ihn, sobald die Bedingung wegfällt. `draft`, `review`, `done` und `dropped` werden von `fab tick` weder gelesen noch verändert.
+- `stall`: nur von `fab tick` geschrieben, optional. `rule` ∈ `doing mention review todo blocked`, `since` = Beginn des Stillstands, `attempts` = bisherige Weck-/Startversuche, `attention` = nach zwei erfolglosen Versuchen oder Regel 5, `reason` einzeilig ohne „stockt seit“, `agent` = zu weckender Agent oder `orchestrator`. Ein Kommentar im Ticket, jede zugestellte manuelle Weckung und jeder Statuswechsel entfernen `stall`; `fab tick` entfernt ihn, sobald die Bedingung wegfällt. `draft`, `review`, `done` und `dropped` werden von `fab tick` weder gelesen noch verändert.
 
 ### Ereignis (eine Zeile in `events.jsonl`)
 
@@ -216,12 +216,12 @@ Jedes Ergebnis wird als `wake`-Ereignis geschrieben, auch jede Unterdrückung. I
 | 5 | offener Blocker seit mehr als `tick_blocked_minutes` (30) unverändert | `attention` mit Blocker und Alter, kein Wecken |
 | 6 | dieselbe Regel war zweimal erfolglos (`stall.attempts >= 2`) | `attention` statt einer dritten Weckung; weitere Ticks wecken nicht mehr, bis `stall` aufgelöst ist |
 
-- Versuche werden je Ticket und Regel in `stall` gezählt. Zwischen zwei Versuchen liegt mindestens `tick_retry_minutes` (5); Regel 1 und 5 nutzen ihre eigene Schwelle. Nach einem fehlgeschlagenen Start im zweiten Versuch steht `attention` sofort, sonst bei der nächsten Auswertung.
+- Versuche werden je Ticket und Regel in `stall` gezählt. Zwischen zwei Versuchen liegt mindestens `tick_retry_minutes` (5); Regel 1 und 5 nutzen ihre eigene Schwelle. Nach einem fehlgeschlagenen Start im zweiten Versuch steht `attention` sofort, sonst nach Ablauf der Wartezeit bei der nächsten Auswertung. Eine lebende Session hält `stall` samt Versuchen fest; erst ein Kommentar oder ein Statuswechsel löst ihn auf.
 - Ping-Pong-Bremse (Abschnitt 4) und Session-Limits (Abschnitt 5) gelten auch hier. Unterdrückte Versuche erzeugen kein `tick`-Ereignis und zählen nicht als Versuch.
 - Jede Aktion schreibt ein `tick`-Ereignis mit Ticket, Regel und Grund; zugestellte Weckungen zusätzlich ein `wake`-Ereignis. Fällt die Bedingung weg, entfernt `tick` `stall` und schreibt `tick`/`gelöst`.
 - `attention` erscheint genau einmal pro Ticket in der Inbox: Text `stockt seit <Dauer> – <Grund>`, `agent` für den Knopf „Erneut versuchen“ im Mod. Der Knopf ruft `fab wake … --from mensch "Erneut starten"`; eine zugestellte Weckung oder ein Kommentar löst `stall` auf. Board-Karten zeigen `stockt seit …`.
 - `--dry-run` plant nur: kein Schreiben, kein `hc send`/`hc run`; Ausgabe nennt die geplanten Aktionen.
-- Auslöser: der Mod ruft `fab tick` jede Minute auf, solange das Fenster offen ist. Optional installiert der Mensch einen launchd-Agent (Intervall 60 s) mit `fab tick --install`, entfernt ihn mit `--uninstall`. Automatisch wird nichts installiert.
+- Auslöser: der Mod ruft `fab tick` jede Minute auf, solange das Fenster offen ist. Optional installiert der Mensch einen launchd-Agent (Intervall 60 s) mit `fab tick --install`, entfernt ihn mit `--uninstall`. Automatisch wird nichts installiert. `--install` im Haupt-Checkout ausführen: der Auftrag trägt den absoluten Pfad der aufrufenden `fabric/fab`; aus einem Worktree zeigt er nach dem Aufräumen ins Leere.
 
 ## 5. Agenten starten
 

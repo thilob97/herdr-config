@@ -139,13 +139,12 @@ def _tick_ticket(ticket, roster, live, cfg, by_id, lines, dry):
     ):
         assignee = _assignee(ticket)
         if not assignee or assignee == "mensch":
-            if stall:
+            if stall and not _live_session(ticket, live):
                 changed = _dissolve(ticket, lines, dry) or changed
             return changed
-        base = stall if stall and stall.get("rule") == "doing" else None
         chosen = (
             "doing",
-            {"agent": assignee, "activity": _last_activity(ticket, base)},
+            {"agent": assignee, "activity": _last_activity(ticket, live)},
         )
 
     if chosen is None:
@@ -160,7 +159,7 @@ def _tick_ticket(ticket, roster, live, cfg, by_id, lines, dry):
         chosen = ("todo", {"agent": "orchestrator"})
 
     if chosen is None:
-        if stall:
+        if stall and not _live_session(ticket, live):
             changed = _dissolve(ticket, lines, dry) or changed
         return changed
 
@@ -171,16 +170,17 @@ def _tick_ticket(ticket, roster, live, cfg, by_id, lines, dry):
 
     number = RULE_NUMBERS[rule]
     agent, reason, text, age = _plan(ticket, rule, payload, now)
-    if stall and int(stall.get("attempts") or 0) >= 2:
-        reason = f"{reason}; {stall.get('attempts')} Versuche ohne Erfolg"
-        return _attention(
-            ticket, rule, agent, reason, lines, dry, number=6
-        ) or changed
 
     if stall and stall.get("last_attempt"):
         wait = cfg[COOLDOWN[rule]] * MINUTES
         if now - int(stall["last_attempt"]) < wait:
             return changed
+
+    if stall and int(stall.get("attempts") or 0) >= 2:
+        reason = f"{reason}; {stall.get('attempts')} Versuche ohne Erfolg"
+        return _attention(
+            ticket, rule, agent, reason, lines, dry, number=6
+        ) or changed
 
     if rule in ("doing", "mention", "review") and age < cfg[rule] * MINUTES:
         return changed
@@ -549,17 +549,15 @@ def _agent_live(ticket, name, team_name, roster, live):
     return any(target in live for target in targets if target)
 
 
-def _last_activity(ticket, stall):
+def _last_activity(ticket, live):
+    """Letzte Aktivität; tote Sessions zählen nicht mehr als Arbeit."""
     stamps = [int(ticket.get("updated_at") or 0)]
     stamps.extend(int(row.get("at") or 0) for row in ticket.get("comments") or [])
     stamps.extend(
-        int(row.get("started_at") or 0) for row in ticket.get("sessions") or []
+        int(row.get("started_at") or 0)
+        for row in ticket.get("sessions") or []
+        if (row or {}).get("name") in live
     )
-    if isinstance(stall, dict) and stall.get("last_attempt"):
-        last = int(stall["last_attempt"])
-        stamps = [stamp for stamp in stamps if stamp > last]
-        if not stamps:
-            return last
     return max(stamps) if stamps else 0
 
 

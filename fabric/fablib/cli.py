@@ -158,6 +158,7 @@ def _dispatch_locked(ticket, agent_name, actor, roster):
         )
         if ticket["status"] != "doing":
             ticket["status"] = "doing"
+        ticket.pop("stall", None)
         events.append("dispatch", ticket["id"], actor, agent_name,
                       f"lief schon: {running_name}")
         store.save(ticket)
@@ -199,6 +200,7 @@ def _dispatch_locked(ticket, agent_name, actor, roster):
             f"Branch {branch_name} und Worktree {folder} bleiben für einen neuen Versuch"
         )
     ticket["status"] = "doing"
+    ticket.pop("stall", None)
     ticket["sessions"].append(
         {
             "agent": agent_name,
@@ -482,6 +484,8 @@ def cmd_status(args):
         ticket = store.load(args.id)
         old = ticket["status"]
         ticket["status"] = args.status
+        if old != args.status:
+            ticket.pop("stall", None)
         events.append("status", ticket["id"], actor, "", f"{old} → {args.status}")
         store.save(ticket)
         index.rebuild()
@@ -740,6 +744,7 @@ def cmd_verdict(args):
         assignee = ticket.get("assignee")
         if args.state == "fail":
             ticket["status"] = "doing"
+            ticket.pop("stall", None)
             _add_comment(ticket, actor, summary)
             if assignee:
                 reviewer = roster.get("reviewer") or ""
@@ -853,6 +858,7 @@ def cmd_handover(args):
                 f"{ticket['id']}: Übergabe verweigert:\n- " + "\n- ".join(reasons)
             )
         ticket["status"] = "review"
+        ticket.pop("stall", None)
         if "mensch" not in ticket["waiting"]:
             ticket["waiting"].append("mensch")
         _add_comment(ticket, actor, summary)
@@ -908,6 +914,7 @@ def cmd_accept(args):
         git.remove_worktree(top, worktree)
         git.delete_branch(top, branch_name)
         ticket["status"] = "done"
+        ticket.pop("stall", None)
         ticket["waiting"] = []
         events.append(
             "accept", ticket["id"], "mensch", "",
@@ -936,6 +943,7 @@ def cmd_reject(args):
                 f"{ticket['id']}: Zurückweisen nur im Status review (jetzt {ticket['status']})"
             )
         ticket["status"] = "doing"
+        ticket.pop("stall", None)
         _add_comment(ticket, "mensch", feedback)
         assignee = ticket.get("assignee")
         results = []
@@ -970,6 +978,7 @@ def cmd_drop(args):
         if ticket["status"] == "done":
             raise FabError(f"{ticket['id']} ist fertig und kann nicht verworfen werden")
         ticket["status"] = "dropped"
+        ticket.pop("stall", None)
         ticket["waiting"] = []
         _add_comment(ticket, actor, reason)
         ended = _end_sessions(ticket)
@@ -1015,6 +1024,11 @@ def cmd_tick(args):
         if args.install:
             path, ok, detail = tick.install()
             print(f"launchd-Auftrag installiert: {path}")
+            if "/worktrees/" in tick.program_path():
+                print(
+                    "Hinweis: der Auftrag zeigt auf einen Worktree; für den "
+                    "Dauerbetrieb aus dem Haupt-Checkout installieren."
+                )
             if not ok:
                 print(f"Hinweis: launchctl bootstrap: {detail}")
         else:

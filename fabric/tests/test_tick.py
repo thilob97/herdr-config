@@ -47,6 +47,14 @@ class TickCase(FabricCase):
     def runs(self):
         return [" ".join(row) for row in self.hc_calls("run")]
 
+    def last_session(self, tid):
+        return self.ticket(tid)["sessions"][-1]["name"]
+
+    def attention(self):
+        return [
+            row for row in self.index()["inbox"] if row["kind"] == "attention"
+        ]
+
     def live_session(self, tid, agent="zap", address="t5"):
         name = f"fab-herdr-app-{agent}-{tid.lower()}"
         self.patch_ticket(
@@ -302,6 +310,93 @@ class TickCase(FabricCase):
         self.assertEqual(stall["attempts"], 2)
         self.assertTrue(stall["attention"])
         self.assertIn("Start fehlgeschlagen", stall["reason"])
+
+    def test_regel6_ueberlebt_lebende_session(self):
+        """Adas Ablauf: Start, Session lebt, Session stirbt, attention."""
+        tid = self.new_ticket(status="doing", assignee="zap")
+        self.patch_ticket(tid, updated_at=self.ago(11))
+        result = self.ok("tick")
+        self.assertIn("Regel 1 (doing)", result.stdout)
+        self.assertEqual(self.ticket(tid)["stall"]["attempts"], 1)
+
+        self.set_live({self.last_session(tid): "t9"})
+        mark = self.mark()
+        result = self.ok("tick")
+        self.assertIn("Keine Aktion.", result.stdout)
+        self.assertEqual(self.ticket(tid)["stall"]["attempts"], 1)
+        self.assertEqual(self.events_since(mark, "tick"), [])
+
+        self.set_live({})
+        stamp = self.ago(11)
+        stall = dict(self.ticket(tid)["stall"])
+        stall["last_attempt"] = stamp
+        self.patch_ticket(tid, updated_at=stamp, stall=stall)
+        result = self.ok("tick")
+        self.assertIn("gestartet", result.stdout)
+        self.assertEqual(self.ticket(tid)["stall"]["attempts"], 2)
+
+        self.set_live({})
+        stall = dict(self.ticket(tid)["stall"])
+        stall["last_attempt"] = self.ago(11)
+        self.patch_ticket(tid, updated_at=self.ago(11), stall=stall)
+        result = self.ok("tick")
+        self.assertIn("Regel 6 (doing)", result.stdout)
+        self.assertIn("attention", result.stdout)
+        runs = len(self.runs())
+        result = self.ok("tick")
+        self.assertIn("Keine Aktion.", result.stdout)
+        self.assertEqual(len(self.runs()), runs)
+        attention = self.attention()
+        self.assertEqual(len(attention), 1)
+        self.assertEqual(attention[0]["agent"], "zap")
+
+    def test_regel6_ueberlebt_lebende_session_bei_erwaehnung(self):
+        tid = self.new_ticket(status="todo", assignee="zap")
+        self.comment_at(tid, "mensch", "@zap bitte übernehmen", self.ago(6))
+        result = self.ok("tick")
+        self.assertIn("Regel 2 (mention)", result.stdout)
+        self.assertEqual(self.ticket(tid)["stall"]["attempts"], 1)
+
+        self.set_live({self.last_session(tid): "t9"})
+        mark = self.mark()
+        result = self.ok("tick")
+        self.assertIn("Keine Aktion.", result.stdout)
+        self.assertEqual(self.ticket(tid)["stall"]["attempts"], 1)
+        self.assertEqual(self.events_since(mark, "tick"), [])
+
+        self.set_live({})
+        stall = dict(self.ticket(tid)["stall"])
+        stall["last_attempt"] = self.ago(6)
+        self.patch_ticket(tid, stall=stall)
+        result = self.ok("tick")
+        self.assertIn("gestartet", result.stdout)
+        self.assertEqual(self.ticket(tid)["stall"]["attempts"], 2)
+
+        self.set_live({})
+        stall = dict(self.ticket(tid)["stall"])
+        stall["last_attempt"] = self.ago(6)
+        self.patch_ticket(tid, stall=stall)
+        result = self.ok("tick")
+        self.assertIn("attention", result.stdout)
+        self.assertEqual(len(self.attention()), 1)
+
+    def test_statuswechsel_loescht_stall(self):
+        tid = self.new_ticket(status="doing", assignee="zap")
+        self.patch_ticket(
+            tid,
+            stall={
+                "rule": "doing",
+                "since": self.ago(40),
+                "attempts": 2,
+                "last_attempt": self.ago(20),
+                "attention": True,
+                "reason": "keine Aktivität seit 40 Min.",
+                "agent": "zap",
+            },
+        )
+        self.ok("status", tid, "review", "--from", "zap")
+        self.assertNotIn("stall", self.ticket(tid))
+        self.assertEqual(self.attention(), [])
 
     # -- Idempotenz und dry-run
 
