@@ -96,6 +96,39 @@ class TeamBriefTests(ContextCase):
 
 
 class PromptContextTests(ContextCase):
+    def test_kuerzung_nennt_auch_die_team_konfiguration(self):
+        repo = self.make_repo()
+        self.project(repo, "# Steckbrief\n\nZweck: Test.\n")
+        text = context.build_paths(
+            [repo], "B" * 200, 150, "/r/roster.json"
+        )
+        self.assertIn("[…] gekürzt, vollständig in", text)
+        self.assertIn("/r/roster.json", text)
+        self.assertIn(os.path.join(repo, ".fabric", "project.md"), text)
+
+    def test_kleine_obergrenze_kuerzt_nur_den_hinweis_hinten(self):
+        text = context.clip("x" * 100, 40, "/sehr/langer/pfad/zum/projekt.md")
+        self.assertLessEqual(len(text), 40)
+        self.assertIn("[…] gekürzt", text)
+
+    def test_ohne_team_nur_steckbrief_ohne_fremden_brief(self):
+        owned = self.make_repo("eigen")
+        self.own_repo(owned)
+        self.brief("GEHEIM: fremder Brief.\n")
+        foreign = self.make_repo("fremd")
+        self.project(foreign, "# Steckbrief\n\nZweck: fremd.\n")
+        roster = {
+            "path": self.roster,
+            "context_limit": 6000,
+            "teams": [{"name": "herdr-app", "repos": [owned]}],
+        }
+        text = context.for_ticket(roster, {"repo": foreign})
+        self.assertIn("Zweck: fremd.", text)
+        self.assertNotIn("GEHEIM", text)
+        legacy = context.for_entry(roster, None, [foreign])
+        self.assertIn("Zweck: fremd.", legacy)
+        self.assertNotIn("GEHEIM", legacy)
+
     def test_prompts_enthalten_steckbrief_und_brief(self):
         repo = self.make_repo()
         self.own_repo(repo)

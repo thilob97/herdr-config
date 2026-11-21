@@ -44,6 +44,8 @@ def clip(text, maximum, source=""):
     marker = "\n\n" + (
         HINT.format(source=source) if source else "[…] gekürzt"
     )
+    if len(marker) > maximum:
+        marker = "[…] gekürzt"
     room = maximum - len(marker)
     if room < 1:
         return marker[:maximum]
@@ -79,26 +81,36 @@ def _project_sections(paths):
 
 
 def build_paths(paths, brief="", maximum=DEFAULT_LIMIT, fallback_source=""):
-    """Steckbriefe der Repos plus Brief; Hinweis auf den ersten gefundenen Pfad."""
+    """Steckbriefe der Repos plus Brief; der Hinweis nennt beide Quellen.
+
+    Der Brief steht hinten und wird darum zuerst gekürzt. Sobald er im
+    Kontext steht, nennt der Hinweis deshalb auch `fallback_source`
+    (die Team-Konfiguration), nicht nur die Steckbrief-Pfade.
+    """
     sections, found = _project_sections(paths)
-    source = ", ".join(found) if found else fallback_source
+    sources = list(found)
+    if (brief or "").strip() and fallback_source:
+        sources.append(fallback_source)
+    source = ", ".join(sources) or fallback_source
     return build(sections, brief, maximum, source)
 
 
 def team_of(roster, repo):
-    """Team des Repos; ohne Treffer das erste Team, sonst None."""
-    entry = teams.team_for_repo(roster, repo) if repo else None
-    return entry if entry is not None else teams.first_team(roster)
+    """Team des Repos, sonst None; ein fremdes Team liefert keinen Brief."""
+    return teams.team_for_repo(roster, repo) if repo else None
 
 
 def for_entry(roster, entry, paths=None):
     """Kontext eines Teams; ohne `paths` die Repos des Teams."""
     if not isinstance(entry, dict):
-        return build([], "", limit(roster))
-    raw = paths if paths is not None else (entry.get("repos") or ())
+        raw = paths if paths is not None else ()
+        brief = ""
+    else:
+        raw = paths if paths is not None else (entry.get("repos") or ())
+        brief = str(entry.get("brief") or "")
     return build_paths(
         raw,
-        str(entry.get("brief") or ""),
+        brief,
         limit(roster),
         roster.get("path") or "",
     )
