@@ -111,6 +111,18 @@ export default class Fabric extends View {
     this.wakeName = "";
     this.wakeText = null;
     this.checksOpen = false;
+    this.changes = null;
+    this.changesFor = null;
+    this.changesAt = 0;
+    this.changesLoading = false;
+    this.changesOpen = false;
+    this.changesSeenHead = "";
+    this.changesFile = null;
+    this.changesDiff = "";
+    this.changesDiffFor = "";
+    this.changesError = null;
+    this.changesPending = null;
+    this.changesLoadingFile = false;
     this.historyScroll = ScrollHandle.new();
     this.historyLastIndex = 1;
     this.propsScroll = ScrollHandle.new();
@@ -370,6 +382,19 @@ export default class Fabric extends View {
     this.clearMentions();
     this.bodyFor = null;
     this.bodyEditor = null;
+    this.changes = null;
+    this.changesFor = null;
+    this.changesAt = 0;
+    this.changesLoading = false;
+    this.changesOpen = false;
+    this.changesSeenHead = "";
+    this.changesFile = null;
+    this.changesDiff = "";
+    this.changesDiffFor = "";
+    this.changesError = null;
+    this.changesLoadingFile = false;
+    this.setError("changes", null);
+    this.setError("accept", null);
   }
 
   agentNames() {
@@ -689,10 +714,158 @@ export default class Fabric extends View {
       if (!this.fieldFocused && this.baseInput.value() !== (this.ticket.base ?? "")) {
         this.baseInput.set_value(this.ticket.base ?? "");
       }
+      if (this.changesApply()) {
+        await this.loadChanges();
+      } else {
+        this.clearChanges();
+      }
     } catch (error) {
       this.ticket = null;
       this.ticketError = `Ticket ${id} ist unlesbar: ${message(error)}`;
     }
+  }
+
+  changesApply(ticket = this.ticket) {
+    return Boolean(ticket && ticket.status === "review" && ticket.branch);
+  }
+
+  clearChanges() {
+    this.changes = null;
+    this.changesFor = null;
+    this.changesAt = 0;
+    this.changesOpen = false;
+    this.changesSeenHead = "";
+    this.changesFile = null;
+    this.changesDiff = "";
+    this.changesDiffFor = "";
+    this.changesError = null;
+  }
+
+  /** Änderungen des offenen Tickets: Dateien, Commits, Nachweise und HEAD. */
+  async loadChanges({ force = false } = {}) {
+    const id = this.openId;
+    if (!id || !this.changesApply()) {
+      this.clearChanges();
+      return null;
+    }
+    if (this.changesLoading) return this.changesPending;
+    if (!force && this.changesFor === id && Date.now() - this.changesAt < 5000) {
+      return this.changes;
+    }
+    this.changesLoading = true;
+    this.setError("changes", null);
+    const pending = (async () => {
+      let result;
+      try {
+        result = await this.execFab(model.diffArgs(id), { timeout: 30000 });
+      } catch (error) {
+        if (this.openId !== id) return null;
+        this.changes = null;
+        this.changesFor = id;
+        this.changesAt = Date.now();
+        this.changesError = `Änderungen nicht ladbar: ${message(error)}`;
+        this.setError("changes", this.changesError);
+        return null;
+      }
+      if (this.openId !== id) return null;
+      this.changesFor = id;
+      this.changesAt = Date.now();
+      if (result.code !== 0) {
+        this.changes = null;
+        this.changesError = (result.stderr || "").trim() || `fab diff endete mit Code ${result.code}.`;
+        this.changesSeenHead = "";
+        this.setError("changes", this.changesError);
+        return null;
+      }
+      const data = parseJson(result.stdout, null);
+      if (!data || !data.head) {
+        this.changes = null;
+        this.changesError = "fab diff lieferte keine Änderungsdaten.";
+        this.changesSeenHead = "";
+        this.setError("changes", this.changesError);
+        return null;
+      }
+      this.changes = data;
+      this.changesError = null;
+      // Ein neuer HEAD sperrt die Abnahme wieder: gesehen gilt nur für den
+      // Stand, der beim Öffnen der Ansicht gelesen wurde.
+      if (this.changesSeenHead && this.changesSeenHead !== data.head) {
+        this.changesFile = null;
+        this.changesDiff = "";
+        this.changesDiffFor = "";
+      }
+      if (this.changesFile && !(data.files ?? []).some((file) => file.path === this.changesFile)) {
+        this.changesFile = null;
+        this.changesDiff = "";
+        this.changesDiffFor = "";
+      }
+      return data;
+    })();
+    this.changesPending = pending;
+    try {
+      return await pending;
+    } finally {
+      this.changesPending = null;
+      this.changesLoading = false;
+      this.notifyNow();
+    }
+  }
+
+  async openDiffFile(path) {
+    const id = this.openId;
+    if (!id || !path) return;
+    this.changesFile = path;
+    if (this.changesDiffFor === `${id}:${path}`) {
+      this.notifyNow();
+      return;
+    }
+    this.changesDiff = "";
+    this.changesDiffFor = "";
+    this.changesLoadingFile = true;
+    this.setError("changes", null);
+    this.notifyNow();
+    let result;
+    try {
+      result = await this.execFab(model.diffFileArgs(id, path), { timeout: 30000 });
+    } catch (error) {
+      if (this.openId !== id || this.changesFile !== path) return;
+      this.changesLoadingFile = false;
+      this.setError("changes", `Diff nicht ladbar: ${message(error)}`);
+      this.notifyNow();
+      return;
+    }
+    if (this.openId !== id || this.changesFile !== path) return;
+    this.changesLoadingFile = false;
+    if (result.code !== 0) {
+      this.setError(
+        "changes",
+        (result.stderr || "").trim() || `fab diff --file endete mit Code ${result.code}.`,
+      );
+    } else {
+      this.changesDiff = result.stdout ?? "";
+      this.changesDiffFor = `${id}:${path}`;
+    }
+    this.notifyNow();
+  }
+
+  async toggleChanges(cx) {
+    const gate = model.changesGate(this.changes, this.changesSeenHead);
+    if (this.changesOpen && gate.enabled) {
+      this.changesOpen = false;
+      this.notifyNow();
+      return;
+    }
+    this.changesOpen = true;
+    await this.loadChanges({ force: true });
+    if (!this.changes) {
+      this.notifyNow();
+      return;
+    }
+    this.changesSeenHead = this.changes.head;
+    this.setError("accept", null);
+    const first = (this.changes.files ?? [])[0]?.path ?? null;
+    if (first && this.changesFile !== first) await this.openDiffFile(first);
+    this.notifyNow();
   }
 
   watchLoop(cx) {
@@ -1862,6 +2035,14 @@ export default class Fabric extends View {
   async accept(cx) {
     const id = this.modal?.ticket?.id ?? this.activeTicketId();
     if (!id) return;
+    await this.loadChanges({ force: true });
+    const gate = model.changesGate(this.changes, this.changesSeenHead);
+    if (!gate.enabled) {
+      this.modal = null;
+      this.setError("accept", gate.reason);
+      this.notifyNow();
+      return;
+    }
     this.modal = null;
     await this.action("accept", model.acceptArgs(id), {
       success: `${id} abgenommen.`,
@@ -1987,9 +2168,17 @@ export default class Fabric extends View {
     }
   }
 
-  openAcceptModal(cx) {
+  async openAcceptModal(cx) {
     const ticket = this.ticket;
     if (!ticket) return;
+    await this.loadChanges({ force: true });
+    const gate = model.changesGate(this.changes, this.changesSeenHead);
+    if (!gate.enabled) {
+      this.setError("accept", gate.reason);
+      this.notifyNow();
+      return;
+    }
+    this.setError("accept", null);
     this.modal = { kind: "accept", ticket };
     this.notifyNow();
   }

@@ -110,9 +110,32 @@ export function dispatchBlockers(ticket, tickets = []) {
   return missing;
 }
 
+// ---------- Änderungen und Abnahme ----------
+
+/** Darf abgenommen werden? Nur wenn die Änderungen geladen sind und zum
+ *  zuletzt gesehenen HEAD passen – ein neuer HEAD sperrt wieder. */
+export function changesGate(changes, seenHead) {
+  const head = changes?.head ?? "";
+  if (!head) return { enabled: false, reason: "Änderungen sind nicht geladen" };
+  if (String(seenHead ?? "") !== head) {
+    return { enabled: false, reason: `Änderungen für HEAD ${head.slice(0, 7)} ansehen` };
+  }
+  return { enabled: true, reason: "" };
+}
+
+/** `fab diff <id> --json`; mit `file` zusätzlich `--file=<pfad>`. */
+export function diffArgs(id, { file = null } = {}) {
+  return ["diff", id, "--json", ...(file ? [`--file=${file}`] : [])];
+}
+
+/** `fab diff <id> --file=<pfad>` für den Sprung in eine einzelne Datei. */
+export function diffFileArgs(id, file) {
+  return ["diff", id, `--file=${file}`];
+}
+
 /** Aktionen je Status. `kind` steuert die Darstellung: primary, normal, danger.
  *  Jede deaktivierte Aktion trägt ihren Grund im `reason` (Tooltip). */
-export function actionBar(ticket, tickets = []) {
+export function actionBar(ticket, tickets = [], changes = null, seenHead = "") {
   const status = ticket?.status;
   const actions = [];
   const add = (action) => actions.push({
@@ -163,6 +186,7 @@ export function actionBar(ticket, tickets = []) {
     });
   }
   if (status === "review") {
+    const gate = changesGate(changes, seenHead);
     add({
       id: "accept",
       label: "Abnehmen",
@@ -170,6 +194,8 @@ export function actionBar(ticket, tickets = []) {
       icon: "check",
       command: "fab accept",
       confirm: "accept",
+      disabled: !gate.enabled,
+      reason: gate.reason,
     });
     add({
       id: "reject",
