@@ -17,6 +17,7 @@ Konzept: `docs/concept.md`. Wer davon abweicht, ändert zuerst diese Datei.
 | Daten | `$FAB_HOME`, Standard `~/.config/herdr-app/data/fabric/` | ignoriert |
 | Worktrees | `~/.herdr/worktrees/<repo-basename>/<branch-slug>` | — |
 | Orchestrator-Arbeitsordner | `~/.herdr/fabric-orchestrator/` (bekommt `AGENTS.md` aus `fabric/prompts/orchestrator.md` bei jedem Start) | — |
+| launchd-Agent `fab tick` (optional) | `~/Library/LaunchAgents/de.herdr.fabric.tick.plist`, nur per `fab tick --install` | — |
 
 `fab` findet seinen Code über den eigenen Pfad (Symlink `~/.local/bin/fab` → `fabric/fab` ist erlaubt). Der Mod ruft immer den absoluten Pfad `${appHome()}/fabric/fab` auf.
 
@@ -60,7 +61,12 @@ IDs kommen aus `counter`, nie aus dem Dateinamen-Maximum: `T-1`, `T-2`, …
   "verdict": {"state": "pass", "by": "ada", "head": "<sha>", "at": 1790000000000, "summary": "…"},
   "attachments": [
     {"name": "bild.png", "path": "data/fabric/attachments/T-1/bild.png", "at": 1790000000000}
-  ]
+  ],
+  "stall": {
+    "rule": "doing", "since": 1790000000000, "attempts": 1,
+    "last_attempt": 1790000000000, "attention": false,
+    "reason": "keine Session, letzter Eintrag von zap", "agent": "zap"
+  }
 }
 ```
 
@@ -68,6 +74,7 @@ IDs kommen aus `counter`, nie aus dem Dateinamen-Maximum: `T-1`, `T-2`, …
 - Felder ohne Wert: `null` bzw. `[]`. Kein Feld fehlt. Unbekannte Felder bleiben beim Schreiben erhalten.
 - `checks`/`verdict` gelten nur, solange `head` dem aktuellen HEAD des Worktrees entspricht.
 - `attachments`: nur Bilder (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`), abgelegt von `fab attach` unter `data/fabric/attachments/<ID>/`. `path` ist relativ zur App-Wurzel (`~/.config/herdr-app`), damit der Mod ihn als Bild laden kann; im Body und in Kommentaren steht derselbe Pfad als Markdown-Bildlink `![name](path)`.
+- `stall`: nur von `fab tick` geschrieben, optional. `rule` ∈ `doing mention review todo blocked`, `since` = Beginn des Stillstands, `attempts` = bisherige Weck-/Startversuche, `attention` = nach zwei erfolglosen Versuchen oder Regel 5, `reason` einzeilig ohne „stockt seit“, `agent` = zu weckender Agent oder `orchestrator`. Ein Kommentar im Ticket und jede zugestellte manuelle Weckung entfernen `stall`; `fab tick` entfernt ihn, sobald die Bedingung wegfällt. `draft`, `review`, `done` und `dropped` werden von `fab tick` weder gelesen noch verändert.
 
 ### Ereignis (eine Zeile in `events.jsonl`)
 
@@ -75,9 +82,10 @@ IDs kommen aus `counter`, nie aus dem Dateinamen-Maximum: `T-1`, `T-2`, …
 {"at": 1790000000000, "kind": "comment", "ticket": "T-1", "actor": "zap", "target": "ada", "text": "…"}
 ```
 
-`kind` ∈ `created edited status assigned comment wake dispatch verify verdict handover accept reject drop orchestrator`.
-`target` nur bei `wake` (wer geweckt wird), `assigned` (wem) und `dispatch` (welcher Agent); sonst `""`.
+`kind` ∈ `created edited status assigned comment wake dispatch verify verdict handover accept reject drop orchestrator config tick`.
+`target` nur bei `wake` (wer geweckt wird), `assigned` (wem), `dispatch` (welcher Agent) und `tick` (welcher Agent); sonst `""`.
 Bei `wake` steht in `text` genau eines von: `geweckt`, `gestartet`, `an orchestrator`, `unterdrückt: <grund>`.
+Bei `tick` steht in `text` eines von: `geweckt`, `gestartet`, `an orchestrator`, `attention`, `gelöst`; `reason` nennt Regel und Grund, z. B. `Regel 1 (doing): keine Session seit 12 min`.
 
 ### Lesemodell `index.json`
 
@@ -90,12 +98,15 @@ Bei `wake` steht in `text` genau eines von: `geweckt`, `gestartet`, `an orchestr
      "updated_at": 0, "comment_count": 3, "waiting": [], "blocked_by": [],
      "checks": "pass", "verdict": null,
      "last_comment": {"author": "zap", "at": 0, "text": "…", "mentions": ["ada"]},
-     "sessions": [{"agent": "zap", "name": "fab-zap-t-1", "terminal": "t9a"}]}
+     "sessions": [{"agent": "zap", "name": "fab-zap-t-1", "terminal": "t9a"}],
+     "stall": {"rule": "doing", "since": 0, "attempts": 2, "attention": true, "reason": "…"}}
   ],
   "inbox": [
     {"kind": "question", "ticket": "T-1", "at": 0, "from": "zap", "text": "…"},
     {"kind": "review", "ticket": "T-2", "at": 0, "from": "zap", "text": "Zusammenfassung"},
-    {"kind": "attention", "ticket": "T-3", "at": 0, "from": "fab", "text": "Ping-Pong zwischen zap und ada"}
+    {"kind": "attention", "ticket": "T-3", "at": 0, "from": "fab",
+     "text": "stockt seit 12 min – Regel 1 (doing): …", "agent": "zap",
+     "reason": "Regel 1 (doing): …", "since": 0}
   ],
   "roster": [{"name": "zap", "role": "umsetzer", "color": "c1", "program": "omp",
               "model": "…", "teams": ["herdr-app"]}],
@@ -105,7 +116,7 @@ Bei `wake` steht in `text` genau eines von: `geweckt`, `gestartet`, `an orchestr
 }
 ```
 
-- `inbox` wird **nur** in `fab` berechnet: `question` = Ticket nicht done, `mensch` in `waiting`; `review` = Status `review`; `attention` = Wecken unterdrückt durch Ping-Pong-Bremse oder Start fehlgeschlagen, solange danach nichts Neues im Ticket passiert ist.
+- `inbox` wird **nur** in `fab` berechnet: `question` = Ticket nicht done, `mensch` in `waiting`; `review` = Status `review`; `attention` = Wecken unterdrückt durch Ping-Pong-Bremse oder Start fehlgeschlagen, solange danach nichts Neues im Ticket passiert ist. Hat ein `todo`/`doing`-Ticket `stall.attention`, gilt genau **ein** `attention`-Eintrag aus dem Stillstand (`stockt seit …`, Grund und `agent` für „Erneut versuchen“); der aus `wake` abgeleitete Eintrag entfällt dann.
 - Pro Ticket höchstens **ein** Eintrag aus `question` und `review`: Steht das Ticket auf `review`, gilt nur `review`, `question` entfällt (auch wenn `mensch` in `waiting` steht). `attention` darf daneben stehen.
 - Der Mod zählt nichts selbst: Inbox-Zahl = `inbox.length`, Stufen = Tickets nach `status`.
 - `index.json` bleibt unter 1 MiB: Ticket-Einträge ohne `body` und ohne `comments`, höchstens 300 Ereignisse.
@@ -132,6 +143,7 @@ Alle Befehle schreiben unter Lock, hängen Ereignisse an und erzeugen danach `in
 | `fab reject ID "<feedback>"` | Nur der Mensch. Kommentar von `mensch`, Status `doing`, weckt `assignee`. |
 | `fab drop ID --from NAME "<grund>"` | Status `dropped`, Sessions beenden, Worktree bleibt. |
 | `fab wake ID NAME --from NAME ["<text>"]` | Wecken von Hand, gleiche Regeln wie bei Erwähnungen |
+| `fab tick [--dry-run] [--install\|--uninstall]` | Stillstandswächter (Abschnitt 4b). Ohne Optionen ein Lauf: wecken/starten oder `attention`, sonst nichts. `--dry-run` zeigt nur die geplanten Aktionen. `--install` legt den launchd-Agent `~/Library/LaunchAgents/de.herdr.fabric.tick.plist` (Intervall 60 s) an, `--uninstall` entfernt ihn. Kein `--from`. |
 | `fab orchestrator start\|stop\|status [TEAM]` | Orchestrator-Terminal je Team verwalten (Abschnitt 5) |
 | `fab agents [--json]` | Mitglieder aller Teams mit Teamzuordnung (`teams`) und laufende Sessions |
 | `fab inbox [--json]` | wie `index.json.inbox` |
@@ -149,7 +161,7 @@ Das UI pflegt alles über diese Befehle. Alle schreiben atomar (tmp + `os.replac
 | `fab agent add NAME --role R [--color cN] --argv-json JSON [--prompt-text T] --from N` | Neuer Agent. Name `^[a-z][a-z0-9_-]{0,15}$`, eindeutig, nicht `orchestrator`/`mensch`/`fab`; Farbe `c1`–`c6`, sonst die nächste freie; `argv` nicht leer. Legt `prompts/<name>.md` an (Text oder kurze Vorlage). |
 | `fab agent edit NAME [--rename NEU] [--role R] [--color cN] [--argv-json JSON] [--prompt-text T] --from N` | Ändern. `--rename` nur, wenn kein offenes Ticket den Agenten nennt (`assignee`) und keine Session läuft; benennt die Promptdatei mit um und passt `reviewer` an. |
 | `fab agent rm NAME --from N` | Entfernen. Verweigert bei offenen Tickets, laufender Session oder wenn er `reviewer` ist (Gründe in der Meldung). Die Promptdatei bleibt erhalten. |
-| `fab settings set KEY VALUE --from N` | `max_sessions` (1–16), `reviewer` (Roster-Name), `orchestrator_argv` (JSON-Liste, nicht leer) |
+| `fab settings set KEY VALUE --from N` | `max_sessions` (1–16), `reviewer` (Roster-Name), `orchestrator_argv` (JSON-Liste, nicht leer), `max_sessions_total` (1–64), `tick_doing_minutes`, `tick_mention_minutes`, `tick_review_minutes`, `tick_blocked_minutes`, `tick_retry_minutes` (jeweils 0–1440, Minuten; steuern `fab tick`, Abschnitt 4b) |
 | `fab blueprint add NAME --role R [--color cN] --argv-json JSON [--prompt-text T] --from N` | Blaupause anlegen; Name wie `fab agent add`, Farbe sonst die nächste freie, Prompt `prompts/<name>.md` |
 | `fab blueprint edit NAME [--rename NEU] [--role R] [--color cN] [--argv-json JSON] [--prompt-text T] --from N` | Blaupause ändern; `--rename` zieht Teams und Prüfer mit |
 | `fab blueprint rm NAME --from N` | Entfernen; verweigert, solange die Blaupause Mitglied eines Teams ist. Der Prompt bleibt |
@@ -190,6 +202,26 @@ Ein geweckter Agent bekommt per `hc send <terminal> "<text>"` (bei Fehlschlag no
 > Ticket {id} „{title}“: @{autor} hat dich erwähnt: „{kommentar, max. 300 Zeichen}“. Lies `fab show {id}`, arbeite an diesem Ticket weiter und antworte im Ticket mit `fab comment {id} --from {name} "…"`.
 
 Jedes Ergebnis wird als `wake`-Ereignis geschrieben, auch jede Unterdrückung. Ist `mensch` erwähnt, gibt es zusätzlich das Ereignis `comment` mit `target: ""`; die Inbox liest `waiting`. `waiting` wird geleert, sobald der Wartende im Ticket kommentiert.
+
+## 4b. Stillstandswächter `fab tick`
+
+`fab tick` prüft alle offenen Tickets (`todo`, `doing`) und behebt Stillstand nach festen Regeln. Der Lauf ist idempotent: Ein zweiter Aufruf direkt danach ändert weder Ticket noch Ereignis. Der ganze Lauf steht unter dem Store-Lock, parallele Auslöser (Mod und launchd) kollidieren nicht. `draft`, `review`, `done` und `dropped` werden nicht angefasst. `tick` formuliert nicht aus, weist nicht zu und nimmt nicht ab.
+
+| Regel | Bedingung | Aktion |
+|---|---|---|
+| 1 | `doing`, `mensch` nicht in `waiting`, keine lebende Session des Tickets, letzte Aktivität älter als `tick_doing_minutes` (10) | Zuständigen wecken; der Text nennt den letzten Verlaufseintrag |
+| 2 | letzte Erwähnung eines Agenten (nicht Prüfer/Orchestrator/`mensch`) ohne Antwort und ohne lebende Session, älter als `tick_mention_minutes` (5) | diesen Agenten starten |
+| 3 | Prüfer im letzten Kommentar erwähnt, kein Urteil danach, keine lebende Prüfer-Session, älter als `tick_review_minutes` (5) | Prüfer starten |
+| 4 | `todo`, keine offenen Blocker, keine Session | Team-Orchestrator wecken; volles Team-/Gesamtlimit ⇒ `unterdrückt: voll`, kein Startversuch |
+| 5 | offener Blocker seit mehr als `tick_blocked_minutes` (30) unverändert | `attention` mit Blocker und Alter, kein Wecken |
+| 6 | dieselbe Regel war zweimal erfolglos (`stall.attempts >= 2`) | `attention` statt einer dritten Weckung; weitere Ticks wecken nicht mehr, bis `stall` aufgelöst ist |
+
+- Versuche werden je Ticket und Regel in `stall` gezählt. Zwischen zwei Versuchen liegt mindestens `tick_retry_minutes` (5); Regel 1 und 5 nutzen ihre eigene Schwelle. Nach einem fehlgeschlagenen Start im zweiten Versuch steht `attention` sofort, sonst bei der nächsten Auswertung.
+- Ping-Pong-Bremse (Abschnitt 4) und Session-Limits (Abschnitt 5) gelten auch hier. Unterdrückte Versuche erzeugen kein `tick`-Ereignis und zählen nicht als Versuch.
+- Jede Aktion schreibt ein `tick`-Ereignis mit Ticket, Regel und Grund; zugestellte Weckungen zusätzlich ein `wake`-Ereignis. Fällt die Bedingung weg, entfernt `tick` `stall` und schreibt `tick`/`gelöst`.
+- `attention` erscheint genau einmal pro Ticket in der Inbox: Text `stockt seit <Dauer> – <Grund>`, `agent` für den Knopf „Erneut versuchen“ im Mod. Der Knopf ruft `fab wake … --from mensch "Erneut starten"`; eine zugestellte Weckung oder ein Kommentar löst `stall` auf. Board-Karten zeigen `stockt seit …`.
+- `--dry-run` plant nur: kein Schreiben, kein `hc send`/`hc run`; Ausgabe nennt die geplanten Aktionen.
+- Auslöser: der Mod ruft `fab tick` jede Minute auf, solange das Fenster offen ist. Optional installiert der Mensch einen launchd-Agent (Intervall 60 s) mit `fab tick --install`, entfernt ihn mit `--uninstall`. Automatisch wird nichts installiert.
 
 ## 5. Agenten starten
 
@@ -238,6 +270,7 @@ Ein einziger Mod, mehrfach im Layout, Ansicht über `props().view`:
 | `timeline` | Ereignisse aus `index.events` als chronologischer Feed, neueste oben und nach Tagen gruppiert. Je Zeile: Akteur, Satz („weckte ada“, „änderte den Status“, „urteilte“), Ticket-ID, Uhrzeit, Art-Punkt; `wake` nennt das Ziel im Satz. Die Auswahl grenzt auf ein Ticket ein, „Alle“ zeigt wieder alle. Klick auf eine Zeile wählt das Ticket. |
 
 - Der Mod liest nur `index.json` und `tickets/<ID>.json` (`readTextFile`). Er beobachtet `data/fabric` mit `watchFolder`, mit einem 5-s-Timer als Rückfall.
+- Solange das Fenster offen ist, ruft der Mod jede Minute `fab tick` auf (Abschnitt 4b); ein laufender Tick blockiert keinen zweiten. Board- und Ticket-Karten zeigen bei `stall` „stockt seit …“ mit dem Grund als Tooltip.
 - Geschrieben wird nur über `exec("${appHome()}/fabric/fab", […])`. Der Mod schreibt nie selbst in Ticket-Dateien.
 - Gemeinsamer Zustand: `shared("fabric.selected")` (gewähltes Ticket).
 - Aufbau: `main.js` (View, verteilt nach `view`), `model.js` (reine Logik ohne herdr-/gpui-Importe: Gruppieren, Kürzel, Zeitformat, Erwähnungen markieren, Zeitverlauf-Feed: Tagesgruppen und Ereignissätze), `ui.js` (Token und Bausteine), `views/*.js`. `model.js` hat node-Tests.

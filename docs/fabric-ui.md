@@ -18,6 +18,8 @@ Die gewählte Auswahl ist überall dieselbe: `shared("fabric.selected")`. Was da
 
 **Fehlgeschlagener Agentenstart:** Scheitert ein Start beim Wecken, hält `fab` den gekürzten Grund (`hc`/`herdr-app`-stderr) im `wake`-Ereignis und als Kommentar fest. Nach 5 s folgt genau ein automatischer zweiter Versuch im Hintergrund. Scheitert auch der, steht im Posteingang ein Eintrag „Aufmerksamkeit“ mit Ticket, Agent und Grund und dem Knopf **Erneut starten**; ein erfolgreicher Start räumt den Eintrag ab. Beleg: `docs/assets/t27-retry.png`.
 
+**Stillstand:** Solange das Fenster offen ist, ruft der Mod jede Minute `fab tick` auf (`docs/fabric.md` Abschnitt 4b). Karten von Tickets mit `stall` tragen „stockt seit …“, der Grund steht im Tooltip. Nach zwei erfolglosen Versuchen oder einer hängenden Kette steht im Posteingang genau ein Eintrag „Aufmerksamkeit“ mit „stockt seit …“, Grund und demselben Knopf **Erneut starten**; ein Kommentar oder eine zugestellte Weckung löst ihn auf. Beleg: mit `stall`-Daten aus einem temporären `HERDR_APP_HOME` (`stockt seit 23 min` bzw. `47 min`) geprüft; ein Screenshot war nicht möglich, weil das Willkommens-Overlay des temporären Homes nicht per CLI schließbar war. Die Darstellung folgt dem vorhandenen Chip-Muster aus T-27.
+
 ## 2. Fabric-Fenster
 
 **Rahmen**
@@ -28,7 +30,7 @@ Die gewählte Auswahl ist überall dieselbe: `shared("fabric.selected")`. Was da
 **Board**
 - Spalten Entwurf · Geplant · In Arbeit · Prüfung · Fertig. „Fertig“ zeigt die letzten 20, „Verworfen“ ist ein Filter.
 - Im Spaltenkopf steht die Anzahl. „Prüfung“ wird hervorgehoben, wenn darin etwas auf den Menschen wartet.
-- Karten zeigen: ID, Titel (2 Zeilen), Avatar des Zuständigen, Kommentarzahl, das Badge „wartet auf dich“, Mini-Indikatoren für Checks und Urteil, Alter.
+- Karten zeigen: ID, Titel (2 Zeilen), Avatar des Zuständigen, Kommentarzahl, das Badge „wartet auf dich“, Mini-Indikatoren für Checks und Urteil, Alter; bei Stillstand „stockt seit …“ (Tooltip = Grund).
 - Filterleiste: Suche, Zuständig, Repo.
 - Klick auf eine Karte öffnet das Ticket. Status ändert man über das Kontextmenü der Karte oder im Detail; Drag & Drop ist nicht nötig.
 
