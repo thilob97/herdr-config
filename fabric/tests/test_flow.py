@@ -2,6 +2,7 @@
 import json
 import os
 import time
+from unittest import mock
 
 from fabric.fablib import flows, store
 from fabric.tests.support import FabricCase
@@ -88,6 +89,14 @@ class FlowCase(FabricCase):
 
         self.ok("flow", "rm", "beispiel")
         self.assertIn("Keine Workflows.", self.ok("flow", "list").stdout)
+
+    def test_edit_unknown_name_fails(self):
+        result = self.cli(
+            "flow", "edit", "gibtsnicht", self.path(self.base())
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("gibt es nicht", result.stderr)
+        self.assertEqual(self.ok("flow", "list").stdout.strip(), "Keine Workflows.")
 
     # -- Ungültige Definitionen
 
@@ -280,6 +289,17 @@ class FlowCase(FabricCase):
         self.assertIn("abgebrochen", cancelled.stdout)
         self.assertEqual(self.runs()[0]["status"], "cancelled")
 
+        # Zweiter Lauf: offenes Ticket wird beim Abbruch informiert.
+        self.ok("flow", "run", "beispiel")
+        cancelled = self.ok("flow", "cancel", "2")
+        self.assertIn("abgebrochen", cancelled.stdout)
+        self.assertEqual(self.runs()[1]["status"], "cancelled")
+        ticket = self.ticket("T-2")
+        self.assertTrue(
+            any("abgebrochen" in str(item.get("text") or "")
+                for item in ticket["comments"])
+        )
+
     def test_resume_after_manual_pause(self):
         self.add(self.base())
         self.ok("flow", "run", "beispiel")
@@ -359,8 +379,36 @@ class FlowCase(FabricCase):
                 run_id = result["run"]
                 flows.tick(now=now + 2 * MINUTE)
                 run = store.flow_run_load(run_id)
+                ticket = store.load("T-1")
         self.assertEqual(run["status"], "failed")
         self.assertIn("Zeitlimit überschritten", run["reason"])
+        self.assertTrue(
+            any("Zeitlimit überschritten" in str(item.get("text") or "")
+                for item in ticket["comments"])
+        )
+
+    def test_cost_limit_ends_run_with_reason(self):
+        data = self.base()
+        data["limits"] = {"max_cost": 1}
+        self.add(data)
+        now = 1_700_000_000_000
+        with self.store_env():
+            with store.locked():
+                result = flows.start("beispiel", now=now)
+                run_id = result["run"]
+                with mock.patch(
+                    "fabric.fablib.costs.collect",
+                    return_value={"total": 5.0},
+                ):
+                    flows.tick(now=now)
+                run = store.flow_run_load(run_id)
+                ticket = store.load("T-1")
+        self.assertEqual(run["status"], "failed")
+        self.assertIn("Kostenlimit überschritten", run["reason"])
+        self.assertTrue(
+            any("Kostenlimit überschritten" in str(item.get("text") or "")
+                for item in ticket["comments"])
+        )
 
     # -- Schleifenlimit
 
@@ -409,6 +457,52 @@ class FlowCase(FabricCase):
         result = self.ok("tick")
         self.assertIn("Selbstauslösung", result.stdout)
         self.assertEqual(len(self.runs()), 1)
+
+    # -- Ping-Pong zweier ticket_done-Workflows
+
+    def test_ticket_done_ping_pong_refused(self):
+        def data_for(name):
+            data = self.base(name)
+            data["nodes"] = [
+                {"id": "start", "type": "trigger", "trigger": "ticket_done"},
+                {"id": "a", "type": "agent", "agent": "zap", "title": name,
+                 "prompt": "Folgearbeit"},
+                {"id": "ende", "type": "end"},
+            ]
+            data["edges"] = [
+                {"from": "start", "to": "a"},
+                {"from": "a", "to": "ende"},
+            ]
+            return data
+
+        self.add(data_for("wf-a"), "a.json")
+        external = self.new("extern")
+        self.done(external)
+        self.ok("tick")
+        self.assertEqual(len(self.runs()), 1)
+
+        self.add(data_for("wf-b"), "b.json")
+        first = self.flow_ticket("wf-a")
+        self.done(first["id"])
+        self.ok("tick")
+        self.assertEqual(len(self.runs()), 2)
+
+        second = self.flow_ticket("wf-b")
+        self.assertEqual(second["flow"]["chain"], ["wf-a", "wf-b"])
+        self.done(second["id"])
+        result = self.ok("tick")
+        self.assertIn("Ping-Pong", result.stdout)
+        rows = self.runs()
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(rows[-1]["status"], "failed")
+        self.assertIn("Ping-Pong", rows[-1]["reason"])
+        self.assertIn("wf-a", rows[-1]["reason"])
+
+        events = [
+            row for row in self.events()
+            if row["kind"] == "flow" and "Ping-Pong" in row["text"]
+        ]
+        self.assertTrue(events)
 
     # -- Probelauf
 
