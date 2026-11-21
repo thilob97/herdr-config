@@ -7,8 +7,8 @@ Der Kontext des Orchestrators bleibt begrenzt:
 - Nach `idle_minutes` ohne fab-Aufruf und ohne Ausgabe startet `fab tick` ihn
   neu, sofern kein Ticket auf ihn wartet.
 
-Zähler und Leerlauf werden aus `events.jsonl` und dem Terminalstatus gelesen;
-es gibt keinen zusätzlichen Zustand. Ein `orchestrator`-Ereignis mit
+Zähler und Leerlauf werden aus dem Ereignisprotokoll und dem Terminalstatus
+gelesen; es gibt keinen zusätzlichen Zustand. Ein `orchestrator`-Ereignis mit
 `text = "neu gestartet"` markiert den Neustart und setzt den Zähler zurück.
 """
 import re

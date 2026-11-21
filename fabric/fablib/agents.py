@@ -41,34 +41,43 @@ def _read(path, required):
     return data
 
 
+def _apply_roster_migration(path, data):
+    """Roster schreiben; der Aufrufer hält den Store-Lock oder den Bootstrap-Lock."""
+    from . import git, index
+
+    fresh = _read(path, required=False) or data
+    if not teams.migrate(fresh):
+        return fresh
+    store.atomic_write(
+        path,
+        json.dumps(fresh, ensure_ascii=False, indent=2) + "\n",
+        mode=_mode(path, 0o644),
+    )
+    git.commit_paths(
+        path,
+        [path],
+        f"chore(roster): Roster zu Team {teams.DEFAULT_TEAM} migriert",
+    )
+    index.rebuild()
+    return fresh
+
+
 def _migrate(path, data):
     """Altes Roster einmalig zu Blaupausen und Team `herdr-app` umschreiben.
 
     Läuft beim ersten Lesen; ein zweiter Lauf findet `teams` und schreibt
     nichts. Der Schreibvorgang steht unter dem Store-Lock und überschreibt
     keine parallele Migration: nach dem Lock wird die Datei neu gelesen.
+    Während der Datenmigration hält `store` den Bootstrap-Lock bereits; ein
+    zweites `locked()` würde denselben flock im selben Prozess blockieren.
     """
     if not teams.migrate(data):
         return data
-    from . import git, index
-
     try:
+        if store.bootstrap_active():
+            return _apply_roster_migration(path, data)
         with store.locked():
-            fresh = _read(path, required=False) or data
-            if not teams.migrate(fresh):
-                return fresh
-            store.atomic_write(
-                path,
-                json.dumps(fresh, ensure_ascii=False, indent=2) + "\n",
-                mode=_mode(path, 0o644),
-            )
-            git.commit_paths(
-                path,
-                [path],
-                f"chore(roster): Roster zu Team {teams.DEFAULT_TEAM} migriert",
-            )
-            index.rebuild()
-            return fresh
+            return _apply_roster_migration(path, data)
     except OSError as exc:
         raise FabError(f"Roster {path} nicht migrierbar: {exc}")
 

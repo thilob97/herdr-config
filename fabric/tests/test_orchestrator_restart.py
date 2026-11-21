@@ -1,6 +1,5 @@
 """Neustart des Team-Orchestrators: Zähler, Leerlauf, Sperre (T-31)."""
 import json
-import os
 import time
 
 from fabric.tests.support import FabricCase
@@ -161,7 +160,7 @@ class OrchestratorRestartCase(FabricCase):
         )
         self.assertIn("Keine Aktion.", self.ok("tick").stdout)
 
-        self._write(os.path.join(self.home, "events.jsonl"), "")
+        self.clear_events()
         self.add_events(
             [{"at": self.now() - 11 * MINUTE, "kind": "comment", "ticket": tid,
               "actor": "orchestrator", "target": "", "text": "Stand"}]

@@ -11,8 +11,6 @@ from fabric.tests.support import FabricCase
 
 class ConfigCase(FabricCase):
     def mark(self):
-        if not os.path.exists(os.path.join(self.home, "events.jsonl")):
-            return 0
         return super().mark()
 
     def roster_json(self):

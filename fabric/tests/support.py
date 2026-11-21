@@ -7,6 +7,9 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
+
+from fabric.fablib import store
 
 FAB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "fab")
 FABRIC = os.path.dirname(FAB)
@@ -314,13 +317,21 @@ class FabricCase(unittest.TestCase):
     def clear_herdr_log(self):
         self._write(self.herdr_log, "")
 
+    def store_env(self):
+        """`store` im Fixture-Home ausführen, ohne Subprozess."""
+        return mock.patch.dict(os.environ, {"FAB_HOME": self.home})
+
+    def meta(self, key):
+        with self.store_env():
+            return store.meta_get(key)
+
+    def storage(self):
+        with self.store_env():
+            return store.storage_info()
+
     def events(self):
-        path = os.path.join(self.home, "events.jsonl")
-        rows = []
-        for line in self._read(path).splitlines():
-            if line.strip():
-                rows.append(json.loads(line))
-        return rows
+        with self.store_env():
+            return store.event_rows()
 
     def wake_events(self, ticket=None):
         rows = [row for row in self.events() if row["kind"] == "wake"]
@@ -329,10 +340,23 @@ class FabricCase(unittest.TestCase):
         return rows
 
     def add_events(self, rows):
-        path = os.path.join(self.home, "events.jsonl")
-        with open(path, "a", encoding="utf-8") as handle:
-            for row in rows:
-                handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+        with self.store_env():
+            with store.locked():
+                for row in rows:
+                    store.event_append(
+                        row.get("kind"),
+                        row.get("ticket", ""),
+                        actor=row.get("actor", ""),
+                        target=row.get("target", ""),
+                        text=row.get("text", ""),
+                        reason=row.get("reason", ""),
+                        at=row.get("at"),
+                    )
+
+    def clear_events(self):
+        with self.store_env():
+            with store.locked():
+                store.event_clear()
 
     def mark(self):
         """Zahl der bisherigen Ereignisse; für Aussagen über neue Ereignisse."""
@@ -355,10 +379,11 @@ class FabricCase(unittest.TestCase):
             return json.load(handle)
 
     def patch_ticket(self, tid, **fields):
-        ticket = self.ticket(tid)
-        ticket.update(fields)
-        path = os.path.join(self.home, "tickets", f"{tid}.json")
-        self._write(path, json.dumps(ticket, ensure_ascii=False, indent=2))
+        with self.store_env():
+            with store.locked():
+                ticket = store.load(tid)
+                ticket.update(fields)
+                store.save(ticket, touch=False)
         return ticket
 
     def index(self):

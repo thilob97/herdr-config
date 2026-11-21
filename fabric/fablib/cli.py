@@ -196,7 +196,7 @@ def _dispatch_locked(ticket, agent_name, actor, roster):
         store.save(ticket)
         index.rebuild()
         detail = started.get("error") or started["result"]
-        raise FabError(
+        raise store.PersistError(
             f"{ticket['id']}: Agent {agent_name} nicht gestartet ({detail}); "
             f"Branch {branch_name} und Worktree {folder} bleiben für einen neuen Versuch"
         )
@@ -606,33 +606,6 @@ def _attachment_name(source):
     return f"{slug}{suffix}"
 
 
-def _copy_attachment(source, tid, wanted):
-    folder = os.path.join(store.home(), "attachments", tid)
-    os.makedirs(folder, exist_ok=True)
-    try:
-        with open(source, "rb") as handle:
-            data = handle.read()
-    except OSError as exc:
-        raise FabError(f"Datei nicht lesbar: {source}: {exc}")
-    stem, suffix = os.path.splitext(wanted)
-    name = wanted
-    counter = 2
-    while True:
-        target = os.path.join(folder, name)
-        if not os.path.exists(target):
-            with open(target, "wb") as handle:
-                handle.write(data)
-            return name
-        try:
-            with open(target, "rb") as handle:
-                if handle.read() == data:
-                    return name
-        except OSError:
-            pass
-        name = f"{stem}-{counter}{suffix}"
-        counter += 1
-
-
 def cmd_attach(args):
     actor = _actor(args) or "mensch"
     source = os.path.expanduser(args.datei)
@@ -644,13 +617,9 @@ def cmd_attach(args):
     tid = ticket["id"]
     wanted = _attachment_name(source)
     with store.locked():
+        name, path = store.attachment_add(source, tid, wanted)
         ticket = store.load(tid)
-        name = _copy_attachment(source, tid, wanted)
-        path = f"data/fabric/attachments/{tid}/{name}"
         reference = f"![{name}]({path})"
-        attachments = ticket.setdefault("attachments", [])
-        if not any(item.get("path") == path for item in attachments):
-            attachments.append({"name": name, "path": path, "at": store.now_ms()})
         events.append("edited", tid, actor, "", f"Anhang {name}")
         if not args.no_edit:
             body = (ticket.get("body") or "").rstrip()
@@ -882,7 +851,7 @@ def cmd_handover(args):
                 store.save(ticket)
                 index.rebuild()
                 _print_wake_results(results)
-            raise FabError(
+            raise store.PersistError(
                 f"{ticket['id']}: Übergabe verweigert:\n- " + "\n- ".join(reasons)
             )
         ticket["status"] = "review"
@@ -1359,6 +1328,69 @@ def cmd_index(args):
         f"{store.index_path()}: {len(payload['tickets'])} Tickets, "
         f"{len(payload['inbox'])} Inbox-Einträge, {len(payload['events'])} Ereignisse"
     )
+    return 0
+
+
+_MIGRATE_LABELS = (
+    ("tickets", "Tickets"),
+    ("comments", "Kommentare"),
+    ("sessions", "Sessions"),
+    ("events", "Ereignisse"),
+    ("attachments", "Anhänge"),
+    ("counter", "Zähler"),
+)
+
+
+def _migrate_text(report):
+    status = report.get("status")
+    if status == "empty":
+        return "Keine Altdaten: nichts zu migrieren."
+    if status == "already":
+        return f"Datenbank ist aktuell: {report.get('db')}"
+    if status == "failed":
+        return (
+            f"Migration fehlgeschlagen: {report.get('error') or 'unbekannter Fehler'}; "
+            f"Altdaten bleiben unverändert unter {report.get('legacy')}"
+        )
+    old = report.get("old") or {}
+    new = report.get("new") or {}
+    lines = [f"Datenbank: {report.get('db')}"]
+    lines.append(f"Altdaten nach {report.get('legacy')} verschoben:")
+    lines.extend(f"  - {path}" for path in report.get("moved") or [])
+    lines.append("Übernommen:")
+    for key, label in _MIGRATE_LABELS:
+        lines.append(f"  {label}: {old.get(key, 0)} → {new.get(key, 0)}")
+    if report.get("skipped_events"):
+        lines.append(f"  Übersprungene Ereignisse: {report['skipped_events']}")
+    return "\n".join(lines)
+
+
+def cmd_migrate(args):
+    report = store.migrate()
+    if args.json:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        print(_migrate_text(report))
+    return 1 if report.get("status") == "failed" else 0
+
+
+def cmd_backup(args):
+    path = store.backup()
+    if not path:
+        raise FabError(
+            "Keine Datenbank vorhanden; vorher `fab migrate` ausführen"
+        )
+    files = store.backup_files()
+    if args.json:
+        print(
+            json.dumps(
+                {"path": path, "retained": len(files), "backups": files},
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+    else:
+        print(f"{path} · {len(files)} Sicherungen aufbewahrt")
     return 0
 
 
@@ -1967,6 +1999,10 @@ def build_parser():
 
     command("version", "Version und Git-HEAD des Fabric-Codes", cmd_version)
     command("index", "index.json neu erzeugen", cmd_index)
+    item = command("migrate", "Altdaten in die SQLite-Datenbank übernehmen", cmd_migrate)
+    item.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe")
+    item = command("backup", "Datenbank nach data/fabric/backups sichern", cmd_backup)
+    item.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe")
     return parser
 
 
