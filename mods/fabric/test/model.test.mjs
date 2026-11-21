@@ -958,6 +958,7 @@ test("teamDirty erkennt Änderungen an Repos, Mitgliedern, Prüfer und Sitzungen
   assert.equal(teamDirty(TEAM, { ...form, reviewer: "zap" }), true);
   assert.equal(teamDirty(TEAM, { ...form, max_sessions: "5" }), true);
   assert.equal(teamDirty(TEAM, { ...form, name: "neu" }), true);
+  assert.equal(teamDirty(TEAM, { ...form, name: "  herdr-app  " }), false);
 });
 
 test("teamForTicket und teamAgents wählen das Team nach dem Repo-Pfad", () => {

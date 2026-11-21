@@ -167,11 +167,43 @@ def _team_names(roster, team_name):
     return names
 
 
+def _prefix_owners(roster):
+    """(Alias, Teamname)-Paare aller Teams, inklusive früherer Namen."""
+    pairs = []
+    if not isinstance(roster, dict):
+        return pairs
+    entries = roster.get("teams")
+    if not isinstance(entries, list):
+        return pairs
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        owner = str(entry.get("name") or "")
+        if not owner:
+            continue
+        for alias in _team_names(roster, owner):
+            pairs.append((alias, owner))
+    return pairs
+
+
+def _prefix_owner(terminal, pairs):
+    """Team mit dem längsten passenden `fab-<alias>-`-Präfix, sonst ""."""
+    best_alias = -1
+    best_owner = ""
+    for alias, owner in pairs:
+        if len(alias) > best_alias and terminal.startswith(f"fab-{alias}-"):
+            best_alias = len(alias)
+            best_owner = owner
+    return best_owner
+
+
 def team_live(roster, team_name):
     """Live-Terminals eines Teams: Orchestrator, Labels, Tickets und Namen.
 
-    Erfasst auch Terminale früherer Teamnamen. `hc.live` wird direkt
-    abgefragt; ein HcError ergibt eine leere Menge.
+    Erfasst auch Terminale früherer Teamnamen. Ein Namenspräfix zählt nur,
+    wenn kein längeres Team oder Alias eines anderen Teams genauer passt
+    (`herdr` beansprucht keine `fab-herdr-app-…`-Terminale). `hc.live` wird
+    direkt abgefragt; ein HcError ergibt eine leere Menge.
     """
     try:
         live = hc.live()
@@ -184,6 +216,7 @@ def team_live(roster, team_name):
     if legacy and legacy in names:
         orchestrators.add(ORCHESTRATOR)
     owner = str(team_name or "")
+    pairs = _prefix_owners(roster)
     rows = {}
     for name, row in live.items():
         labels = (row or {}).get("labels")
@@ -194,7 +227,7 @@ def team_live(roster, team_name):
             name in orchestrators
             or label_team in names
             or owners.get(name) == owner
-            or any(name.startswith(f"fab-{alias}-") for alias in names)
+            or _prefix_owner(name, pairs) == owner
         ):
             rows[name] = row
     return rows

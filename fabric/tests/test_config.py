@@ -1273,7 +1273,8 @@ class TeamTests(ConfigCase):
         text = str(ctx.exception)
         self.assertIn("lässt sich nicht umbenennen", text)
         self.assertIn("fab-zwei-zap-t-1", text)
-        self.assertIn("fab orchestrator stop zwei", text)
+        self.assertIn("hc kill", text)
+        self.assertNotIn("fab orchestrator stop", text)
         self.assertEqual(self._read(self.roster), before)
 
     def test_rename_ohne_sessions_bleibt_wie_bisher(self):
@@ -1338,6 +1339,30 @@ class TeamTests(ConfigCase):
             self.config_call(config.remove_team, "zwei", "mensch")
         self.assertIn("fab-tmpx-zap-t-1", str(ctx.exception))
         self.assertEqual(self._read(self.roster), before)
+
+    def test_praefix_ordnet_terminale_dem_laengsten_teamnamen_zu(self):
+        self.add_team("herdr", self.make_repo("herdr"))
+        self.set_live(
+            {
+                "fab-herdr-app-orchestrator": "t0",
+                "fab-herdr-app-zap-t-25": "t5",
+            }
+        )
+        roster = self.roster_json()
+        self.assertEqual(self.config_call(agents.team_live, roster, "herdr"), {})
+        app_live = self.config_call(agents.team_live, roster, "herdr-app")
+        self.assertEqual(
+            sorted(app_live), ["fab-herdr-app-orchestrator", "fab-herdr-app-zap-t-25"]
+        )
+
+        message = self.config_call(
+            config.edit_team, "herdr", rename="herd", actor="mensch"
+        )
+        self.assertIn("Name herdr → herd", message)
+        self.assertEqual(
+            [entry["name"] for entry in self.roster_json()["teams"]],
+            ["herdr-app", "herd"],
+        )
 
     def test_team_live_ohne_roster_und_team_wirft_nicht(self):
         self.assertEqual(agents._team_names(None, "zwei"), ["zwei"])

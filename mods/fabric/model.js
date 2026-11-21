@@ -688,7 +688,7 @@ export function teamDirty(team, form) {
   if (!team || !form) return false;
   const base = teamDraft(team);
   const next = {
-    name: String(form.name ?? base.name),
+    name: String(form.name ?? base.name).trim(),
     repos: (form.repos ?? []).map((repo) => String(repo)),
     members: normalizeMembers(form.members),
     reviewer: String(form.reviewer ?? ""),

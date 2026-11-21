@@ -676,6 +676,28 @@ def add_team(name, repos, members_json, orchestrator_argv_json=None,
     return entry
 
 
+def _live_blockers(live, name):
+    """Meldungen für laufende Orchestratoren und Agenten-Sessions eines Teams."""
+    orchestrators = sorted(
+        terminal for terminal in live if hc.is_orchestrator(terminal)
+    )
+    sessions = sorted(
+        terminal for terminal in live if not hc.is_orchestrator(terminal)
+    )
+    blockers = []
+    if orchestrators:
+        blockers.append(
+            f"Orchestrator {', '.join(orchestrators)} läuft (stoppe ihn zuerst "
+            f"mit fab orchestrator stop {name})"
+        )
+    if sessions:
+        blockers.append(
+            "laufende Sessions " + ", ".join(sessions)
+            + " (beende sie zuerst mit hc kill <terminal>)"
+        )
+    return blockers
+
+
 def edit_team(name, rename=None, repos=None, members_json=None,
               orchestrator_argv_json=None, orchestrator_prompt=None,
               reviewer=None, max_sessions=None, actor=""):
@@ -699,12 +721,10 @@ def edit_team(name, rename=None, repos=None, members_json=None,
                 )
             live = agents.team_live(data, name)
             if live:
-                names = ", ".join(sorted(live))
-                verb = "läuft" if len(live) == 1 else "laufen"
                 raise FabError(
                     f"Team „{name}“ lässt sich nicht umbenennen: "
-                    f"{names} {verb} noch (stoppe zuerst mit "
-                    f"fab orchestrator stop {name})."
+                    + "; ".join(_live_blockers(live, name))
+                    + "."
                 )
 
     old_repos = _team_repos(entry)
@@ -834,22 +854,7 @@ def remove_team(name, actor):
             )
         )
     live = agents.team_live(data, name)
-    orchestrators = sorted(
-        terminal for terminal in live if hc.is_orchestrator(terminal)
-    )
-    sessions = sorted(
-        terminal for terminal in live if not hc.is_orchestrator(terminal)
-    )
-    if orchestrators:
-        blockers.append(
-            f"Orchestrator {', '.join(orchestrators)} läuft (stoppe ihn zuerst "
-            f"mit fab orchestrator stop {name})"
-        )
-    if sessions:
-        blockers.append(
-            "laufende Sessions " + ", ".join(sessions)
-            + f" (stoppe sie zuerst mit fab orchestrator stop {name})"
-        )
+    blockers.extend(_live_blockers(live, name))
     if blockers:
         raise FabError(
             f"Team „{name}“ lässt sich nicht löschen: "
