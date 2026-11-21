@@ -785,16 +785,22 @@ function trimUrl(url) {
   return value;
 }
 
-// Bild-Markdown, nackte URL, Erwähnung — in dieser Reihenfolge, damit der
-// Bild-Alt-Text und URLs nicht als Erwähnung gelesen werden.
+// Inline-Mathematik `$…$` in einer Zeile; ein maskiertes Zeichen hinter dem
+// Backslash beendet sie nicht. Ohne schließendes `$` gibt es keinen Treffer.
+const INLINE_MATH = "\\$(?:\\\\[^\\n]|[^\\\\$\\n])+\\$";
+
+// Bild-Markdown, Inline-Mathematik, nackte URL, Erwähnung — in dieser
+// Reihenfolge, damit der Bild-Alt-Text und URLs nicht als Erwähnung gelesen
+// werden und Mathematik wörtlich bleibt.
 const PLAIN_TOKEN = new RegExp([
   IMAGE_MARKDOWN.source,
+  INLINE_MATH,
   "https?:\\/\\/[^\\s<>\"']+",
   "(?<![A-Za-z0-9._%+-])@([A-Za-z][A-Za-z0-9_-]*)",
 ].join("|"), "g");
 
 /** Kommentartext als reiner Text, Zeilenumbrüche erhalten: `@name` fett,
- *  nackte URLs als Link, Bild-Markdown nur als Alt-Text. */
+ *  nackte URLs als Link, Bild-Markdown nur als Alt-Text, `$…$` wörtlich. */
 export function plainMentionMarkdown(text) {
   const source = protectIndent(String(text ?? ""));
   const parts = [];
@@ -805,6 +811,8 @@ export function plainMentionMarkdown(text) {
       parts.push(escapeMarkdown(match[1]));
     } else if (match[3] !== undefined) {
       parts.push(`**${escapeMarkdown(`@${match[3]}`)}**`);
+    } else if (match[0].startsWith("$")) {
+      parts.push(match[0]);
     } else {
       const url = trimUrl(match[0]);
       parts.push(`<${url}>${escapeMarkdown(match[0].slice(url.length))}`);
@@ -938,9 +946,16 @@ export function wakeTargets(text, names = [], author = "") {
   });
 }
 
-/** Eine Zeile unter dem Kommentarfeld: „Weckt ada · Inbox: mensch“. */
-export function wakeSummary(text, names = [], author = "") {
-  const targets = wakeTargets(text, names, author);
+/** Eine Zeile unter dem Kommentarfeld: „Weckt ada · Inbox: mensch“.
+ *  `pending` ist die offene `@`-Eingabe; ihr Bereich zählt nicht als Erwähnung. */
+export function wakeSummary(text, names = [], author = "", pending = null) {
+  const source = String(text ?? "");
+  const start = pending?.start;
+  const end = pending?.end;
+  const valid = Number.isInteger(start) && Number.isInteger(end)
+    && start >= 0 && start <= end && end <= source.length;
+  const visible = valid ? source.slice(0, start) + source.slice(end) : source;
+  const targets = wakeTargets(visible, names, author);
   if (!targets.length) return "Weckt niemanden.";
   const wake = targets.filter((target) => target.kind === "wake").map((target) => target.name);
   const inbox = targets.filter((target) => target.kind === "inbox").map((target) => target.name);
@@ -1147,6 +1162,13 @@ export function history(ticket, events) {
     rows.push({ kind: "wake", at: event.at ?? 0, event });
   }
   return rows.sort((a, b) => a.at - b.at);
+}
+
+/** Ende des Verlaufs im Scrollbereich: Index 0 ist der Text, danach folgen
+ *  `history()`s Kopfzeile und Zeilen. Ohne Zeilen steht dort die Leerzeile. */
+export function historyEndIndex(ticket, events) {
+  const rows = history(ticket, events);
+  return rows.length ? 1 + rows.length : 2;
 }
 
 // ---------- Zeitverlauf (Feed) ----------
@@ -1466,6 +1488,27 @@ export function repoSetArgs(path, key, text, from = "mensch") {
 }
 
 // ---------- Layout-Helfer ----------
+
+export const COMPACT_WIDTH = 760;
+/** Ab dieser Optionszahl scrollt ein Dropdown; darunter passt die Liste. */
+export const DROPDOWN_SCROLL_FROM = 12;
+
+export function dropdownNeedsScroll(count) {
+  return Number(count) >= DROPDOWN_SCROLL_FROM;
+}
+
+/** Letzter direkter Kind-Index im Eigenschaften-Scrollbereich: eingebettet
+ *  folgt er dem Verlauf, sonst ist er das letzte Feld der Spalte. */
+export function propertiesEndIndex(historyLastIndex, fieldCount, compact) {
+  return compact
+    ? Number(historyLastIndex) + Number(fieldCount)
+    : Number(fieldCount) - 1;
+}
+
+/** Schmale Fenster (< 760 logische px) brauchen das einspaltige UI. */
+export function compactWidth(width) {
+  return Number(width) > 0 && Number(width) < COMPACT_WIDTH;
+}
 
 export function findNode(node, id) {
   if (node?.id === id) return node;

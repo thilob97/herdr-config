@@ -115,29 +115,31 @@ function filterBar(app, cx, t) {
   return ui.fabricFilters(t, { app, cx, droppedKey: "showDropped" });
 }
 
-function column(app, cx, t, col) {
+function columnHead(t, col) {
   const attention = col.attention;
+  return h_flex()
+    .flex_none()
+    .w_full()
+    .h(28)
+    .px(S.s)
+    .gap(5)
+    .items_center()
+    .rounded(ui.RADIUS.s)
+    .when(attention, (el) => el.bg(t.accent + "1a"))
+    .child(ui.dot(t, attention ? t.accent : ui.statusColor(t, col.key)))
+    .child(div().text_size(T.xs).font_semibold().text_color(attention ? t.accent : t.muted).child(col.label))
+    .child(div().flex_none().text_size(T.xs).text_color(attention ? t.accent : t.dim).child(String(col.count)))
+    .child(div().flex_1())
+    .when(attention, (el) => el.child(ui.chip(t, "wartet", t.accent)));
+}
+
+function column(app, cx, t, col) {
   return v_flex()
     .flex_1()
     .min_w(150)
     .min_h(0)
     .gap(S.s)
-    .child(
-      h_flex()
-        .flex_none()
-        .w_full()
-        .h(28)
-        .px(S.s)
-        .gap(5)
-        .items_center()
-        .rounded(ui.RADIUS.s)
-        .when(attention, (el) => el.bg(t.accent + "1a"))
-        .child(ui.dot(t, attention ? t.accent : ui.statusColor(t, col.key)))
-        .child(div().text_size(T.xs).font_semibold().text_color(attention ? t.accent : t.muted).child(col.label))
-        .child(div().flex_none().text_size(T.xs).text_color(attention ? t.accent : t.dim).child(String(col.count)))
-        .child(div().flex_1())
-        .when(attention, (el) => el.child(ui.chip(t, "wartet", t.accent))),
-    )
+    .child(columnHead(t, col))
     .child(
       v_flex()
         .flex_1()
@@ -150,6 +152,17 @@ function column(app, cx, t, col) {
         ))
         .children(col.tickets.map((ticket) => card(app, cx, t, ticket))),
     );
+}
+
+function compactColumn(app, cx, t, col) {
+  return v_flex()
+    .w_full()
+    .gap(S.s)
+    .child(columnHead(t, col))
+    .when(col.tickets.length === 0, (el) => el.child(
+      div().w_full().py(S.m).text_center().text_size(T.xs).text_color(t.dim).child("leer"),
+    ))
+    .children(col.tickets.map((ticket) => card(app, cx, t, ticket)));
 }
 
 export function renderBoard(app, cx, t) {
@@ -167,7 +180,7 @@ export function renderBoard(app, cx, t) {
         onClick: (cx) => app.openInWindow({ page: "board" }, cx),
         active: true,
       }),
-    ], { iconName: "board", subtitle: "Entwurf bis Fertig, Prüfung im Blick" }))
+    ], { iconName: "board", subtitle: "Entwurf bis Fertig, Prüfung im Blick", compact: app.compact }))
     .child(filterBar(app, cx, t))
     .when(Boolean(app.loadError), (el) => el.child(ui.notice(t, app.loadError)))
     .when(Boolean(app.flash?.text), (el) => el.child(ui.notice(t, app.flash.text, app.flash.level)))
@@ -177,14 +190,24 @@ export function renderBoard(app, cx, t) {
     })
     .child(
       app.index
-        ? h_flex()
-          .flex_1()
-          .min_h(0)
-          .px(S.m)
-          .pt(S.s)
-          .gap(S.s)
-          .items_stretch()
-          .children(columns.map((col) => column(app, cx, t, col)))
+        ? (app.compact
+          ? v_flex()
+            .flex_1()
+            .min_h(0)
+            .overflow_y_scrollbar()
+            .px(S.m)
+            .pt(S.s)
+            .pb(S.m)
+            .gap(S.l)
+            .children(columns.map((col) => compactColumn(app, cx, t, col)))
+          : h_flex()
+            .flex_1()
+            .min_h(0)
+            .px(S.m)
+            .pt(S.s)
+            .gap(S.s)
+            .items_stretch()
+            .children(columns.map((col) => column(app, cx, t, col))))
         : ui.loading(t, "Tickets werden geladen …"),
     );
 }

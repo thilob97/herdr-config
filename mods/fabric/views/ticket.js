@@ -42,7 +42,7 @@ function head(app, cx, t, ticket) {
         .child(ui.chip(t, model.statusWord(ticket.status), ui.statusColor(t, ticket.status)))
         .when(ticket.waiting?.includes("mensch"), (el) => el.child(ui.chip(t, "wartet auf dich", t.accent)))
         .child(div().flex_1())
-        .when(Boolean(ticket.branch), (el) => el.child(ui.chip(t, ticket.branch, t.muted))),
+        .when(Boolean(ticket.branch) && !app.compact, (el) => el.child(ui.chip(t, ticket.branch, t.muted))),
     )
     .child(
       app.titleEdit
@@ -187,7 +187,8 @@ function historyRow(app, cx, t, row, index) {
           .child(model.relativeTime(comment.at))
           .tooltip(model.absoluteTime(comment.at)))
         .child(div().flex_1())
-        .when(Boolean(comment.mentions?.length), (el) => el.child(ui.chip(t, `${comment.mentions.length} Erwähnung${comment.mentions.length === 1 ? "" : "en"}`, t.muted))),
+        .when(!app.compact && Boolean(comment.mentions?.length), (el) => el.child(
+          ui.chip(t, `${comment.mentions.length} Erwähnung${comment.mentions.length === 1 ? "" : "en"}`, t.muted))),
     )
     .child(
       div().pl(30).w_full()
@@ -218,7 +219,8 @@ function history(app, cx, t, ticket) {
 
 function commentBox(app, cx, t, ticket) {
   const text = app.commentInput.value();
-  const preview = model.wakeSummary(text, app.agentNames(), "mensch");
+  const pending = app.mentionOpen("comment") ? app.mentions : null;
+  const preview = model.wakeSummary(text, app.agentNames(), "mensch", pending);
 
   const inputBox = v_flex()
     .w_full()
@@ -264,9 +266,11 @@ function commentBox(app, cx, t, ticket) {
           tooltip: "Kommentar senden (⌘⏎)",
           onClick: (cx) => app.comment(cx),
         }))
-        .child(ui.keyHint(t, "⌘⏎"))
-        .child(div().flex_1())
-        .child(ui.hint(t, "„@name“ weckt. „@mensch“ landet in der Inbox.")),
+        .when(!app.compact, (el) => el
+          .child(ui.keyHint(t, "⌘⏎"))
+          .child(div().flex_1())
+          .child(ui.hint(t, "„@name“ weckt. „@mensch“ landet in der Inbox.")))
+        .when(app.compact, (el) => el.child(div().flex_1())),
     );
 }
 
@@ -544,40 +548,43 @@ function sessionsField(app, cx, t, ticket) {
           }))))));
 }
 
-function properties(app, cx, t, ticket) {
+function properties(app, cx, t, ticket, { compact = false } = {}) {
   const problem = app.errorFor("status") || app.errorFor("assign") || app.errorFor("repo")
     || app.errorFor("base") || app.errorFor("link");
-  const column = v_flex()
-    .flex_1()
-    .min_h(0)
-    .overflow_y_scrollbar()
-    .p(S.l)
-    .gap(S.m)
-    .child(statusField(app, cx, t, ticket))
-    .child(assigneeField(app, cx, t, ticket))
-    .child(repoField(app, cx, t, ticket))
-    .child(ui.field(t, "Basis", ui.input(t, app.baseInput)))
-    .child(readonlyValue(app, cx, t, "Branch", ticket.branch))
-    .child(readonlyValue(app, cx, t, "Worktree", ticket.worktree))
-    .child(blockerField(app, cx, t, ticket))
-    .when(Boolean(ticket.parent), (el) => el.child(parentField(app, cx, t, ticket)))
-    .when(model.childrenOf(app.tickets, ticket.id).length > 0, (el) => el.child(childrenField(app, cx, t, ticket)))
-    .child(div().w_full().h(1).bg(t.border))
-    .child(checksField(app, cx, t, ticket))
-    .child(verdictField(app, cx, t, ticket))
-    .child(sessionsField(app, cx, t, ticket))
-    .child(div().w_full().h(1).bg(t.border))
-    .child(h_flex().w_full().gap(S.s).items_center()
-      .child(div().text_size(T.xs).text_color(t.dim).child(`Angelegt von ${ticket.created_by ?? "—"}`))
-      .child(div().flex_1())
-      .child(div().text_size(T.xs).text_color(t.dim)
-        .child(model.relativeTime(ticket.created_at)).tooltip(model.absoluteTime(ticket.created_at))))
-    .child(h_flex().w_full().gap(S.s).items_center()
-      .child(div().text_size(T.xs).text_color(t.dim).child("Aktualisiert"))
-      .child(div().flex_1())
-      .child(div().text_size(T.xs).text_color(t.dim)
-        .child(model.relativeTime(ticket.updated_at)).tooltip(model.absoluteTime(ticket.updated_at))));
-  const withProblem = problem ? column.child(ui.notice(t, problem.text, problem.level)) : column;
+  const fields = [
+    statusField(app, cx, t, ticket),
+    assigneeField(app, cx, t, ticket),
+    repoField(app, cx, t, ticket),
+    ui.field(t, "Basis", ui.input(t, app.baseInput)),
+    readonlyValue(app, cx, t, "Branch", ticket.branch),
+    readonlyValue(app, cx, t, "Worktree", ticket.worktree),
+    blockerField(app, cx, t, ticket),
+  ];
+  if (ticket.parent) fields.push(parentField(app, cx, t, ticket));
+  if (model.childrenOf(app.tickets, ticket.id).length > 0) fields.push(childrenField(app, cx, t, ticket));
+  fields.push(div().w_full().h(1).bg(t.border));
+  fields.push(checksField(app, cx, t, ticket));
+  fields.push(verdictField(app, cx, t, ticket));
+  fields.push(sessionsField(app, cx, t, ticket));
+  fields.push(div().w_full().h(1).bg(t.border));
+  fields.push(h_flex().w_full().gap(S.s).items_center()
+    .child(div().text_size(T.xs).text_color(t.dim).child(`Angelegt von ${ticket.created_by ?? "—"}`))
+    .child(div().flex_1())
+    .child(div().text_size(T.xs).text_color(t.dim)
+      .child(model.relativeTime(ticket.created_at)).tooltip(model.absoluteTime(ticket.created_at))));
+  fields.push(h_flex().w_full().gap(S.s).items_center()
+    .child(div().text_size(T.xs).text_color(t.dim).child("Aktualisiert"))
+    .child(div().flex_1())
+    .child(div().text_size(T.xs).text_color(t.dim)
+      .child(model.relativeTime(ticket.updated_at)).tooltip(model.absoluteTime(ticket.updated_at))));
+  if (problem) fields.push(ui.notice(t, problem.text, problem.level));
+
+  if (compact) {
+    const embedded = fields.map((field) => div().w_full().px(S.l).py(S.xs).child(field));
+    app.propsEndIndex = model.propertiesEndIndex(app.historyLastIndex, embedded.length, true);
+    return embedded;
+  }
+  app.propsEndIndex = model.propertiesEndIndex(0, fields.length, false);
   return v_flex()
     .flex_none()
     .w(PROPS)
@@ -585,7 +592,17 @@ function properties(app, cx, t, ticket) {
     .h_full()
     .border_l(1)
     .border_color(t.border)
-    .child(withProblem);
+    .child(
+      v_flex()
+        .flex_1()
+        .min_h(0)
+        .w_full()
+        .p(S.l)
+        .gap(S.m)
+        .overflow_y_scrollbar()
+        .track_scroll(app.propsScroll)
+        .children(fields),
+    );
 }
 
 function actionBar(app, cx, t, ticket) {
@@ -647,14 +664,36 @@ export function renderTicket(app, cx, t) {
       .min_h(0)
       .child(ui.header(t, "Ticket", [
         ui.button(t, { id: "fabric-ticket-back-empty", label: "Zurück", icon: "chevron-left", tooltip: "Zurück (Esc)", onClick: (cx) => app.navigate("tickets", {}, cx) }),
-      ], { iconName: "tickets" }))
+      ], { iconName: "tickets", compact: app.compact }))
       .child(ui.loading(t, app.ticketError ?? "Das Ticket wird geladen …"));
+  }
+  const headBlock = head(app, cx, t, ticket);
+  if (app.compact) {
+    return v_flex()
+      .size_full()
+      .min_h(0)
+      .overflow_hidden()
+      .child(headBlock)
+      .child(
+        v_flex()
+          .id("fabric-ticket-scroll")
+          .flex_1()
+          .min_h(0)
+          .w_full()
+          .overflow_y_scrollbar()
+          .track_scroll(app.historyScroll)
+          .child(body(app, cx, t, ticket))
+          .children(history(app, cx, t, ticket))
+          .children(properties(app, cx, t, ticket, { compact: true })),
+      )
+      .child(commentBox(app, cx, t, ticket))
+      .child(actionBar(app, cx, t, ticket));
   }
   return v_flex()
     .size_full()
     .min_h(0)
     .overflow_hidden()
-    .child(head(app, cx, t, ticket))
+    .child(headBlock)
     .child(
       h_flex()
         .w_full()

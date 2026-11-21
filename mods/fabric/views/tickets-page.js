@@ -52,6 +52,9 @@ export function renderTicketsPage(app, cx, t) {
     .map((ticket) => ({ ...ticket, __selected: app.cursorId === ticket.id }));
   const open = app.tickets.filter((ticket) => ticket.status !== "done" && ticket.status !== "dropped").length;
   const review = app.tickets.filter((ticket) => ticket.status === "review").length;
+  const columns = app.compact
+    ? model.TABLE_COLUMNS.filter((column) => column.key === "id" || column.key === "title" || column.key === "status")
+    : model.TABLE_COLUMNS;
 
   return v_flex()
     .size_full()
@@ -68,6 +71,7 @@ export function renderTicketsPage(app, cx, t) {
     ], {
       iconName: "tickets",
       subtitle: `${open} offen · ${review} in Prüfung · Spaltenkopf sortiert`,
+      compact: app.compact,
     }))
     .child(filters(app, cx, t))
     .when(Boolean(app.loadError), (el) => el.child(ui.notice(t, app.loadError)))
@@ -92,7 +96,7 @@ export function renderTicketsPage(app, cx, t) {
             .overflow_y_scrollbar()
             .child(ui.table(t, {
               id: "fabric-ticket-table",
-              columns: model.TABLE_COLUMNS,
+              columns,
               rows,
               sort: app.tableSort,
               onSort: (sort) => { app.tableSort = sort; cx.notify(); },
