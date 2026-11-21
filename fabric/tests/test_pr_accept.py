@@ -303,6 +303,59 @@ class PrAcceptTests(FabricCase):
             [call for call in self.gh_calls() if call[:2] == ["pr", "create"]]
         )
 
+    def test_accept_weckt_orchestrator_mit_pruefer_hinweisen(self):
+        repo, tid, worktree = self.review_ticket()
+        self.ok(
+            "comment", tid, "--from", "ada",
+            "hinweis fabric/fablib/store.py:596 — Hinweis eins",
+        )
+        self.ok(
+            "comment", tid, "--from", "ada",
+            "hinweis fabric/tests/test_sqlite.py:261 — Hinweis zwei",
+        )
+        mark = self.mark()
+        self.clear_log()
+
+        result = self.ok("accept", tid)
+
+        self.assertIn("angenommen", result.stdout)
+        self.assertEqual(self.ticket(tid)["status"], "done")
+        sends = self.hc_calls("send")
+        self.assertEqual(len(sends), 1, sends)
+        text = sends[0][2]
+        self.assertIn("store.py:596", text)
+        self.assertIn("test_sqlite.py:261", text)
+        self.assertIn(tid, text)
+        wakes = [
+            row
+            for row in self.wake_since(mark, tid)
+            if row["target"] == "orchestrator"
+        ]
+        self.assertEqual(len(wakes), 1, wakes)
+
+    def test_accept_ohne_pruefer_hinweis_weckt_orchestrator_nicht(self):
+        repo, tid, worktree = self.review_ticket()
+        self.ok(
+            "comment", tid, "--from", "ada",
+            "blocker fabric/fablib/store.py:596 — das ist blockierend",
+        )
+        mark = self.mark()
+        self.clear_log()
+
+        result = self.ok("accept", tid)
+
+        self.assertIn("angenommen", result.stdout)
+        self.assertEqual(self.ticket(tid)["status"], "done")
+        self.assertEqual(self.hc_calls("send"), [])
+        self.assertEqual(
+            [
+                row
+                for row in self.wake_since(mark, tid)
+                if row["target"] == "orchestrator"
+            ],
+            [],
+        )
+
     def test_nicht_fast_forward_basis_bricht_ab(self):
         repo, tid, worktree = self.review_ticket()
         bare = self.setup_origin(repo)

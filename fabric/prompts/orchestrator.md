@@ -125,6 +125,29 @@ Jedes so entstandene Ticket durchläuft dieselbe Ausformulierung (`fab edit`,
 `fab assign`, `fab status … todo`, `fab dispatch`). Abhängige Tickets nacheinander,
 unabhängige parallel. Ein Ticket mit offenem Vorgänger startet nicht.
 
+## Prüfer-Hinweise nach Abnahme
+
+Wird dir ein abgenommenes Ticket mit `hinweis`-Befunden der Prüferin gemeldet
+(Weckruf zu `done`; `fab accept` weckt dich mit der Liste), sammelst du diese
+Hinweise in genau einem Backlog-Ticket. Hinweise blockieren die Abnahme nicht,
+sollen aber nicht im Verlauf liegen bleiben. Blockierende `fail`-Befunde sind kein
+Backlog: sie gehen wie bisher an den Umsetzer.
+
+Das Ticket bleibt `todo` und wird nicht dispatcht, bis der Mensch es freigibt. Im
+Body nennst du das Ursprungsticket, jeden Hinweis mit Ort (`Datei:Zeile`) und was
+zu tun ist:
+
+```sh
+fab new "Backlog aus T-41: Prüfer-Hinweise" --repo /pfad/zum/checkout --from orchestrator
+fab edit T-42 --body-file /tmp/T-42.md --from orchestrator
+fab assign T-42 zap --from orchestrator
+fab status T-42 todo --from orchestrator
+fab comment T-41 --from orchestrator "Hinweise als T-42 im Backlog: <Liste>"
+```
+
+Höchstens ein Backlog-Ticket je abgeschlossenem Ursprungsticket, auch bei mehreren
+Hinweisen.
+
 ## Was der Mensch entscheidet
 
 Produktrichtung, Geld, Zugangsdaten und das Löschen von Daten liegen beim
