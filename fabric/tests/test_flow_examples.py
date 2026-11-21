@@ -49,6 +49,33 @@ class FlowExamplesCase(FabricCase):
             self.assertEqual(cleaned["name"], name)
             self.assertEqual(len(cleaned["nodes"]), len(definition["nodes"]))
 
+    def nachtfenster_at(self, clock):
+        bindir = os.path.join(self.tmp, f"clock-{clock}")
+        os.makedirs(bindir, exist_ok=True)
+        fake_date = os.path.join(bindir, "date")
+        self.write_file(fake_date, f"#!/bin/sh\necho {clock}\n")
+        os.chmod(fake_date, 0o755)
+        env = dict(self.env, PATH=bindir + os.pathsep + self.env.get("PATH", ""))
+        command = self.node("nachtschicht", "nachtfenster")["command"]
+        return subprocess.run(
+            command, shell=True, cwd=self.tmp, env=env,
+            capture_output=True, text=True,
+        )
+
+    def test_nachtfenster_only_runs_in_night_window(self):
+        for clock in ("0000", "1200", "1759", "2330", "2359"):
+            with self.subTest(clock=clock):
+                self.assertNotEqual(
+                    self.nachtfenster_at(clock).returncode, 0,
+                    f"{clock} liegt außerhalb des Nachtfensters",
+                )
+        for clock in ("1800", "2000", "2329"):
+            with self.subTest(clock=clock):
+                self.assertEqual(
+                    self.nachtfenster_at(clock).returncode, 0,
+                    f"{clock} liegt im Nachtfenster",
+                )
+
     def test_revert_command_handles_merge_commit(self):
         repo = self.make_repo()
         self.git_out(repo, "checkout", "-q", "-b", "feature")
