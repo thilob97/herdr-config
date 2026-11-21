@@ -272,3 +272,186 @@ export function fabricRows(
 
   return { orchestrator, rows, teams: groups };
 }
+
+// --- Freie Agenten ohne Fabric-Team -----------------------------------------
+// Eigener AGENTS-Abschnitt: Terminals, deren Programm einen Status meldet
+// (OSC 7501) und die weder ein `fab.*`-Label noch einen `fab-…`-Namen tragen
+// und auch nicht über `parent` an einem Fabric-Terminal hängen. Der
+// Space-Orchestrator wird über `hub.role` oder den Namen `orchestrator` erkannt.
+
+export const FREE_STATUS_WORDS = {
+  working: "WORKING",
+  blocked: "WAITING",
+  done: "DONE",
+  idle: "IDLE",
+  error: "ERROR",
+};
+
+export const FREE_SPRITES = ["agent-a", "agent-b"];
+
+export function freeStatusWord(status) {
+  return FREE_STATUS_WORDS[status] ?? (status ? String(status).toUpperCase() : "IDLE");
+}
+
+export function busyLabel(busy) {
+  return `${Number(busy) || 0} BUSY`;
+}
+
+/** Eck-Symbol oben rechts; `z` schläft, `note` ist fertig, `clock` wartet. */
+export function freeCornerIcon(status) {
+  switch (status) {
+    case "idle": return "zzz";
+    case "done": return "note";
+    case "working": return "play";
+    case "blocked": return "clock";
+    case "error": return "alert";
+    default: return "dot";
+  }
+}
+
+/** Orchestrator-Motiv für den Space-Orchestrator, sonst abwechselnd eines der
+    beiden Agenten-Motive; `index` zählt die Agenten einer Gruppe durch. */
+export function freeSpriteKey(entry, index = 0) {
+  if (entry?.orchestrator) return "orchestrator";
+  return FREE_SPRITES[Math.abs(Number(index) || 0) % FREE_SPRITES.length] ?? FREE_SPRITES[0];
+}
+
+/** Einzeilige Aufgabe; lange Titel werden an der Wortgrenze gekürzt. */
+export function truncateTask(text, max = 42) {
+  const value = String(text ?? "").replace(/\s+/g, " ").trim();
+  if (value.length <= max) return value;
+  const cut = value.slice(0, max - 1);
+  const space = cut.lastIndexOf(" ");
+  return `${(space > max * 0.6 ? cut.slice(0, space) : cut).trimEnd()}…`;
+}
+
+function labelsOf(terminal) {
+  return terminal?.labels && typeof terminal.labels === "object" ? terminal.labels : {};
+}
+
+function addressOf(terminal) {
+  return String(terminal?.address ?? terminal?.name ?? "");
+}
+
+/** Fabric-Terminal samt Nachfahren über `parent`; dieselbe Abgrenzung wie in
+    `mods/agents-filtered` und `fabricRows`. */
+export function fabricAddresses(terminals = []) {
+  const direct = new Set();
+  for (const terminal of terminals ?? []) {
+    if (!terminal || typeof terminal !== "object") continue;
+    const labels = labelsOf(terminal);
+    const name = String(terminal.name ?? "");
+    if (labels["fab.agent"] || labels["fab.role"] || /^fab-/i.test(name)) {
+      direct.add(addressOf(terminal));
+    }
+  }
+  const hidden = new Set(direct);
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const terminal of terminals ?? []) {
+      if (!terminal || typeof terminal !== "object") continue;
+      const address = addressOf(terminal);
+      if (!address || hidden.has(address)) continue;
+      const parent = typeof terminal.parent === "string" ? terminal.parent : "";
+      if (parent && hidden.has(parent)) {
+        hidden.add(address);
+        changed = true;
+      }
+    }
+  }
+  return hidden;
+}
+
+/** Der Herdr-Space-Orchestrator: `hub.role=orchestrator` oder Name `orchestrator`. */
+export function freeOrchestrator(terminal) {
+  const labels = labelsOf(terminal);
+  const role = String(labels["hub.role"] ?? "").trim().toLowerCase();
+  const name = String(terminal?.name ?? "").trim().toLowerCase();
+  return role === "orchestrator" || role === "space-orchestrator" || name === "orchestrator";
+}
+
+/** Maschine eines Terminals: Feld, Adresspräfix `maschine/t7`, sonst der Space. */
+export function machineOf(terminal, spaces = []) {
+  if (typeof terminal?.machine === "string" && terminal.machine) return terminal.machine;
+  const address = String(terminal?.address ?? "");
+  const slash = address.indexOf("/");
+  if (slash > 0) return address.slice(0, slash);
+  const spaceId = String(terminal?.space ?? "");
+  if (spaceId) {
+    const space = (spaces ?? []).find((row) => String(row?.id ?? "") === spaceId);
+    if (space && typeof space.machine === "string" && space.machine) return space.machine;
+  }
+  return null;
+}
+
+export function machineLabel(machine) {
+  return machine ? String(machine).toUpperCase() : "THIS MACHINE";
+}
+
+/** Karten und Gruppen des AGENTS-Abschnitts. `listed` ist `agents()` aus Herdr:
+    nur Terminals mit gemeldetem Status sind freie Agenten. */
+export function freeAgentCards(terminals = [], listed = [], spaces = []) {
+  const hidden = fabricAddresses(terminals);
+  const reported = new Map(
+    (listed ?? []).filter(Boolean).map((agent) => [String(agent.address ?? ""), agent]),
+  );
+  const cards = [];
+
+  for (const terminal of terminals ?? []) {
+    if (!terminal || typeof terminal !== "object") continue;
+    if (terminal.state !== undefined && terminal.state !== "live") continue;
+    const address = addressOf(terminal);
+    if (!address || hidden.has(address)) continue;
+    const agent = reported.get(address) ?? null;
+    const status = String(agent?.status ?? terminal.status ?? (terminal.report ? "idle" : ""));
+    // Freier Agent heißt: das Programm meldet einen Status. Reine Shells
+    // und fremde, statuslose Programme bleiben draußen.
+    if (!agent && !status) continue;
+    const name = String(agent?.title || terminal.title || terminal.name || address);
+    const app = String(agent?.app ?? terminal.agent ?? terminal.report ?? "");
+    const machine = machineOf(terminal, spaces);
+    const orchestrator = freeOrchestrator(terminal);
+    const task = truncateTask(name);
+    cards.push({
+      address,
+      name,
+      app,
+      status,
+      machine,
+      group: machineLabel(machine),
+      orchestrator,
+      badge: freeStatusWord(status),
+      icon: freeCornerIcon(status),
+      sprite: null,
+      task,
+      click: { kind: "terminal", terminal: address },
+    });
+  }
+
+  cards.sort((a, b) => Number(b.orchestrator) - Number(a.orchestrator)
+    || a.name.localeCompare(b.name)
+    || a.address.localeCompare(b.address));
+
+  let agentIndex = 0;
+  for (const card of cards) {
+    card.sprite = freeSpriteKey(card, agentIndex);
+    if (!card.orchestrator) agentIndex += 1;
+  }
+
+  const groups = [];
+  for (const card of cards) {
+    let group = groups.find((row) => row.name === card.group);
+    if (!group) {
+      group = { name: card.group, machine: card.machine, cards: [], busy: 0, total: 0 };
+      groups.push(group);
+    }
+    group.cards.push(card);
+    group.total += 1;
+    if (card.status === "working") group.busy += 1;
+  }
+  groups.sort((a, b) => Number(a.machine !== null) - Number(b.machine !== null)
+    || a.name.localeCompare(b.name));
+
+  const busy = cards.filter((card) => card.status === "working").length;
+  return { cards, groups, busy };
+}

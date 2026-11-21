@@ -2,13 +2,17 @@
 // mit Rolle, Status und Laufzeit. Klick öffnet das Terminal, der Ticket-Chip
 // das Ticket im Fabric-Fenster. Reine Auswahl-/Textlogik: model.js.
 
-import { View, div } from "gpui-kit";
+import { View, div, image } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import {
-  agents, appHome, checking, openOverlay, readTextFile, run, setShared, shared,
-  terminals, theme,
+  agents, appHome, checking, fonts, openOverlay, readTextFile, run, setShared, settings,
+  shared, spaces, terminals, theme,
 } from "herdr";
 import * as model from "./model.js";
+
+const SPRITE_DIR = "mods/fabric-sidebar/sprites";
+// Eck-Symbole der Karten (die SVG-Sprites tragen die Figur).
+const CORNER_GLYPH = { zzz: "z", note: "♪", play: "▸", clock: "◷", alert: "!", dot: "·" };
 
 function message(error) {
   return error instanceof Error ? error.message : String(error ?? "");
@@ -106,6 +110,98 @@ function teamHeader(t, group, first) {
     .child(div().flex_1().min_w(0).truncate().text_size(10.5).font_semibold().text_color(t.dim)
       .child(group.name))
     .child(div().flex_none().text_size(10).text_color(t.dim).child(String(group.count)));
+}
+
+// Farbton je Maschinengruppe; alle Farben kommen aus theme().
+function groupTint(t, index) {
+  const palette = [t.accent, t.working, t.done, t.ansi5, t.ansi6, t.blocked];
+  return palette[index % palette.length] ?? t.accent;
+}
+
+function monoFont() {
+  const configured = settings()?.font_family;
+  if (typeof configured === "string" && configured) return configured;
+  return (fonts() ?? []).find((name) => /mono|menlo|courier/i.test(name)) ?? "";
+}
+
+// Abschnittskopf AGENTS mit dem BUSY-Zähler.
+function agentsHeader(t, free) {
+  return h_flex()
+    .flex_none()
+    .w_full()
+    .px(10)
+    .pt(6)
+    .pb(2)
+    .gap(6)
+    .items_center()
+    .child(div().text_size(10).font_semibold().text_color(t.muted).child("AGENTS"))
+    .child(div()
+      .text_size(10)
+      .text_color(free.busy > 0 ? t.working : t.dim)
+      .child(model.busyLabel(free.busy)));
+}
+
+// Maschinengruppe: farbiges Icon, Name, Trennlinie, rechts belegt/gesamt.
+function freeGroupHeader(t, group, tint, first) {
+  return h_flex()
+    .flex_none()
+    .w_full()
+    .when(!first, (el) => el.mt(5).pt(6).border_t(1).border_color(t.border))
+    .px(10)
+    .pb(3)
+    .gap(6)
+    .items_center()
+    .child(div().size(7).flex_none().rounded(1).bg(tint))
+    .child(div().flex_none().text_size(10).font_semibold().text_color(tint).child(group.name))
+    .child(div().flex_1().min_w(4).h(1).bg(t.border))
+    .child(div().flex_none().text_size(10).text_color(t.dim)
+      .child(`${group.busy}/${group.total}`));
+}
+
+// Pixel-Karte: Avatar-Szene, Status-Badge, Eck-Symbol, Name, eine Aufgabenzeile.
+function freeCard(t, card, tint, mono) {
+  const status = statusColor(t, card.status);
+  return h_flex()
+    .id(`free-agent-${card.address}`)
+    .w_full()
+    .flex_none()
+    .gap(8)
+    .p(6)
+    .rounded(6)
+    .border_1()
+    .border_color(tint + "40")
+    .bg(tint + "12")
+    .items_center()
+    .cursor_pointer()
+    .hover((style) => style.bg(tint + "1e"))
+    .tooltip(`${card.name} öffnen`)
+    .on_click(() => run("agent.focus", { terminal: card.click.terminal }))
+    .child(image(`${SPRITE_DIR}/${card.sprite}.svg`).w(44).h(44).flex_none())
+    .child(
+      v_flex().flex_1().min_w(0).gap(2)
+        .child(
+          h_flex().w_full().items_center().gap(4)
+            .child(div()
+              .h(14)
+              .px(4)
+              .rounded(3)
+              .bg(status + "26")
+              .text_size(8.5)
+              .font_semibold()
+              .text_color(status)
+              .flex()
+              .items_center()
+              .child(card.badge))
+            .child(div().flex_1())
+            .child(div().text_size(10).text_color(status)
+              .child(CORNER_GLYPH[card.icon] ?? "·")),
+        )
+        .child(div().w_full().truncate().text_size(11).font_semibold()
+          .when(Boolean(mono), (el) => el.font_family(mono))
+          .child(card.name))
+        .child(div().w_full().truncate().text_size(9.5).text_color(t.dim)
+          .tooltip(card.task).child(card.task)),
+    );
 }
 
 function metaLine(t, row) {
@@ -210,7 +306,17 @@ export default class FabricSidebar extends View {
       Date.now(),
       this.index?.teams ?? [],
     );
+    const free = model.freeAgentCards(terminals(), agents(), spaces());
     const sections = [];
+    if (free.cards.length > 0) {
+      const mono = monoFont();
+      sections.push(agentsHeader(t, free));
+      free.groups.forEach((group, index) => {
+        const tint = groupTint(t, index);
+        sections.push(freeGroupHeader(t, group, tint, index === 0));
+        for (const card of group.cards) sections.push(freeCard(t, card, tint, mono));
+      });
+    }
     for (const group of groups) {
       if (group.rows.length === 0) continue;
       sections.push(teamHeader(t, group, sections.length === 0));
@@ -262,7 +368,7 @@ export default class FabricSidebar extends View {
           .w_full()
           .py(2)
           .overflow_y_scrollbar()
-          .when(rows.length === 0, (el) => el.child(
+          .when(rows.length === 0 && free.cards.length === 0, (el) => el.child(
             v_flex()
               .px(12)
               .py(8)
