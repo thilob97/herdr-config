@@ -93,6 +93,16 @@ class CliTests(FabricCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Unbekannter Status", result.stderr)
 
+    def test_status_dropped_ist_verboten(self):
+        tid = self.new("Verwerfen")
+        result = self.cli("status", tid, "dropped", "--from", "mensch")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(f"fab drop {tid}", result.stderr)
+        self.assertEqual(self.ticket(tid)["status"], "draft")
+        self.assertEqual(
+            [row for row in self.events() if row["kind"] == "status"], []
+        )
+
     def test_assign_prueft_den_roster(self):
         tid = self.new("Zu")
         result = self.cli("assign", tid, "fremd", "--from", "mensch")
