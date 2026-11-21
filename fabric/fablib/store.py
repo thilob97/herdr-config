@@ -1369,24 +1369,34 @@ def flow_steps(run_id):
 
 
 def flow_approvals():
+    """Offene Freigaben: nur Läufe, die genau an einem Freigabe-Knoten pausieren."""
     ensure()
-    rows = _connect().execute(
-        "SELECT id,at,kind,ticket,actor,target,text,reason FROM events "
-        "WHERE kind='flow' AND text LIKE 'freigabe:%' ORDER BY id"
-    ).fetchall()
-    return [
-        {
-            "id": row["id"],
-            "at": row["at"],
-            "kind": row["kind"],
-            "ticket": row["ticket"],
-            "actor": row["actor"],
-            "target": row["target"],
-            "text": row["text"],
-            "reason": row["reason"],
-        }
-        for row in rows
-    ]
+    rows = []
+    for row in _connect().execute(
+        "SELECT id,workflow,status,reason,data,updated_at FROM flow_runs "
+        "WHERE status='paused' ORDER BY id"
+    ):
+        data = _flow_parse(row["data"], {})
+        paused = data.get("paused_at") if isinstance(data, dict) else None
+        if not isinstance(paused, dict) or paused.get("kind") != "approval":
+            continue
+        text = row["reason"] or ""
+        prefix = "Freigabe offen: "
+        if text.startswith(prefix):
+            text = text[len(prefix):]
+        rows.append(
+            {
+                "id": row["id"],
+                "at": row["updated_at"],
+                "kind": "flow",
+                "ticket": "",
+                "actor": "flow",
+                "target": paused.get("node") or "",
+                "text": text,
+                "reason": row["workflow"],
+            }
+        )
+    return rows
 
 
 # ---------------------------------------------------------------- Anhänge

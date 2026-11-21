@@ -2192,6 +2192,10 @@ def cmd_flow(args):
         row = flows.pause(args.run, actor)
         print(f"Lauf {row['id']} pausiert")
         return 0
+    if args.action == "resume":
+        row = flows.resume(args.run, actor)
+        print(f"Lauf {row['id']} fortgesetzt")
+        return 0
     if args.action == "cancel":
         row = flows.cancel(args.run, actor)
         print(f"Lauf {row['id']} abgebrochen")
@@ -2744,6 +2748,11 @@ def build_parser():
     pause_item.add_argument("run", metavar="LAUF")
     pause_item.add_argument("--from", dest="from_", metavar="NAME", default="mensch",
                             help="Autor (Standard: mensch)")
+    resume_item = flow_sub.add_parser("resume", help="Pausierten Lauf fortsetzen",
+                                      description="Pausierten Lauf fortsetzen")
+    resume_item.add_argument("run", metavar="LAUF")
+    resume_item.add_argument("--from", dest="from_", metavar="NAME", default="mensch",
+                             help="Autor (Standard: mensch)")
     cancel_item = flow_sub.add_parser("cancel", help="Lauf abbrechen",
                                       description="Lauf abbrechen")
     cancel_item.add_argument("run", metavar="LAUF")

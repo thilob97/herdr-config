@@ -32,12 +32,13 @@ class FlowCase(FabricCase):
                  "prompt": "Bitte prüfen"},
                 {"id": "b", "type": "condition", "expr": "{{a.status}} == done"},
                 {"id": "ende", "type": "end"},
+                {"id": "ende_fail", "type": "end"},
             ],
             "edges": [
                 {"from": "start", "to": "a"},
                 {"from": "a", "to": "b"},
                 {"from": "b", "to": "ende", "when": "pass"},
-                {"from": "b", "to": "ende", "when": "fail"},
+                {"from": "b", "to": "ende_fail", "when": "fail"},
             ],
         }
         data.update(overrides)
@@ -70,7 +71,7 @@ class FlowCase(FabricCase):
         self.add(self.base())
         listed = self.ok("flow", "list").stdout
         self.assertIn("beispiel", listed)
-        self.assertIn("4 Knoten", listed)
+        self.assertIn("5 Knoten", listed)
 
         edited = self.base()
         edited["nodes"] = [
@@ -159,12 +160,33 @@ class FlowCase(FabricCase):
                      for step in store.flow_steps(1)]
         self.assertIn(("b", "pass"), steps)
         self.assertIn(("ende", "done"), steps)
+        self.assertNotIn(("ende_fail", "done"), steps)
 
         kinds = [
             row for row in self.events()
             if row["kind"] == "flow" and row["target"] in ("a", "b", "ende")
         ]
         self.assertEqual({"a", "b", "ende"}, {row["target"] for row in kinds})
+
+    def test_condition_fail_branch(self):
+        data = self.base()
+        for node in data["nodes"]:
+            if node["id"] == "b":
+                node["expr"] = "{{a.status}} == dropped"
+        self.add(data)
+        self.ok("flow", "run", "beispiel")
+        self.done("T-1")
+        self.ok("tick")
+
+        run = self.runs()[0]
+        self.assertEqual(run["status"], "done")
+        self.assertEqual(run["current"], "ende_fail")
+        with self.store_env():
+            steps = [(step["node"], step["status"])
+                     for step in store.flow_steps(1)]
+        self.assertIn(("b", "fail"), steps)
+        self.assertIn(("ende_fail", "done"), steps)
+        self.assertNotIn(("ende", "done"), steps)
 
     # -- Platzhalter aus dem Vorgänger
 
@@ -229,6 +251,72 @@ class FlowCase(FabricCase):
         cancelled = self.ok("flow", "cancel", "1")
         self.assertIn("abgebrochen", cancelled.stdout)
         self.assertEqual(self.runs()[0]["status"], "cancelled")
+
+    def test_resume_after_manual_pause(self):
+        self.add(self.base())
+        self.ok("flow", "run", "beispiel")
+        self.ok("flow", "pause", "1")
+        self.assertEqual(self.runs()[0]["status"], "paused")
+
+        self.done("T-1")
+        resumed = self.ok("flow", "resume", "1")
+        self.assertIn("fortgesetzt", resumed.stdout)
+        run = self.runs()[0]
+        self.assertEqual(run["status"], "done")
+        self.assertEqual(run["current"], "ende")
+
+    def test_approval_inbox_and_resume(self):
+        data = self.base()
+        data["nodes"] = [
+            {"id": "start", "type": "trigger", "trigger": "manual"},
+            {"id": "ok", "type": "approval", "text": "Bitte freigeben"},
+            {"id": "ende", "type": "end"},
+        ]
+        data["edges"] = [
+            {"from": "start", "to": "ok"},
+            {"from": "ok", "to": "ende"},
+        ]
+        self.add(data)
+        self.ok("flow", "run", "beispiel")
+        self.assertEqual(self.runs()[0]["status"], "paused")
+
+        inbox = json.loads(self.ok("inbox", "--json").stdout)
+        approvals = [item for item in inbox if item["kind"] == "approval"]
+        self.assertTrue(any("Bitte freigeben" in item["text"] for item in approvals))
+
+        self.ok("flow", "resume", "1")
+        self.assertEqual(self.runs()[0]["status"], "done")
+
+        inbox = json.loads(self.ok("inbox", "--json").stdout)
+        self.assertFalse([item for item in inbox if item["kind"] == "approval"])
+
+    def test_action_placeholders_are_shell_quoted(self):
+        marker = os.path.join(self.tmp, "pwned")
+        data = self.base()
+        data["nodes"] = [
+            {"id": "start", "type": "trigger", "trigger": "manual"},
+            {"id": "a", "type": "agent", "agent": "zap", "title": "A",
+             "prompt": "A"},
+            {"id": "b", "type": "action", "action": "shell",
+             "command": "true {{a.zusammenfassung}}"},
+            {"id": "ende", "type": "end"},
+        ]
+        data["edges"] = [
+            {"from": "start", "to": "a"},
+            {"from": "a", "to": "b"},
+            {"from": "b", "to": "ende"},
+        ]
+        self.add(data)
+        self.ok("flow", "run", "beispiel")
+        self.add_events([{
+            "kind": "handover", "ticket": "T-1", "actor": "zap",
+            "text": f"x; touch {marker}",
+        }])
+        self.done("T-1")
+        self.ok("tick")
+
+        self.assertFalse(os.path.exists(marker))
+        self.assertEqual(self.runs()[0]["status"], "done")
 
     # -- Zeitlimit
 

@@ -445,14 +445,55 @@ def runs(workflow=None):
 
 
 def pause(run_id, actor="mensch"):
-    return _set_state(run_id, "paused", "pausiert", actor)
+    return _set_state(run_id, "paused", "pausiert", actor, paused_kind="manual")
+
+
+def resume(run_id, actor="mensch"):
+    """Einen pausierten Lauf fortsetzen; eine Freigabe gilt damit als erteilt."""
+    run_id = _run_id(run_id)
+    with store.locked():
+        run = store.flow_run_load(run_id)
+        if run is None:
+            raise FlowError(f"Lauf {run_id} gibt es nicht")
+        if run["status"] != "paused":
+            raise FlowError(
+                f"Lauf {run_id} ist nicht pausiert (Status {run['status']})"
+            )
+        definition = get(run["workflow"])
+        data = run["data"]
+        paused = data.pop("paused_at", None)
+        if not isinstance(paused, dict):
+            paused = {}
+        run["status"] = "running"
+        run["reason"] = ""
+        events.append(
+            "flow", "", actor,
+            paused.get("node") or data.get("current") or "",
+            f"Lauf {run_id} fortgesetzt", reason=run["workflow"],
+        )
+        if paused.get("kind") == "approval":
+            node = _node(definition, paused.get("node") or data.get("current"))
+            if node is not None:
+                _step(run, node, "done", {})
+                outgoing = _outgoing(definition, node["id"])
+                if not outgoing:
+                    _finish(run, "failed", f"kein Folgeknoten nach {node['id']}")
+                else:
+                    _traverse(run, definition, outgoing[0])
+        store.flow_run_save(run)
+        if run["status"] == "running":
+            try:
+                _advance(run, definition, now=store.now_ms())
+            except FlowError as exc:
+                _finish(run, "failed", str(exc))
+    return _run_row(run)
 
 
 def cancel(run_id, actor="mensch"):
     return _set_state(run_id, "cancelled", "abgebrochen", actor)
 
 
-def _set_state(raw, status, word, actor):
+def _set_state(raw, status, word, actor, paused_kind=None):
     run_id = _run_id(raw)
     with store.locked():
         run = store.flow_run_load(run_id)
@@ -464,6 +505,15 @@ def _set_state(raw, status, word, actor):
             return _run_row(run)
         run["status"] = status
         run["reason"] = word
+        data = run.get("data")
+        if isinstance(data, dict):
+            if status == "paused":
+                data["paused_at"] = {
+                    "node": data.get("current") or "",
+                    "kind": paused_kind or "manual",
+                }
+            else:
+                data.pop("paused_at", None)
         store.flow_run_save(run)
         events.append(
             "flow", "", actor, (run["data"] or {}).get("current") or "",
@@ -594,6 +644,7 @@ def _advance(run, definition, now):
             )
             run["status"] = "paused"
             run["reason"] = f"Freigabe offen: {text}"
+            run["data"]["paused_at"] = {"node": node["id"], "kind": "approval"}
             store.flow_run_save(run)
             return True
     return changed
@@ -810,7 +861,7 @@ def _action(run, definition, node):
             reason=definition["name"],
         )
         return {"code": 0, "ausgabe": text, "fehler": ""}
-    command = _resolve(str(node.get("command") or ""), outputs)
+    command = _resolve(str(node.get("command") or ""), outputs, quote=True)
     repo = run["data"].get("repo") or os.getcwd()
     if kind == "shell":
         try:
@@ -840,7 +891,9 @@ def _action(run, definition, node):
 # ---------------------------------------------------------------- Ausdrücke
 
 
-def _resolve(text, outputs):
+def _resolve(text, outputs, quote=False):
+    """Platzhalter ersetzen; mit `quote` als ein sicheres Shell-Argument."""
+
     def replace(match):
         node, field = match.group(1), match.group(2)
         values = outputs.get(node)
@@ -848,8 +901,9 @@ def _resolve(text, outputs):
             return match.group(0)
         value = values[field]
         if isinstance(value, bool):
-            return "true" if value else "false"
-        return str(value)
+            value = "true" if value else "false"
+        text_value = str(value)
+        return shlex.quote(text_value) if quote else text_value
 
     return PLACEHOLDER.sub(replace, text)
 
