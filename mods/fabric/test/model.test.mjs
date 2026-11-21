@@ -14,6 +14,9 @@ import {
   formatCost, formatDuration, ticketCost, costTotals,
   flowNodeStates, flowLayout, flowStatusWord, flowRunWord, flowNodeSteps,
   flowNodeReason, flowNodeTicket, flowKindWord,
+  FLOW_NODE_TYPES, FLOW_TRIGGER_TYPES, FLOW_ACTION_TYPES, flowNewDefinition, flowLoad, flowSerialize,
+  flowParse, flowNodeTemplate, flowNodeId, flowAddNode, flowRemoveNode, flowPatchNode, flowConnect,
+  flowRemoveEdge, flowPatchEdge, flowOutgoing, flowEdgeWhenOptions, flowPlaceholders, flowValidate,
 } from "../model.js";
 
 test("Tickets werden nach Stufe gruppiert, in Stufenreihenfolge", () => {
@@ -1639,4 +1642,263 @@ test("Workflow-Wörter, letzter Schritt und Knotengrund", () => {
   assert.equal(flowNodeReason({ data: { ausgabe: "fertig" } }), "fertig");
   assert.equal(flowNodeReason({ data: { text: "Bitte freigeben" } }), "Bitte freigeben");
   assert.equal(flowNodeTicket(undefined), null);
+});
+
+test("Workflow-Builder: Knoten anlegen, verbinden und löschen", () => {
+  assert.deepEqual(FLOW_NODE_TYPES, ["trigger", "agent", "action", "condition", "approval", "end"]);
+  assert.deepEqual(FLOW_TRIGGER_TYPES, ["manual", "cron", "ticket_done", "github_issue", "main_red"]);
+  assert.deepEqual(FLOW_ACTION_TYPES, ["shell", "fab", "notify"]);
+  assert.deepEqual(flowNodeTemplate("agent", "a"), {
+    id: "a", type: "agent", agent: "", title: "", prompt: "",
+  });
+  assert.deepEqual(flowNodeTemplate("end", "z"), { id: "z", type: "end" });
+
+  let draft = flowNewDefinition("bau");
+  assert.deepEqual(Object.keys(draft), ["name", "limits", "nodes", "edges"]);
+
+  let added = flowAddNode(draft, "trigger");
+  assert.equal(added.id, "start");
+  draft = added.definition;
+  added = flowAddNode(draft, "action");
+  assert.equal(added.id, "aktion");
+  draft = added.definition;
+  added = flowAddNode(draft, "end");
+  assert.equal(added.id, "ende");
+  draft = added.definition;
+
+  assert.deepEqual(draft.nodes.map((node) => [node.id, node.type]), [
+    ["start", "trigger"], ["aktion", "action"], ["ende", "end"],
+  ]);
+  assert.equal(draft.nodes[0].trigger, "manual");
+  assert.equal(draft.nodes[1].action, "shell");
+  assert.equal(draft.nodes[1].command, "");
+  assert.equal(flowNodeId(draft, "action"), "aktion2");
+  assert.equal(flowNodeId(draft, "trigger"), "start2");
+
+  added = flowConnect(draft, "start", "aktion");
+  assert.equal(added.index, 0);
+  draft = added.definition;
+  added = flowConnect(draft, "aktion", "ende");
+  assert.equal(added.index, 1);
+  draft = added.definition;
+  assert.deepEqual(draft.edges, [
+    { from: "start", to: "aktion" },
+    { from: "aktion", to: "ende", when: "pass" },
+  ]);
+  assert.deepEqual(flowOutgoing(draft, "aktion").map((entry) => entry.index), [1]);
+
+  assert.equal(flowConnect(draft, "start", "fehlt").index, -1);
+  assert.equal(flowConnect(draft, "start", "start").index, -1);
+  assert.equal(flowConnect(draft, "start", "aktion").index, 0);
+
+  draft = flowRemoveEdge(draft, 1);
+  assert.deepEqual(draft.edges, [{ from: "start", to: "aktion" }]);
+
+  draft = flowRemoveNode(draft, "aktion");
+  assert.deepEqual(draft.nodes.map((node) => node.id), ["start", "ende"]);
+  assert.deepEqual(draft.edges, []);
+
+  // Freigabetext gehört zum Knoten und darf beim Patchen nicht als
+  // Aktionsfeld aufgeräumt werden; Aktionen räumen nur ihre eigenen Felder.
+  draft = flowAddNode(draft, "approval").definition;
+  draft = flowPatchNode(draft, "freigabe", { text: "Bitte freigeben" });
+  draft = flowPatchNode(draft, "freigabe", { text: "Bitte freigeben!" });
+  assert.equal(draft.nodes.find((node) => node.id === "freigabe").text, "Bitte freigeben!");
+  const notify = flowAddNode(draft, "action").definition;
+  const switched = flowPatchNode(notify, "aktion", { action: "notify", text: "Meldung" });
+  assert.equal(switched.nodes.find((node) => node.id === "aktion").command, undefined);
+  assert.equal(switched.nodes.find((node) => node.id === "aktion").text, "Meldung");
+});
+
+test("Workflow-Prüfung: Zyklus verlangt ein Schleifenlimit", () => {
+  let draft = flowNewDefinition("schleife");
+  draft = flowAddNode(draft, "trigger").definition;
+  draft = flowAddNode(draft, "action").definition;
+  draft = flowAddNode(draft, "action").definition;
+  draft = flowAddNode(draft, "end").definition;
+  draft = flowPatchNode(draft, "aktion", { command: "echo eins" });
+  draft = flowPatchNode(draft, "aktion2", { command: "echo zwei" });
+  draft = flowConnect(draft, "start", "aktion").definition;
+  draft = flowConnect(draft, "aktion", "aktion2").definition;
+  draft = flowConnect(draft, "aktion2", "ende").definition;
+  const back = flowConnect(draft, "aktion2", "aktion");
+  draft = back.definition;
+
+  assert.equal(back.index, 3);
+  assert.equal(draft.edges[3].when, "fail");
+
+  let result = flowValidate(draft);
+  assert.equal(result.ok, false);
+  assert.equal(result.errors.some((error) => error.includes("Zyklus ohne Schleifenlimit")), true);
+
+  draft = flowPatchEdge(draft, back.index, { max_loops: "3" });
+  assert.equal(draft.edges[back.index].max_loops, 3);
+  result = flowValidate(draft);
+  assert.equal(result.errors.some((error) => error.includes("Zyklus ohne Schleifenlimit")), false);
+  assert.equal(result.ok, true);
+});
+
+test("Workflow-Prüfung: Pflichtfelder von Aktion und Bedingung", () => {
+  let draft = flowNewDefinition("pflicht");
+  draft = flowAddNode(draft, "trigger").definition;
+  draft = flowAddNode(draft, "action").definition;
+  draft = flowAddNode(draft, "condition").definition;
+  draft = flowAddNode(draft, "end").definition;
+  draft = flowConnect(draft, "start", "aktion").definition;
+  draft = flowConnect(draft, "aktion", "bedingung").definition;
+  draft = flowConnect(draft, "bedingung", "ende").definition;
+
+  const result = flowValidate(draft);
+  assert.equal(result.ok, false);
+  assert.equal(result.errors.some((error) => error.includes("braucht einen Befehl")), true);
+  assert.equal(result.errors.some((error) => error.includes("braucht einen Ausdruck")), true);
+});
+
+test("Workflow-Prüfung: Auslöser und Ende sind Pflicht", () => {
+  let missingTrigger = flowNewDefinition("ohne-ausloeser");
+  missingTrigger = flowAddNode(missingTrigger, "agent").definition;
+  missingTrigger = flowAddNode(missingTrigger, "end").definition;
+  missingTrigger = flowConnect(missingTrigger, "agent", "ende").definition;
+  let result = flowValidate(missingTrigger);
+  assert.equal(result.errors.some((error) => error.includes("Auslöser fehlt")), true);
+
+  let missingEnd = flowNewDefinition("ohne-ende");
+  missingEnd = flowAddNode(missingEnd, "trigger").definition;
+  missingEnd = flowAddNode(missingEnd, "agent").definition;
+  missingEnd = flowConnect(missingEnd, "start", "agent").definition;
+  result = flowValidate(missingEnd);
+  assert.equal(result.errors.some((error) => error.includes("Ende fehlt")), true);
+});
+
+test("Workflow-Rundreise: kanonisch serialisieren und verlustfrei laden", () => {
+  let draft = flowNewDefinition("rundreise");
+  draft = flowAddNode(draft, "trigger").definition;
+  draft = flowAddNode(draft, "agent").definition;
+  draft = flowAddNode(draft, "action").definition;
+  draft = flowAddNode(draft, "condition").definition;
+  draft = flowAddNode(draft, "end").definition;
+  draft = flowPatchNode(draft, "start", { trigger: "cron", every_minutes: "15" });
+  draft = flowPatchNode(draft, "agent", { agent: "ada", title: "Prüfen", prompt: "Bitte prüfen" });
+  draft = flowPatchNode(draft, "aktion", { command: "echo fertig" });
+  draft = flowPatchNode(draft, "bedingung", { expr: "{{agent.status}} == done" });
+  draft = flowConnect(draft, "start", "agent").definition;
+  draft = flowConnect(draft, "agent", "aktion").definition;
+  draft = flowConnect(draft, "aktion", "bedingung").definition;
+  draft = flowConnect(draft, "bedingung", "ende").definition;
+
+  assert.deepEqual(flowValidate(draft), { ok: true, errors: [] });
+  assert.equal(draft.edges.find((edge) => edge.from === "agent").when, "done");
+
+  const json = flowSerialize(draft);
+  assert.equal(json.endsWith("\n"), true);
+  const loaded = flowParse(json);
+  assert.deepEqual(loaded, flowLoad(draft));
+  assert.equal(flowSerialize(loaded), json);
+  assert.equal(flowSerialize(flowLoad(json)), json);
+
+  assert.deepEqual(Object.keys(draft), ["name", "limits", "nodes", "edges"]);
+  assert.deepEqual(Object.keys(flowNewDefinition("neu")), ["name", "limits", "nodes", "edges"]);
+  assert.equal("updated_at" in loaded, false);
+  assert.equal(loaded.name, "rundreise");
+  assert.equal(loaded.nodes[0].every_minutes, "15");
+});
+
+test("Workflow-Platzhalter: nur vorgelagerte Knoten und deren Felder", () => {
+  let draft = flowNewDefinition("platzhalter");
+  draft = flowAddNode(draft, "trigger").definition;
+  draft = flowAddNode(draft, "agent").definition;
+  draft = flowAddNode(draft, "action").definition;
+  draft = flowAddNode(draft, "condition").definition;
+  draft = flowAddNode(draft, "end").definition;
+
+  assert.deepEqual(flowPlaceholders(draft, "start"), []);
+  const actionFields = flowPlaceholders(draft, "aktion").map((item) => item.text);
+  assert.equal(actionFields.includes("{{agent.status}}"), true);
+  assert.equal(actionFields.includes("{{agent.zusammenfassung}}"), true);
+  assert.equal(actionFields.includes("{{agent.ticket}}"), true);
+  assert.equal(actionFields.includes("{{aktion.code}}"), false);
+  assert.equal(actionFields.includes("{{start.trigger}}"), false);
+
+  const conditionFields = flowPlaceholders(draft, "bedingung").map((item) => item.text);
+  assert.equal(conditionFields.includes("{{aktion.code}}"), true);
+  assert.equal(conditionFields.includes("{{aktion.ausgabe}}"), true);
+  assert.equal(conditionFields.includes("{{aktion.fehler}}"), true);
+  assert.equal(conditionFields.includes("{{agent.status}}"), true);
+
+  const all = flowPlaceholders(draft, "fehlt").map((item) => item.text);
+  assert.equal(all.includes("{{agent.status}}"), true);
+  assert.equal(all.includes("{{aktion.code}}"), true);
+  assert.equal(all.includes("{{bedingung.pass}}"), true);
+  assert.deepEqual(flowPlaceholders(draft, "aktion").filter((item) => item.node === "aktion"), []);
+});
+
+test("Workflow-Kanten: Ausgänge und Vorgaben", () => {
+  let draft = flowNewDefinition("kanten");
+  draft = flowAddNode(draft, "trigger").definition;
+  draft = flowAddNode(draft, "agent").definition;
+  draft = flowAddNode(draft, "action").definition;
+  draft = flowAddNode(draft, "condition").definition;
+  draft = flowAddNode(draft, "end").definition;
+
+  assert.deepEqual(flowEdgeWhenOptions(draft, "start"), []);
+  assert.deepEqual(flowEdgeWhenOptions(draft, "bedingung"), ["pass", "fail"]);
+  assert.deepEqual(flowEdgeWhenOptions(draft, "aktion"), ["pass", "fail"]);
+  assert.deepEqual(flowEdgeWhenOptions(draft, "agent"), ["done", "dropped"]);
+  assert.deepEqual(flowEdgeWhenOptions(draft, "ende"), []);
+  assert.deepEqual(flowEdgeWhenOptions(draft, "fehlt"), []);
+
+  draft = flowConnect(draft, "bedingung", "ende").definition;
+  draft = flowConnect(draft, "bedingung", "agent").definition;
+  draft = flowConnect(draft, "aktion", "ende").definition;
+  draft = flowConnect(draft, "aktion", "agent").definition;
+  draft = flowConnect(draft, "agent", "ende").definition;
+  draft = flowConnect(draft, "agent", "aktion").definition;
+  draft = flowConnect(draft, "start", "ende").definition;
+
+  const when = (from, to) => draft.edges.find((edge) => edge.from === from && edge.to === to)?.when;
+  assert.equal(when("bedingung", "ende"), "pass");
+  assert.equal(when("bedingung", "agent"), "fail");
+  assert.equal(when("aktion", "ende"), "pass");
+  assert.equal(when("aktion", "agent"), "fail");
+  assert.equal(when("agent", "ende"), "done");
+  assert.equal(when("agent", "aktion"), "dropped");
+  assert.equal(when("start", "ende"), undefined);
+  assert.equal("when" in draft.edges.find((edge) => edge.from === "start"), false);
+
+  draft = flowAddNode(draft, "end").definition;
+  draft = flowConnect(draft, "bedingung", "ende2").definition;
+  const third = draft.edges.find((edge) => edge.from === "bedingung" && edge.to === "ende2");
+  assert.equal("when" in third, false);
+});
+
+test("Workflow-Laden: Eingabe bleibt unverändert, unbekannte Felder bleiben", () => {
+  const input = {
+    name: "geladen",
+    repo: "herdr",
+    updated_at: 1234,
+    limits: { max_cost: 5 },
+    nodes: [
+      { id: "start", type: "trigger", trigger: "manual", template: "standard" },
+      { id: "ende", type: "end", note: "ziel" },
+    ],
+    edges: [{ from: "start", to: "ende", label: "geradeaus" }],
+  };
+  const snapshot = JSON.parse(JSON.stringify(input));
+  const loaded = flowLoad(input);
+
+  assert.deepEqual(input, snapshot);
+  assert.equal(loaded.name, "geladen");
+  assert.equal(loaded.repo, "herdr");
+  assert.equal("updated_at" in loaded, false);
+  assert.deepEqual(loaded.limits, { max_cost: 5 });
+  assert.equal(loaded.nodes[0].template, "standard");
+  assert.equal(loaded.nodes[1].note, "ziel");
+  assert.equal(loaded.edges[0].label, "geradeaus");
+
+  loaded.nodes[0].trigger = "cron";
+  assert.equal(input.nodes[0].trigger, "manual");
+
+  const fromText = flowLoad(JSON.stringify(input));
+  assert.deepEqual(fromText, flowLoad(input));
+  assert.equal("updated_at" in fromText, false);
 });

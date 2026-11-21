@@ -6,7 +6,7 @@ import { InputState, TextareaState, EditorState, ScrollHandle, VirtualListScroll
 import {
   appHome, checking, closeOverlay, exec, focused, knownAgents, layout, nextCommand, notify,
   openOverlay, pickFolder, playSound, props, readTextFile, run, setShared, shared, spaces, terminals,
-  watchFolder,
+  watchFolder, writeTextFile,
 } from "herdr";
 import * as ui from "./ui.js";
 import * as model from "./model.js";
@@ -183,6 +183,10 @@ export default class Fabric extends View {
     this.flowRunsError = null;
     this.flowAt = 0;
     this.flowRunsAt = 0;
+    this.flowMode = null;
+    this.flowBuilder = null;
+    this.flowBuilderDrag = null;
+    this.flowPendingName = null;
     this.version = null;
     this.versionError = null;
     this.programs = null;
@@ -1160,11 +1164,11 @@ export default class Fabric extends View {
         cx.spawn(async (cx) => {
           if (flowsStale) await this.loadFlows(cx);
           if (runsStale) await this.loadFlowRuns(cx);
-          this.syncFlowSelection(this.currentRoute());
+          this.syncFlowSelection(this.currentRoute(), cx);
           cx.notify();
         });
       } else {
-        this.syncFlowSelection(route);
+        this.syncFlowSelection(route, cx);
       }
     } else if (route.page === "settings") {
       if (!this.version) cx.spawn((cx) => this.loadVersion(cx));
@@ -1702,7 +1706,8 @@ export default class Fabric extends View {
   }
 
   /** Auswahl aus Route und Bestand zusammenführen: Route gewinnt, sonst bleibt die Wahl. */
-  syncFlowSelection(route = this.currentRoute()) {
+  syncFlowSelection(route = this.currentRoute(), cx = null) {
+    const previousName = this.flowName;
     const flows = this.flows ?? [];
     let name = this.flowName;
     if (route.name && flows.some((flow) => flow.name === route.name)) name = route.name;
@@ -1720,13 +1725,23 @@ export default class Fabric extends View {
     if (name !== this.flowName || runId !== this.flowRunId) this.flowNode = null;
     this.flowName = name;
     this.flowRunId = runId;
+    const mode = route.mode === "builder" || route.mode === "run" ? route.mode : null;
+    if (mode) this.flowMode = mode;
+    else if (previousName !== name || this.flowMode == null) {
+      this.flowMode = runs.length ? "run" : "builder";
+    }
+    if (this.flowMode === "builder") {
+      this.ensureFlowBuilder(name, cx);
+    } else if (this.flowBuilder && !this.flowBuilder.dirty && this.flowBuilder.original !== name) {
+      this.flowBuilder = null;
+    }
   }
 
   /** Beide Listen neu holen und die Auswahl an Route/Bestand angleichen. */
   async reloadFlows(cx) {
     await this.loadFlows(cx);
     await this.loadFlowRuns(cx);
-    this.syncFlowSelection(this.currentRoute());
+    this.syncFlowSelection(this.currentRoute(), cx);
     this.notifyNow();
   }
 
@@ -1737,19 +1752,34 @@ export default class Fabric extends View {
   }
 
   selectFlow(name, cx) {
-    if (!name || name === this.flowName) return;
+    if (!name) return;
+    if (name === this.flowName && !this.flowBuilder?.fresh) return;
+    if (this.flowBuilder?.dirty) {
+      this.flowPendingName = name;
+      this.flash = {
+        level: "warn",
+        text: `Builder hat ungespeicherte Änderungen… „Verwerfen“ verwirft sie und wechselt zu „${name}“.`,
+      };
+      this.notifyNow();
+      return;
+    }
+    this.flowPendingName = null;
+    this.flowBuilder = null;
+    this.flowBuilderDrag = null;
     this.flowName = name;
     this.flowNode = null;
     const runs = (this.flowRuns ?? []).filter((run) => run.workflow === name);
     this.flowRunId = runs[0]?.id ?? null;
-    const route = { page: "workflows", name };
-    if (this.flowRunId != null) route.run = this.flowRunId;
+    this.flowMode = runs.length ? "run" : "builder";
+    if (this.flowMode === "builder") this.openFlowBuilder(name, cx);
+    const route = { page: "workflows", name, mode: this.flowMode };
+    if (this.flowMode === "run" && this.flowRunId != null) route.run = this.flowRunId;
     setShared("fabric.route", route);
     this.notifyNow();
     if (!this.flowRuns || Date.now() - this.flowRunsAt > 15000) {
       cx?.spawn?.(async (cx) => {
         await this.loadFlowRuns(cx);
-        this.syncFlowSelection(this.currentRoute());
+        this.syncFlowSelection(this.currentRoute(), cx);
         cx.notify();
       });
     }
@@ -1760,10 +1790,470 @@ export default class Fabric extends View {
     if (!Number.isFinite(runId)) return;
     this.flowRunId = runId;
     this.flowNode = null;
-    const route = { page: "workflows", run: runId };
+    this.flowMode = "run";
+    const route = { page: "workflows", run: runId, mode: "run" };
     if (this.flowName) route.name = this.flowName;
     setShared("fabric.route", route);
     this.notifyNow();
+  }
+
+  // ---------- Workflow-Builder ----------
+
+  setFlowMode(mode, cx) {
+    if (mode !== "run" && mode !== "builder") return;
+    this.flowMode = mode;
+    if (mode === "builder") this.ensureFlowBuilder(this.flowName, cx);
+    const route = { page: "workflows", mode };
+    if (this.flowName) route.name = this.flowName;
+    if (mode === "run" && this.flowRunId != null) route.run = this.flowRunId;
+    setShared("fabric.route", route);
+    this.notifyNow();
+  }
+
+  ensureFlowBuilder(name, cx) {
+    const builder = this.flowBuilder;
+    if (builder) {
+      if (builder.dirty) return builder;
+      if (builder.fresh) return builder;
+      if (builder.original === name) return builder;
+    }
+    this.openFlowBuilder(name, cx);
+    return this.flowBuilder;
+  }
+
+  flowNewName() {
+    const names = new Set((this.flows ?? []).map((flow) => flow.name));
+    let name = "neuer-workflow";
+    let suffix = 2;
+    while (names.has(name)) {
+      name = `neuer-workflow-${suffix}`;
+      suffix += 1;
+    }
+    return name;
+  }
+
+  /** Ein neuer Entwurf bekommt sofort Auslöser und Ende, damit er lauffähig ist. */
+  flowBuilderStarter(draft) {
+    if (Array.isArray(draft.nodes) && draft.nodes.length) return draft;
+    let next = draft;
+    const trigger = model.flowAddNode(next, "trigger");
+    next = trigger.definition;
+    const end = model.flowAddNode(next, "end");
+    next = end.definition;
+    if (trigger.id && end.id) next = model.flowConnect(next, trigger.id, end.id).definition;
+    return next;
+  }
+
+  openFlowBuilder(name, cx) {
+    const flow = name ? (this.flows ?? []).find((row) => row.name === name) ?? null : null;
+    let draft = flow ? model.flowLoad(flow) : model.flowNewDefinition(name ?? this.flowNewName());
+    if (!flow) draft = this.flowBuilderStarter(draft);
+    const builder = {
+      original: flow ? flow.name : null,
+      fresh: !flow,
+      draft,
+      saved: model.flowSerialize(draft),
+      selected: null,
+      connectFrom: null,
+      form: null,
+      focusField: null,
+      errors: [],
+      dirty: false,
+      saving: false,
+      dropdown: null,
+      placeholderHint: false,
+    };
+    this.flowBuilder = builder;
+    builder.errors = model.flowValidate(draft).errors ?? [];
+    // Ein neuer Entwurf startet mit dem Namen; bestehende zeigen den ersten
+    // Agentenschritt, damit Prompt und Platzhalter sofort sichtbar sind.
+    if (flow) {
+      const first = (draft.nodes ?? []).find((node) => node.type === "agent")
+        ?? (draft.nodes ?? [])[0] ?? null;
+      if (first) builder.selected = { kind: "node", id: first.id };
+    }
+    this.flowBuilderBuildForm(cx);
+    this.notifyNow();
+  }
+
+  newFlowBuilder(cx) {
+    this.flowMode = "builder";
+    this.flowBuilderDrag = null;
+    this.flowBuilder = null;
+    this.openFlowBuilder(null, cx);
+    const route = { page: "workflows", mode: "builder" };
+    if (this.flowName) route.name = this.flowName;
+    setShared("fabric.route", route);
+    this.notifyNow();
+  }
+
+  flowBuilderRefresh(cx) {
+    const builder = this.flowBuilder;
+    if (!builder) return;
+    builder.errors = model.flowValidate(builder.draft).errors ?? [];
+    builder.dirty = model.flowSerialize(builder.draft) !== builder.saved;
+    if (cx) cx.notify();
+    else this.notifyNow();
+  }
+
+  flowBuilderBuildForm(cx) {
+    const builder = this.flowBuilder;
+    if (!builder) return;
+    const fields = {};
+    const multiline = new Set(["prompt", "command", "text", "expr"]);
+    const add = (name, value, options = {}) => {
+      const state = multiline.has(name)
+        ? TextareaState.new({
+          value: value == null ? "" : String(value),
+          placeholder: options.placeholder ?? "",
+        })
+        : InputState.new({
+          value: value == null ? "" : String(value),
+          placeholder: options.placeholder ?? "",
+        });
+      if (options.step != null && state.set_step) state.set_step(options.step);
+      if (options.min != null && state.set_min) state.set_min(options.min);
+      state.on("change", (_event, cx) => {
+        builder.focusField = name;
+        this.flowBuilderField(name, state.value(), cx);
+      });
+      state.on("focus", (_event, cx) => {
+        builder.focusField = name;
+        this.fieldFocused = true;
+        cx.notify();
+      });
+      this.track(state);
+      fields[name] = state;
+    };
+    const selected = builder.selected;
+    if (selected?.kind === "node") {
+      const node = (builder.draft.nodes ?? []).find((row) => row.id === selected.id) ?? null;
+      if (node) {
+        if (node.type === "trigger") {
+          add("every_minutes", node.every_minutes ?? 60, {
+            step: 1, min: 1, placeholder: "z. B. 60",
+          });
+        } else if (node.type === "agent") {
+          add("agent", node.agent, { placeholder: "Team oder Agent" });
+          add("title", node.title, { placeholder: "Titel des Tickets" });
+          add("prompt", node.prompt, { placeholder: "Prompt für den Agenten" });
+          add("template", node.template, { placeholder: "Vorlage (optional)" });
+        } else if (node.type === "action") {
+          add("command", node.command, { placeholder: "Befehl" });
+          add("text", node.text, { placeholder: "Text der Benachrichtigung" });
+        } else if (node.type === "condition") {
+          add("expr", node.expr, { placeholder: "{{abnahme.status}} == done" });
+        } else if (node.type === "approval") {
+          add("text", node.text, { placeholder: "Freigabetext" });
+        }
+      }
+    } else if (selected?.kind === "edge") {
+      const edge = (builder.draft.edges ?? [])[selected.index] ?? null;
+      if (edge) add("max_loops", edge.max_loops, { placeholder: "kein Limit" });
+    } else if (builder.fresh) {
+      add("name", builder.draft.name, { placeholder: "Workflow-Name" });
+    }
+    builder.form = {
+      key: selected?.kind === "node"
+        ? `node:${selected.id}`
+        : selected?.kind === "edge" ? `edge:${selected.index}` : "flow",
+      fields,
+    };
+    builder.focusField = null;
+    builder.placeholderHint = false;
+    if (cx) cx.notify();
+  }
+
+  flowBuilderSelectNode(id, cx) {
+    const builder = this.flowBuilder;
+    if (!builder || !id) return;
+    builder.selected = { kind: "node", id };
+    builder.connectFrom = null;
+    builder.dropdown = null;
+    this.flowBuilderBuildForm(cx);
+    this.flowBuilderRefresh(cx);
+  }
+
+  flowBuilderSelectEdge(index, cx) {
+    const builder = this.flowBuilder;
+    if (!builder) return;
+    const position = Number(index);
+    if (!Number.isFinite(position)) return;
+    builder.selected = { kind: "edge", index: position };
+    builder.connectFrom = null;
+    builder.dropdown = null;
+    this.flowBuilderBuildForm(cx);
+    this.flowBuilderRefresh(cx);
+  }
+
+  flowBuilderSelectClear(cx) {
+    const builder = this.flowBuilder;
+    if (!builder) return;
+    builder.selected = null;
+    builder.connectFrom = null;
+    builder.dropdown = null;
+    this.flowBuilderBuildForm(cx);
+    this.flowBuilderRefresh(cx);
+  }
+
+  flowBuilderPlace(type, cx) {
+    const builder = this.flowBuilder;
+    if (!builder || !type) return;
+    const result = model.flowAddNode(builder.draft, type);
+    builder.draft = result.definition;
+    builder.selected = result.id ? { kind: "node", id: result.id } : null;
+    this.flowBuilderDrag = null;
+    this.flowBuilderBuildForm(cx);
+    this.flowBuilderRefresh(cx);
+  }
+
+  flowBuilderDrop(cx) {
+    const type = this.flowBuilderDrag;
+    if (!type) return;
+    this.flowBuilderDrag = null;
+    this.flowBuilderPlace(type, cx);
+  }
+
+  flowBuilderStartConnect(id, cx) {
+    const builder = this.flowBuilder;
+    if (!builder) return;
+    builder.connectFrom = builder.connectFrom === id ? null : id;
+    this.notifyNow();
+  }
+
+  flowBuilderClickNode(id, cx) {
+    const builder = this.flowBuilder;
+    if (!builder || !id) return;
+    if (builder.connectFrom && builder.connectFrom !== id) {
+      const result = model.flowConnect(builder.draft, builder.connectFrom, id);
+      builder.draft = result.definition;
+      builder.selected = { kind: "edge", index: result.index };
+      builder.connectFrom = null;
+      builder.dropdown = null;
+      this.flowBuilderBuildForm(cx);
+      this.flowBuilderRefresh(cx);
+      return;
+    }
+    builder.connectFrom = null;
+    this.flowBuilderSelectNode(id, cx);
+  }
+
+  flowBuilderPatchNode(patch, cx) {
+    const builder = this.flowBuilder;
+    if (!builder || builder.selected?.kind !== "node") return;
+    builder.draft = model.flowPatchNode(builder.draft, builder.selected.id, patch);
+    this.flowBuilderRefresh(cx);
+  }
+
+  flowBuilderField(name, value, cx) {
+    const builder = this.flowBuilder;
+    if (!builder) return;
+    const selected = builder.selected;
+    if (selected?.kind === "node") {
+      let next = value;
+      if (name === "every_minutes") {
+        const raw = String(value).trim();
+        const number = Number(raw);
+        next = raw === "" ? null : Number.isFinite(number) ? number : raw;
+      }
+      this.flowBuilderPatchNode({ [name]: next }, cx);
+      return;
+    }
+    if (selected?.kind === "edge") {
+      let next = value;
+      if (name === "max_loops") {
+        const raw = String(value).trim();
+        const number = Number(raw);
+        next = raw === "" ? null : Number.isFinite(number) ? number : raw;
+      }
+      builder.draft = model.flowPatchEdge(builder.draft, selected.index, { [name]: next });
+      this.flowBuilderRefresh(cx);
+      return;
+    }
+    builder.draft = { ...builder.draft, name: String(value) };
+    this.flowBuilderRefresh(cx);
+  }
+
+  flowBuilderSetTrigger(value, cx) {
+    const builder = this.flowBuilder;
+    if (!builder || builder.selected?.kind !== "node") return;
+    builder.dropdown = null;
+    const node = (builder.draft.nodes ?? []).find((row) => row.id === builder.selected.id);
+    const patch = { trigger: value };
+    if (value === "cron" && node && node.every_minutes == null) {
+      const state = builder.form?.fields?.every_minutes;
+      const number = Number(state?.value?.() ?? "");
+      patch.every_minutes = Number.isFinite(number) && number > 0 ? number : 60;
+    }
+    this.flowBuilderPatchNode(patch, cx);
+  }
+
+  flowBuilderSetAction(value, cx) {
+    const builder = this.flowBuilder;
+    if (!builder || builder.selected?.kind !== "node") return;
+    builder.dropdown = null;
+    const patch = { action: value };
+    if (value === "shell" || value === "fab") {
+      const state = builder.form?.fields?.command;
+      const text = String(state?.value?.() ?? "");
+      if (text.trim()) patch.command = text;
+    } else if (value === "notify") {
+      const state = builder.form?.fields?.text;
+      const text = String(state?.value?.() ?? "");
+      if (text.trim()) patch.text = text;
+    }
+    this.flowBuilderPatchNode(patch, cx);
+  }
+
+  flowBuilderSetEdgeWhen(value, cx) {
+    const builder = this.flowBuilder;
+    if (!builder || builder.selected?.kind !== "edge") return;
+    builder.dropdown = null;
+    builder.draft = model.flowPatchEdge(builder.draft, builder.selected.index, {
+      when: value ? value : null,
+    });
+    this.flowBuilderRefresh(cx);
+  }
+
+  flowBuilderSetEdgeLoops(value, cx) {
+    const builder = this.flowBuilder;
+    if (!builder || builder.selected?.kind !== "edge") return;
+    const raw = String(value ?? "").trim();
+    const number = Number(raw);
+    builder.draft = model.flowPatchEdge(builder.draft, builder.selected.index, {
+      max_loops: raw === "" ? null : Number.isFinite(number) ? number : raw,
+    });
+    this.flowBuilderRefresh(cx);
+  }
+
+  flowBuilderDeleteNode(cx) {
+    const builder = this.flowBuilder;
+    if (!builder || builder.selected?.kind !== "node") return;
+    builder.draft = model.flowRemoveNode(builder.draft, builder.selected.id);
+    builder.selected = null;
+    builder.connectFrom = null;
+    builder.dropdown = null;
+    this.flowBuilderBuildForm(cx);
+    this.flowBuilderRefresh(cx);
+  }
+
+  flowBuilderDeleteEdge(index, cx) {
+    const builder = this.flowBuilder;
+    if (!builder) return;
+    const position = Number(index);
+    if (!Number.isFinite(position)) return;
+    builder.draft = model.flowRemoveEdge(builder.draft, position);
+    if (builder.selected?.kind === "edge") builder.selected = null;
+    builder.dropdown = null;
+    this.flowBuilderBuildForm(cx);
+    this.flowBuilderRefresh(cx);
+  }
+
+  flowBuilderInsertPlaceholder(text, cx) {
+    const builder = this.flowBuilder;
+    if (!builder) return;
+    const field = builder.focusField;
+    const state = field ? builder.form?.fields?.[field] : null;
+    if (!state) {
+      builder.placeholderHint = true;
+      this.notifyNow();
+      return;
+    }
+    builder.placeholderHint = false;
+    state.replace(text);
+    this.flowBuilderField(field, state.value(), cx);
+  }
+
+  flowBuilderDiscard(cx) {
+    const builder = this.flowBuilder;
+    if (!builder) return;
+    this.flowPendingName = null;
+    this.flash = null;
+    if (builder.original) {
+      const flow = (this.flows ?? []).find((row) => row.name === builder.original);
+      if (flow) {
+        this.openFlowBuilder(flow.name, cx);
+        return;
+      }
+    }
+    this.flowBuilder = null;
+    this.flowBuilderDrag = null;
+    this.flowMode = (this.flowRuns ?? []).some((run) => run.workflow === this.flowName)
+      ? "run" : "builder";
+    if (this.flowMode === "builder") this.ensureFlowBuilder(this.flowName, cx);
+    this.notifyNow();
+  }
+
+  flowBuilderDiscardPending(cx) {
+    const name = this.flowPendingName;
+    this.flowPendingName = null;
+    this.flash = null;
+    this.flowBuilder = null;
+    this.flowBuilderDrag = null;
+    if (name) this.selectFlow(name, cx);
+    else this.notifyNow();
+  }
+
+  async saveFlowBuilder(cx) {
+    const builder = this.flowBuilder;
+    if (!builder || builder.saving || this.busy) return false;
+    const name = String(builder.draft?.name ?? "").trim();
+    const errors = [...(model.flowValidate(builder.draft).errors ?? [])];
+    if (!name) errors.push("Workflow braucht einen Namen.");
+    if (builder.fresh && name
+      && (this.flows ?? []).some((flow) => flow.name === name)) {
+      errors.push(`Workflow „${name}“ existiert bereits.`);
+    }
+    if (errors.length) {
+      builder.errors = errors;
+      builder.dirty = model.flowSerialize(builder.draft) !== builder.saved;
+      this.notifyNow();
+      return false;
+    }
+    builder.saving = true;
+    this.setError("flow-save", null);
+    this.notifyNow();
+    const temp = `${this.dir}/.tmp/workflow-${Date.now()}.json`;
+    const draft = { ...builder.draft, name };
+    try {
+      try {
+        await exec("/bin/mkdir", ["-p", `${this.dir}/.tmp`]);
+      } catch {
+        // mkdir darf scheitern; writeTextFile meldet den eigentlichen Fehler.
+      }
+      await writeTextFile(temp, model.flowSerialize(draft), null);
+      const args = builder.original
+        ? ["flow", "edit", builder.original, temp, "--from=mensch"]
+        : ["flow", "add", temp, "--from=mensch"];
+      const result = await this.action("flow-save", args, {
+        success: `Workflow „${name}“ gespeichert.`,
+        after: async () => { await this.loadFlows(cx); },
+      });
+      if (!result.ok) return false;
+      builder.original = name;
+      builder.fresh = false;
+      builder.draft = model.flowLoad(model.flowSerialize(draft));
+      builder.saved = model.flowSerialize(builder.draft);
+      builder.dirty = false;
+      this.flowName = name;
+      this.flowMode = "builder";
+      this.flowPendingName = null;
+      this.flash = null;
+      this.flowBuilderRefresh(cx);
+      setShared("fabric.route", { page: "workflows", name, mode: "builder" });
+      this.notifyNow();
+      return true;
+    } catch (error) {
+      const text = message(error);
+      this.setError("flow-save", text);
+      notify({ title: "Fabric", body: text, level: "error" });
+      this.notifyNow();
+      return false;
+    } finally {
+      try { await exec("/bin/rm", ["-f", temp]); } catch { /* egal */ }
+      builder.saving = false;
+      this.notifyNow();
+    }
   }
 
   pauseFlowRun(cx) {

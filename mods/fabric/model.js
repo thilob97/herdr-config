@@ -2068,16 +2068,17 @@ export function flowLayout(definition, options = {}) {
 
   const geometry = new Map(nodes.map((node) => [node.id, node]));
   const edges = [];
-  for (const edge of sourceEdges) {
+  sourceEdges.forEach((edge, index) => {
     const from = geometry.get(edge.from);
     const to = geometry.get(edge.to);
-    if (!from || !to) continue;
+    if (!from || !to) return;
     const x1 = vertical ? from.x + from.w / 2 : from.x + from.w;
     const y1 = vertical ? from.y + from.h : from.y + from.h / 2;
     const x2 = vertical ? to.x + to.w / 2 : to.x;
     const y2 = vertical ? to.y : to.y + to.h / 2;
     const back = vertical ? to.y <= from.y : to.x <= from.x;
     edges.push({
+      index,
       from: edge.from,
       to: edge.to,
       when: edge.when ?? null,
@@ -2089,7 +2090,7 @@ export function flowLayout(definition, options = {}) {
       back,
       vertical,
     });
-  }
+  });
 
   const right = nodes.reduce((max, node) => Math.max(max, node.x + node.w), 0);
   const bottom = nodes.reduce((max, node) => Math.max(max, node.y + node.h), 0);
@@ -2120,4 +2121,445 @@ export function flowNodeReason(step) {
 export function flowNodeTicket(step) {
   const ticket = step?.data?.ticket;
   return ticket === undefined || ticket === null || ticket === "" ? null : String(ticket);
+}
+
+// ---------- Workflows: Definitionen, Builder und Prüfung ----------
+
+// Dieselben Werte und Meldungen wie `fabric/fablib/flows.py`, damit der
+// Builder nichts baut, was `fab flow add` ablehnt.
+export const FLOW_NODE_TYPES = ["trigger", "agent", "action", "condition", "approval", "end"];
+export const FLOW_TRIGGER_TYPES = ["manual", "cron", "ticket_done", "github_issue", "main_red"];
+export const FLOW_ACTION_TYPES = ["shell", "fab", "notify"];
+
+/** Tiefe Kopie reiner JSON-Werte; Reihenfolge der Felder bleibt erhalten. */
+function flowCopy(value) {
+  if (Array.isArray(value)) return value.map(flowCopy);
+  if (value && typeof value === "object") {
+    const copy = {};
+    for (const key of Object.keys(value)) copy[key] = flowCopy(value[key]);
+    return copy;
+  }
+  return value;
+}
+
+/** Definition aus Objekt oder JSON-Text als tiefe Kopie. `updated_at` ist
+ *  Listen-Metadaten und fällt weg; unbekannte Felder bleiben erhalten. */
+export function flowLoad(value) {
+  const parsed = typeof value === "string" ? JSON.parse(value) : value;
+  const copy = flowCopy(parsed);
+  const result = { name: "" };
+  if (copy && typeof copy === "object" && !Array.isArray(copy)) {
+    result.name = copy.name === undefined || copy.name === null ? "" : String(copy.name);
+    for (const key of Object.keys(copy)) {
+      if (key === "name" || key === "updated_at" || key === "limits" || key === "nodes" || key === "edges") continue;
+      result[key] = copy[key];
+    }
+    result.limits = copy.limits && typeof copy.limits === "object" && !Array.isArray(copy.limits) ? copy.limits : {};
+    result.nodes = Array.isArray(copy.nodes) ? copy.nodes : [];
+    result.edges = Array.isArray(copy.edges) ? copy.edges : [];
+  } else {
+    result.limits = {};
+    result.nodes = [];
+    result.edges = [];
+  }
+  return result;
+}
+
+/** Neue, leere Definition. */
+export function flowNewDefinition(name = "neuer-workflow") {
+  return { name: String(name ?? ""), limits: {}, nodes: [], edges: [] };
+}
+
+/** Kanonisches JSON: name, übrige Felder, limits, nodes, edges. */
+export function flowSerialize(definition) {
+  const source = flowLoad(definition);
+  const ordered = { name: source.name };
+  for (const key of Object.keys(source)) {
+    if (key === "name" || key === "limits" || key === "nodes" || key === "edges") continue;
+    ordered[key] = source[key];
+  }
+  ordered.limits = source.limits;
+  ordered.nodes = source.nodes;
+  ordered.edges = source.edges;
+  return `${JSON.stringify(ordered, null, 2)}\n`;
+}
+
+/** Definition aus gespeichertem JSON-Text; ungültiges JSON wirft. */
+export function flowParse(text) {
+  return flowLoad(JSON.parse(text));
+}
+
+/** Startwerte eines neuen Knotens; `id` und `type` stehen immer vorn. */
+export function flowNodeTemplate(type, id) {
+  const node = { id, type };
+  if (type === "trigger") {
+    node.trigger = "manual";
+  } else if (type === "agent") {
+    node.agent = "";
+    node.title = "";
+    node.prompt = "";
+  } else if (type === "action") {
+    node.action = "shell";
+    node.command = "";
+  } else if (type === "condition") {
+    node.expr = "";
+  } else if (type === "approval") {
+    node.text = "";
+  }
+  return node;
+}
+
+const FLOW_ID_BASES = {
+  trigger: "start",
+  agent: "agent",
+  action: "aktion",
+  condition: "bedingung",
+  approval: "freigabe",
+  end: "ende",
+};
+
+/** Freie Knoten-ID: Grundname, danach 2, 3, … */
+export function flowNodeId(definition, type) {
+  const base = FLOW_ID_BASES[type] ?? (type ? String(type) : "knoten");
+  const nodes = Array.isArray(definition?.nodes) ? definition.nodes : [];
+  const taken = new Set(nodes.map((node) => String(node?.id ?? "")));
+  if (!taken.has(base)) return base;
+  let suffix = 2;
+  while (taken.has(`${base}${suffix}`)) suffix += 1;
+  return `${base}${suffix}`;
+}
+
+/** Knoten anhängen; liefert neue Definition und vergebene ID. */
+export function flowAddNode(definition, type) {
+  const copy = flowLoad(definition);
+  const id = flowNodeId(copy, type);
+  copy.nodes.push(flowNodeTemplate(type, id));
+  return { definition: copy, id };
+}
+
+/** Knoten und alle Kanten darauf entfernen. */
+export function flowRemoveNode(definition, id) {
+  const copy = flowLoad(definition);
+  const target = String(id ?? "");
+  copy.nodes = copy.nodes.filter((node) => String(node?.id ?? "") !== target);
+  copy.edges = copy.edges.filter(
+    (edge) => String(edge?.from ?? "") !== target && String(edge?.to ?? "") !== target,
+  );
+  return copy;
+}
+
+/** Knoten zusammenführen; abhängige Felder werden mit aufgeräumt. */
+export function flowPatchNode(definition, id, patch) {
+  const copy = flowLoad(definition);
+  const target = String(id ?? "");
+  const node = copy.nodes.find((entry) => String(entry?.id ?? "") === target);
+  if (!node) return copy;
+  const values = patch && typeof patch === "object" && !Array.isArray(patch) ? patch : {};
+  Object.assign(node, values);
+  for (const key of Object.keys(node)) {
+    if (node[key] === undefined) delete node[key];
+  }
+  if (node.type === "trigger" && node.trigger !== "cron") delete node.every_minutes;
+  if (node.type === "action" && node.action !== "shell" && node.action !== "fab") {
+    delete node.command;
+  }
+  if (node.type === "action" && node.action !== "notify") delete node.text;
+  return copy;
+}
+
+/** Kante anhängen und passenden Ausgang setzen. */
+export function flowConnect(definition, from, to) {
+  const copy = flowLoad(definition);
+  const fromId = String(from ?? "");
+  const toId = String(to ?? "");
+  const ids = new Set(copy.nodes.map((node) => String(node?.id ?? "")));
+  if (!ids.has(fromId) || !ids.has(toId) || fromId === toId) {
+    return { definition: copy, index: -1 };
+  }
+  const existing = copy.edges.findIndex(
+    (edge) => String(edge?.from ?? "") === fromId && String(edge?.to ?? "") === toId,
+  );
+  if (existing !== -1) return { definition: copy, index: existing };
+
+  const source = copy.nodes.find((node) => String(node?.id ?? "") === fromId);
+  const used = new Set(
+    copy.edges
+      .filter((edge) => String(edge?.from ?? "") === fromId)
+      .map((edge) => String(edge?.when ?? "")),
+  );
+  let when = "";
+  if (source?.type === "condition" || source?.type === "action") {
+    if (!used.has("pass")) when = "pass";
+    else if (!used.has("fail")) when = "fail";
+  } else if (source?.type === "agent") {
+    if (!used.has("done")) when = "done";
+    else if (!used.has("dropped")) when = "dropped";
+  }
+
+  const edge = { from: fromId, to: toId };
+  if (when) edge.when = when;
+  const index = copy.edges.length;
+  copy.edges.push(edge);
+  return { definition: copy, index };
+}
+
+/** Kante an einer Position entfernen. */
+export function flowRemoveEdge(definition, index) {
+  const copy = flowLoad(definition);
+  const position = Number(index);
+  if (Number.isInteger(position) && position >= 0 && position < copy.edges.length) {
+    copy.edges.splice(position, 1);
+  }
+  return copy;
+}
+
+/** Kante zusammenführen und `max_loops`/`when` normalisieren. */
+export function flowPatchEdge(definition, index, patch) {
+  const copy = flowLoad(definition);
+  const position = Number(index);
+  const edge = copy.edges[position];
+  if (!edge || typeof edge !== "object" || Array.isArray(edge)) return copy;
+  if (patch && typeof patch === "object" && !Array.isArray(patch)) Object.assign(edge, patch);
+
+  if ("max_loops" in edge) {
+    const value = edge.max_loops;
+    if (value === "" || value === null || value === undefined) {
+      delete edge.max_loops;
+    } else if (typeof value === "number" && Number.isFinite(value)) {
+      edge.max_loops = value;
+    } else if (typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value))) {
+      edge.max_loops = Number(value);
+    }
+  }
+  if ("when" in edge) {
+    const value = edge.when;
+    if (value === "" || value === null || value === undefined) delete edge.when;
+    else edge.when = String(value);
+  }
+  return copy;
+}
+
+/** Alle Kanten ab einem Knoten in Definitionsreihenfolge. */
+export function flowOutgoing(definition, id) {
+  const target = String(id ?? "");
+  const edges = Array.isArray(definition?.edges) ? definition.edges : [];
+  const result = [];
+  edges.forEach((edge, index) => {
+    if (String(edge?.from ?? "") === target) result.push({ index, edge });
+  });
+  return result;
+}
+
+/** Mögliche Ausgänge einer Kante ab diesem Knoten. */
+export function flowEdgeWhenOptions(definition, fromId) {
+  const target = String(fromId ?? "");
+  const nodes = Array.isArray(definition?.nodes) ? definition.nodes : [];
+  const node = nodes.find((entry) => String(entry?.id ?? "") === target);
+  if (node?.type === "condition" || node?.type === "action") return ["pass", "fail"];
+  if (node?.type === "agent") return ["done", "dropped"];
+  return [];
+}
+
+const FLOW_PLACEHOLDER_FIELDS = {
+  agent: ["status", "zusammenfassung", "dateien", "branch", "pr", "anhaenge", "ticket"],
+  action: ["code", "ausgabe", "fehler"],
+  condition: ["pass"],
+};
+
+/** Platzhalter `{{knoten.feld}}` aus den Knoten vor dieser Position. */
+export function flowPlaceholders(definition, nodeId) {
+  const nodes = Array.isArray(definition?.nodes) ? definition.nodes : [];
+  const target = nodeId === undefined || nodeId === null || nodeId === "" ? null : String(nodeId);
+  let limit = nodes.length;
+  if (target !== null) {
+    const position = nodes.findIndex((node) => String(node?.id ?? "") === target);
+    if (position !== -1) limit = position;
+  }
+  const result = [];
+  for (let index = 0; index < limit; index += 1) {
+    const node = nodes[index];
+    if (!node || (target !== null && String(node.id ?? "") === target)) continue;
+    const id = String(node.id ?? "");
+    if (!id) continue;
+    for (const field of FLOW_PLACEHOLDER_FIELDS[node.type] ?? []) {
+      result.push({ text: `{{${id}.${field}}}`, node: id, field });
+    }
+  }
+  return result;
+}
+
+/** Ganzzahl wie Pythons `int()`; `null`, wenn der Wert nicht passt. */
+function flowIntValue(value) {
+  if (typeof value === "number") return Number.isFinite(value) ? Math.trunc(value) : null;
+  if (typeof value === "boolean") return value ? 1 : 0;
+  if (typeof value === "string") {
+    const text = value.trim();
+    return /^[+-]?\d+$/.test(text) ? Number(text) : null;
+  }
+  return null;
+}
+
+/** Einfache Zyklen als Listen von Kantenindizes; keine Drehungs-Dubletten. */
+function flowCycles(edges) {
+  const adjacency = new Map();
+  edges.forEach((edge, index) => {
+    if (!adjacency.has(edge.from)) adjacency.set(edge.from, []);
+    adjacency.get(edge.from).push(index);
+  });
+  const found = [];
+  const seen = new Set();
+
+  const walk = (start, node, pathNodes, pathEdges) => {
+    for (const index of adjacency.get(node) ?? []) {
+      const next = edges[index].to;
+      if (next === start) {
+        const key = [...pathEdges, index].sort((left, right) => left - right).join(",");
+        if (!seen.has(key)) {
+          seen.add(key);
+          found.push([...pathEdges, index]);
+        }
+      } else if (!pathNodes.has(next)) {
+        const nextNodes = new Set(pathNodes);
+        nextNodes.add(next);
+        walk(start, next, nextNodes, [...pathEdges, index]);
+      }
+    }
+  };
+
+  for (const node of adjacency.keys()) walk(node, node, new Set([node]), []);
+  return found;
+}
+
+/** Prüft eine Definition wie `fab flow add`; sammelt alle Fehler. */
+export function flowValidate(definition) {
+  if (!definition || typeof definition !== "object" || Array.isArray(definition)) {
+    return { ok: false, errors: ["Workflow-Definition ist kein JSON-Objekt"] };
+  }
+  const name = String(definition.name || "").trim();
+  if (!name) return { ok: false, errors: ["Workflow braucht einen Namen"] };
+
+  const prefix = `${name}: `;
+  const errors = [];
+  const rawNodes = definition.nodes;
+  const rawEdges = definition.edges;
+  const nodesValid = Array.isArray(rawNodes) && rawNodes.length > 0;
+
+  if (!nodesValid) errors.push(`${prefix}Knoten fehlen`);
+  if (!Array.isArray(rawEdges)) errors.push(`${prefix}Kanten fehlen`);
+
+  const byId = new Map();
+  const nodes = [];
+  if (nodesValid) {
+    for (const raw of rawNodes) {
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+        errors.push(`${prefix}Knoten ist kein JSON-Objekt`);
+        continue;
+      }
+      const id = String(raw.id || "").trim();
+      if (!id) {
+        errors.push(`${prefix}Knoten ohne ID`);
+        continue;
+      }
+      if (byId.has(id)) {
+        errors.push(`${prefix}Knoten ${id} doppelt`);
+        continue;
+      }
+      const kind = String(raw.type || "").trim();
+      byId.set(id, { id, type: kind });
+      nodes.push({ id, type: kind });
+      if (!FLOW_NODE_TYPES.includes(kind)) {
+        errors.push(`${prefix}Knoten ${id} hat unbekannten Typ ${kind || "—"}`);
+        continue;
+      }
+      if (kind === "trigger") {
+        const trigger = String(raw.trigger || "").trim();
+        if (!FLOW_TRIGGER_TYPES.includes(trigger)) {
+          errors.push(`${prefix}Knoten ${id} hat unbekannten Auslöser ${trigger || "—"}`);
+        }
+        if (trigger === "cron") {
+          let every = flowIntValue(raw.every_minutes);
+          if (every === null) every = 0;
+          if (every <= 0) errors.push(`${prefix}cron-Auslöser ${id} braucht every_minutes > 0`);
+        }
+      } else if (kind === "action") {
+        const action = String(raw.action || "").trim();
+        if (!FLOW_ACTION_TYPES.includes(action)) {
+          errors.push(`${prefix}Knoten ${id} hat unbekannte Aktion ${action || "—"}`);
+        } else if ((action === "shell" || action === "fab") && !String(raw.command || "").trim()) {
+          errors.push(`${prefix}Aktion ${id} braucht einen Befehl`);
+        }
+      } else if (kind === "condition") {
+        if (!String(raw.expr || "").trim()) errors.push(`${prefix}Bedingung ${id} braucht einen Ausdruck`);
+      }
+    }
+
+    if (!nodes.some((node) => node.type === "trigger")) errors.push(`${prefix}Auslöser fehlt`);
+    if (!nodes.some((node) => node.type === "end")) errors.push(`${prefix}Ende fehlt`);
+  }
+
+  const cycleEdges = [];
+  if (nodesValid && Array.isArray(rawEdges)) {
+    for (const raw of rawEdges) {
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+        errors.push(`${prefix}Kante ist kein JSON-Objekt`);
+        continue;
+      }
+      const source = String(raw.from || "").trim();
+      const target = String(raw.to || "").trim();
+      let known = true;
+      if (!byId.has(source)) {
+        errors.push(`${prefix}Kante von unbekanntem Knoten ${source || "—"}`);
+        known = false;
+      }
+      if (!byId.has(target)) {
+        errors.push(`${prefix}Kante auf unbekannten Knoten ${target || "—"}`);
+        known = false;
+      }
+
+      const hasLimit = raw.max_loops !== null && raw.max_loops !== undefined;
+      let limit = null;
+      if (hasLimit) {
+        limit = flowIntValue(raw.max_loops);
+        if (limit === null) {
+          errors.push(`${prefix}Kante ${source} → ${target} hat kein gültiges Schleifenlimit`);
+        } else if (limit <= 0) {
+          errors.push(`${prefix}Kante ${source} → ${target} braucht max_loops > 0`);
+        }
+      }
+      if (known) {
+        cycleEdges.push({
+          from: source,
+          to: target,
+          max_loops: hasLimit ? (limit === null ? raw.max_loops : limit) : undefined,
+        });
+      }
+    }
+
+    for (const cycle of flowCycles(cycleEdges)) {
+      if (cycle.some((index) => cycleEdges[index].max_loops)) continue;
+      const path = cycle.map((index) => cycleEdges[index].from);
+      path.push(cycleEdges[cycle[cycle.length - 1]].to);
+      errors.push(`${prefix}Zyklus ohne Schleifenlimit: ${path.join(" → ")}`);
+    }
+  }
+
+  const limits = definition.limits;
+  if (limits !== undefined && limits !== null) {
+    if (typeof limits !== "object" || Array.isArray(limits)) {
+      errors.push(`${prefix}limits ist kein JSON-Objekt`);
+    } else {
+      for (const key of ["max_cost", "max_minutes"]) {
+        const value = limits[key];
+        if (value === undefined || value === null || value === "") continue;
+        const number = Number(value);
+        if (!Number.isFinite(number)) {
+          errors.push(`${prefix}limits.${key} ist keine Zahl`);
+        } else if (number < 0) {
+          errors.push(`${prefix}limits.${key} darf nicht negativ sein`);
+        }
+      }
+    }
+  }
+
+  return { ok: errors.length === 0, errors };
 }
