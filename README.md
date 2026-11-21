@@ -47,6 +47,8 @@ node --test mods/fabric/test/
 herdr-app check mods/fabric
 ```
 
+Für UI-Nachweise je Ticket-Worktree: `fab preview start ID` startet eine eigene Instanz unter `/tmp/fab-preview/<ID>/` mit kopierten Einstellungen, Mods und CLI, privatem `HOME` und eigenem Core (Demo-Ticket statt echter Daten). `fab preview shot ID` legt ein PNG an und hängt es wie `fab attach` an (Akteur: `--from`, sonst `assignee`, sonst `mensch`); `fab preview stop ID` beendet App und Core und entfernt das Verzeichnis.
+
 ## Regel für Arbeit an diesem Repo
 
 Arbeit, die an Agenten geht, läuft ausschließlich über `fab`-Tickets (`fab new` → Orchestrator → Agent im Worktree → `handover` → `accept`). Keine Nebenwege über interne Subagenten oder Chat.

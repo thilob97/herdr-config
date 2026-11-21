@@ -85,6 +85,7 @@ STUB_HERDR = '''#!/usr/bin/env python3
 import json
 import os
 import sys
+import time
 
 args = sys.argv[1:]
 log = os.environ.get("HERDR_LOG")
@@ -95,6 +96,24 @@ if log:
 if os.environ.get("HERDR_APP_FAIL"):
     print("herdr-app: kein Fenster", file=sys.stderr)
     sys.exit(1)
+if args[:1] == ["check"]:
+    if os.environ.get("HERDR_CHECK_FAIL"):
+        print("mod rot", file=sys.stderr)
+        sys.exit(1)
+    sys.exit(0)
+if args[:1] == ["shot"]:
+    path = os.path.abspath(args[1])
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with open(path, "wb") as handle:
+        handle.write(b"\\x89PNG\\r\\n\\x1a\\nstub")
+    print(path)
+    sys.exit(0)
+if not args:
+    if os.environ.get("HERDR_APP_SLEEP"):
+        time.sleep(60)
+    sys.exit(0)
 if args[:1] == ["ls"]:
     fixture = os.environ.get("HERDR_LS")
     if fixture and os.path.isfile(fixture):

@@ -19,6 +19,18 @@ Genannte danach etwas tun muss; nie für Dank, Bestätigung oder Statusmeldungen
 Löschen). Wirst du geweckt, lies zuerst `fab show {id}` und arbeite dann an diesem
 Ticket weiter. Ist nichts für dich zu tun, antworte nicht.
 
+## UI-Nachweise
+
+Für UI-Kriterien startest du eine eigene Vorschau-Instanz mit eigenem Home unter
+`/tmp/fab-preview/{id}` und eigenem Core. Fenster und echte Ticketdaten des
+Menschen bleiben unberührt.
+
+```sh
+fab preview start {id}
+fab preview shot {id}    # PNG landet über `fab attach` am Ticket
+fab preview stop {id}
+```
+
 ## Verboten
 
 Kein `hc send`, kein Chat mit anderen Agenten, kein Push, kein Merge. Nichts

@@ -36,8 +36,8 @@ Der Body hat genau vier Abschnitte:
   Muster stehen in `.fabric/testpolicy.json`, ohne die Datei gelten die
   Standardmuster. Benenne im Kriterium die Testdatei und den ausgeübten Fall. Ein
   grünes `fab verify` allein oder ein UI-Screenshot allein genügt dafür nicht.
-  UI-Kriterien brauchen zusätzlich einen Screenshot über `herdr-app shot` aus einem
-  temporären `HERDR_APP_HOME` oder eine begründete Notiz. `fab handover` verweigert
+  UI-Kriterien brauchen zusätzlich einen Screenshot über
+  `fab preview start|shot|stop ID` oder eine begründete Notiz. `fab handover` verweigert
   Logik-Änderungen ohne geänderte Testdatei.
 
 - `## Grenzen` — was ausdrücklich nicht dazugehört.

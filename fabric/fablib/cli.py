@@ -14,6 +14,7 @@ from . import (
     git,
     hc,
     index,
+    preview,
     prompts,
     render,
     repos,
@@ -606,14 +607,8 @@ def _attachment_name(source):
     return f"{slug}{suffix}"
 
 
-def cmd_attach(args):
-    actor = _actor(args) or "mensch"
-    source = os.path.expanduser(args.datei)
-    if not os.path.isfile(source):
-        raise FabError(f"Datei gibt es nicht: {source}")
-    if not os.access(source, os.R_OK):
-        raise FabError(f"Datei ist nicht lesbar: {source}")
-    ticket = store.load(args.id)
+def _attach_image(ticket_id, source, actor, edit_body):
+    ticket = store.load(ticket_id)
     tid = ticket["id"]
     wanted = _attachment_name(source)
     with store.locked():
@@ -621,14 +616,46 @@ def cmd_attach(args):
         ticket = store.load(tid)
         reference = f"![{name}]({path})"
         events.append("edited", tid, actor, "", f"Anhang {name}")
-        if not args.no_edit:
+        if edit_body:
             body = (ticket.get("body") or "").rstrip()
             if reference not in body:
                 body = f"{body}\n\n{reference}\n" if body else f"{reference}\n"
                 ticket["body"] = body
         store.save(ticket)
         index.rebuild()
+    return reference
+
+
+def cmd_attach(args):
+    actor = _actor(args) or "mensch"
+    source = os.path.expanduser(args.datei)
+    if not os.path.isfile(source):
+        raise FabError(f"Datei gibt es nicht: {source}")
+    if not os.access(source, os.R_OK):
+        raise FabError(f"Datei ist nicht lesbar: {source}")
+    reference = _attach_image(args.id, source, actor, not args.no_edit)
     print(reference)
+    return 0
+
+
+def cmd_preview(args):
+    ticket = store.load(args.id)
+    tid = ticket["id"]
+    if args.action == "start":
+        state = preview.start(ticket)
+        print(
+            f"{tid}: Vorschau läuft in {state['home']} "
+            f"(PID {state['pid']}, Core {state['session']})"
+        )
+    elif args.action == "shot":
+        png = preview.shot(ticket)
+        actor = _actor(args) or ticket.get("assignee") or "mensch"
+        reference = _attach_image(tid, png, actor, True)
+        print(png)
+        print(reference)
+    else:
+        preview.stop(tid)
+        print(f"{tid}: Vorschau beendet, {preview.root(tid)} entfernt")
     return 0
 
 
@@ -908,6 +935,28 @@ def _pr_failure(ticket, reason, url):
     index.rebuild()
 
 
+def _accept_check_failed(ticket, report):
+    output = report.get("output") or ""
+    waiting = list(ticket.get("waiting") or [])
+    had_stall = "stall" in ticket
+    stall = ticket.get("stall")
+    _add_comment(ticket, "mensch", "herdr-app check rot — Merge zurückgesetzt:\n" + output)
+    ticket["waiting"] = waiting
+    if had_stall:
+        ticket["stall"] = stall
+    else:
+        ticket.pop("stall", None)
+    target = ticket.get("assignee") or "orchestrator"
+    events.append(
+        "wake",
+        ticket["id"],
+        "mensch",
+        target,
+        "rücksetzen: check rot",
+        reason=output if len(output) <= 1500 else output[:1500] + "…",
+    )
+
+
 def cmd_accept(args):
     with store.locked():
         ticket = store.load(args.id)
@@ -954,9 +1003,20 @@ def cmd_accept(args):
                 f"eine gh-Anmeldung (gh auth status)"
             )
         if not pr_ready:
+            before = git.head(top)
             merged = git.merge_no_ff(
                 top, branch_name, f"Merge {branch_name}: {ticket['title']}"
             )
+            report = preview.check_mods(top)
+            if not report["ok"]:
+                git.reset_keep(top, before)
+                _accept_check_failed(ticket, report)
+                store.save(ticket)
+                index.rebuild()
+                raise store.PersistError(
+                    f"{ticket['id']}: herdr-app check rot; "
+                    f"Merge auf {_short(before)} zurückgesetzt"
+                )
             ended = _end_sessions(ticket)
             git.remove_worktree(top, worktree)
             git.delete_branch(top, branch_name)
@@ -1005,9 +1065,20 @@ def cmd_accept(args):
             try:
                 git.gh_pr_merge(repo, url)
                 git.fetch(top)
-                git.push_delete(top, "origin", branch_name)
                 git.merge_ff_only(top, f"origin/{base}")
                 merged = git.head(top)
+                report = preview.check_mods(top)
+                if not report["ok"]:
+                    git.revert(top, merged)
+                    git.push(top, "origin", base)
+                    _accept_check_failed(ticket, report)
+                    store.save(ticket)
+                    index.rebuild()
+                    raise store.PersistError(
+                        f"{ticket['id']}: herdr-app check rot; Merge "
+                        f"{_short(merged)} als Revert nach origin/{base} gepusht"
+                    )
+                git.push_delete(top, "origin", branch_name)
                 ended = _end_sessions(ticket)
                 git.remove_worktree(top, worktree)
                 git.delete_branch(top, branch_name)
@@ -1027,6 +1098,8 @@ def cmd_accept(args):
                     f"gemergt ({_short(merged)}); Worktree und Branch entfernt"
                     + (f"; {len(ended)} Session(s) beendet" if ended else "")
                 )
+            except store.PersistError:
+                raise
             except FabError as exc:
                 _pr_failure(ticket, str(exc), url)
                 failure = exc
@@ -1896,6 +1969,24 @@ def build_parser():
     item.add_argument("--no-edit", action="store_true", help="Body nicht ergänzen")
     item.add_argument("--from", dest="from_", metavar="NAME", default="mensch",
                       help="Autor (Standard: mensch)")
+
+    item = command(
+        "preview",
+        "Vorschau-Instanz je Worktree: eigenes Home, eigener Core, Screenshot",
+        cmd_preview,
+    )
+    preview_sub = item.add_subparsers(dest="action", metavar="AKTION", required=True)
+    start = preview_sub.add_parser("start", help="Vorschau starten",
+                                   description="Vorschau starten")
+    start.add_argument("id", metavar="ID")
+    shot = preview_sub.add_parser("shot", help="Screenshot der Vorschau anhängen",
+                                  description="Screenshot der Vorschau anhängen")
+    shot.add_argument("id", metavar="ID")
+    shot.add_argument("--from", dest="from_", metavar="NAME",
+                      help="Autor (Standard: Zuständiger oder mensch)")
+    stop = preview_sub.add_parser("stop", help="Vorschau beenden und entfernen",
+                                  description="Vorschau beenden und entfernen")
+    stop.add_argument("id", metavar="ID")
 
     item = command("dispatch", "Branch und Worktree anlegen und den Agenten starten", cmd_dispatch)
     item.add_argument("id", metavar="ID")

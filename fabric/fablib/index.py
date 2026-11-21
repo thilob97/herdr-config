@@ -146,6 +146,9 @@ def _inbox(stalled, questions, reviews, rows):
             summary = f"Ping-Pong zwischen {candidate.get('actor')} und {candidate.get('target')}"
         elif text == "unterdrückt: voll":
             summary = f"Start fehlgeschlagen: {candidate.get('target')} (voll)"
+        elif text == "rücksetzen: check rot":
+            summary = f"Merge zurückgesetzt: {reason}"
+            agent = target
         else:
             summary = f"Start fehlgeschlagen: {target}" + (
                 f" — {reason}" if reason else ""

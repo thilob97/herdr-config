@@ -242,6 +242,31 @@ def merge_no_ff(repo_top, branch_name, message):
     return head(repo_top)
 
 
+def reset_keep(repo_top, commit):
+    result = git(["reset", "--keep", commit], repo_top, timeout=PUSH_TIMEOUT)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip() or "unbekannter Fehler"
+        raise FabError(f"git reset --keep {commit} ist fehlgeschlagen: {detail}")
+    return head(repo_top)
+
+
+def revert(repo, commit):
+    parents = git(["rev-list", "--parents", "-n", "1", commit], repo)
+    if parents.returncode != 0:
+        detail = (parents.stderr or parents.stdout).strip() or "unbekannter Fehler"
+        raise FabError(f"git rev-list {commit} ist fehlgeschlagen: {detail}")
+    fields = parents.stdout.split()
+    if len(fields) >= 3:
+        args = ["revert", "-m", "1", "--no-edit", commit]
+    else:
+        args = ["revert", "--no-edit", commit]
+    result = git(args, repo, timeout=600)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip() or "unbekannter Fehler"
+        raise FabError(f"git revert {commit} ist fehlgeschlagen: {detail}")
+    return head(repo)
+
+
 def is_github_url(url):
     return bool(url and GITHUB_URL.match(url.strip()))
 
