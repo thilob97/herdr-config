@@ -5,7 +5,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  costOf, costText, fabricEntry, fabricRows, runtimeText, statusWord, ticketFromName,
+  busyLabel, costOf, costText, fabricEntry, fabricRows, freeAgentCards, freeCornerIcon,
+  freeSpriteKey, freeStatusWord, runtimeText, statusWord, ticketFromName, truncateTask,
 } from "../model.js";
 
 const NOW = 1_800_000_000_000;
@@ -242,4 +243,91 @@ test("Gruppen folgen der Team-Reihenfolge, Unbekannte alphabetisch", () => {
 
   assert.deepEqual(teams.map((team) => team.name), ["zulu", "alpha", "gamma"]);
   assert.deepEqual(teams.map((team) => team.orchestrator?.address ?? null), ["z1", "a1", null]);
+});
+
+// --- Freie Agenten ohne Fabric-Team (AGENTS-Abschnitt) ----------------------
+
+test("freie Agenten: Space-Orchestrator ja, Fabric-Terminals und ihre Kinder nein", () => {
+  const space = term("t7q", "orchestrator", { "hub.role": "orchestrator" }, {
+    status: "done", title: "orchestrator",
+  });
+  const teamOrch = term("t118", "fab-herdr-app-orchestrator", {
+    "fab.role": "orchestrator",
+  }, { status: "done" });
+  const zapAgent = term("t119", "fab-herdr-app-zap-t-43", {
+    "fab.agent": "zap", "fab.ticket": "T-43",
+  }, { status: "working" });
+  const free = term("t10b", "autopilot", {}, { status: "working", title: "autopilot" });
+  const child = term("t8z", "kind", {}, { parent: "t119", status: "idle" });
+  const shell = term("t1", "zsh", {}, { status: null });
+
+  const { cards } = freeAgentCards([space, teamOrch, zapAgent, free, child, shell], [], []);
+  assert.deepEqual(cards.map((card) => card.address), ["t7q", "t10b"]);
+  assert.equal(cards[0].orchestrator, true);
+  assert.equal(cards[1].orchestrator, false);
+  // Der Orchestrator bleibt im Fabric-Abschnitt, der freie Agent nicht.
+  assert.equal(fabricEntry(teamOrch).orchestrator, true);
+  assert.equal(fabricEntry(space), null);
+});
+
+test("freie Karten: alle fünf Status, Badge, Eck-Icon, Motiv, Klickziel", () => {
+  const statuses = ["working", "blocked", "done", "idle", "error"];
+  const { cards } = freeAgentCards(
+    statuses.map((status, index) => term(`f${index}`, `frei-${index}`, {}, {
+      status, title: `Agent ${index}`,
+    })),
+    [],
+    [],
+  );
+  assert.deepEqual(cards.map((card) => card.badge), [
+    "WORKING", "WAITING", "DONE", "IDLE", "ERROR",
+  ]);
+  assert.deepEqual(cards.map((card) => card.icon), ["play", "clock", "note", "zzz", "alert"]);
+  for (const [index, card] of cards.entries()) {
+    assert.equal(card.sprite, ["agent-a", "agent-b"][index % 2]);
+    assert.deepEqual(card.click, { kind: "terminal", terminal: card.address });
+  }
+  assert.deepEqual(statuses.map(freeStatusWord), ["WORKING", "WAITING", "DONE", "IDLE", "ERROR"]);
+  assert.equal(freeCornerIcon("weg"), "dot");
+});
+
+test("Orchestrator-Motiv unterscheidet sich von Agenten-Motiven", () => {
+  const [orchestrator] = freeAgentCards(
+    [term("o1", "orchestrator", { "hub.role": "orchestrator" }, { status: "idle" })],
+    [], [],
+  ).cards;
+  assert.equal(orchestrator.sprite, "orchestrator");
+  assert.equal(freeSpriteKey({ name: "zap" }), freeSpriteKey({ name: "zap" }));
+  assert.notEqual(freeSpriteKey({}, 0), freeSpriteKey({}, 1));
+  assert.notEqual(orchestrator.sprite, freeSpriteKey({ name: "zap" }));
+});
+
+test("Kürzung langer Aufgaben, Gruppenzähler 0/3 und N BUSY", () => {
+  const long = "Ein sehr langer Ticket-Titel, der in der schmalen Seitenleiste nicht vollständig Platz hat";
+  assert.equal(truncateTask("kurz"), "kurz");
+  assert.ok(truncateTask(long).length <= 42);
+  assert.ok(truncateTask(long).endsWith("…"));
+  assert.equal(truncateTask("a\nb   c"), "a b c");
+
+  const idle = [0, 1, 2].map((index) => term(`i${index}`, `ruhig-${index}`, {}, {
+    status: "idle", title: long,
+  }));
+  const quiet = freeAgentCards(idle, [], []);
+  assert.deepEqual(quiet.groups.map((group) => [group.name, group.busy, group.total]), [
+    ["THIS MACHINE", 0, 3],
+  ]);
+  assert.equal(busyLabel(quiet.busy), "0 BUSY");
+  assert.equal(quiet.groups[0].cards[0].task.endsWith("…"), true);
+
+  const mixed = freeAgentCards([
+    ...idle,
+    term("w1", "arbeit-1", {}, { status: "working" }),
+    term("remote/w2", "arbeit-2", {}, { status: "working" }),
+  ], [], []);
+  assert.equal(busyLabel(mixed.busy), "2 BUSY");
+  assert.deepEqual(mixed.groups.map((group) => [group.name, group.busy, group.total]), [
+    ["THIS MACHINE", 1, 4],
+    ["REMOTE", 1, 1],
+  ]);
+  assert.deepEqual(mixed.groups[1].cards[0].click, { kind: "terminal", terminal: "remote/w2" });
 });
