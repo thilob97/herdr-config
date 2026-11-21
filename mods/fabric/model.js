@@ -1379,6 +1379,34 @@ export function sortPrompts(prompts) {
   return [...(prompts ?? [])].sort((a, b) => rank(a) - rank(b) || String(a?.name).localeCompare(String(b?.name)));
 }
 
+// ---------- Vorlagen und Issues ----------
+
+/** Feste Reihenfolge der mitgelieferten Vorlagen. */
+export const TEMPLATE_ORDER = ["bug", "feature", "refactor", "chore"];
+
+const TEMPLATE_WORDS = { bug: "Bug", feature: "Feature", refactor: "Refactor", chore: "Chore" };
+
+/** Anzeigename einer Vorlage; unbekannte Namen bleiben unverändert. */
+export function templateLabel(name) {
+  return TEMPLATE_WORDS[name] ?? String(name ?? "");
+}
+
+/** Vorlagen in fester Reihenfolge, danach weitere alphabetisch. */
+export function sortTemplates(rows) {
+  const rank = (row) => {
+    const index = TEMPLATE_ORDER.indexOf(row?.name);
+    return index < 0 ? TEMPLATE_ORDER.length : index;
+  };
+  return [...(rows ?? [])].sort((a, b) =>
+    rank(a) - rank(b) || String(a?.name).localeCompare(String(b?.name)));
+}
+
+/** Zeile eines Issues im Dropdown: `#12 Titel`. */
+export function issueLabel(issue) {
+  if (issue?.number == null || issue.number === "") return String(issue?.title ?? "");
+  return `#${issue.number} ${issue?.title ?? ""}`.trim();
+}
+
 /** Vorlage für ein fehlendes `.fabric/verify.sh`. */
 export function verifyTemplate() {
   return [
@@ -1476,11 +1504,15 @@ export function editArgs(id, fields = {}, from = "mensch") {
   return args;
 }
 
-export function newArgs(sentence, { repo = null, wake = true, from = "mensch" } = {}) {
+export function newArgs(sentence, { repo = null, wake = true, from = "mensch", template = null, issue = null } = {}) {
   const args = ["new"];
   if (repo) args.push(`--repo=${repo}`);
   if (!wake) args.push("--no-wake");
-  args.push(`--from=${from}`, "--", sentence);
+  if (template) args.push(`--template=${template}`);
+  if (issue != null && issue !== "") args.push(`--issue=${issue}`);
+  args.push(`--from=${from}`);
+  const text = String(sentence ?? "");
+  if (text) args.push("--", text);
   return args;
 }
 
@@ -1519,6 +1551,10 @@ export function wakeArgs(id, name, from = "mensch", text = "") {
 
 export function promptSetArgs(name, text, from = "mensch") {
   return ["prompt", "set", name, `--text=${text}`, `--from=${from}`];
+}
+
+export function templateSetArgs(name, text, from = "mensch") {
+  return ["template", "set", name, `--text=${text}`, `--from=${from}`];
 }
 
 export function repoSetArgs(path, key, text, from = "mensch") {

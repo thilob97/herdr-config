@@ -32,9 +32,28 @@ function newTicketDialog(app, cx, t) {
     })),
     { value: "__pick", label: "Ordner wählen…", detail: "Systemdialog", selected: false },
   ];
+  const templateOptions = [
+    { value: "", label: "Ohne Vorlage", detail: "Freier Satz", selected: !app.newTemplate },
+    ...model.sortTemplates(app.templateList ?? []).map((row) => ({
+      value: String(row.name),
+      label: model.templateLabel(row.name),
+      detail: `${row.bytes ?? 0} B`,
+      selected: row.name === app.newTemplate,
+    })),
+  ];
+  const issueOptions = [
+    { value: "", label: "Ohne Issue", detail: "Freier Satz", selected: app.newIssue == null },
+    ...(app.newIssues ?? []).map((issue) => ({
+      value: String(issue.number),
+      label: model.issueLabel(issue),
+      detail: "GitHub",
+      selected: String(issue.number) === String(app.newIssue),
+    })),
+  ];
+  const canCreate = Boolean(app.newSentence?.value().trim()) || app.newIssue != null;
   return ui.modal(t, {
     title: "Neues Ticket",
-    detail: "Ein Satz genügt. Der Orchestrator formuliert Ziel, Kontext und Abnahmekriterien aus.",
+    detail: "Ein Satz oder ein Issue genügt. Der Orchestrator formuliert Ziel, Kontext und Abnahmekriterien aus.",
     width: 580,
     actions: [
       ui.button(t, {
@@ -48,7 +67,7 @@ function newTicketDialog(app, cx, t) {
         icon: "plus",
         primary: true,
         busy: app.busy === "new",
-        disabled: Boolean(app.busy) || !(app.newSentence?.value().trim()),
+        disabled: Boolean(app.busy) || !canCreate,
         tooltip: "Ticket anlegen",
         onClick: (cx) => app.createTicket(cx),
       }),
@@ -59,6 +78,22 @@ function newTicketDialog(app, cx, t) {
       .child(app.newSentence ? ui.input(t, app.newSentence, { focused: true }) : div())
       .when(app.mentionOpen("new"), (el) => el.child(app.mentionView("new", t)))
       .when(Boolean(app.newError), (el) => el.child(ui.notice(t, app.newError)))
+      .child(div().pt(S.xs).text_size(T.xs).text_color(t.dim).child("Vorlage"))
+      .child(ui.dropdown(t, {
+        id: "fabric-new-template",
+        value: app.newTemplate ? model.templateLabel(app.newTemplate) : "Ohne Vorlage",
+        options: templateOptions,
+        open: app.menu === "new-template",
+        width: 360,
+        scrollHandle: app.dropdownScroll,
+        onToggle: (cx) => { app.menu = app.menu === "new-template" ? null : "new-template"; cx.notify(); },
+        onPick: (value, cx) => {
+          app.menu = null;
+          app.newTemplate = value || null;
+          if (value) app.newIssue = null;
+          cx.notify();
+        },
+      }))
       .child(div().pt(S.xs).text_size(T.xs).text_color(t.dim).child("Repo"))
       .child(ui.dropdown(t, {
         id: "fabric-new-repo",
@@ -67,14 +102,41 @@ function newTicketDialog(app, cx, t) {
         open: app.menu === "new-repo",
         width: 360,
         scrollHandle: app.dropdownScroll,
-        onToggle: () => { app.menu = app.menu === "new-repo" ? null : "new-repo"; cx.notify(); },
-        onPick: (value) => {
+        onToggle: (cx) => { app.menu = app.menu === "new-repo" ? null : "new-repo"; cx.notify(); },
+        onPick: (value, cx) => {
           app.menu = null;
           if (value === "__pick") app.pickNewRepo(cx);
-          else { app.newRepo = value || null; cx.notify(); }
+          else {
+            app.newRepo = value || null;
+            app.newIssue = null;
+            app.newIssues = [];
+            app.issuesError = null;
+            cx.notify();
+            cx.spawn((cx) => app.loadNewIssues(cx));
+          }
         },
       }))
       .when(Boolean(app.newRepo), (el) => el.child(ui.hint(t, app.newRepo)))
+      .child(div().pt(S.xs).text_size(T.xs).text_color(t.dim).child("Issue"))
+      .when(Boolean(app.newRepo), (el) => el.child(ui.dropdown(t, {
+        id: "fabric-new-issue",
+        value: app.newIssue != null
+          ? model.issueLabel((app.newIssues ?? []).find((issue) => String(issue.number) === String(app.newIssue)) ?? { number: app.newIssue })
+          : "Ohne Issue",
+        options: issueOptions,
+        open: app.menu === "new-issue",
+        width: 360,
+        scrollHandle: app.dropdownScroll,
+        onToggle: (cx) => { app.menu = app.menu === "new-issue" ? null : "new-issue"; cx.notify(); },
+        onPick: (value, cx) => {
+          app.menu = null;
+          app.newIssue = value ? Number(value) : null;
+          if (value) app.newTemplate = null;
+          cx.notify();
+        },
+      })))
+      .when(!app.newRepo, (el) => el.child(ui.hint(t, "Issues brauchen ein Repo.")))
+      .when(Boolean(app.issuesError), (el) => el.child(ui.notice(t, app.issuesError, "warn")))
       .child(div().h(1).my(S.xs).bg(t.border))
       .child(ui.switchRow(t, {
         id: "fabric-new-wake",

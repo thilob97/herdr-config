@@ -215,6 +215,24 @@ class PrAcceptTests(FabricCase):
         self.assertIn("Ticket: T-1", body)
         self.assertIn("fab/T-1-kurzer-titel → main", body)
 
+    def test_pr_body_closes_verknuepftes_issue(self):
+        repo, tid, worktree = self.review_ticket()
+        self.patch_ticket(
+            tid,
+            issue={
+                "number": 12,
+                "url": "https://github.com/test/repo/issues/12",
+                "title": "Knopf defekt",
+            },
+        )
+        bare = self.setup_origin(repo)
+        self.ok("accept", tid, env=self.gh_env(bare))
+        create = next(
+            call for call in self.gh_calls() if call[:2] == ["pr", "create"]
+        )
+        body = create[create.index("--body") + 1]
+        self.assertIn("Closes #12", body)
+
     def test_merge_fehlschlag_laesst_ticket_in_review(self):
         repo, tid, worktree = self.review_ticket()
         bare = self.setup_origin(repo)
@@ -336,7 +354,28 @@ class PrAcceptTests(FabricCase):
         self.git_out(repo, "remote", "add", "origin", bare)
         result = self.ok("accept", tid, env=self.gh_env())
         self.assertIn("angenommen", result.stdout)
+        self.assertNotIn("bleibt offen", result.stdout)
         ticket = self.ticket(tid)
         self.assertEqual(ticket["status"], "done")
         self.assertNotIn("pr", ticket)
+        self.assertFalse(os.path.exists(worktree))
+
+    def test_lokaler_merge_meldet_offenes_issue(self):
+        repo, tid, worktree = self.review_ticket()
+        self.patch_ticket(
+            tid,
+            issue={
+                "number": 12,
+                "url": "https://github.com/test/repo/issues/12",
+                "title": "Knopf defekt",
+            },
+        )
+        bare = os.path.join(self.tmp, "origin.git")
+        subprocess.run(["git", "init", "--bare", "-q", bare], check=True)
+        self.git_out(repo, "remote", "add", "origin", bare)
+        result = self.ok("accept", tid, env=self.gh_env())
+        self.assertIn("angenommen", result.stdout)
+        self.assertIn("Issue #12 bleibt offen", result.stdout)
+        self.assertIn("kein PR-Merge ohne GitHub-Remote/gh", result.stdout)
+        self.assertEqual(self.ticket(tid)["status"], "done")
         self.assertFalse(os.path.exists(worktree))

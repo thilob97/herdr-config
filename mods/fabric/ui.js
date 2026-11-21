@@ -641,7 +641,7 @@ export function dropdown(t, {
     cx.stop_propagation();
     if (disabled) return;
     const wasOpen = open;
-    onToggle();
+    onToggle(cx);
     if (!wasOpen && scrollHandle) {
       const selected = options.findIndex((option) => option.selected);
       if (selected >= 0) {
@@ -697,7 +697,7 @@ export function dropdown(t, {
       v_flex().w_full().p(SPACE.xs).gap(1).children(options.map((option) => row(option)
         .when(!option.disabled, (line) => still(line).on_click((_event, cx) => {
           cx.stop_propagation();
-          onPick(option.value);
+          onPick(option.value, cx);
         })))),
     ))
     .when(needsScroll, (el) => el.child(
@@ -711,7 +711,7 @@ export function dropdown(t, {
           cx.stop_propagation();
           const option = byKey.get(key);
           if (!option || option.disabled) return;
-          onPick(option.value);
+          onPick(option.value, cx);
         }),
     ));
 

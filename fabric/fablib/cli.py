@@ -20,6 +20,7 @@ from . import (
     repos,
     store,
     teams,
+    templates,
     testpolicy,
     tick,
     wake,
@@ -330,14 +331,26 @@ def _short(value):
 
 # ---------------------------------------------------------------- Befehle
 
+def _issue_ticket_body(issue):
+    """Ticket-Body aus einem GitHub-Issue: Text und Link."""
+    text = (issue.get("body") or "").strip()
+    url = (issue.get("url") or "").strip()
+    parts = [part for part in (text, f"Issue: {url}" if url else "") if part]
+    return "\n\n".join(parts)
+
+
 def cmd_new(args):
     sentence = " ".join((args.sentence or "").split())
-    if not sentence:
-        raise FabError("Der Satz für das Ticket ist leer")
+    template_name = (args.template or "").strip()
+    issue_number = args.issue
+    if template_name and issue_number is not None:
+        raise FabError("--template und --issue schließen sich aus")
+    if not sentence and issue_number is None:
+        raise FabError(
+            "Der Satz für das Ticket ist leer; Satz angeben oder --issue N"
+        )
     author = _actor(args) or "mensch"
     roster = agents.load(required=False)
-    title = sentence[:80]
-    body = f"## Auftrag\n{sentence}"
     with store.locked():
         parent = None
         if args.parent:
@@ -379,12 +392,39 @@ def cmd_new(args):
         if roster is None and not args.no_wake:
             print(f"Warnung: Roster fehlt ({agents.roster_path()}); @orchestrator wird nicht geweckt",
                   file=sys.stderr)
+
+        issue = None
+        title = sentence[:80]
+        body = f"## Auftrag\n{sentence}"
+        if issue_number is not None:
+            git.require_github_issues(repo)
+            found = git.gh_issue_view(repo, issue_number)
+            state = str(found.get("state") or "").strip()
+            if state.upper() != "OPEN":
+                raise FabError(
+                    f"Issue #{issue_number} ist geschlossen "
+                    f"(Status {state or '—'}); Tickets entstehen nur aus offenen Issues"
+                )
+            number = int(found.get("number") or issue_number)
+            issue = {
+                "number": number,
+                "url": str(found.get("url") or ""),
+                "title": str(found.get("title") or ""),
+            }
+            title = issue["title"]
+            body = _issue_ticket_body(found)
+        elif template_name:
+            body = templates.render(templates.show(template_name), sentence)
+            title = sentence[:80]
+
         tid = store.next_id()
         ticket = store.blank_ticket(tid, title=title, body=body, repo=repo, created_by=author)
+        ticket["issue"] = issue
         if parent is not None:
             ticket["parent"] = parent["id"]
         store.save(ticket)
-        events.append("created", tid, author, "", sentence)
+        created_text = sentence or f"#{issue['number']} {issue['title']}"
+        events.append("created", tid, author, "", created_text)
         if not args.no_wake:
             text = "@orchestrator bitte ausformulieren und verteilen"
             if parent is not None:
@@ -1060,22 +1100,25 @@ def _pr_body(ticket, branch_name):
         summary = f"Ticket {ticket['id']}: {ticket['title']}"
     checks = ticket.get("checks") or {}
     verdict = ticket.get("verdict") or {}
-    return "\n".join(
-        [
-            summary,
-            "",
-            "## Checks",
-            f"- {checks.get('state') or '—'} (HEAD {_short(checks.get('head'))})",
-            "",
-            "## Urteil",
-            f"- {verdict.get('state') or '—'} von {verdict.get('by') or '—'}: "
-            f"{(verdict.get('summary') or '').strip() or '—'} "
-            f"(HEAD {_short(verdict.get('head'))})",
-            "",
-            f"Ticket: {ticket['id']} (fab show {ticket['id']})",
-            f"Branch: {branch_name} → {ticket['base']}",
-        ]
-    )
+    lines = [
+        summary,
+        "",
+        "## Checks",
+        f"- {checks.get('state') or '—'} (HEAD {_short(checks.get('head'))})",
+        "",
+        "## Urteil",
+        f"- {verdict.get('state') or '—'} von {verdict.get('by') or '—'}: "
+        f"{(verdict.get('summary') or '').strip() or '—'} "
+        f"(HEAD {_short(verdict.get('head'))})",
+        "",
+        f"Ticket: {ticket['id']} (fab show {ticket['id']})",
+        f"Branch: {branch_name} → {ticket['base']}",
+    ]
+    issue = ticket.get("issue") or {}
+    number = issue.get("number") if isinstance(issue, dict) else None
+    if number:
+        lines.extend(["", f"Closes #{number}"])
+    return "\n".join(lines)
 
 
 def _pr_failure(ticket, reason, url):
@@ -1190,6 +1233,12 @@ def cmd_accept(args):
                 f"({_short(merged)}); Worktree und Branch entfernt"
                 + (f"; {len(ended)} Session(s) beendet" if ended else "")
             )
+            issue = ticket.get("issue") or {}
+            if isinstance(issue, dict) and issue.get("number"):
+                print(
+                    f"Issue #{issue['number']} bleibt offen: "
+                    f"kein PR-Merge ohne GitHub-Remote/gh"
+                )
         else:
             base = ticket["base"]
             local_base = git.head(top)
@@ -1962,6 +2011,40 @@ def cmd_prompt(args):
     return 0
 
 
+def cmd_template(args):
+    if args.action == "list":
+        rows = templates.entries()
+        if args.json:
+            print(json.dumps(rows, ensure_ascii=False, indent=2))
+            return 0
+        for row in rows:
+            print(f"{row['name']}  {row['bytes']} B  {row['path']}")
+        return 0
+    if args.action == "show":
+        sys.stdout.write(templates.show(args.name))
+        return 0
+    actor = _require_actor(args)
+    with store.locked():
+        path, size = templates.save(args.name, args.text, actor)
+    print(f"Vorlage „{args.name}“ gespeichert ({size} Bytes): {path}")
+    return 0
+
+
+def cmd_issue(args):
+    repo = _abs_repo(args.repo) if args.repo else git.main_toplevel(os.getcwd())
+    if not repo:
+        raise FabError(
+            "Repo fehlt: --repo PFAD angeben oder in einem Git-Checkout ausführen"
+        )
+    rows = git.gh_issue_list(repo)
+    if args.json:
+        print(json.dumps(rows, ensure_ascii=False, indent=2))
+        return 0
+    for row in rows:
+        print(f"#{row.get('number')} {row.get('title') or ''}".rstrip())
+    return 0
+
+
 def cmd_repos(args):
     rows = repos.known(args.add or ())
     if args.json:
@@ -2060,10 +2143,14 @@ def build_parser():
         item.set_defaults(func=function)
         return item
 
-    item = command("new", "Ticket aus einem Satz anlegen und den Orchestrator wecken", cmd_new)
-    item.add_argument("sentence", metavar="SATZ", help="der Auftrag in einem Satz")
+    item = command("new", "Ticket aus einem Satz anlegen, optional aus Vorlage oder GitHub-Issue, und den Orchestrator wecken", cmd_new)
+    item.add_argument("sentence", metavar="SATZ", nargs="?",
+                      help="der Auftrag in einem Satz; entfällt mit --issue")
     item.add_argument("--repo", metavar="PFAD", help="Checkout, Standard: Git-Wurzel des aktuellen Ordners")
     item.add_argument("--parent", metavar="ID", help="Eltern-Ticket; das Unter-Ticket erbt dessen Repo")
+    item.add_argument("--template", metavar="NAME", help="Vorlage aus fabric/templates, z. B. bug")
+    item.add_argument("--issue", metavar="N", type=int,
+                      help="offenes GitHub-Issue als Titel und Body übernehmen")
     item.add_argument("--from", dest="from_", metavar="NAME", default="mensch", help="Autor (Standard: mensch)")
     item.add_argument("--no-wake", action="store_true",
                       help="nur den Entwurf anlegen, ohne @orchestrator-Kommentar")
@@ -2336,6 +2423,28 @@ def build_parser():
     set_prompt.add_argument("--team", metavar="NAME",
                             help="Team für den Orchestrator-Prompt")
     set_prompt.add_argument("--from", dest="from_", metavar="NAME", required=True)
+
+    item = command("template", "Ticket-Vorlagen auflisten, zeigen und speichern", cmd_template)
+    template_sub = item.add_subparsers(dest="action", metavar="AKTION", required=True)
+    listing = template_sub.add_parser("list", help="Vorlagen auflisten",
+                                      description="Vorlagen auflisten")
+    listing.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe")
+    show_item = template_sub.add_parser("show", help="Vorlage roh ausgeben",
+                                        description="Vorlage roh ausgeben")
+    show_item.add_argument("name", metavar="NAME", help="z. B. bug, feature, refactor, chore")
+    set_template = template_sub.add_parser("set", help="Vorlage speichern",
+                                           description="Vorlage speichern")
+    set_template.add_argument("name", metavar="NAME")
+    set_template.add_argument("--text", metavar="T", required=True)
+    set_template.add_argument("--from", dest="from_", metavar="NAME", required=True)
+
+    item = command("issue", "GitHub-Issues des Repos auflisten", cmd_issue)
+    issue_sub = item.add_subparsers(dest="action", metavar="AKTION", required=True)
+    listing = issue_sub.add_parser("list", help="offene Issues auflisten",
+                                   description="offene Issues auflisten")
+    listing.add_argument("--repo", metavar="PFAD",
+                         help="Checkout, Standard: Git-Wurzel des aktuellen Ordners")
+    listing.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe")
 
     item = command("repos", "Bekannte Repos zeigen", cmd_repos)
     item.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe")
