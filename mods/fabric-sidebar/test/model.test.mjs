@@ -446,14 +446,15 @@ test("jeder Agent der bisherigen Liste erscheint im Fabric-Abschnitt", () => {
     { address: "p1", status: "idle", pinned: true },
   ];
 
-  const snapshot = hiddenAgentAddresses(terms, listed);
-  const visible = visibleAgents(listed, snapshot, "fabric");
+  const visible = visibleAgents(listed, null);
   const shown = new Set([
     ...fabricRows(terms, listed, [], [], NOW).rows.map((row) => row.address),
     ...freeAgentCards(terms, listed, []).cards.map((card) => card.address),
   ]);
 
   // Die Anforderung im Wortlaut: jede Adresse der bisherigen Liste ist da.
+  // Ungefiltert vergleichen; gefiltert prüfte die Schleife nichts.
+  assert.ok(visible.length > 0);
   for (const agent of visible) assert.ok(shown.has(agent.address), `${agent.address} fehlt`);
   // Und die fünf Fälle selbst, damit der Test nicht leer besteht.
   for (const address of ["c1", "o1", "f2", "t8z", "p1"]) {
