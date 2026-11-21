@@ -1112,3 +1112,77 @@ test("teamForTicket und teamAgents wählen das Team nach dem Repo-Pfad", () => {
   assert.equal(teamForTicket(teams, { repo: "/r/unknown" }), null);
   assert.deepEqual(teamAgents(teams, { repo: "/r/unknown" }), []);
 });
+
+// ---------- Änderungen und Abnahme ----------
+
+test("changesGate: ohne Änderungen gesperrt, fremder HEAD gesperrt, gleicher HEAD frei", async () => {
+  const { changesGate } = await import("../model.js");
+  const head = "0123456789abcdef0123456789abcdef01234567";
+
+  assert.deepEqual(changesGate(null, ""), {
+    enabled: false, reason: "Änderungen sind nicht geladen",
+  });
+  assert.deepEqual(changesGate({}, head), {
+    enabled: false, reason: "Änderungen sind nicht geladen",
+  });
+
+  const unseen = changesGate({ head }, "");
+  assert.equal(unseen.enabled, false);
+  assert.match(unseen.reason, /HEAD 0123456/);
+  assert.match(unseen.reason, /ansehen/);
+
+  assert.deepEqual(changesGate({ head }, head), { enabled: true, reason: "" });
+});
+
+test("changesGate: ein neuer HEAD sperrt wieder", async () => {
+  const { changesGate } = await import("../model.js");
+  const oldHead = "1111111111111111111111111111111111111111";
+  const newHead = "2222222222222222222222222222222222222222";
+
+  assert.equal(changesGate({ head: oldHead }, oldHead).enabled, true);
+
+  const stale = changesGate({ head: newHead }, oldHead);
+  assert.equal(stale.enabled, false);
+  assert.match(stale.reason, /HEAD 2222222/);
+  assert.match(stale.reason, /ansehen/);
+});
+
+test("Aktionsleiste: Abnehmen verlangt geladene Änderungen zum selben HEAD", async () => {
+  const { actionBar } = await import("../model.js");
+  const ticket = { status: "review" };
+  const head = "abcdef0123456789abcdef0123456789abcdef01";
+
+  const unloading = actionBar(ticket, []);
+  assert.equal(unloading[0].id, "accept");
+  assert.equal(unloading[0].disabled, true);
+  assert.equal(unloading[0].reason, "Änderungen sind nicht geladen");
+  assert.equal(unloading[1].disabled, false, "Zurück bleibt möglich");
+  assert.equal(unloading[2].disabled, false, "Verwerfen bleibt möglich");
+
+  const ready = actionBar(ticket, [], { head }, head);
+  assert.equal(ready[0].id, "accept");
+  assert.equal(ready[0].disabled, false);
+  assert.equal(ready[0].reason, "");
+  assert.equal(ready[0].kind, "primary");
+  assert.equal(ready[0].icon, "check");
+  assert.equal(ready[0].confirm, "accept");
+  assert.equal(ready[1].disabled, false);
+  assert.equal(ready[2].disabled, false);
+
+  const stale = actionBar(ticket, [], { head }, "ffffffffffffffffffffffffffffffffffffffff");
+  assert.equal(stale[0].disabled, true);
+  assert.match(stale[0].reason, /HEAD abcdef0/);
+  assert.match(stale[0].reason, /ansehen/);
+  assert.equal(stale[1].disabled, false, "Zurück bleibt auch bei neuem HEAD möglich");
+  assert.equal(stale[2].disabled, false);
+});
+
+test("diffArgs und diffFileArgs bauen die Kommandozeile", async () => {
+  const { diffArgs, diffFileArgs } = await import("../model.js");
+
+  assert.deepEqual(diffArgs("T-29"), ["diff", "T-29", "--json"]);
+  assert.deepEqual(diffArgs("T-29", { file: "" }), ["diff", "T-29", "--json"]);
+  assert.deepEqual(diffArgs("T-29", { file: "fabric/fab/cli.py" }),
+    ["diff", "T-29", "--json", "--file=fabric/fab/cli.py"]);
+  assert.deepEqual(diffFileArgs("T-29", "a b/c.py"), ["diff", "T-29", "--file=a b/c.py"]);
+});

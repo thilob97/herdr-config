@@ -53,11 +53,12 @@ Die gewählte Auswahl ist überall dieselbe: `shared("fabric.selected")`. Was da
   - Checks: Zustand, HEAD, Zeit, Ausgabe ausklappbar, Knopf „Prüfen“.
   - Urteil: Zustand, von wem, Zusammenfassung.
   - Sessions: Chips mit Live-Status; Klick öffnet das Terminal, „Wecken…“ öffnet ein Feld mit Text und scrollt das Panel vollständig in den sichtbaren Bereich. Beleg: `docs/assets/t40-wake-panel.png`.
+- Änderungen (Status Prüfung, mit Branch): Kopfzeile mit HEAD und Summe `+`/`−`; „Ansehen“ öffnet die Dateiliste (mit `+`/`−` je Datei), den Diff der gewählten Datei, die Commits und die Nachweise als Bild-Vorschau (Anhänge und im Handover genannte Dateien/Screenshots). Daten kommen aus `fab diff ID --json` bzw. `--file PFAD`. Das Öffnen merkt sich den HEAD; erst dann ist **Abnehmen** frei. Ein neuer HEAD (andere Commit-Spitze) sperrt wieder.
 - Aktionsleiste, abhängig vom Status:
   - Entwurf: **Ausformulieren lassen**. Schreibt einen Kommentar „@orchestrator bitte ausformulieren und verteilen“.
   - Geplant: **Verteilen**. Ruft `fab dispatch`. Fehlen Voraussetzungen, nennt der Knopf sie im Tooltip und ist deaktiviert.
   - In Arbeit: **Prüfen** und **Agent wecken…**.
-  - Prüfung: **Abnehmen** (primär) und **Zurück mit Feedback**.
+  - Prüfung: **Abnehmen** (primär, bis die Änderungen für den aktuellen HEAD angesehen wurden deaktiviert) und **Zurück mit Feedback**.
   - Immer: **Verwerfen…**.
   - Abnehmen und Verwerfen öffnen einen Bestätigungsdialog, der sagt, was passiert: Merge in welche Basis, welcher Worktree und welche Sessions verschwinden.
 

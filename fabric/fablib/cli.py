@@ -435,6 +435,162 @@ def cmd_show(args):
     return 0
 
 
+_URL_TEXT = re.compile(r"https?://\S+", re.IGNORECASE)
+_PROOF_TOKEN = re.compile(
+    r"[A-Za-z0-9_.@+\-]+(?:/[A-Za-z0-9_.@+\-]+)*/[A-Za-z0-9_.@+\-]+\.[A-Za-z0-9]+"
+    r"|[A-Za-z0-9_.@+\-]+\.[A-Za-z0-9]{2,10}\b",
+    re.IGNORECASE,
+)
+
+
+def _is_image(path):
+    return os.path.splitext(path)[1].lower() in _ATTACHMENT_SUFFIXES
+
+
+def _resolve_candidate(roots, path):
+    """Ersten existierenden Treffer von path unter roots liefern, sonst None."""
+    for root in roots:
+        if not root:
+            continue
+        candidate = os.path.abspath(os.path.join(root, path))
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
+def _proof_roots(ticket, order):
+    known = {
+        "home_parent": os.path.dirname(store.home()),
+        "home": store.home(),
+        "worktree": ticket.get("worktree"),
+        "repo": ticket.get("repo"),
+    }
+    return [known[name] for name in order]
+
+
+def _attachment_proofs(ticket):
+    roots = _proof_roots(ticket, ("home_parent", "home", "worktree", "repo"))
+    proofs = []
+    for item in ticket.get("attachments") or []:
+        path = item.get("path") or ""
+        name = item.get("name") or os.path.basename(path)
+        resolved = _resolve_candidate(roots, path)
+        if resolved is None and name:
+            stored = os.path.join(store.attachments_dir(ticket["id"]), name)
+            if os.path.isfile(stored):
+                resolved = os.path.abspath(stored)
+        proofs.append(
+            {
+                "name": name,
+                "path": resolved or path,
+                "kind": "attachment",
+                "image": True,
+                "exists": resolved is not None,
+            }
+        )
+    return proofs
+
+
+def _handover_proofs(ticket):
+    roots = _proof_roots(ticket, ("worktree", "repo", "home_parent", "home"))
+    proofs = []
+    seen = set()
+    for row in events.read_all():
+        if row.get("kind") != "handover" or row.get("ticket") != ticket["id"]:
+            continue
+        text = _URL_TEXT.sub(" ", row.get("text") or "")
+        for match in _PROOF_TOKEN.finditer(text):
+            path = match.group(0)
+            resolved = _resolve_candidate(roots, path)
+            shown = resolved or path
+            key = os.path.abspath(shown) if resolved else shown
+            if key in seen:
+                continue
+            seen.add(key)
+            proofs.append(
+                {
+                    "name": os.path.basename(path),
+                    "path": shown,
+                    "kind": "handover",
+                    "image": _is_image(path),
+                    "exists": resolved is not None,
+                }
+            )
+    return proofs
+
+
+def _merge_proofs(proofs):
+    """Gleiche Datei nur einmal: Anhang vor Handover, erster Treffer zählt."""
+    seen = set()
+    merged = []
+    for proof in proofs:
+        key = os.path.abspath(proof["path"])
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(proof)
+    return merged
+
+
+def cmd_diff(args):
+    ticket = store.load(args.id)
+    tid = ticket["id"]
+    repo = ticket.get("repo")
+    base = ticket.get("base")
+    branch_name = ticket.get("branch")
+    if not repo or not base or not branch_name:
+        raise FabError(
+            f"{tid}: Repo, Basis oder Branch fehlt; fab dispatch legt sie an"
+        )
+    sha = git.resolve_head(repo, branch_name, ticket.get("worktree"))
+    if args.file:
+        text = git.diff_text(repo, base, branch_name, args.file)
+        if args.json:
+            print(json.dumps({"path": args.file, "diff": text}, ensure_ascii=False))
+        else:
+            sys.stdout.write(text)
+        return 0
+    files = git.diff_numstat(repo, base, branch_name)
+    commits = git.diff_commits(repo, base, branch_name)
+    proofs = _merge_proofs(_attachment_proofs(ticket) + _handover_proofs(ticket))
+    if args.json:
+        payload = {
+            "id": tid,
+            "base": base,
+            "branch": branch_name,
+            "head": sha,
+            "merge_base": git.merge_base(repo, base, branch_name),
+            "files": files,
+            "commits": commits,
+            "proofs": proofs,
+        }
+        print(json.dumps(payload, ensure_ascii=False))
+        return 0
+    print(f"{tid}: {branch_name} → {base} (HEAD {sha[:7]})")
+    print("Dateien:")
+    if files:
+        for item in files:
+            if item["binary"]:
+                print(f"binär {item['path']}")
+            else:
+                print(f"+{item['added']} -{item['deleted']} {item['path']}")
+    else:
+        print("keine")
+    print("Commits:")
+    if commits:
+        for commit in commits:
+            print(f"{commit['short']} {commit['subject']} ({commit['author']})")
+    else:
+        print("keine")
+    print("Nachweise:")
+    if proofs:
+        for proof in proofs:
+            print(f"{proof['name']} {proof['path']}")
+    else:
+        print("keine")
+    return 0
+
+
 def cmd_edit(args):
     actor = _require_actor(args)
     body_text = args.body
@@ -1922,6 +2078,11 @@ def build_parser():
     item = command("show", "Ein Ticket mit Verlauf zeigen", cmd_show)
     item.add_argument("id", metavar="ID", help="Ticket-ID, z. B. T-1")
     item.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe")
+
+    item = command("diff", "Änderungen des Tickets gegenüber der Basis zeigen", cmd_diff)
+    item.add_argument("id", metavar="ID", help="Ticket-ID, z. B. T-1")
+    item.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe")
+    item.add_argument("--file", metavar="PFAD", help="nur diese Datei zeigen")
 
     item = command("edit", "Titel, Body, Repo oder Basis eines Tickets ändern", cmd_edit)
     item.add_argument("id", metavar="ID")

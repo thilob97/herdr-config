@@ -10,7 +10,7 @@ class CliTests(FabricCase):
     def test_help_listet_alle_befehle(self):
         result = self.ok("--help")
         for command in (
-            "new", "list", "show", "edit", "status", "assign", "link", "comment",
+            "new", "list", "show", "diff", "edit", "status", "assign", "link", "comment",
             "attach", "dispatch", "verify", "verdict", "handover", "accept",
             "reject", "drop",
             "wake", "orchestrator", "agents", "inbox", "index",

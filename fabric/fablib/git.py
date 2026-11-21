@@ -98,8 +98,8 @@ def pending_paths(path):
     return paths
 
 
-def diff_paths(repo, base, branch_name):
-    """Dateien, die der Branch gegenüber der Merge-Basis mit base ändert."""
+def merge_base(repo, base, branch_name):
+    """Merge-Basis von base und branch_name; FabError, wenn unbestimmbar."""
     merged = git(["merge-base", base, branch_name], repo)
     basis = merged.stdout.strip()
     if merged.returncode != 0 or not basis:
@@ -107,11 +107,102 @@ def diff_paths(repo, base, branch_name):
         raise FabError(
             f"Merge-Basis von {base} und {branch_name} ist nicht bestimmbar: {detail}"
         )
+    return basis
+
+
+def diff_paths(repo, base, branch_name):
+    """Dateien, die der Branch gegenüber der Merge-Basis mit base ändert."""
+    basis = merge_base(repo, base, branch_name)
     result = git(["diff", "--name-only", "-z", basis, branch_name], repo)
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip() or "unbekannter Fehler"
         raise FabError(f"Dateien von {branch_name} sind nicht lesbar: {detail}")
     return [name for name in result.stdout.split("\0") if name]
+
+
+def resolve_head(repo, branch_name, worktree=None):
+    """Voller SHA der Branch-Spitze; bevorzugt den Worktree, sonst das Repo."""
+    if worktree and os.path.isdir(worktree):
+        sha = head(worktree)
+        if sha:
+            return sha
+    result = git(["rev-parse", "--verify", branch_name], repo)
+    sha = result.stdout.strip()
+    if result.returncode != 0 or not sha:
+        detail = (result.stderr or result.stdout).strip() or "unbekannter Fehler"
+        raise FabError(f"Branch {branch_name} ist nicht auflösbar: {detail}")
+    return sha
+
+
+def diff_numstat(repo, base, branch_name):
+    """Dateiänderungen als {path, added, deleted, binary} (drei Punkte, keine Renames)."""
+    result = git(
+        ["diff", "--numstat", "--no-renames", "-z", f"{base}...{branch_name}"], repo
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip() or "unbekannter Fehler"
+        raise FabError(f"Änderungen von {branch_name} sind nicht lesbar: {detail}")
+    files = []
+    for entry in result.stdout.split("\0"):
+        if not entry:
+            continue
+        added, deleted, path = entry.split("\t", 2)
+        binary = added == "-" or deleted == "-"
+        files.append(
+            {
+                "path": path,
+                "added": 0 if binary else int(added),
+                "deleted": 0 if binary else int(deleted),
+                "binary": binary,
+            }
+        )
+    return files
+
+
+def diff_commits(repo, base, branch_name):
+    """Commits auf dem Branch seit base, neueste zuerst."""
+    result = git(
+        [
+            "log",
+            "-z",
+            "--format=%H%x1f%h%x1f%an%x1f%aI%x1f%s",
+            f"{base}..{branch_name}",
+        ],
+        repo,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip() or "unbekannter Fehler"
+        raise FabError(f"Commits von {branch_name} sind nicht lesbar: {detail}")
+    commits = []
+    for record in result.stdout.split("\0"):
+        if not record.strip():
+            continue
+        fields = record.split("\x1f", 4)
+        if len(fields) != 5:
+            continue
+        sha, short, author, at, subject = fields
+        commits.append(
+            {
+                "hash": sha,
+                "short": short,
+                "subject": subject,
+                "author": author,
+                "at": at,
+            }
+        )
+    return commits
+
+
+def diff_text(repo, base, branch_name, path):
+    """Farbfreier Diff einer Datei gegen die Merge-Basis."""
+    result = git(
+        ["diff", "--no-color", "--no-ext-diff", f"{base}...{branch_name}", "--", path],
+        repo,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip() or "unbekannter Fehler"
+        raise FabError(f"Diff für {path} ist nicht lesbar: {detail}")
+    return result.stdout
 
 
 def merge_conflicts(repo_top, base, branch_name):

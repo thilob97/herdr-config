@@ -2,7 +2,7 @@
 
 import { div } from "gpui-kit";
 import { h_flex, v_flex, TextView } from "gpui-base";
-import { agents, run, terminals } from "herdr";
+import { agents, appHome, run, terminals } from "herdr";
 import * as model from "../model.js";
 import * as ui from "../ui.js";
 
@@ -157,6 +157,195 @@ function body(app, cx, t, ticket) {
             }),
           }),
       ));
+}
+
+function proofName(proof) {
+  return proof?.name || String(proof?.path ?? "").split("/").pop() || "Nachweis";
+}
+
+/** `image()` löst relativ zum App-Verzeichnis auf; alles außerhalb bleibt Datei. */
+function appImagePath(path) {
+  const root = String(appHome() ?? "").replace(/\/+$/, "");
+  const value = String(path ?? "");
+  if (!root || !value) return "";
+  if (value.startsWith(`${root}/`)) return value.slice(root.length + 1);
+  return value.startsWith("/") ? "" : value;
+}
+
+function changesFiles(app, cx, t, data) {
+  const files = data.files ?? [];
+  if (!files.length) return ui.hint(t, "Keine Dateien gegenüber der Basis.");
+  return v_flex().w_full().gap(1).children(files.map((file, index) => {
+    const selected = app.changesFile === file.path;
+    return h_flex()
+      .id(`fabric-changes-file-${index}`)
+      .w_full()
+      .h(24)
+      .px(6)
+      .gap(S.s)
+      .items_center()
+      .rounded(ui.RADIUS.s)
+      .cursor_pointer()
+      .hover((style) => style.bg(t.hover))
+      .when(selected, (el) => el.bg(t.raised))
+      .on_click((_event, clickCx) => {
+        clickCx.stop_propagation();
+        app.openDiffFile(file.path);
+      })
+      .child(div().flex_1().min_w(0).truncate().text_size(T.xs).text_color(t.foreground)
+        .child(file.path).tooltip(file.path))
+      .child(div().flex_none().text_size(T.xs).text_color(file.binary ? t.dim : t.done)
+        .child(file.binary ? "binär" : `+${file.added ?? 0}`))
+      .child(div().flex_none().text_size(T.xs).text_color(file.binary ? t.dim : t.blocked)
+        .child(file.binary ? "" : `−${file.deleted ?? 0}`));
+  }));
+}
+
+function diffLine(t, line, index) {
+  const kind = line.startsWith("@@") ? "hunk"
+    : line.startsWith("+") ? "add"
+      : line.startsWith("-") ? "del" : "";
+  const color = kind === "add" ? t.done
+    : kind === "del" ? t.blocked
+      : kind === "hunk" ? t.accent : t.muted;
+  return div()
+    .id(`fabric-changes-diff-${index}`)
+    .flex_none()
+    .font_family("monospace")
+    .text_size(T.xs)
+    .text_color(color)
+    .whitespace_nowrap()
+    .child(line === "" ? " " : line);
+}
+
+function changesDiff(app, cx, t) {
+  if (!app.changesFile) return null;
+  const lines = String(app.changesDiff ?? "").split("\n");
+  const shown = lines.slice(0, 2000);
+  return v_flex().w_full().gap(S.xs)
+    .child(h_flex().w_full().gap(S.s).items_center()
+      .child(div().flex_1().min_w(0).truncate().text_size(T.xs).font_semibold().text_color(t.muted)
+        .child(app.changesFile))
+      .when(app.changesLoadingFile, (el) => el.child(ui.spinner(t))))
+    .child(
+      div()
+        .w_full()
+        .max_h(320)
+        .overflow_y_scrollbar()
+        .overflow_x_scrollbar()
+        .rounded(ui.RADIUS.s)
+        .border_1()
+        .border_color(t.border)
+        .bg(t.background)
+        .p(S.s)
+        .child(v_flex().gap(1).children(shown.map((line, index) => diffLine(t, line, index)))),
+    )
+    .when(lines.length > shown.length, (el) =>
+      el.child(ui.hint(t, `… ${lines.length - shown.length} weitere Zeilen`)))
+    .when(!app.changesDiff && !app.changesLoadingFile, (el) =>
+      el.child(ui.hint(t, "Keine Textänderung – binär oder leer.")));
+}
+
+function changesCommits(t, data) {
+  const commits = data.commits ?? [];
+  if (!commits.length) return ui.hint(t, "Keine Commits.");
+  return v_flex().w_full().gap(2).children(commits.map((commit, index) => h_flex()
+    .id(`fabric-changes-commit-${index}`)
+    .w_full()
+    .gap(S.s)
+    .items_center()
+    .child(div().flex_none().font_family("monospace").text_size(T.xs).text_color(t.accent)
+      .child(commit.short ?? String(commit.hash ?? "").slice(0, 7)))
+    .child(div().flex_1().min_w(0).truncate().text_size(T.xs).text_color(t.foreground)
+      .child(commit.subject ?? "Ohne Betreff").tooltip(commit.subject ?? ""))
+    .child(div().flex_none().text_size(T.xs).text_color(t.dim).child(commit.author ?? ""))));
+}
+
+function changesProofs(app, cx, t, data) {
+  const proofs = data.proofs ?? [];
+  if (!proofs.length) return ui.hint(t, "Keine Nachweise im Handover oder als Anhang.");
+  const images = proofs
+    .filter((proof) => proof.image && proof.exists)
+    .map((proof) => ({ path: appImagePath(proof.path), alt: proofName(proof) }))
+    .filter((proof) => proof.path);
+  const files = proofs.filter((proof) => !proof.exists || !proof.image || !appImagePath(proof.path));
+  return v_flex().w_full().gap(S.s)
+    .when(images.length > 0, (el) => el.child(
+      ui.imageGallery(
+        t,
+        images,
+        (bild) => app.openImage(bild),
+        "fabric-changes-proof",
+      ),
+    ))
+    .children(files.map((proof, index) => h_flex()
+      .id(`fabric-changes-proof-file-${index}`)
+      .w_full()
+      .gap(S.s)
+      .items_center()
+      .child(div().flex_none().text_color(proof.exists ? t.muted : t.dim)
+        .child(ui.icon(proof.image ? "image" : "folder", 12)))
+      .child(div().flex_1().min_w(0).truncate().text_size(T.xs)
+        .text_color(proof.exists ? t.foreground : t.dim)
+        .child(proofName(proof)).tooltip(proof.path ?? ""))
+      .when(!proof.exists, (el) => el.child(ui.chip(t, "fehlt", t.dim)))));
+}
+
+function changesSection(app, cx, t, ticket) {
+  const data = app.changes;
+  const gate = model.changesGate(data, app.changesSeenHead);
+  const head = data?.head ? String(data.head).slice(0, 7) : "—";
+  const totals = (data?.files ?? []).reduce((sum, file) => ({
+    added: sum.added + (Number(file.added) || 0),
+    deleted: sum.deleted + (Number(file.deleted) || 0),
+  }), { added: 0, deleted: 0 });
+  const buttonLabel = !app.changesOpen ? "Ansehen"
+    : gate.enabled ? "Ausblenden" : "Neu ansehen";
+  return v_flex()
+    .id("fabric-changes")
+    .flex_none()
+    .w_full()
+    .p(S.l)
+    .gap(S.s)
+    .border_b(1)
+    .border_color(t.border)
+    .child(h_flex().w_full().gap(S.s).items_center()
+      .child(div().text_size(T.s).font_semibold().text_color(t.muted).child("Änderungen"))
+      .child(ui.chip(t, `HEAD ${head}`, gate.enabled ? t.done : t.dim))
+      .when(Boolean(data?.files?.length), (el) => el
+        .child(div().text_size(T.xs).text_color(t.done).child(`+${totals.added}`))
+        .child(div().text_size(T.xs).text_color(t.blocked).child(`−${totals.deleted}`)))
+      .child(div().flex_1())
+      .child(ui.button(t, {
+        id: "fabric-changes-toggle",
+        label: buttonLabel,
+        icon: "code",
+        small: true,
+        busy: app.changesLoading,
+        tooltip: gate.enabled
+          ? "Änderungen für diesen HEAD sind angesehen"
+          : "Dateien, Diff, Commits und Nachweise ansehen; schaltet „Abnehmen“ frei",
+        onClick: (cx) => app.toggleChanges(cx),
+      })))
+    .when(!app.changesOpen, (el) => el.child(div()
+      .w_full()
+      .text_size(T.xs)
+      .text_color(gate.enabled ? t.done : t.dim)
+      .whitespace_normal()
+      .child(gate.enabled
+        ? "Für diesen HEAD angesehen – „Abnehmen“ ist frei."
+        : "Vor dem Abnehmen ansehen: Dateien, Diff, Commits und Nachweise.")))
+    .when(app.changesOpen && Boolean(data), (el) => el
+      .child(changesFiles(app, cx, t, data))
+      .when(Boolean(app.changesFile), (inner) => inner.child(changesDiff(app, cx, t)))
+      .child(div().w_full().h(1).bg(t.border))
+      .child(div().text_size(T.xs).font_semibold().text_color(t.dim).child("Commits"))
+      .child(changesCommits(t, data))
+      .child(div().w_full().h(1).bg(t.border))
+      .child(div().text_size(T.xs).font_semibold().text_color(t.dim).child("Nachweise"))
+      .child(changesProofs(app, cx, t, data)))
+    .when(Boolean(app.errorFor("changes")), (el) =>
+      el.child(ui.notice(t, app.errorFor("changes").text, app.errorFor("changes").level)));
 }
 
 function historyRow(app, cx, t, row, index) {
@@ -606,7 +795,7 @@ function properties(app, cx, t, ticket, { compact = false } = {}) {
 }
 
 function actionBar(app, cx, t, ticket) {
-  const actions = model.actionBar(ticket, app.tickets);
+  const actions = model.actionBar(ticket, app.tickets, app.changes, app.changesSeenHead);
   const error = ["accept", "accept-pr", "reject", "drop", "verify", "wake", "status", "dispatch", "formulate"]
     .map((key) => app.errorFor(key)).find(Boolean);
   return v_flex()
@@ -683,6 +872,8 @@ export function renderTicket(app, cx, t) {
           .overflow_y_scrollbar()
           .track_scroll(app.historyScroll)
           .child(body(app, cx, t, ticket))
+          .when(ticket.status === "review" && Boolean(ticket.branch), (el) =>
+            el.child(changesSection(app, cx, t, ticket)))
           .children(history(app, cx, t, ticket))
           .children(properties(app, cx, t, ticket, { compact: true })),
       )
@@ -712,6 +903,8 @@ export function renderTicket(app, cx, t) {
                 .overflow_y_scrollbar()
                 .track_scroll(app.historyScroll)
                 .child(body(app, cx, t, ticket))
+                .when(ticket.status === "review" && Boolean(ticket.branch), (el) =>
+                  el.child(changesSection(app, cx, t, ticket)))
                 .children(history(app, cx, t, ticket)),
             )
             .child(commentBox(app, cx, t, ticket)),
