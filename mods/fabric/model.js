@@ -63,12 +63,14 @@ const TRANSITIONS = {
   dropped: ["draft"],
 };
 
-/** Status, die das Select im Detail anbietet, mit `disabled` und Grund. */
+/** Status, die das Select im Detail anbietet, mit `disabled` und Grund.
+ *  „Verworfen“ trägt `drop: true`: es öffnet immer den Verwerfen-Dialog
+ *  (`fab drop`), nie einen direkten Statuswechsel. */
 export function statusOptions(current) {
   const allowed = TRANSITIONS[current] ?? [];
   const options = [{ key: current, label: statusWord(current), disabled: false, reason: "" }];
   for (const key of allowed) {
-    options.push({ key, label: statusWord(key), disabled: false, reason: "" });
+    options.push({ key, label: statusWord(key), disabled: false, reason: "", drop: key === "dropped" });
   }
   if (current === "done") {
     return [{ key: "done", label: statusWord("done"), disabled: true, reason: "Fertig ist abgeschlossen." }];

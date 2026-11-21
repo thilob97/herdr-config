@@ -295,7 +295,11 @@ function statusField(app, cx, t, ticket) {
     width: 190,
     scrollHandle: app.dropdownScroll,
     onToggle: () => { app.menu = app.menu === "detail-status" ? null : "detail-status"; cx.notify(); },
-    onPick: (value) => { app.menu = null; app.setStatus(value, cx); },
+    onPick: (value) => {
+      app.menu = null;
+      if (options.find((option) => option.key === value)?.drop) app.openDropModal(cx, ticket);
+      else app.setStatus(value, cx);
+    },
   }));
 }
 

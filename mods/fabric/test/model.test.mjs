@@ -188,6 +188,24 @@ test("Statusübergänge: done nur über Abnehmen, dropped lässt sich wieder öf
   );
   assert.deepEqual(statusOptions("dropped").map((option) => option.key), ["dropped", "draft"]);
 
+  // „Verworfen“ öffnet immer den Dialog (fab drop); andere Wechsel nicht.
+  assert.deepEqual(
+    statusOptions("draft").filter((option) => option.drop).map((option) => option.key),
+    ["dropped"],
+  );
+  assert.deepEqual(
+    statusOptions("doing").filter((option) => option.drop).map((option) => option.key),
+    ["dropped"],
+  );
+  assert.equal(
+    statusOptions("doing").find((option) => option.key === "review").drop,
+    false,
+  );
+  assert.equal(
+    statusOptions("dropped").some((option) => option.drop),
+    false,
+  );
+
   assert.equal(canTransition("draft", "todo"), true);
   assert.equal(canTransition("draft", "done"), false);
   assert.equal(canTransition("review", "done"), false);

@@ -459,12 +459,14 @@ def cmd_status(args):
         )
     if args.status == "done":
         raise FabError(f"{args.id}: „done“ gibt es nur über fab accept")
+    if args.status == "dropped":
+        raise FabError(
+            f"{args.id}: „dropped“ gibt es nur über fab drop {args.id} mit einem Grund"
+        )
     with store.locked():
         ticket = store.load(args.id)
         old = ticket["status"]
         ticket["status"] = args.status
-        if args.status in ("done", "dropped"):
-            ticket["waiting"] = []
         events.append("status", ticket["id"], actor, "", f"{old} → {args.status}")
         store.save(ticket)
         index.rebuild()
@@ -1611,9 +1613,13 @@ def build_parser():
     item.add_argument("--base", metavar="B")
     item.add_argument("--from", dest="from_", metavar="NAME", required=True, help="wer ändert")
 
-    item = command("status", "Status eines Tickets setzen (done nur über accept)", cmd_status)
+    item = command(
+        "status",
+        "Status eines Tickets setzen (done über accept, dropped über drop)",
+        cmd_status,
+    )
     item.add_argument("id", metavar="ID")
-    item.add_argument("status", metavar="STATUS", help="draft, todo, doing, review oder dropped")
+    item.add_argument("status", metavar="STATUS", help="draft, todo, doing oder review")
     item.add_argument("--from", dest="from_", metavar="NAME", required=True)
 
     item = command("assign", "Zuständigen aus dem Roster setzen", cmd_assign)

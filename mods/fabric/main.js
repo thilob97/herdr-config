@@ -1558,6 +1558,10 @@ export default class Fabric extends View {
 
   async setStatus(status, cx) {
     if (status === this.ticket?.status) return;
+    if (status === "dropped") {
+      this.openDropModal(cx);
+      return;
+    }
     await this.setStatusOf(this.activeTicketId(), status, cx);
   }
 
