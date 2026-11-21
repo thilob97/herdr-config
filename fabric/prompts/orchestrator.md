@@ -42,6 +42,10 @@ Der Body hat genau vier Abschnitte:
 
 - `## Grenzen` — was ausdrücklich nicht dazugehört.
 
+## Projekt und Team
+
+{context}
+
 ## Lehren aus früheren Tickets
 
 Die Liste unten ist der Stand beim Start des Orchestrators. Lies vor dem

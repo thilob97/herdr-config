@@ -33,6 +33,7 @@ SETTINGS = (
     "reviewer",
     "orchestrator_argv",
     "max_sessions_total",
+    "context_limit",
     *TICK_KEYS,
     *ORCHESTRATOR_KEYS,
 )
@@ -719,7 +720,7 @@ def _live_blockers(live, name):
 
 def edit_team(name, rename=None, repos=None, members_json=None,
               orchestrator_argv_json=None, orchestrator_prompt=None,
-              reviewer=None, max_sessions=None, actor=""):
+              reviewer=None, max_sessions=None, brief=None, actor=""):
     path, data = _load()
     _migrate(data)
     entry = teams.team(data, name)
@@ -793,6 +794,11 @@ def edit_team(name, rename=None, repos=None, members_json=None,
     if orchestrator_prompt is not None:
         final_prompt = str(orchestrator_prompt)
 
+    old_brief = str(entry.get("brief") or "")
+    final_brief = old_brief
+    if brief is not None:
+        final_brief = str(brief).strip()
+
     teams.validate_team(
         data, target, final_repos, final_members, final_reviewer, final_limit,
         ignore=name,
@@ -821,11 +827,15 @@ def edit_team(name, rename=None, repos=None, members_json=None,
         changes.append("orchestrator argv " + " ".join(final_argv))
     if final_prompt != old_prompt:
         changes.append(f"orchestrator_prompt {final_prompt}")
+    if final_brief != old_brief:
+        changes.append(
+            f"Brief {len(old_brief)} → {len(final_brief)} Zeichen"
+        )
     if not changes:
         raise FabError(
             "Nichts zu ändern: nutze --rename, --repo, --members-json, "
-            "--reviewer, --max-sessions, --orchestrator-argv-json oder "
-            "--orchestrator-prompt"
+            "--reviewer, --max-sessions, --orchestrator-argv-json, "
+            "--orchestrator-prompt oder --brief/--brief-file"
         )
 
     entry["name"] = target
@@ -844,6 +854,7 @@ def edit_team(name, rename=None, repos=None, members_json=None,
     entry["members"] = final_members
     entry["reviewer"] = final_reviewer
     entry["max_sessions"] = final_limit
+    entry["brief"] = final_brief
     orchestrator["argv"] = final_argv
     orchestrator["prompt"] = final_prompt
     _sync_legacy(data)
@@ -943,6 +954,11 @@ def set_setting(key, value, actor, team=None):
         text = (
             f"max_sessions_total: {old if old is not None else '—'} → {number}"
         )
+    elif key == "context_limit":
+        number = teams.check_context_limit(raw)
+        old = data.get(key)
+        data[key] = number
+        text = f"context_limit: {old if old is not None else '—'} → {number}"
     elif key in TICK_KEYS:
         try:
             number = int(raw.strip())

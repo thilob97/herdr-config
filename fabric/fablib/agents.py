@@ -4,7 +4,7 @@ import os
 import re
 import stat
 
-from . import claude, hc, herdr, render, store, teams
+from . import claude, context, hc, herdr, render, store, teams
 from .errors import FabError, HcError, HerdrError
 
 ORCHESTRATOR = hc.ORCHESTRATOR
@@ -98,6 +98,9 @@ def load(required=True):
         "agents": expanded["agents"],
         "orchestrator": expanded["orchestrator"],
         "team": expanded.get("team"),
+        "context_limit": expanded.get(
+            "context_limit", teams.DEFAULT_CONTEXT_LIMIT
+        ),
         "teams": list(data.get("teams") or []),
         "blueprints": list(data.get("blueprints") or []),
         "tick": {
@@ -378,6 +381,7 @@ def start_prompt(roster, ticket, entry, reviewer=None):
         "base": ticket.get("base") or "",
         "reviewer": reviewer if reviewer is not None else roster.get("reviewer") or "",
         "lessons": repos_mod.lessons_text(ticket.get("repo")),
+        "context": context.for_ticket(roster, ticket),
     }
     preamble = _fill(
         prompt_text(roster, os.path.join("prompts", "preamble.md")), values
@@ -595,7 +599,7 @@ def orchestrator_dir(team=None):
 
 
 def orchestrator_prompt(roster, team_name):
-    """Orchestrator-Prompt eines Teams mit eingebetteten Lehren seiner Repos."""
+    """Orchestrator-Prompt eines Teams mit Lehren, Steckbriefen und Brief."""
     from . import repos as repos_mod
 
     entry = teams.team(roster, team_name)
@@ -608,7 +612,10 @@ def orchestrator_prompt(roster, team_name):
         text = repos_mod.EMPTY_LESSONS
     return _fill(
         prompt_text(roster, teams.orchestrator_config(entry)["prompt"]),
-        {"lessons": text},
+        {
+            "lessons": text,
+            "context": context.for_entry(roster, entry),
+        },
     )
 
 
