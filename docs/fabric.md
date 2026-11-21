@@ -188,7 +188,7 @@ Das UI pflegt alles über diese Befehle. Alle schreiben atomar (tmp + `os.replac
 
 Erwähnung = `@name`, Muster `@([a-z][a-z0-9_-]*)`, ohne Beachtung der Groß-/Kleinschreibung. Pro Kommentar wird jeder Name höchstens einmal geweckt. Für jeden genannten Namen gilt in dieser Reihenfolge:
 
-1. Name = Autor → nichts.
+1. Name = Autor → nichts. Zuvor geprüft wird ein Merge-Konflikt des Ticket-Branch mit der Basis: Kommentar mit Dateiliste an den Zuständigen und Wecken, auch wenn `mensch` der Autor ist.
 2. `--no-wake` → nichts.
 3. `mensch` → kein Wecken. `mensch` kommt in `waiting`, das Ticket erscheint in der Inbox.
 4. Ticket `done` oder `dropped` → `unterdrückt: abgeschlossen`.
