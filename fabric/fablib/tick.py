@@ -78,7 +78,7 @@ def run(roster, dry=False):
         live = {}
     tickets = store.all_tickets()
     by_id = {ticket["id"]: ticket for ticket in tickets}
-    for ticket in tickets:
+    for ticket in store.open_tickets():
         try:
             changed = _tick_ticket(
                 ticket, roster or {}, live, cfg, by_id, result, dry

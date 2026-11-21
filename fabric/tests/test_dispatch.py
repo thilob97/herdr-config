@@ -1,5 +1,4 @@
 """Dispatch: Vorbedingungen, Branch und Worktree, Start statt Wecken."""
-import json
 import os
 
 from fabric.tests.support import FabricCase
@@ -143,8 +142,7 @@ class DispatchTests(FabricCase):
         self.assertEqual(
             renames["tab.rename"][renames["tab.rename"].index("--id") + 1], tab
         )
-        with open(os.path.join(self.home, "herdr.json"), encoding="utf-8") as handle:
-            self.assertEqual(json.load(handle)["space"], space)
+        self.assertEqual(self.meta("herdr_space"), space)
 
     def test_dispatch_ohne_herdr_fenster_startet_agenten_trotzdem(self):
         repo = self.make_repo()

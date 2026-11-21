@@ -62,28 +62,22 @@ class StoreTests(FabricCase):
             self.assertEqual(process.returncode, 0, err)
             results.append(out.strip())
         self.assertEqual(sorted(results), ["T-1", "T-2"])
-        tickets = sorted(
-            name for name in os.listdir(os.path.join(self.home, "tickets"))
-            if name.endswith(".json")
-        )
-        self.assertEqual(tickets, ["T-1.json", "T-2.json"])
-        with open(os.path.join(self.home, "counter"), encoding="utf-8") as handle:
-            self.assertEqual(handle.read().strip(), "3")
+        self.assertTrue(os.path.isfile(os.path.join(self.home, "tickets", "T-1.json")))
+        self.assertTrue(os.path.isfile(os.path.join(self.home, "tickets", "T-2.json")))
+        third = self.new("Drittes")
+        self.assertEqual(third, "T-3")
 
     def test_counter_vergibt_keine_nummer_zweimal(self):
-        first = self.new("Eins")
+        with self.store_env():
+            with store.locked():
+                first = store.next_id()
+                second = store.next_id()
         self.assertEqual(first, "T-1")
-        os.unlink(os.path.join(self.home, "tickets", f"{first}.json"))
-        second = self.new("Zwei")
         self.assertEqual(second, "T-2")
 
     def test_unbekannte_felder_bleiben_erhalten(self):
         tid = self.new("Felder")
-        ticket = self.ticket(tid)
-        ticket["eigen"] = {"x": [1, 2]}
-        ticket["notiz"] = "bleibt"
-        path = os.path.join(self.home, "tickets", f"{tid}.json")
-        self.write_file(path, json.dumps(ticket, ensure_ascii=False, indent=2))
+        self.patch_ticket(tid, eigen={"x": [1, 2]}, notiz="bleibt")
         self.ok("status", tid, "doing", "--from", "mensch")
         self.ok("comment", tid, "--from", "zap", "hallo", "--no-wake")
         fresh = self.ticket(tid)
@@ -106,6 +100,9 @@ class StoreTests(FabricCase):
         self.assertEqual(ticket["status"], "draft")
         self.assertEqual(ticket["blocked_by"], [])
         self.assertIsNone(ticket["checks"])
+        legacy = os.path.join(self.home, "legacy", "tickets", "T-1.json")
+        self.assertTrue(os.path.isfile(legacy))
+        self.assertIn("tickets", self.storage()["tables"])
 
     def test_index_ist_atomar_und_lesbar(self):
         tid = self.new("Atomar")

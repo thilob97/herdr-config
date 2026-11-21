@@ -6,7 +6,6 @@ Fokuswechsel in diesen Space und Tab (`adopt`). `terminal.keep` wäre der
 falsche Weg: Es nimmt den gerade gezeigten Space und fokussiert den neuen Tab.
 """
 import json
-import os
 import secrets
 import subprocess
 import time
@@ -15,7 +14,6 @@ from . import store
 from .errors import HerdrError
 
 SPACE = "Fabric"
-_STATE = "herdr.json"
 _WAIT = 2.0
 _POLL = 0.1
 
@@ -50,28 +48,13 @@ def spaces():
     return [row for row in rows or [] if isinstance(row, dict) and row.get("id")]
 
 
-def _state_path():
-    return os.path.join(store.home(), _STATE)
-
-
 def _saved_space():
-    try:
-        with open(_state_path(), encoding="utf-8") as handle:
-            data = json.load(handle)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return None
-    space = data.get("space") if isinstance(data, dict) else None
+    space = store.meta_get("herdr_space")
     return space if isinstance(space, str) and space else None
 
 
 def _save_space(space):
-    store.ensure()
-    path = _state_path()
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as handle:
-        json.dump({"space": space}, handle)
-        handle.write("\n")
-    os.replace(tmp, path)
+    store.meta_set("herdr_space", space)
 
 
 def _new_id(prefix):

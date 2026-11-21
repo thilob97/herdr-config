@@ -24,14 +24,23 @@ Konzept: `docs/concept.md`. Wer davon abweicht, ändert zuerst diese Datei.
 ## 2. Daten (`$FAB_HOME`)
 
 ```
-tickets/T-<n>.json   ein Ticket, Schema unten
-counter              nächste Nummer (Ganzzahl), nur unter Lock gelesen/geschrieben
-events.jsonl         Ereignislog, nur anhängen
+fabric.db            SQLite (WAL): tickets, comments, sessions, events, counter, attachments, meta
+fabric.db-wal/-shm   SQLite-Begleitdateien im WAL-Modus
+tickets/T-<n>.json   Lesemodell je Ticket, nach jeder Änderung aus der DB erzeugt
 index.json           Lesemodell für den Mod, nach JEDER Änderung atomar neu geschrieben (tmp + rename)
-lock                 flock für alle Schreibvorgänge
+attachments/<ID>/    Bilddateien; die Tabelle `attachments` hält nur den Verweis
+backups/             Sicherungen (`fab backup` und täglich automatisch, höchstens 14)
+legacy/              abgelegte Altdateien nach erfolgreicher Migration (nicht löschen)
+lock                 flock für Schreibvorgänge und die einmalige Migration
 ```
 
-IDs kommen aus `counter`, nie aus dem Dateinamen-Maximum: `T-1`, `T-2`, …
+Die gesamte Datenhaltung läuft über die schmale Schnittstelle in `fabric/fablib/store.py`; kein anderes Modul öffnet `fabric.db` oder die Dateien unter `data/fabric/` selbst. Ausnahme ist die Erzeugung der Lesemodelle `index.json` und `tickets/<ID>.json`.
+
+- **Eine Änderung = eine Transaktion.** Ticket, Ereignis und Zähler werden gemeinsam festgeschrieben oder gar nicht; ein abgebrochener Schreibvorgang hinterlässt keinen halben Zustand.
+- **Lesemodelle aus der DB.** Nach dem Commit schreibt `fab` die betroffenen `tickets/<ID>.json` und `index.json` neu. Der Mod und die Seitenleiste lesen weiterhin nur diese Dateien und bleiben unverändert.
+- **Migration.** Fehlt `fabric.db` und liegen Altdateien (`tickets/*.json`, `counter`, `events.jsonl`) vor, überführt der erste Aufruf sie automatisch; `fab migrate` macht dasselbe ausdrücklich. Der Bericht vergleicht Tickets, Kommentare, Sessions, Ereignisse, Anhänge und Zähler in Alt und Neu. Bei Abweichung bleibt die DB aus, die Altdateien bleiben unberührt, und `fab` arbeitet weiter auf ihnen, bis die Migration gelingt. Nach Erfolg wandern die Altdateien nach `legacy/`.
+- **Sicherung.** Beim ersten Schreibzugriff eines Tages und über `fab tick` entsteht eine konsistente sqlite-Backup-Kopie in `backups/`; `fab backup` erzwingt eine. Die letzten 14 bleiben.
+- **IDs** kommen aus der Tabelle `counter`, nie aus dem Dateinamen-Maximum: `T-1`, `T-2`, …
 
 ### Ticket `tickets/T-<n>.json`
 
@@ -76,7 +85,7 @@ IDs kommen aus `counter`, nie aus dem Dateinamen-Maximum: `T-1`, `T-2`, …
 - `attachments`: nur Bilder (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`), abgelegt von `fab attach` unter `data/fabric/attachments/<ID>/`. `path` ist relativ zur App-Wurzel (`~/.config/herdr-app`), damit der Mod ihn als Bild laden kann; im Body und in Kommentaren steht derselbe Pfad als Markdown-Bildlink `![name](path)`.
 - `stall`: nur von `fab tick` geschrieben, optional. `rule` ∈ `doing mention review todo blocked`, `since` = Beginn des Stillstands, `attempts` = bisherige Weck-/Startversuche, `attention` = nach zwei erfolglosen Versuchen oder Regel 5, `reason` einzeilig ohne „stockt seit“, `agent` = zu weckender Agent oder `orchestrator`. Ein Kommentar im Ticket, jede zugestellte manuelle Weckung und jeder Statuswechsel entfernen `stall`; `fab tick` entfernt ihn, sobald die Bedingung wegfällt. `draft`, `review`, `done` und `dropped` werden von `fab tick` weder gelesen noch verändert.
 
-### Ereignis (eine Zeile in `events.jsonl`)
+### Ereignis (Zeile in `events`)
 
 ```json
 {"at": 1790000000000, "kind": "comment", "ticket": "T-1", "actor": "zap", "target": "ada", "text": "…"}
@@ -123,7 +132,7 @@ Bei `tick` steht in `text` eines von: `geweckt`, `gestartet`, `an orchestrator`,
 
 ## 3. CLI
 
-Alle Befehle schreiben unter Lock, hängen Ereignisse an und erzeugen danach `index.json` neu. Fehler: Exit-Code ≠ 0, deutsche Meldung auf stderr. `--json` liefert maschinenlesbare Ausgabe, wo angegeben.
+Alle schreibenden Befehle laufen in genau einer Transaktion, hängen Ereignisse an und erzeugen danach die Lesemodelle (`index.json`, betroffene `tickets/<ID>.json`) neu. Fehler: Exit-Code ≠ 0, deutsche Meldung auf stderr. `--json` liefert maschinenlesbare Ausgabe, wo angegeben.
 
 | Befehl | Wirkung |
 |---|---|
@@ -148,6 +157,8 @@ Alle Befehle schreiben unter Lock, hängen Ereignisse an und erzeugen danach `in
 | `fab agents [--json]` | Mitglieder aller Teams mit Teamzuordnung (`teams`) und laufende Sessions. Beendete Sessions zeigen `beendet`; je Ticket und Terminalname erscheint nur der neueste Start. |
 | `fab inbox [--json]` | wie `index.json.inbox` |
 | `fab index` | `index.json` neu erzeugen |
+| `fab migrate [--json]` | Altdateien nach `fabric.db` überführen und den Abgleichsbericht zeigen; ein zweiter Lauf ändert nichts |
+| `fab backup [--json]` | Konsistente SQLite-Sicherung nach `data/fabric/backups/` schreiben; behält die letzten 14 |
 
 `--from` ist bei allen schreibenden Befehlen außer `new`, `accept`, `reject` und `verify` Pflicht. `verify` nimmt `--from NAME` optional; Standard ist der `assignee`. `accept` und `reject` schreiben als `mensch`.
 
@@ -239,7 +250,7 @@ Jedes Ergebnis wird als `wake`-Ereignis geschrieben, auch jede Unterdrückung. I
 
 ## 4c. Neustart des Orchestrators
 
-Der Kontext des Team-Orchestrators bleibt begrenzt. Zähler und Leerlauf werden aus `events.jsonl` gelesen; ein zusätzlicher Zustand entsteht nicht. Ein Neustart ist `hc kill` auf das laufende Orchestrator-Terminal und ein frischer `fab orchestrator start`, gefolgt von einem `orchestrator`-Ereignis mit `text: "neu gestartet"` und `reason` (Zähler oder Leerlauf). Das Ereignis setzt den Zähler zurück.
+Der Kontext des Team-Orchestrators bleibt begrenzt. Zähler und Leerlauf werden per SQL aus der Tabelle `events` gelesen; ein zusätzlicher Zustand entsteht nicht. Ein Neustart ist `hc kill` auf das laufende Orchestrator-Terminal und ein frischer `fab orchestrator start`, gefolgt von einem `orchestrator`-Ereignis mit `text: "neu gestartet"` und `reason` (Zähler oder Leerlauf). Das Ereignis setzt den Zähler zurück.
 
 - **Zähler:** Gezählt werden erfolgreiche `fab dispatch`-Aufrufe mit `--from orchestrator` seit dem letzten Start; Dispatch-Versuche mit `Start fehlgeschlagen` zählen nicht. Beim nächsten Wecken mit `@orchestrator` startet `fab` neu, statt `hc send` an die alte Session zu richten; die Weckernachricht geht an die neue Session. Schwelle `orchestrator_dispatches` (Standard 5, 0 schaltet ab).
 - **Leerlauf:** `fab tick` startet einen laufenden Orchestrator neu, wenn sein Terminal nicht `working`/`blocked` ist und seit `orchestrator_idle_minutes` (Standard 30, 0 schaltet ab) weder ein fab-Aufruf noch eine Ausgabe beobachtet wurde. Ausgabe kommt aus `hc get` (`status_ms`, sonst `created_ms`), fab-Aufrufe aus Ereignissen mit `actor: "orchestrator"` des Teams. Wartet ein offenes Ticket auf ihn (letzte Erwähnung ohne spätere Reaktion oder `orchestrator` in `waiting`), bleibt er stehen; `--dry-run` nennt den geplanten Neustart nur.

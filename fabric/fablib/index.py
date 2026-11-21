@@ -78,14 +78,31 @@ def _stall_age(since, now):
     return f"{hours // 24} Tagen"
 
 
-def _inbox(tickets, rows):
+def _ticket_number(ticket):
+    try:
+        return int(str(ticket.get("id") or "").split("-")[-1])
+    except ValueError:
+        return 0
+
+
+def _waiting_entries(questions, reviews):
+    """question/review in Ticket-Reihenfolge: `review` hat Vorrang, beide schließen sich aus."""
+    for ticket in sorted([*questions, *reviews], key=_ticket_number):
+        last = ticket["comments"][-1] if ticket["comments"] else None
+        if ticket.get("status") == "review":
+            yield "review", ticket, last, ticket.get("updated_at")
+        else:
+            yield "question", ticket, last, (
+                last.get("at") if last else ticket.get("updated_at")
+            )
+
+
+def _inbox(stalled, questions, reviews, rows):
     entries = []
-    stalled = set()
+    stalled_ids = set()
     now = store.now_ms()
-    for ticket in tickets:
+    for ticket in stalled:
         stall = ticket.get("stall")
-        if ticket.get("status") not in ("todo", "doing"):
-            continue
         if not isinstance(stall, dict) or not stall.get("attention"):
             continue
         since = stall.get("since")
@@ -105,47 +122,21 @@ def _inbox(tickets, rows):
                 "since": since,
             }
         )
-        stalled.add(ticket_id)
-    for ticket in tickets:
-        status = ticket.get("status")
-        closed = status in ("done", "dropped")
-        review = status == "review"
-        last = ticket["comments"][-1] if ticket["comments"] else None
-        # Pro Ticket höchstens ein Eintrag aus question/review: `review` hat Vorrang.
-        if not closed and not review and "mensch" in ticket.get("waiting", []):
-            entries.append(
-                {
-                    "kind": "question",
-                    "ticket": ticket["id"],
-                    "at": last.get("at") if last else ticket.get("updated_at"),
-                    "from": (last.get("author") if last else ticket.get("assignee")) or "fab",
-                    "text": ((last.get("text") if last else ticket.get("title")) or "")[:300],
-                }
-            )
-        if review:
-            entries.append(
-                {
-                    "kind": "review",
-                    "ticket": ticket["id"],
-                    "at": ticket.get("updated_at"),
-                    "from": (last.get("author") if last else ticket.get("assignee")) or "fab",
-                    "text": ((last.get("text") if last else ticket.get("title")) or "")[:300],
-                }
-            )
+        stalled_ids.add(ticket_id)
+    for kind, ticket, last, at in _waiting_entries(questions, reviews):
+        entries.append(
+            {
+                "kind": kind,
+                "ticket": ticket["id"],
+                "at": at,
+                "from": (last.get("author") if last else ticket.get("assignee")) or "fab",
+                "text": ((last.get("text") if last else ticket.get("title")) or "")[:300],
+            }
+        )
 
-    per_ticket = {}
-    for row in rows:
-        per_ticket.setdefault(row.get("ticket"), []).append(row)
-    for ticket_id, ticket_rows in per_ticket.items():
-        if ticket_id in stalled:
-            continue
-        candidate = None
-        for row in ticket_rows:
-            if row.get("kind") == "wake" and row.get("text") in events.ATTENTION_TEXTS:
-                candidate = row
-            else:
-                candidate = None
-        if not candidate:
+    for candidate in rows:
+        ticket_id = candidate.get("ticket")
+        if ticket_id in stalled_ids:
             continue
         text = candidate.get("text") or ""
         target = candidate.get("target") or ""
@@ -201,12 +192,18 @@ def _teams(roster):
 def build():
     tickets = store.all_tickets()
     rows = events.read_all()
+    inbox = _inbox(
+        store.stalled_tickets(),
+        store.question_tickets(),
+        store.review_tickets(),
+        store.attention_event_rows(events.ATTENTION_TEXTS),
+    )
     roster = agents.load(required=False)
     payload = {
         "version": 1,
         "generated_at": store.now_ms(),
         "tickets": [entry(ticket) for ticket in tickets],
-        "inbox": _inbox(tickets, rows),
+        "inbox": inbox,
         "roster": agents.roster_rows(roster) if roster else [],
         "teams": _teams(roster) if roster else [],
         "events": rows[-MAX_EVENTS:],
@@ -216,6 +213,9 @@ def build():
 
 def rebuild():
     payload = build()
+    if store.in_transaction():
+        store.defer_index(payload)
+        return payload
     text = json.dumps(payload, ensure_ascii=False) + "\n"
     store.atomic_write(store.index_path(), text)
     return payload

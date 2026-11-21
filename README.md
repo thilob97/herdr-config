@@ -14,7 +14,7 @@ Meine Herdr-Konfiguration (`~/.config/herdr-app`) und die **Fabric**: ein Ticket
 | Roster und Prompts | `fabric/roster.json`, `fabric/prompts/` |
 | Mod `fabric` (Tickets, Inbox, Timeline) | `mods/fabric/` |
 | Layout | `layouts/fabric.json` |
-| Daten | `data/fabric/` (nicht getrackt) |
+| Daten | `data/fabric/` (SQLite `fabric.db`, Lesemodelle, Sicherungen; nicht getrackt) |
 
 ## Benutzen
 
