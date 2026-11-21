@@ -1,0 +1,106 @@
+{
+  "name": "nachtschicht",
+  "nodes": [
+    {
+      "id": "start",
+      "type": "trigger",
+      "trigger": "cron",
+      "every_minutes": 60
+    },
+    {
+      "id": "nachtfenster",
+      "type": "action",
+      "action": "shell",
+      "command": "test \"$(date +%H%M)\" -lt 2330"
+    },
+    {
+      "id": "pause-pruefen",
+      "type": "action",
+      "action": "shell",
+      "command": "test ! -e \"$HOME/.herdr/autopilot-pause\""
+    },
+    {
+      "id": "abnahme",
+      "type": "agent",
+      "agent": "orchestrator",
+      "title": "Nachtschicht: grüne Tickets abnehmen",
+      "prompt": "Prüfe alle Tickets im Status review. Nimm ein Ticket nur ab, wenn checks und verdict auf pass stehen und beide denselben HEAD nennen wie der Worktree des Tickets. Prüfe vorher, dass der Haupt-Checkout auf main sauber ist. Führe danach `fab accept <id>` aus. Leite eine Rückfrage an @mensch genau einmal an @orchestrator weiter. Fasse am Ende zusammen, welche Tickets abgenommen oder übersprungen wurden."
+    },
+    {
+      "id": "main-pruefen",
+      "type": "action",
+      "action": "shell",
+      "command": "test ! -x .fabric/verify.sh || .fabric/verify.sh"
+    },
+    {
+      "id": "revert",
+      "type": "action",
+      "action": "shell",
+      "command": "mkdir -p \"$HOME/.herdr\"; git revert -m 1 --no-edit HEAD; code=$?; touch \"$HOME/.herdr/autopilot-pause\"; exit $code"
+    },
+    {
+      "id": "wache",
+      "type": "action",
+      "action": "fab",
+      "command": "tick"
+    },
+    {
+      "id": "ende",
+      "type": "end"
+    }
+  ],
+  "edges": [
+    {
+      "from": "start",
+      "to": "nachtfenster"
+    },
+    {
+      "from": "nachtfenster",
+      "to": "pause-pruefen",
+      "when": "pass"
+    },
+    {
+      "from": "nachtfenster",
+      "to": "ende",
+      "when": "fail"
+    },
+    {
+      "from": "pause-pruefen",
+      "to": "abnahme",
+      "when": "pass"
+    },
+    {
+      "from": "pause-pruefen",
+      "to": "wache",
+      "when": "fail"
+    },
+    {
+      "from": "abnahme",
+      "to": "main-pruefen",
+      "when": "done"
+    },
+    {
+      "from": "abnahme",
+      "to": "ende",
+      "when": "dropped"
+    },
+    {
+      "from": "main-pruefen",
+      "to": "wache",
+      "when": "pass"
+    },
+    {
+      "from": "main-pruefen",
+      "to": "revert",
+      "when": "fail"
+    },
+    {
+      "from": "revert",
+      "to": "wache"
+    },
+    {
+      "from": "wache",
+      "to": "ende"
+    }
+  ]
+}
