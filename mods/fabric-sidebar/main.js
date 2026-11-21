@@ -2,11 +2,11 @@
 // mit Rolle, Status und Laufzeit. Klick öffnet das Terminal, der Ticket-Chip
 // das Ticket im Fabric-Fenster. Reine Auswahl-/Textlogik: model.js.
 
-import { View, div, image } from "gpui-kit";
+import { View, div, image, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import {
-  agents, appHome, checking, fonts, openOverlay, readTextFile, run, setShared, settings,
-  shared, spaces, terminals, theme,
+  agents, appHome, checking, fonts, openOverlay, readTextFile, run, setAgentOrder, setShared,
+  settings, shared, spaces, terminals, theme,
 } from "herdr";
 import * as model from "./model.js";
 
@@ -158,8 +158,32 @@ function freeGroupHeader(t, group, tint, first) {
       .child(`${group.busy}/${group.total}`));
 }
 
+// Anheften/Lösen einer freien Karte. Anders als im Agents-Mod gibt es hier
+// keine Zweitliste: `herdr.pinned` ist die gemeinsame Wahrheit, der Befehl
+// `terminal.pin` setzt oder entfernt sie.
+function pinButton(t, card) {
+  return div()
+    .id(`free-pin-${card.address}`)
+    .flex_none()
+    .p(3)
+    .rounded(4)
+    .text_color(card.pinned ? t.accent : t.dim)
+    .cursor_pointer()
+    .hover((style) => style.bg(t.hover).text_color(t.foreground))
+    .tooltip(card.pinned ? "Nicht mehr anheften" : "Oben anheften")
+    .on_click((_event, cx) => {
+      cx.stop_propagation();
+      const pin = model.pinCommand(card);
+      run(pin.command, pin.args);
+    })
+    .child(svg(`mods/workspace-chrome/${card.pinned ? "pin-off" : "pin"}.svg`)
+      .size(13)
+      .flex_none());
+}
+
 // Pixel-Karte: Avatar-Szene, Status-Badge, Eck-Symbol, Name, eine Aufgabenzeile.
-function freeCard(t, card, tint, mono) {
+// Der Pin erscheint nur unter dem Zeiger oder wenn die Karte angeheftet ist.
+function freeCard(t, card, tint, mono, hovered, onHover) {
   const status = statusColor(t, card.status);
   return h_flex()
     .id(`free-agent-${card.address}`)
@@ -175,6 +199,7 @@ function freeCard(t, card, tint, mono) {
     .cursor_pointer()
     .hover((style) => style.bg(tint + "1e"))
     .tooltip(`${card.name} öffnen`)
+    .on_hover((on, cx) => onHover(card.address, on, cx))
     .on_click(() => run("agent.focus", { terminal: card.click.terminal }))
     .child(image(`${SPRITE_DIR}/${card.sprite}.svg`).w(44).h(44).flex_none())
     .child(
@@ -201,7 +226,8 @@ function freeCard(t, card, tint, mono) {
           .child(card.name))
         .child(div().w_full().truncate().text_size(9.5).text_color(t.dim)
           .tooltip(card.task).child(card.task)),
-    );
+    )
+    .when(card.pinned || hovered, (el) => el.child(pinButton(t, card)));
 }
 
 function metaLine(t, row) {
@@ -263,6 +289,14 @@ export default class FabricSidebar extends View {
     this.loadError = null;
     this.loading = false;
     this.closed = false;
+    this.hovered = null;
+    // Alte Anheftungen aus `localStorage` (agents-filtered) übernehmen, bis der
+    // Core das Label `herdr.pinned` bestätigt. Im Layout fabric lief bisher der
+    // Agents-Block; ohne ihn wäre diese Migration sonst verloren.
+    try { this.pendingPins = JSON.parse(localStorage.getItem("pins") ?? "[]"); } catch { this.pendingPins = []; }
+    if (!Array.isArray(this.pendingPins)) this.pendingPins = [];
+    if (!this.pendingPins.length) localStorage.removeItem("pins");
+    this.migratingPins = new Set();
 
     if (checking()) return;
 
@@ -275,6 +309,34 @@ export default class FabricSidebar extends View {
     cx.timer.every(5000, (cx) => {
       if (!this.closed) cx.spawn((cx) => reload(cx));
     });
+  }
+
+  // Offline-Anheftungen bleiben, bis ihr Terminal zurückkommt; eine angefragte
+  // bleibt stehen, bis der Core das Label zurückspiegelt. Derselbe Ablauf wie
+  // in `mods/agents-filtered/main.js`.
+  migratePins(all) {
+    const listed = new Map(all.filter((terminal) => terminal.state === "live")
+      .map((terminal) => [terminal.address, terminal]));
+    const pending = this.pendingPins.filter((address) => {
+      const terminal = listed.get(address);
+      if (!terminal) return true;
+      if (terminal.labels?.["herdr.pinned"]) return false;
+      if (!this.migratingPins.has(address)) {
+        this.migratingPins.add(address);
+        run("terminal.pin", { terminal: address, pinned: true });
+      }
+      return true;
+    });
+    if (pending.length === this.pendingPins.length) return;
+    this.pendingPins = pending;
+    if (pending.length) localStorage.setItem("pins", JSON.stringify(pending));
+    else localStorage.removeItem("pins");
+  }
+
+  pinHover(address, on, cx) {
+    if (on) this.hovered = address;
+    else if (this.hovered === address) this.hovered = null;
+    cx.notify();
   }
 
   async close() {
@@ -312,6 +374,7 @@ export default class FabricSidebar extends View {
     const terms = terminals();
     const listed = agents();
     publishHiddenAgents(terms, listed);
+    if (this.pendingPins.length) this.migratePins(terms);
     const { rows, teams: groups } = model.fabricRows(
       terms,
       listed,
@@ -320,7 +383,12 @@ export default class FabricSidebar extends View {
       Date.now(),
       this.index?.teams ?? [],
     );
-    const free = model.freeAgentCards(terms, listed, spaces());
+    const free = model.freeAgentCards(terms, listed, spaces(), shared("agents.sort"));
+    // `agent.next`/`agent.prev` folgen der Reihenfolge, die hier steht: freie
+    // Karten (angepinnt, wartend, arbeitend, untätig) und dann die Teams.
+    // Ohne diesen Aufruf liefe die Tastaturbelegung ins Leere, weil der
+    // Agents-Block in diesem Layout nicht mehr rendert.
+    setAgentOrder([...free.cards, ...rows].map((item) => item.address));
     const sections = [];
     if (free.cards.length > 0) {
       const mono = monoFont();
@@ -328,7 +396,10 @@ export default class FabricSidebar extends View {
       free.groups.forEach((group, index) => {
         const tint = groupTint(t, index);
         sections.push(freeGroupHeader(t, group, tint, index === 0));
-        for (const card of group.cards) sections.push(freeCard(t, card, tint, mono));
+        for (const card of group.cards) {
+          sections.push(freeCard(t, card, tint, mono, this.hovered === card.address,
+            (address, on, cx) => this.pinHover(address, on, cx)));
+        }
       });
     }
     for (const group of groups) {

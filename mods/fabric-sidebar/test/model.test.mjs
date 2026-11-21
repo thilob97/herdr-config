@@ -6,9 +6,10 @@ import assert from "node:assert/strict";
 
 import {
   busyLabel, costOf, costText, fabricAddresses, fabricEntry, fabricRows, freeAgentCards,
-  freeCornerIcon, freeSpriteKey, freeStatusWord, hiddenAgentAddresses, runtimeText, statusWord,
-  ticketFromName, truncateTask,
+  freeCornerIcon, freeSpriteKey, freeStatusWord, hiddenAgentAddresses, pinCommand, runtimeText,
+  statusWord, ticketFromName, truncateTask,
 } from "../model.js";
+import { visibleAgents } from "../../agents-filtered/model.js";
 
 const NOW = 1_800_000_000_000;
 const MIN = 60_000;
@@ -272,7 +273,7 @@ test("freie Agenten: Space-Orchestrator ja, Fabric-Terminals und ihre Kinder nei
 });
 
 test("freie Karten: alle fünf Status, Badge, Eck-Icon, Motiv, Klickziel", () => {
-  const statuses = ["working", "blocked", "done", "idle", "error"];
+  const statuses = ["blocked", "error", "done", "working", "idle"];
   const { cards } = freeAgentCards(
     statuses.map((status, index) => term(`f${index}`, `frei-${index}`, {}, {
       status, title: `Agent ${index}`,
@@ -281,14 +282,14 @@ test("freie Karten: alle fünf Status, Badge, Eck-Icon, Motiv, Klickziel", () =>
     [],
   );
   assert.deepEqual(cards.map((card) => card.badge), [
-    "WORKING", "WAITING", "DONE", "IDLE", "ERROR",
+    "WAITING", "ERROR", "DONE", "WORKING", "IDLE",
   ]);
-  assert.deepEqual(cards.map((card) => card.icon), ["play", "clock", "note", "zzz", "alert"]);
+  assert.deepEqual(cards.map((card) => card.icon), ["clock", "alert", "note", "play", "zzz"]);
   for (const [index, card] of cards.entries()) {
     assert.equal(card.sprite, ["agent-a", "agent-b"][index % 2]);
     assert.deepEqual(card.click, { kind: "terminal", terminal: card.address });
   }
-  assert.deepEqual(statuses.map(freeStatusWord), ["WORKING", "WAITING", "DONE", "IDLE", "ERROR"]);
+  assert.deepEqual(statuses.map(freeStatusWord), ["WAITING", "ERROR", "DONE", "WORKING", "IDLE"]);
   assert.equal(freeCornerIcon("weg"), "dot");
 });
 
@@ -415,4 +416,99 @@ test("fabricAddresses: Labels, fab-Name, Nachfahrenkette, fremde Eltern, Zyklus"
   ]);
   assert.deepEqual([...hidden].sort(), ["a1", "a2", "a3", "a4", "a5"]);
   assert.deepEqual([...fabricAddresses()], []);
+});
+
+// --- Übernahme der bisherigen Agents-Liste ----------------------------------
+
+test("jeder Agent der bisherigen Liste erscheint im Fabric-Abschnitt", () => {
+  // (a) claude ohne fab, (b) omp ohne fab, (c) Subagent eines freien Agenten,
+  // (d) Subagent eines fab-Agenten, (e) gepinnter freier Agent.
+  const orch = term("t8k", "fab-orchestrator", { "fab.role": "orchestrator" });
+  const fabAgent = term("t8x", "fab-zap-t-12", { "fab.agent": "zap", "fab.ticket": "T-12" });
+  const fabSub = term("t8z", "fab-kind", {}, { parent: "t8x", status: "working" });
+  const claude = term("c1", "claude", {}, { status: "working", title: "claude" });
+  const omp = term("o1", "omp", {}, { status: null, report: "omp", title: "omp" });
+  const free = term("f1", "frei", {}, { status: "blocked", title: "frei" });
+  const freeSub = term("f2", "frei-kind", {}, { parent: "f1", status: "working" });
+  const pinned = term("p1", "angepinnt", {}, {
+    status: "idle", labels: { "herdr.pinned": "1" }, title: "angepinnt",
+  });
+  const shell = term("s1", "zsh", {}, { status: null });
+  const terms = [orch, fabAgent, fabSub, claude, omp, free, freeSub, pinned, shell];
+  const listed = [
+    { address: "t8k", status: "idle", pinned: false },
+    { address: "t8x", status: "idle", pinned: false },
+    { address: "t8z", status: "working", pinned: false },
+    { address: "c1", status: "working", pinned: false },
+    { address: "o1", status: "idle", pinned: false },
+    { address: "f1", status: "blocked", pinned: false },
+    { address: "f2", status: "working", pinned: false },
+    { address: "p1", status: "idle", pinned: true },
+  ];
+
+  const snapshot = hiddenAgentAddresses(terms, listed);
+  const visible = visibleAgents(listed, snapshot, "fabric");
+  const shown = new Set([
+    ...fabricRows(terms, listed, [], [], NOW).rows.map((row) => row.address),
+    ...freeAgentCards(terms, listed, []).cards.map((card) => card.address),
+  ]);
+
+  // Die Anforderung im Wortlaut: jede Adresse der bisherigen Liste ist da.
+  for (const agent of visible) assert.ok(shown.has(agent.address), `${agent.address} fehlt`);
+  // Und die fünf Fälle selbst, damit der Test nicht leer besteht.
+  for (const address of ["c1", "o1", "f2", "t8z", "p1"]) {
+    assert.ok(shown.has(address), `${address} fehlt im Fabric-Abschnitt`);
+  }
+  // Die reine Shell gehört weiterhin nicht dazu.
+  assert.equal(shown.has("s1"), false);
+});
+
+test("Reihenfolge: gepinnt zuerst, dann wartend, arbeitend, untätig", () => {
+  const pinned = term("p1", "pin", {}, {
+    status: "idle", labels: { "herdr.pinned": "1" },
+  });
+  const blocked = term("b1", "a-wartend", {}, { status: "blocked" });
+  const error = term("e1", "b-fehler", {}, { status: "error" });
+  const done = term("d1", "fertig", {}, { status: "done" });
+  const working = term("w1", "arbeit", {}, { status: "working" });
+  const idle = term("i1", "ruhe", {}, { status: "idle" });
+
+  const { cards } = freeAgentCards([working, idle, blocked, pinned, done, error], [], []);
+  assert.deepEqual(cards.map((card) => card.address), ["p1", "b1", "e1", "d1", "w1", "i1"]);
+  assert.deepEqual(cards.map((card) => card.status), [
+    "idle", "blocked", "error", "done", "working", "idle",
+  ]);
+});
+
+test("Pin-Befehl setzt und entfernt herdr.pinned über terminal.pin", () => {
+  assert.deepEqual(pinCommand({ address: "f1", pinned: false }), {
+    command: "terminal.pin", args: { terminal: "f1", pinned: true },
+  });
+  assert.deepEqual(pinCommand({ address: "f1", pinned: true }), {
+    command: "terminal.pin", args: { terminal: "f1", pinned: false },
+  });
+
+  const [byLabel] = freeAgentCards([
+    term("f1", "frei", {}, { status: "idle", labels: { "herdr.pinned": "1" } }),
+  ], [], []).cards;
+  assert.equal(byLabel.pinned, true);
+  assert.deepEqual(pinCommand(byLabel).args, { terminal: "f1", pinned: false });
+
+  // `agents()` ist die frischeste Quelle, auch ohne Label am Terminal.
+  const [byAgent] = freeAgentCards(
+    [term("f2", "frei", {})], [{ address: "f2", status: "idle", pinned: true }], [],
+  ).cards;
+  assert.equal(byAgent.pinned, true);
+});
+
+test("agents.sort 'grouped' hält Angeheftete vorn und sortiert nach Maschine", () => {
+  const remote = term("remote/r1", "zeta", {}, { status: "blocked" });
+  const local = term("l1", "alpha", {}, { status: "idle" });
+  const pinnedRemote = term("remote/p1", "pin", {}, {
+    status: "idle", labels: { "herdr.pinned": "1" },
+  });
+
+  const { cards } = freeAgentCards([remote, local, pinnedRemote], [], [], "grouped");
+  assert.deepEqual(cards.map((card) => card.address), ["remote/p1", "remote/r1", "l1"]);
+  assert.deepEqual(cards.map((card) => card.group), ["REMOTE", "REMOTE", "THIS MACHINE"]);
 });

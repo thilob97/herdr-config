@@ -388,6 +388,18 @@ export function machineLabel(machine) {
   return machine ? String(machine).toUpperCase() : "THIS MACHINE";
 }
 
+/** Anheften/Lösen als reine Umschaltung; `main.js` führt den Befehl aus. */
+export function pinCommand(card) {
+  return {
+    command: "terminal.pin",
+    args: { terminal: String(card?.address ?? ""), pinned: !card?.pinned },
+  };
+}
+
+// Dringlichkeit der freien Karten: Wartende zuerst, dann Fertige, Arbeitende,
+// Untätige. `error` zählt wie `blocked`, weil beides jemanden braucht.
+const FREE_RANK = { blocked: 4, error: 4, done: 3, working: 2, idle: 1 };
+
 /** Freie Agenten: Terminal live, Status gemeldet, nicht Teil eines Fabric-Teams.
     Eine Regelquelle für Karten (`freeAgentCards`) und Filter (`hiddenAgentAddresses`). */
 function freeAgentEntries(terminals = [], listed = []) {
@@ -407,7 +419,10 @@ function freeAgentEntries(terminals = [], listed = []) {
     // Freier Agent heißt: das Programm meldet einen Status. Reine Shells
     // und fremde, statuslose Programme bleiben draußen.
     if (!agent && !status) continue;
-    entries.push({ terminal, agent, status, address });
+    // `agents()` ist die frischeste Quelle; das Label deckt Terminals ohne
+    // Agenteneintrag (nur gemeldeter Status) ab.
+    const pinned = agent ? Boolean(agent.pinned) : Boolean(labelsOf(terminal)["herdr.pinned"]);
+    entries.push({ terminal, agent, status, address, pinned });
   }
 
   return entries;
@@ -465,11 +480,13 @@ export function freeAgentTask(title, name) {
 }
 
 /** Karten und Gruppen des AGENTS-Abschnitts. `listed` ist `agents()` aus Herdr:
-    nur Terminals mit gemeldetem Status sind freie Agenten. */
-export function freeAgentCards(terminals = [], listed = [], spaces = []) {
+    nur Terminals mit gemeldetem Status sind freie Agenten. `sort` übernimmt die
+    Einstellung `agents.sort`: `priority` (Standard, Wartende zuerst) oder
+    `grouped` (nach Maschinengruppe). Angeheftete bleiben in beiden Fällen vorn. */
+export function freeAgentCards(terminals = [], listed = [], spaces = [], sort = "priority") {
   const cards = [];
 
-  for (const { terminal, agent, status, address } of freeAgentEntries(terminals, listed)) {
+  for (const { terminal, agent, status, address, pinned } of freeAgentEntries(terminals, listed)) {
     const name = freeAgentName(terminal, agent);
     const app = String(agent?.app ?? terminal.agent ?? terminal.report ?? "");
     const machine = machineOf(terminal, spaces);
@@ -483,6 +500,7 @@ export function freeAgentCards(terminals = [], listed = [], spaces = []) {
       machine,
       group: machineLabel(machine),
       orchestrator,
+      pinned,
       badge: freeStatusWord(status),
       icon: freeCornerIcon(status),
       sprite: null,
@@ -491,9 +509,18 @@ export function freeAgentCards(terminals = [], listed = [], spaces = []) {
     });
   }
 
-  cards.sort((a, b) => Number(b.orchestrator) - Number(a.orchestrator)
+  // Angeheftete zuerst. Danach `priority`: Dringlichkeit, dann Orchestrator,
+  // Name und Adresse; `grouped`: Maschinengruppe, Name, Adresse.
+  const byName = (a, b) => Number(b.pinned) - Number(a.pinned)
+    || String(a.group).localeCompare(String(b.group))
     || a.name.localeCompare(b.name)
-    || a.address.localeCompare(b.address));
+    || a.address.localeCompare(b.address);
+  const byPriority = (a, b) => Number(b.pinned) - Number(a.pinned)
+    || (FREE_RANK[b.status] ?? 0) - (FREE_RANK[a.status] ?? 0)
+    || Number(b.orchestrator) - Number(a.orchestrator)
+    || a.name.localeCompare(b.name)
+    || a.address.localeCompare(b.address);
+  cards.sort(String(sort) === "grouped" ? byName : byPriority);
 
   let agentIndex = 0;
   for (const card of cards) {
