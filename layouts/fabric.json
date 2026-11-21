@@ -1,5 +1,6 @@
 {
   "id": "root",
+  "toast": "fabric-toast",
   "type": "row",
   "titlebar": "none",
   "traffic_lights": [

@@ -5,7 +5,8 @@ import { View, div } from "gpui-kit";
 import { InputState, TextareaState, EditorState, ScrollHandle, VirtualListScrollHandle, TextView, h_flex, v_flex, Popup } from "gpui-base";
 import {
   appHome, checking, closeOverlay, exec, focused, knownAgents, layout, nextCommand, notify,
-  openOverlay, pickFolder, props, readTextFile, run, setShared, shared, spaces, terminals, watchFolder,
+  openOverlay, pickFolder, playSound, props, readTextFile, run, setShared, shared, spaces, terminals,
+  watchFolder,
 } from "herdr";
 import * as ui from "./ui.js";
 import * as model from "./model.js";
@@ -661,6 +662,7 @@ export default class Fabric extends View {
       }
     }
     this.index = next;
+    this.notifyInbox();
 
     const selected = this.selectedId();
     const wanted = model.ticketIdFor(this.isApp, this.currentRoute(), selected);
@@ -971,6 +973,45 @@ export default class Fabric extends View {
     }
   }
 
+  // ---------- Benachrichtigungen ----------
+
+  notifySettings() {
+    return model.normalizeNotifySettings(shared(model.NOTIFY_SETTINGS_KEY));
+  }
+
+  notifyInbox() {
+    if (checking() || !this.index) return;
+    const plan = model.inboxNotifications(
+      this.inbox, shared(model.NOTIFY_SEEN_KEY), this.notifySettings(), Date.now());
+    // Vor dem Senden beanspruchen: sonst meldet jede Mod-Kopie dieselben Einträge.
+    if (plan.changed) setShared(model.NOTIFY_SEEN_KEY, plan.seen);
+    for (const entry of plan.fresh) {
+      if (!entry.ticket) continue;
+      playSound(model.inboxNotifySound(entry.kind));
+      notify({
+        title: `Fabric · ${model.INBOX_WORDS[entry.kind] ?? "Hinweis"}`,
+        body: `${entry.ticket} · ${model.oneLine(entry.text, 140)}`,
+        level: model.inboxNotifyLevel(entry.kind),
+        action: { name: "fabric.open", args: { ticket: entry.ticket } },
+        timeout: 12000,
+      });
+    }
+  }
+
+  setNotify(patch, cx) {
+    const next = model.normalizeNotifySettings({ ...this.notifySettings(), ...patch });
+    setShared(model.NOTIFY_SETTINGS_KEY, next);
+    this.notifyNow();
+    return next;
+  }
+
+  stepNotify(field, delta, cx) {
+    if (field !== "quiet_from" && field !== "quiet_to") return;
+    const current = this.notifySettings()[field];
+    const minutes = (((current + delta) % 24) + 24) % 24;
+    this.setNotify({ [field]: minutes }, cx);
+  }
+
   // ---------- Auswahl und Navigation ----------
 
   select(id, cx) {
@@ -1173,6 +1214,14 @@ export default class Fabric extends View {
   }
 
   handleCommand(command, cx) {
+    if (command === "open") {
+      const request = shared("fabric.openRequest");
+      if (request?.route) {
+        setShared("fabric.openRequest", null);
+        this.openInWindow(request.route, cx);
+      }
+      return;
+    }
     if (command === "window") {
       this.toggleWindow(cx);
       return;

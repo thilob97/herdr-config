@@ -1187,6 +1187,92 @@ export function inboxLesson(entry) {
   };
 }
 
+// ---------- Benachrichtigungen ----------
+
+export const NOTIFY_SETTINGS_KEY = "fabric.notify";
+export const NOTIFY_SEEN_KEY = "fabric.notify.seen";
+
+export const NOTIFY_DEFAULTS = Object.freeze({ enabled: true, quiet_from: 22, quiet_to: 8 });
+
+const quietHour = (value, fallback) => (Number.isInteger(value) && value >= 0 && value <= 23 ? value : fallback);
+
+/** Einstellungen der Inbox-Benachrichtigung; kaputte Werte fallen auf die Vorgabe zurück. */
+export function normalizeNotifySettings(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ...NOTIFY_DEFAULTS };
+  return {
+    enabled: raw.enabled !== false,
+    quiet_from: quietHour(raw.quiet_from, NOTIFY_DEFAULTS.quiet_from),
+    quiet_to: quietHour(raw.quiet_to, NOTIFY_DEFAULTS.quiet_to),
+  };
+}
+
+/** Minute des Tages in der Zeitzone des Rechners. */
+export function minuteOfDay(ms) {
+  const date = new Date(Number(ms));
+  if (Number.isNaN(date.getTime())) return 0;
+  return date.getHours() * 60 + date.getMinutes();
+}
+
+/** Liegt `minutes` in der Ruhezeit? Beginn zählt, Ende nicht; gleiche Zeiten = keine Ruhe. */
+export function inQuietHours(minutes, settings) {
+  const { quiet_from: fromHour, quiet_to: toHour } = normalizeNotifySettings(settings);
+  if (fromHour === toHour) return false;
+  const from = fromHour * 60;
+  const to = toHour * 60;
+  const minute = ((Number(minutes) % 1440) + 1440) % 1440;
+  if (!Number.isFinite(minute)) return false;
+  return from < to ? minute >= from && minute < to : minute >= from || minute < to;
+}
+
+export const INBOX_LEVELS = { question: "warning", review: "info", attention: "error", lesson: "success" };
+
+/** Toast-Stufe einer Inbox-Art; Unbekanntes bleibt bei „info“. */
+export function inboxNotifyLevel(kind) {
+  return INBOX_LEVELS[kind] ?? "info";
+}
+
+/** Klang einer Inbox-Art: nur „attention“ blockiert. */
+export function inboxNotifySound(kind) {
+  return kind === "attention" ? "blocked" : "done";
+}
+
+/** Stabile Kennung eines Inbox-Eintrags; ohne `id` aus Art, Ticket und Zeit. */
+export function inboxEntryId(entry) {
+  const id = entry?.id;
+  if (typeof id === "string" && id) return id;
+  const kind = entry?.kind ?? "";
+  const ticket = entry?.ticket ?? "";
+  const at = entry?.at ?? "";
+  const proposal = entry?.proposal;
+  const agent = entry?.agent;
+  const suffix = proposal ? `:${proposal}` : agent ? `:${agent}` : "";
+  return `${kind}:${ticket}:${at}${suffix}`;
+}
+
+/** Neue, noch nicht gesehene Inbox-Einträge; Ruhezeit und Abschalten merken
+ *  die aktuellen Einträge trotzdem als gesehen, damit sie nicht später feuern. */
+export function inboxNotifications(inbox, seen, settings, now = Date.now()) {
+  const current = sortInbox(inbox);
+  const old = seen && typeof seen === "object" && !Array.isArray(seen) ? seen : {};
+  const known = new Set(Object.keys(old));
+  const next = {};
+  const fresh = [];
+
+  for (const entry of current) {
+    const key = inboxEntryId(entry);
+    next[key] = Object.prototype.hasOwnProperty.call(old, key) ? old[key] : now;
+    if (!known.has(key)) fresh.push(entry);
+  }
+  fresh.reverse();
+
+  const nextKeys = Object.keys(next);
+  const changed = nextKeys.length !== known.size || nextKeys.some((key) => !known.has(key));
+  const quiet = !normalizeNotifySettings(settings).enabled
+    || inQuietHours(minuteOfDay(now), settings);
+
+  return { fresh: quiet ? [] : fresh, seen: next, changed };
+}
+
 // ---------- Verlauf ----------
 
 /** `wake`-Zeilen zwischen den Kommentaren, z. B. `→ ada geweckt`. */

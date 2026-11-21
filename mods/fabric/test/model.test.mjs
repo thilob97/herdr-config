@@ -9,6 +9,8 @@ import {
   stallLabel, stallReason,
   wakeLine, sessionChips, sessionStatus, childrenOf, childProgress,
   teamForTicket, teamAgents,
+  NOTIFY_SETTINGS_KEY, NOTIFY_SEEN_KEY, NOTIFY_DEFAULTS, normalizeNotifySettings, inQuietHours, minuteOfDay,
+  INBOX_LEVELS, inboxNotifyLevel, inboxNotifySound, inboxEntryId, inboxNotifications,
 } from "../model.js";
 
 test("Tickets werden nach Stufe gruppiert, in Stufenreihenfolge", () => {
@@ -1246,4 +1248,94 @@ test("diffArgs und diffFileArgs bauen die Kommandozeile", async () => {
   assert.deepEqual(diffArgs("T-29", { file: "fabric/fab/cli.py" }),
     ["diff", "T-29", "--json", "--file=fabric/fab/cli.py"]);
   assert.deepEqual(diffFileArgs("T-29", "a b/c.py"), ["diff", "T-29", "--file=a b/c.py"]);
+});
+
+// ---------- Benachrichtigungen ----------
+
+const localTime = (hour, minute = 0) => new Date(2026, 10, 21, hour, minute).getTime();
+const notifyOn = { enabled: true, quiet_from: 22, quiet_to: 8 };
+
+test("Benachrichtigung: ein neuer Inbox-Eintrag feuert genau einmal", async () => {
+  const { inboxNotifications, inboxEntryId } = await import("../model.js");
+  const inbox = [
+    { id: "neu", kind: "review", ticket: "T-2", at: 2000 },
+    { id: "alt", kind: "question", ticket: "T-1", at: 1000 },
+  ];
+
+  const first = inboxNotifications(inbox, {}, notifyOn, localTime(12));
+  assert.deepEqual(first.fresh.map(inboxEntryId), ["alt", "neu"], "ältester zuerst");
+  assert.equal(first.changed, true);
+
+  const restart = inboxNotifications(inbox, first.seen, notifyOn, localTime(12, 5));
+  assert.deepEqual(restart.fresh, [], "ein Neustart feuert nicht erneut");
+  assert.equal(restart.changed, false);
+
+  const grown = inboxNotifications([...inbox, { id: "noch-neuer", kind: "lesson", ticket: "T-3", at: 3000 }],
+    first.seen, notifyOn, localTime(12, 10));
+  assert.deepEqual(grown.fresh.map(inboxEntryId), ["noch-neuer"]);
+  assert.equal(grown.changed, true);
+});
+
+test("Benachrichtigung: Ruhezeit unterdrückt und merkt die Einträge als gesehen", async () => {
+  const { inboxNotifications } = await import("../model.js");
+  const inbox = [{ id: "nacht", kind: "attention", ticket: "T-1", at: 1000 }];
+
+  const night = inboxNotifications(inbox, {}, notifyOn, localTime(23));
+  assert.deepEqual(night.fresh, [], "23:00 liegt in der Ruhezeit");
+  assert.equal(night.seen.nacht, localTime(23));
+  assert.equal(night.changed, true);
+
+  const morning = inboxNotifications(inbox, night.seen, notifyOn, localTime(9));
+  assert.deepEqual(morning.fresh, [], "09:00 feuert nicht nachträglich");
+  assert.equal(morning.changed, false);
+
+  assert.equal(inboxNotifications(inbox, {}, notifyOn, localTime(8)).fresh.length, 1, "08:00 ist nicht mehr Ruhezeit");
+});
+
+test("Benachrichtigung: abgeschaltet unterdrückt und merkt die Einträge als gesehen", async () => {
+  const { inboxNotifications } = await import("../model.js");
+  const inbox = [{ id: "aus", kind: "review", ticket: "T-1", at: 1000 }];
+
+  const off = inboxNotifications(inbox, {}, { enabled: false }, localTime(12));
+  assert.deepEqual(off.fresh, []);
+  assert.equal(off.seen.aus, localTime(12));
+
+  const on = inboxNotifications(inbox, off.seen, notifyOn, localTime(12, 5));
+  assert.deepEqual(on.fresh, [], "späteres Einschalten feuert nicht rückwirkend");
+  assert.equal(on.changed, false);
+});
+
+test("Benachrichtigung: Stufe und Klang je Inbox-Art", async () => {
+  const { inboxNotifyLevel, inboxNotifySound, INBOX_LEVELS } = await import("../model.js");
+
+  assert.deepEqual(INBOX_LEVELS, {
+    question: "warning", review: "info", attention: "error", lesson: "success",
+  });
+  assert.equal(inboxNotifyLevel("question"), "warning");
+  assert.equal(inboxNotifyLevel("review"), "info");
+  assert.equal(inboxNotifyLevel("attention"), "error");
+  assert.equal(inboxNotifyLevel("lesson"), "success");
+  assert.equal(inboxNotifyLevel("unbekannt"), "info");
+
+  assert.equal(inboxNotifySound("attention"), "blocked");
+  assert.equal(inboxNotifySound("question"), "done");
+  assert.equal(inboxNotifySound("lesson"), "done");
+  assert.equal(inboxNotifySound(""), "done");
+});
+
+test("Benachrichtigung: inboxEntryId fällt ohne id auf Art, Ticket und Zeit zurück", async () => {
+  const { inboxEntryId } = await import("../model.js");
+
+  assert.equal(inboxEntryId({ id: "abc" }), "abc");
+  assert.equal(inboxEntryId({ id: "" }), "::");
+  assert.equal(inboxEntryId({ kind: "question", ticket: "T-1", at: 1000 }), "question:T-1:1000");
+  assert.equal(
+    inboxEntryId({ kind: "lesson", ticket: "T-1", at: 1000, proposal: "Regel", agent: "ada" }),
+    "lesson:T-1:1000:Regel",
+    "der Vorschlag hat Vorrang vor dem Agenten",
+  );
+  assert.equal(
+    inboxEntryId({ kind: "error", ticket: "T-1", at: 1000, agent: "ada" }),
+    "error:T-1:1000:ada",
+  );
 });

@@ -100,6 +100,28 @@ class IndexTests(FabricCase):
         size = os.path.getsize(os.path.join(self.home, "index.json"))
         self.assertLess(size, 1024 * 1024)
 
+    def test_inbox_eintraege_haben_stabile_ids(self):
+        question = self.new("Frage mit Id")
+        lesson = self.new("Lehre mit Id")
+        self.ok("comment", question, "--from", "zap", "@mensch bitte entscheiden")
+        self.ok("lesson", "propose", lesson, "Immer zuerst lesen.", "--from", "zap")
+        first = self.index()["inbox"]
+        self.assertEqual({row["kind"] for row in first}, {"question", "lesson"})
+        ids = []
+        for row in first:
+            self.assertIsInstance(row["id"], str)
+            self.assertTrue(row["id"])
+            ids.append(row["id"])
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertIn(f"question:{question}:", next(
+            row["id"] for row in first if row["kind"] == "question"
+        ))
+        self.assertTrue(next(
+            row["id"] for row in first if row["kind"] == "lesson"
+        ).startswith(f"lesson:{lesson}:"))
+        self.ok("index")
+        self.assertEqual(sorted(ids), sorted(row["id"] for row in self.index()["inbox"]))
+
     def test_index_wird_nach_jeder_aenderung_geschrieben(self):
         tid = self.new("Folge")
         first = self.index()["generated_at"]
