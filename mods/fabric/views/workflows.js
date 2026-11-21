@@ -268,7 +268,7 @@ function head(app, cx, t, definition, run) {
         .child(div().flex_1().min_w(0).truncate().text_size(T.xs).text_color(t.dim)
           .child(builder?.connectFrom
             ? `Verbindung von „${builder.connectFrom}“: Zielknoten anklicken.`
-            : "Palette: Baustein anklicken oder in den Plan ziehen. Knoten anklicken zum Bearbeiten."))
+            : "Palette: Baustein anklicken, um ihn zu platzieren. Knoten anklicken zum Bearbeiten."))
         .when(Boolean(builder?.connectFrom), (row) => row.child(ui.button(t, {
           id: "fabric-flow-builder-connect-cancel",
           label: "Verbindung abbrechen",
@@ -508,7 +508,7 @@ function builderPalette(app, cx, t) {
       h_flex().w_full().items_center().gap(S.s)
         .child(div().text_size(T.xs).font_semibold().text_color(t.muted).child("Bausteine"))
         .child(div().flex_1())
-        .child(div().text_size(T.xs).text_color(t.dim).child("klicken oder in den Plan ziehen")),
+        .child(div().text_size(T.xs).text_color(t.dim).child("anklicken, um zu platzieren")),
     )
     .child(
       h_flex().w_full().gap(6).items_center().flex_wrap()
@@ -521,19 +521,17 @@ function builderPalette(app, cx, t) {
           .items_center()
           .rounded(ui.RADIUS.m)
           .border_1()
-          .border_color(app.flowBuilderDrag === type.value ? t.accent : t.input)
-          .bg(app.flowBuilderDrag === type.value ? t.selected : t.raised)
+          .border_color(t.input)
+          .bg(t.raised)
           .text_size(T.xs)
-          .text_color(app.flowBuilderDrag === type.value ? t.foreground : t.muted)
+          .text_color(t.muted)
           .cursor_pointer()
           .hover((style) => style.bg(t.hover).text_color(t.foreground))
           .on_mouse_down("left", (_event, cx) => {
-            app.flowBuilderDrag = type.value;
-            cx.notify();
-          })
-          .on_click((_event, cx) => {
+            // Der Druck gehört dem Baustein: sonst zieht der Fensterrahmen das
+            // ganze Fabric-Fenster. Das Loslassen über dem Baustein kommt im
+            // Fenster nicht an, deshalb platziert schon der Druck.
             cx.stop_propagation();
-            app.flowBuilderDrag = null;
             app.flowBuilderPlace(type.value, cx);
           })
           .child(ui.icon("plus", 11))
@@ -665,9 +663,6 @@ function builderCanvas(app, cx, t) {
     .overflow_x_scrollbar()
     .overflow_y_scrollbar()
     .p(S.m)
-    .on_mouse_up("left", (_event, cx) => {
-      if (app.flowBuilderDrag) app.flowBuilderDrop(cx);
-    })
     .child(
       div()
         .relative()

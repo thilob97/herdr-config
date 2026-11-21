@@ -185,7 +185,6 @@ export default class Fabric extends View {
     this.flowRunsAt = 0;
     this.flowMode = null;
     this.flowBuilder = null;
-    this.flowBuilderDrag = null;
     this.flowPendingName = null;
     this.version = null;
     this.versionError = null;
@@ -1765,7 +1764,6 @@ export default class Fabric extends View {
     }
     this.flowPendingName = null;
     this.flowBuilder = null;
-    this.flowBuilderDrag = null;
     this.flowName = name;
     this.flowNode = null;
     const runs = (this.flowRuns ?? []).filter((run) => run.workflow === name);
@@ -1878,7 +1876,6 @@ export default class Fabric extends View {
 
   newFlowBuilder(cx) {
     this.flowMode = "builder";
-    this.flowBuilderDrag = null;
     this.flowBuilder = null;
     this.openFlowBuilder(null, cx);
     const route = { page: "workflows", mode: "builder" };
@@ -2002,16 +1999,8 @@ export default class Fabric extends View {
     const result = model.flowAddNode(builder.draft, type);
     builder.draft = result.definition;
     builder.selected = result.id ? { kind: "node", id: result.id } : null;
-    this.flowBuilderDrag = null;
     this.flowBuilderBuildForm(cx);
     this.flowBuilderRefresh(cx);
-  }
-
-  flowBuilderDrop(cx) {
-    const type = this.flowBuilderDrag;
-    if (!type) return;
-    this.flowBuilderDrag = null;
-    this.flowBuilderPlace(type, cx);
   }
 
   flowBuilderStartConnect(id, cx) {
@@ -2115,17 +2104,6 @@ export default class Fabric extends View {
     this.flowBuilderRefresh(cx);
   }
 
-  flowBuilderSetEdgeLoops(value, cx) {
-    const builder = this.flowBuilder;
-    if (!builder || builder.selected?.kind !== "edge") return;
-    const raw = String(value ?? "").trim();
-    const number = Number(raw);
-    builder.draft = model.flowPatchEdge(builder.draft, builder.selected.index, {
-      max_loops: raw === "" ? null : Number.isFinite(number) ? number : raw,
-    });
-    this.flowBuilderRefresh(cx);
-  }
-
   flowBuilderDeleteNode(cx) {
     const builder = this.flowBuilder;
     if (!builder || builder.selected?.kind !== "node") return;
@@ -2177,7 +2155,6 @@ export default class Fabric extends View {
       }
     }
     this.flowBuilder = null;
-    this.flowBuilderDrag = null;
     this.flowMode = (this.flowRuns ?? []).some((run) => run.workflow === this.flowName)
       ? "run" : "builder";
     if (this.flowMode === "builder") this.ensureFlowBuilder(this.flowName, cx);
@@ -2189,7 +2166,6 @@ export default class Fabric extends View {
     this.flowPendingName = null;
     this.flash = null;
     this.flowBuilder = null;
-    this.flowBuilderDrag = null;
     if (name) this.selectFlow(name, cx);
     else this.notifyNow();
   }
