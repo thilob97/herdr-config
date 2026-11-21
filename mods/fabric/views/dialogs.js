@@ -86,8 +86,8 @@ function newTicketDialog(app, cx, t) {
         open: app.menu === "new-template",
         width: 360,
         scrollHandle: app.dropdownScroll,
-        onToggle: () => { app.menu = app.menu === "new-template" ? null : "new-template"; cx.notify(); },
-        onPick: (value) => {
+        onToggle: (cx) => { app.menu = app.menu === "new-template" ? null : "new-template"; cx.notify(); },
+        onPick: (value, cx) => {
           app.menu = null;
           app.newTemplate = value || null;
           if (value) app.newIssue = null;
@@ -102,8 +102,8 @@ function newTicketDialog(app, cx, t) {
         open: app.menu === "new-repo",
         width: 360,
         scrollHandle: app.dropdownScroll,
-        onToggle: () => { app.menu = app.menu === "new-repo" ? null : "new-repo"; cx.notify(); },
-        onPick: (value) => {
+        onToggle: (cx) => { app.menu = app.menu === "new-repo" ? null : "new-repo"; cx.notify(); },
+        onPick: (value, cx) => {
           app.menu = null;
           if (value === "__pick") app.pickNewRepo(cx);
           else {
@@ -127,8 +127,8 @@ function newTicketDialog(app, cx, t) {
         open: app.menu === "new-issue",
         width: 360,
         scrollHandle: app.dropdownScroll,
-        onToggle: () => { app.menu = app.menu === "new-issue" ? null : "new-issue"; cx.notify(); },
-        onPick: (value) => {
+        onToggle: (cx) => { app.menu = app.menu === "new-issue" ? null : "new-issue"; cx.notify(); },
+        onPick: (value, cx) => {
           app.menu = null;
           app.newIssue = value ? Number(value) : null;
           if (value) app.newTemplate = null;
