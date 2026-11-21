@@ -352,7 +352,7 @@ function teamCard(app, cx, t, team) {
     : "Mindestens ein Repo ist nötig.";
   return ui.card(t, [
     h_flex().w_full().gap(S.s).items_center().flex_wrap()
-      .child(div().text_size(T.l).font_semibold().whitespace_nowrap().child(team.name))
+      .child(div().w(220).flex_none().id(`fabric-team-name-${team.name}`).child(ui.input(t, form.name)))
       .child(ui.chip(t, `${form.members.length} Mitglied${form.members.length === 1 ? "" : "er"}`,
         t.dim, `fabric-team-members-chip-${team.name}`, { tooltip: "Mitglieder im Team" }))
       .child(ui.chip(t, `${form.repos.length} Repo${form.repos.length === 1 ? "" : "s"}`,

@@ -619,6 +619,9 @@ export function teamSaveArgs(team, form) {
     return { error: "Sitzungen müssen zwischen 1 und 16 liegen." };
   }
   const args = ["team", "edit", name];
+  // Ein leerer Feldwert ist kein Rename; fab prüft den neuen Namen selbst.
+  const nextName = String(form?.name ?? "").trim();
+  if (nextName && nextName !== name) args.push(`--rename=${nextName}`);
   for (const repo of repos) args.push("--repo", repo);
   args.push(
     `--members-json=${teamMembersJson(members)}`,
@@ -685,7 +688,7 @@ export function teamDirty(team, form) {
   if (!team || !form) return false;
   const base = teamDraft(team);
   const next = {
-    name: String(form.name ?? base.name),
+    name: String(form.name ?? base.name).trim(),
     repos: (form.repos ?? []).map((repo) => String(repo)),
     members: normalizeMembers(form.members),
     reviewer: String(form.reviewer ?? ""),

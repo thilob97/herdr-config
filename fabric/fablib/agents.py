@@ -133,6 +133,106 @@ def agent_in_team(roster, team_entry, name):
     )
 
 
+def _team_names(roster, team_name):
+    """Aktueller Teamname plus frühere Namen (dedupliziert, ohne Leerstrings).
+
+    Ein früherer Name, der inzwischen ein anderes existierendes Team ist, zählt
+    nicht als Alias dieses Teams. Fehlendes Team oder Roster wirft nicht.
+    """
+    name = str(team_name or "").strip()
+    names = [name] if name else []
+    if not isinstance(roster, dict):
+        return names
+    entries = roster.get("teams")
+    if not isinstance(entries, list):
+        return names
+    existing = set()
+    previous = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        other = str(entry.get("name") or "")
+        if other:
+            existing.add(other)
+        if other != name:
+            continue
+        raw = entry.get("previous_names")
+        if isinstance(raw, list):
+            previous = [item for item in raw if isinstance(item, str)]
+    for item in previous:
+        candidate = item.strip()
+        if not candidate or candidate in names or candidate in existing:
+            continue
+        names.append(candidate)
+    return names
+
+
+def _prefix_owners(roster):
+    """(Alias, Teamname)-Paare aller Teams, inklusive früherer Namen."""
+    pairs = []
+    if not isinstance(roster, dict):
+        return pairs
+    entries = roster.get("teams")
+    if not isinstance(entries, list):
+        return pairs
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        owner = str(entry.get("name") or "")
+        if not owner:
+            continue
+        for alias in _team_names(roster, owner):
+            pairs.append((alias, owner))
+    return pairs
+
+
+def _prefix_owner(terminal, pairs):
+    """Team mit dem längsten passenden `fab-<alias>-`-Präfix, sonst ""."""
+    best_alias = -1
+    best_owner = ""
+    for alias, owner in pairs:
+        if len(alias) > best_alias and terminal.startswith(f"fab-{alias}-"):
+            best_alias = len(alias)
+            best_owner = owner
+    return best_owner
+
+
+def team_live(roster, team_name):
+    """Live-Terminals eines Teams: Orchestrator, Labels, Tickets und Namen.
+
+    Erfasst auch Terminale früherer Teamnamen. Ein Namenspräfix zählt nur,
+    wenn kein längeres Team oder Alias eines anderen Teams genauer passt
+    (`herdr` beansprucht keine `fab-herdr-app-…`-Terminale). `hc.live` wird
+    direkt abgefragt; ein HcError ergibt eine leere Menge.
+    """
+    try:
+        live = hc.live()
+    except HcError:
+        live = {}
+    names = _team_names(roster, team_name)
+    owners = _session_teams(roster)
+    orchestrators = {hc.orchestrator_name(alias) for alias in names}
+    legacy = teams.legacy_team_name(roster) if isinstance(roster, dict) else ""
+    if legacy and legacy in names:
+        orchestrators.add(ORCHESTRATOR)
+    owner = str(team_name or "")
+    pairs = _prefix_owners(roster)
+    rows = {}
+    for name, row in live.items():
+        labels = (row or {}).get("labels")
+        label_team = ""
+        if isinstance(labels, dict):
+            label_team = str(labels.get("fab.team") or "")
+        if (
+            name in orchestrators
+            or label_team in names
+            or owners.get(name) == owner
+            or _prefix_owner(name, pairs) == owner
+        ):
+            rows[name] = row
+    return rows
+
+
 def _session_teams(roster):
     """Terminalname → Team für Sessions, die in Tickets vermerkt sind."""
     owners = {}
@@ -470,9 +570,19 @@ def start_orchestrator(roster, team_name=None):
 
 
 def orchestrator_targets(roster, team_name):
-    """Neues Team-Terminal und, für das Legacy-Team, das alte globale Terminal."""
-    targets = [hc.orchestrator_name(team_name)]
-    if team_name == teams.legacy_team_name(roster):
+    """Orchestrator-Terminale: aktueller Name, frühere Namen, ggf. das alte globale.
+
+    Die Reihenfolge ist aktueller Teamname, dann frühere Namen, dann für das
+    Legacy-Team das alte globale Terminal `fab-orchestrator`.
+    """
+    aliases = _team_names(roster, team_name)
+    targets = []
+    for alias in aliases:
+        target = hc.orchestrator_name(alias)
+        if target not in targets:
+            targets.append(target)
+    legacy = teams.legacy_team_name(roster) if isinstance(roster, dict) else ""
+    if legacy and legacy in aliases and ORCHESTRATOR not in targets:
         targets.append(ORCHESTRATOR)
     return targets
 

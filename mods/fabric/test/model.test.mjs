@@ -832,6 +832,34 @@ test("teamSaveArgs verlangt Repos, Mitglieder und einen Prüfer aus dem Team", a
     "max-cost für ada muss eine ganze Zahl ≥ 0 sein.");
 });
 
+test("teamSaveArgs hängt einen geänderten Namen als --rename direkt an den alten Namen", async () => {
+  const { teamSaveArgs } = await import("../model.js");
+  const plan = teamSaveArgs(TEAM, {
+    name: "  newname  ",
+    repos: ["/r/a"],
+    members: [{ blueprint: "zap" }, { blueprint: "ada" }],
+    reviewer: "ada",
+    max_sessions: 4,
+  });
+  assert.equal(plan.error, undefined);
+  assert.deepEqual(plan.args.slice(0, 4), ["team", "edit", "herdr-app", "--rename=newname"]);
+});
+
+test("teamSaveArgs sendet ohne Namensänderung kein --rename", async () => {
+  const { teamSaveArgs } = await import("../model.js");
+  const base = {
+    repos: ["/r/a"],
+    members: [{ blueprint: "zap" }, { blueprint: "ada" }],
+    reviewer: "ada",
+    max_sessions: 4,
+  };
+  for (const name of ["herdr-app", "  herdr-app  ", "", "   "]) {
+    const plan = teamSaveArgs(TEAM, { ...base, name });
+    assert.equal(plan.error, undefined);
+    assert.equal(plan.args.some((arg) => arg.startsWith("--rename=")), false, `kein --rename für ${JSON.stringify(name)}`);
+  }
+});
+
 test("teamAddArgs baut die Kommandozeile für ein neues Team", async () => {
   const { teamAddArgs } = await import("../model.js");
   const plan = teamAddArgs({
@@ -929,6 +957,8 @@ test("teamDirty erkennt Änderungen an Repos, Mitgliedern, Prüfer und Sitzungen
   assert.equal(teamDirty(TEAM, { ...form, members: [{ blueprint: "zap" }, { blueprint: "ada" }] }), true);
   assert.equal(teamDirty(TEAM, { ...form, reviewer: "zap" }), true);
   assert.equal(teamDirty(TEAM, { ...form, max_sessions: "5" }), true);
+  assert.equal(teamDirty(TEAM, { ...form, name: "neu" }), true);
+  assert.equal(teamDirty(TEAM, { ...form, name: "  herdr-app  " }), false);
 });
 
 test("teamForTicket und teamAgents wählen das Team nach dem Repo-Pfad", () => {

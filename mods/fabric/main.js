@@ -2130,6 +2130,9 @@ export default class Fabric extends View {
 
   buildTeamForm(team) {
     const draft = model.teamDraft(team);
+    const name = InputState.new({ value: draft.name, placeholder: "Teamname" });
+    name.on("change", (_event, cx) => cx.notify());
+    this.track(name);
     const maxSessions = InputState.new({ value: String(draft.max_sessions) });
     maxSessions.set_step(1);
     maxSessions.set_min(1);
@@ -2138,7 +2141,7 @@ export default class Fabric extends View {
     maxSessions.on("submit", (_event, cx) => this.saveTeam(team.name, cx));
     this.track(maxSessions);
     return {
-      name: draft.name,
+      name,
       repos: [...draft.repos],
       reviewer: draft.reviewer,
       members: draft.members.map((member) => this.memberForm(member)),
@@ -2151,7 +2154,7 @@ export default class Fabric extends View {
     const form = this.teamForms[name];
     if (!form) return null;
     return {
-      name: form.name,
+      name: form.name.value(),
       repos: [...form.repos],
       members: form.members.map((member) => ({
         blueprint: member.blueprint,
