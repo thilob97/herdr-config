@@ -225,6 +225,51 @@ class CliTests(FabricCase):
         text = self.ok("agents").stdout
         self.assertIn("fab-zap-t-1 (t5, T-1, idle)", text)
 
+    def test_agents_fuehrt_session_je_terminal_zusammen(self):
+        tid = self.new("Team")
+        self.patch_ticket(
+            tid,
+            sessions=[
+                {"agent": "zap", "name": "fab-zap-t-1", "terminal": "t3",
+                 "started_at": 1},
+                {"agent": "zap", "name": "fab-zap-t-1", "terminal": "t4",
+                 "started_at": 2},
+            ],
+        )
+        self.set_live({"fab-zap-t-1": "t4"})
+        text = self.ok("agents").stdout
+        self.assertEqual(text.count("fab-zap-t-1"), 1)
+        self.assertIn("t4", text)
+        self.assertNotIn("t3", text)
+        payload = json.loads(self.ok("agents", "--json").stdout)
+        rows = [
+            row for row in payload["sessions"] if row["name"] == "fab-zap-t-1"
+        ]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["terminal"], "t4")
+        zap = next(
+            item for item in payload["agents"] if item["name"] == "zap"
+        )
+        self.assertEqual(
+            [row["name"] for row in zap["running"]], ["fab-zap-t-1"]
+        )
+
+    def test_agents_zeigt_beendete_session_als_beendet(self):
+        tid = self.new("Team")
+        self.patch_ticket(
+            tid,
+            sessions=[
+                {"agent": "zap", "name": "fab-zap-t-1", "terminal": "t6",
+                 "started_at": 1},
+            ],
+        )
+        self.set_live({})
+        text = self.ok("agents").stdout
+        self.assertIn("fab-zap-t-1", text)
+        self.assertIn("· beendet", text)
+        payload = json.loads(self.ok("agents", "--json").stdout)
+        self.assertEqual(payload["sessions"], [])
+
     def test_inbox_json_und_index(self):
         tid = self.new("Inbox")
         self.ok("comment", tid, "--from", "zap", "@mensch bitte")
