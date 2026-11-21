@@ -29,6 +29,17 @@ Der Body hat genau vier Abschnitte:
   Dateien öffnen); nur belegte Fakten, keine Vermutungen.
 - `## Abnahmekriterien` — `- [ ]`-Checkboxen, die ein Fremder prüfen kann
   (Befehl, Ausgabe, sichtbares Verhalten). Kein „sauber umgesetzt“.
+
+  Jedes Kriterium, dessen Erfüllung Logik ändert, braucht mindestens einen
+  automatisierten Test. Als Logik gelten die Standardmuster `*.py` unter
+  `fabric/fablib` und `*.js` unter `mods/*` außer `mods/*/views/`; repo-eigene
+  Muster stehen in `.fabric/testpolicy.json`, ohne die Datei gelten die
+  Standardmuster. Benenne im Kriterium die Testdatei und den ausgeübten Fall. Ein
+  grünes `fab verify` allein oder ein UI-Screenshot allein genügt dafür nicht.
+  UI-Kriterien brauchen zusätzlich einen Screenshot über `herdr-app shot` aus einem
+  temporären `HERDR_APP_HOME` oder eine begründete Notiz. `fab handover` verweigert
+  Logik-Änderungen ohne geänderte Testdatei.
+
 - `## Grenzen` — was ausdrücklich nicht dazugehört.
 
 Existiert im Repo die Datei `.fabric/lessons.md`, lies sie vor dem Ausformulieren

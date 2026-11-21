@@ -19,6 +19,7 @@ from . import (
     repos,
     store,
     teams,
+    testpolicy,
     tick,
     wake,
 )
@@ -829,6 +830,28 @@ def cmd_handover(args):
         children = _open_children(ticket)
         if children:
             reasons.append(_children_reason(children))
+        if (
+            not reasons
+            and ticket.get("repo")
+            and ticket.get("base")
+            and ticket.get("branch")
+        ):
+            try:
+                changed = git.diff_paths(
+                    ticket["repo"], ticket["base"], ticket["branch"]
+                )
+                policy = testpolicy.load(ticket["repo"])
+                logic, tests = testpolicy.classify(policy, changed)
+                if logic and not tests:
+                    reasons.append(
+                        "Logik ohne Test:\n  - "
+                        + "\n  - ".join(logic)
+                        + "\nTestmuster: "
+                        + ", ".join(policy.tests)
+                        + f" (Quelle: {policy.source})"
+                    )
+            except FabError as exc:
+                reasons.append(str(exc))
         files = None
         if not reasons and ticket.get("base") and ticket.get("branch") and ticket.get("repo"):
             try:

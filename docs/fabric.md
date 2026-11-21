@@ -138,7 +138,7 @@ Alle Befehle schreiben unter Lock, hängen Ereignisse an und erzeugen danach `in
 | `fab dispatch ID [--agent NAME] --from NAME` | Verlangt `repo`, einen Abschnitt `## Abnahmekriterien` und keine offenen `blocked_by`. Legt Branch `fab/<ID>-<slug>` vom aktuellen HEAD des Repos und den Worktree an, startet den Agenten (Abschnitt 5), Status `doing`. Läuft er schon für das Ticket: wecken statt starten. |
 | `fab verify ID [--from NAME]` | Führt `<worktree>/.fabric/verify.sh` aus (fehlt sie: Fehler mit Pfad), `sh` im Worktree, Timeout 10 min. Schreibt `checks` auf den HEAD. Akteur des `verify`-Ereignisses ist `--from`, Standard: `assignee`. |
 | `fab verdict ID pass\|fail --from NAME "<zusammenfassung>"` | Urteil des Prüfers auf den HEAD. `fail`: Kommentar mit Zusammenfassung, Status `doing`, entfernt `mensch` aus `waiting` (keine Inbox-Frage), weckt `assignee`. `pass`: weckt `assignee` mit dem Hinweis, auf grünen Checks mit `fab handover` zu übergeben. Ist der Prüfer selbst der `assignee`, wird weder bei `pass` noch bei `fail` jemand geweckt. |
-| `fab handover ID --from NAME "<zusammenfassung>"` | Übergabe an den Menschen. Gate: `checks.state == pass` und `verdict.state == pass`, beide auf dem aktuellen HEAD. Sonst Abbruch mit den Gründen. Erfolg: Status `review`, `mensch` in `waiting`, Kommentar. |
+| `fab handover ID --from NAME "<zusammenfassung>"` | Übergabe an den Menschen. Gate: `checks.state == pass` und `verdict.state == pass`, beide auf dem aktuellen HEAD. Sonst Abbruch mit den Gründen. Zusätzlich Abbruch, wenn der Diff `base...branch` Logikdateien ändert, aber keine Testdatei; die Meldung nennt die Logikdateien und die aktiven Testmuster. Standardmuster: `fabric/fablib/**/*.py` und `mods/*/**/*.js` (ohne `mods/*/views/**`) für Logik, `fabric/tests/test_*.py` und `mods/*/test/**` für Tests; je Repo über `.fabric/testpolicy.json` übersteuerbar (Abschnitt „Test-Policy“). Erfolg: Status `review`, `mensch` in `waiting`, Kommentar. |
 | `fab accept ID` | Nur der Mensch. Merge `--no-ff` des Branch in `base` im Haupt-Checkout (der muss auf `base` stehen; uncommittete Änderungen bleiben erlaubt, solange sie keine Datei des Branchs berühren — sonst Abbruch mit den betroffenen Dateien), beendet alle Sessions des Tickets, entfernt Worktree und Branch, Status `done`. Danach startet `fab` automatisch jedes Ticket, das nur noch durch dieses blockiert war und startbereit ist (`todo`, Zuständiger, Repo, Abnahmekriterien) — mit denselben Regeln wie `fab dispatch`. Entwürfe und unvollständige Tickets bleiben liegen; Grund und Startfehler stehen als `dispatch`-Ereignis im Verlauf, die Abnahme bleibt gültig. |
 | `fab reject ID "<feedback>"` | Nur der Mensch. Kommentar von `mensch`, Status `doing`, weckt `assignee`. |
 | `fab drop ID --from NAME "<grund>"` | Status `dropped`, Sessions beenden, Worktree bleibt. |
@@ -150,6 +150,20 @@ Alle Befehle schreiben unter Lock, hängen Ereignisse an und erzeugen danach `in
 | `fab index` | `index.json` neu erzeugen |
 
 `--from` ist bei allen schreibenden Befehlen außer `new`, `accept`, `reject` und `verify` Pflicht. `verify` nimmt `--from NAME` optional; Standard ist der `assignee`. `accept` und `reject` schreiben als `mensch`.
+
+### Test-Policy
+
+`fab handover` prüft, ob zu geänderten Logikdateien mindestens eine geänderte Testdatei gehört. Welche Pfade zählen, steht in `.fabric/testpolicy.json` im **Haupt-Checkout** des Repos (nicht im Worktree); fehlt die Datei, gelten die Standardmuster.
+
+```json
+{"logic": ["fabric/fablib/**/*.py", "mods/*/**/*.js", "!mods/*/views/**"],
+ "tests": ["fabric/tests/test_*.py", "mods/*/test/**"]}
+```
+
+- Beide Schlüssel sind optional und ersetzen unabhängig voneinander die jeweilige Standardliste; unbekannte Schlüssel werden ignoriert.
+- Muster sind repo-relative POSIX-Globs: `*` innerhalb eines Pfadsegments, `**` über Segmente hinweg (`**/` darf null Segmente treffen), `?` ein Zeichen; ein führendes `!` schließt aus. Groß-/Kleinschreibung zählt.
+- Fehlerhafte Datei (kein JSON, falscher Typ, ungültige Musterliste) bricht die Übergabe mit Pfad ab.
+- Gemessen wird keine Abdeckung, nur ob mindestens eine geänderte Testdatei im Diff liegt.
 
 ## 3b. Konfiguration und Pflege (für das UI)
 
