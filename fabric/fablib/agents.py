@@ -91,6 +91,9 @@ def load(required=True):
         "team": expanded.get("team"),
         "teams": list(data.get("teams") or []),
         "blueprints": list(data.get("blueprints") or []),
+        "tick": {
+            key: value for key, value in data.items() if key.startswith("tick_")
+        },
     }
 
 

@@ -23,6 +23,7 @@ fab new "Ein Satz, was passieren soll" --repo ~/code/projekt   # weckt den Orche
 fab list
 fab show T-1
 fab comment T-1 --from mensch "@zap bitte …"                  # weckt zap
+fab tick                                                       # Stillstand beheben
 fab accept T-1                                                 # Merge nach Prüfung
 ```
 

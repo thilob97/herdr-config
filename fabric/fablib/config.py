@@ -16,7 +16,21 @@ from .errors import FabError, HcError
 NAME_RE = teams.NAME_RE
 RESERVED = teams.RESERVED
 COLORS = teams.COLORS
-SETTINGS = ("max_sessions", "reviewer", "orchestrator_argv", "max_sessions_total")
+TICK_KEYS = (
+    "tick_doing_minutes",
+    "tick_mention_minutes",
+    "tick_review_minutes",
+    "tick_blocked_minutes",
+    "tick_retry_minutes",
+)
+TICK_MAX_MINUTES = 1440
+SETTINGS = (
+    "max_sessions",
+    "reviewer",
+    "orchestrator_argv",
+    "max_sessions_total",
+    *TICK_KEYS,
+)
 MIN_SESSIONS = teams.MIN_SESSIONS
 MAX_SESSIONS = teams.MAX_SESSIONS
 
@@ -920,6 +934,21 @@ def set_setting(key, value, actor):
         text = (
             f"max_sessions_total: {old if old is not None else '—'} → {number}"
         )
+    elif key in TICK_KEYS:
+        try:
+            number = int(raw.strip())
+        except (TypeError, ValueError):
+            raise FabError(
+                f"{key} muss eine ganze Zahl zwischen 0 und {TICK_MAX_MINUTES} sein"
+            )
+        if number < 0 or number > TICK_MAX_MINUTES:
+            raise FabError(
+                f"{key} muss zwischen 0 und {TICK_MAX_MINUTES} liegen, "
+                f"nicht {number}"
+            )
+        old = data.get(key)
+        data[key] = number
+        text = f"{key}: {old if old is not None else '—'} → {number}"
     else:
         raise FabError(
             f"Unbekannte Einstellung „{key}“; erlaubt: {', '.join(SETTINGS)}"

@@ -65,6 +65,7 @@ def add_comment(ticket, author, text, roster=None):
     ticket["waiting"] = [
         waiting for waiting in ticket["waiting"] if waiting.lower() != author.lower()
     ]
+    ticket.pop("stall", None)
     events.append("comment", ticket["id"], author, "", text)
     return found
 
@@ -306,6 +307,14 @@ def _one(ticket, name, author, text, roster, no_wake, message_for, send_text=Non
         return "an orchestrator", "an orchestrator", address, ""
     line = f"{START_FAILED} ({reason})" if reason else START_FAILED
     return START_FAILED, line, None, reason
+
+
+def once(ticket, name, author, text, roster):
+    """Eine Aktion ohne Ereignis, Kommentar oder Retry.
+
+    Rückgabe wie `_one`: (wake-text oder None, Zeile, Adresse, Grund).
+    """
+    return _one(ticket, name, author, text, roster, False, None, send_text=text)
 
 
 def retry_delay():

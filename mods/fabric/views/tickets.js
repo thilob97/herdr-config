@@ -59,7 +59,11 @@ function ticketRow(app, cx, t, ticket) {
         .child(h_flex().gap(5).text_size(T.xs).text_color(t.dim)
           .when(Boolean(ticket.assignee), (el) => el.child(div().child(ticket.assignee)).child(div().child("·")))
           .when(comments > 0, (el) => el.child(div().child(`${comments}`)).child(div().child("·")))
-          .child(div().child(model.relativeTime(ticket.updated_at)))),
+          .child(div().child(model.relativeTime(ticket.updated_at)))
+          .when(Boolean(ticket.stall), (el) => el.child(
+            ui.chip(t, model.stallLabel(ticket.stall), t.accent, null, {
+              tooltip: model.stallReason(ticket.stall),
+            })))),
     )
     .child(div().flex_none().text_size(T.l).text_color(t.dim).child("›"));
 }
@@ -105,6 +109,11 @@ function headChips(app, t, ticket) {
       ticket.verdict.state === "pass" ? t.done : t.blocked));
   }
   if (ticket.waiting?.includes("mensch")) chips.push(ui.chip(t, "wartet auf dich", t.accent));
+  if (ticket.stall) {
+    chips.push(ui.chip(t, model.stallLabel(ticket.stall), t.accent, null, {
+      tooltip: model.stallReason(ticket.stall),
+    }));
+  }
   return h_flex().gap(4).flex_wrap().items_center().children(chips);
 }
 

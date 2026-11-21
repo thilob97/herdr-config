@@ -1044,6 +1044,26 @@ export function relativeTime(at, now = Date.now()) {
   return `${two(date.getDate())}.${two(date.getMonth() + 1)}.${date.getFullYear()}`;
 }
 
+function stallAge(at, now) {
+  const minutes = Math.floor(Math.max(0, now - at) / 60000);
+  if (minutes < 1) return "gerade eben";
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} h`;
+  return `${Math.floor(hours / 24)} Tagen`;
+}
+
+/** „stockt seit 5 min“; leer ohne Zeitstempel. Gleiche Dauer wie im Lesemodell. */
+export function stallLabel(stall, now = Date.now()) {
+  if (!Number.isFinite(stall?.since)) return "";
+  return `stockt seit ${stallAge(stall.since, now)}`;
+}
+
+/** Grund des Stillstands für Tooltips; leer, wenn keiner bekannt ist. */
+export function stallReason(stall) {
+  return String(stall?.reason ?? "");
+}
+
 /** Absolute Zeit für Tooltips: DD.MM.YYYY HH:MM. */
 export function absoluteTime(at) {
   if (!Number.isFinite(at)) return "";
