@@ -227,10 +227,12 @@ export default class Agents extends View {
     const all = terminals();
     this.migratePins(all);
     const reported = agents();
+    const snapshot = shared("fabric.hiddenAgents");
+    const shownLayout = String(shared("layout") ?? layout()?.name ?? "fabric");
     this.listed = new Map(reported.map((a) => [a.address, a.status]));
-    // Fab-Agenten stehen im Fabric-Abschnitt, nicht in dieser Liste.
-    const treeAll = filter.visibleTerminals(all);
-    let list = filter.visibleAgents(reported, all);
+    // Was die Fabric-Seitenleiste als Karte zeigt, steht nicht in dieser Liste.
+    const treeAll = filter.visibleTerminals(all, snapshot, shownLayout);
+    let list = filter.visibleAgents(reported, snapshot, shownLayout);
     const shown = focused()?.agent;
     const now = Date.now();
     this.track(reported, now);

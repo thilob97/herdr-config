@@ -388,14 +388,14 @@ export function machineLabel(machine) {
   return machine ? String(machine).toUpperCase() : "THIS MACHINE";
 }
 
-/** Karten und Gruppen des AGENTS-Abschnitts. `listed` ist `agents()` aus Herdr:
-    nur Terminals mit gemeldetem Status sind freie Agenten. */
-export function freeAgentCards(terminals = [], listed = [], spaces = []) {
+/** Freie Agenten: Terminal live, Status gemeldet, nicht Teil eines Fabric-Teams.
+    Eine Regelquelle für Karten (`freeAgentCards`) und Filter (`hiddenAgentAddresses`). */
+function freeAgentEntries(terminals = [], listed = []) {
   const hidden = fabricAddresses(terminals);
   const reported = new Map(
     (listed ?? []).filter(Boolean).map((agent) => [String(agent.address ?? ""), agent]),
   );
-  const cards = [];
+  const entries = [];
 
   for (const terminal of terminals ?? []) {
     if (!terminal || typeof terminal !== "object") continue;
@@ -407,11 +407,74 @@ export function freeAgentCards(terminals = [], listed = [], spaces = []) {
     // Freier Agent heißt: das Programm meldet einen Status. Reine Shells
     // und fremde, statuslose Programme bleiben draußen.
     if (!agent && !status) continue;
-    const name = String(agent?.title || terminal.title || terminal.name || address);
+    entries.push({ terminal, agent, status, address });
+  }
+
+  return entries;
+}
+
+/** Adressen der freien Karten; dieselbe Auswahl wie `freeAgentCards`. */
+export function freeAgentAddresses(terminals = [], listed = []) {
+  return freeAgentEntries(terminals, listed).map((entry) => entry.address);
+}
+
+/** Adressen, die die normale Agentenliste ausblenden soll: Fabric-Terminals samt
+    Nachfahren und freie Karten. Herdr erlaubt keine mod-übergreifenden Importe,
+    deshalb geht der Schnappschuss über den Shared-State. */
+export function hiddenAgentAddresses(terminals = [], listed = []) {
+  return {
+    fabric: [...fabricAddresses(terminals)],
+    free: freeAgentAddresses(terminals, listed),
+  };
+}
+
+/** Kartenname: Label vor Terminalname vor Programm; der Ticket-Titel benennt die
+    Aufgabe, nicht den Agenten. */
+function freeAgentName(terminal, agent) {
+  const labels = labelsOf(terminal);
+  for (const label of ["hub.name", "hub.role"]) {
+    const value = String(labels[label] ?? "").trim();
+    if (value) return value;
+  }
+  const name = String(terminal?.name ?? "").trim();
+  if (name) return name;
+  const app = String(agent?.app ?? terminal?.app ?? "").trim();
+  if (app) return app;
+  const title = String(terminal?.title ?? "").trim();
+  return title || addressOf(terminal);
+}
+
+const LEADING_GLYPHS =
+  /^[\p{Extended_Pictographic}\p{So}\u2800-\u28FF\uFE0F\u200D]+\s*/gu;
+const PROGRAM_SEPARATOR = /^[^\s]{1,3}\s*>\s*/u;
+const PROGRAM_GLYPH = /^[^\s]{1,3}\s+(?=[\u2800-\u28FF])/u;
+const INNER_EMOJI =
+  /\p{Extended_Pictographic}|\uFE0F|\u200D|\p{Emoji_Modifier}/gu;
+
+/** Aufgabenzeile aus dem Programmtitel: Programmpräfix, Statusglyphen und Emoji
+    weg; ein Rest, der nur den Agentennamen wiederholt, entfällt. */
+export function freeAgentTask(title, name) {
+  let value = String(title ?? "").replace(/\s+/g, " ").trim();
+  value = value.replace(LEADING_GLYPHS, "");
+  value = value.replace(PROGRAM_SEPARATOR, "");
+  value = value.replace(PROGRAM_GLYPH, "");
+  value = value.replace(LEADING_GLYPHS, "");
+  value = value.replace(INNER_EMOJI, "").replace(/\s+/g, " ").trim();
+  const task = truncateTask(value);
+  return task && task !== name ? task : "";
+}
+
+/** Karten und Gruppen des AGENTS-Abschnitts. `listed` ist `agents()` aus Herdr:
+    nur Terminals mit gemeldetem Status sind freie Agenten. */
+export function freeAgentCards(terminals = [], listed = [], spaces = []) {
+  const cards = [];
+
+  for (const { terminal, agent, status, address } of freeAgentEntries(terminals, listed)) {
+    const name = freeAgentName(terminal, agent);
     const app = String(agent?.app ?? terminal.agent ?? terminal.report ?? "");
     const machine = machineOf(terminal, spaces);
     const orchestrator = freeOrchestrator(terminal);
-    const task = truncateTask(name);
+    const task = freeAgentTask(agent?.title || terminal.title || "", name);
     cards.push({
       address,
       name,
