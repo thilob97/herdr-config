@@ -311,6 +311,15 @@ class TickCase(FabricCase):
         self.assertNotIn("stall", self.ticket(third))
         self.assertEqual(self.attention(), [])
 
+    def test_regel5_draft_blocker_meldet_nach_schwelle(self):
+        blocker = self.new_ticket(status="draft")
+        self.patch_ticket(blocker, updated_at=self.ago(45))
+        tid = self.new_ticket(status="todo", blocked_by=[blocker])
+        result = self.ok("tick")
+        self.assertIn("Regel 5 (blocked)", result.stdout)
+        self.assertEqual([row["ticket"] for row in self.attention()], [tid])
+        self.assertIn("draft", self.ticket(tid)["stall"]["reason"])
+
     def test_regel6_zweiter_versuch_ist_attention(self):
         tid = self.new_ticket(status="doing", assignee="zap")
         self.patch_ticket(

@@ -213,7 +213,7 @@ Jedes Ergebnis wird als `wake`-Ereignis geschrieben, auch jede Unterdrückung. I
 | 2 | letzte Erwähnung eines Agenten (nicht Prüfer/Orchestrator/`mensch`) ohne Antwort und ohne lebende Session, älter als `tick_mention_minutes` (5) | diesen Agenten starten |
 | 3 | Prüfer im letzten Kommentar erwähnt, kein Urteil danach, keine lebende Prüfer-Session, älter als `tick_review_minutes` (5) | Prüfer starten |
 | 4 | `todo`, keine offenen Blocker, keine Session | Team-Orchestrator wecken; volles Team-/Gesamtlimit ⇒ `unterdrückt: voll`, kein Startversuch |
-| 5 | offener Blocker in `doing`/`review` seit mehr als `tick_blocked_minutes` (30) unverändert (ein fehlender Blocker zählt sofort); ein `todo`-Blocker wartet planmäßig auf seinen Vorgänger | `attention` mit Blocker und Alter, kein Wecken |
+| 5 | offener Blocker seit mehr als `tick_blocked_minutes` (30) unverändert, außer ein `todo` mit eigenen offenen Blockern (wartet planmäßig; Regel 4 greift dort); ein fehlender Blocker zählt sofort | `attention` mit Blocker und Alter, kein Wecken |
 | 6 | dieselbe Regel war zweimal erfolglos (`stall.attempts >= 2`) | `attention` statt einer dritten Weckung; weitere Ticks wecken nicht mehr, bis `stall` aufgelöst ist |
 
 - Versuche werden je Ticket und Regel in `stall` gezählt. Zwischen zwei Versuchen liegt mindestens `tick_retry_minutes` (5); Regel 1 und 5 nutzen ihre eigene Schwelle. Nach einem fehlgeschlagenen Start im zweiten Versuch steht `attention` sofort, sonst nach Ablauf der Wartezeit bei der nächsten Auswertung. Eine lebende Session hält `stall` samt Versuchen fest; erst ein Kommentar oder ein Statuswechsel löst ihn auf.
