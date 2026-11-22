@@ -92,6 +92,10 @@ export default class Fabric extends View {
     this.imageOpen = null;
     this.newOpen = false;
     this.inboxOpen = false;
+    this.autopilotOpen = false;
+    this.autopilotSource = null;
+    this.autopilotText = null;
+    this.autopilotLogText = null;
     this.closed = false;
     this.watch = null;
     this.refreshing = false;
@@ -673,6 +677,13 @@ export default class Fabric extends View {
     } catch {
       text = null;
     }
+    let autopilot = null;
+    try {
+      autopilot = await readTextFile(`${this.dir}/autopilot.json`);
+    } catch {
+      autopilot = null;
+    }
+    this.autopilotText = autopilot;
     let next = null;
     this.loadError = null;
     if (text !== null) {
@@ -1077,6 +1088,7 @@ export default class Fabric extends View {
     const go = () => {
       this.menu = null;
       this.inboxOpen = false;
+      this.autopilotOpen = false;
       this.modal = null;
       if (page !== "team") {
         this.clearBlueprintDrawer();
@@ -1319,6 +1331,7 @@ export default class Fabric extends View {
       cx.stop_propagation();
       if (this.menu) { this.menu = null; this.notifyNow(); return; }
       if (this.inboxOpen) { this.inboxOpen = false; this.notifyNow(); return; }
+      if (this.autopilotOpen) { this.autopilotOpen = false; this.notifyNow(); return; }
       if (this.newTeamOpen) { this.closeNewTeam(cx); return; }
       if (this.newOpen) { this.newOpen = false; this.clearMentions(this.lastCx); this.notifyNow(); return; }
       if (this.blueprintDrawer) { this.closeBlueprintDrawer(cx); return; }
@@ -3812,6 +3825,7 @@ export default class Fabric extends View {
                 : page === "repos" ? renderRepos(this, cx, t)
                   : renderSettings(this, cx, t);
 
+    const lamp = model.autopilotLamp(this.autopilotText, Date.now());
     const state = this.orchestratorState();
     const statusWord = model.orchestratorWord(state);
     const statusColor = ui.orchestratorStatus(t, state).color;
@@ -3826,14 +3840,26 @@ export default class Fabric extends View {
       .border_color(t.border)
       .bg(t.chrome)
       .child(
-        h_flex()
+        v_flex()
           .w_full()
-          .h(40)
-          .px(8)
-          .gap(8)
-          .items_center()
-          .child(div().flex_none().text_color(t.accent).child(ui.icon("fabric", 17)))
-          .child(div().text_size(ui.FONT.m).font_semibold().child("Fabric")),
+          .flex_none()
+          .gap(2)
+          .child(
+            h_flex()
+              .w_full()
+              .h(40)
+              .px(8)
+              .gap(8)
+              .items_center()
+              .child(div().flex_none().text_color(t.accent).child(ui.icon("fabric", 17)))
+              .child(div().text_size(ui.FONT.m).font_semibold().child("Fabric")),
+          )
+          .child(this.autopilotTrigger(t, cx, {
+            anchor: "bottom_left",
+            popupId: "fabric-autopilot-side-panel",
+            lamp,
+            labelWidth: 148,
+          })),
       )
       .children(NAV.map((item) => ui.navItem(t, {
         id: `fabric-nav-${item.page}`,
@@ -3932,6 +3958,12 @@ export default class Fabric extends View {
         tooltip: "Neues Ticket (⌘N)",
         onClick: (cx) => this.openNewTicket(cx),
       })))
+      .child(this.autopilotTrigger(t, cx, {
+        compact: this.compact,
+        anchor: "bottom_left",
+        popupId: "fabric-autopilot-panel",
+        lamp,
+      }))
       .child(this.inboxButton(t, cx, this.compact))
       .child(ui.iconButton(t, {
         id: "fabric-window-close",
@@ -3958,10 +3990,15 @@ export default class Fabric extends View {
       );
 
     const overlay = [];
-    if (this.menu || this.inboxOpen) {
+    if (this.menu || this.inboxOpen || this.autopilotOpen) {
       overlay.push(ui.backdrop(t, {
         dim: false,
-        onClick: (cx) => { this.menu = null; this.inboxOpen = false; this.notifyNow(); },
+        onClick: (cx) => {
+          this.menu = null;
+          this.inboxOpen = false;
+          this.autopilotOpen = false;
+          this.notifyNow();
+        },
       }));
     }
     if (this.newOpen || this.newTeamOpen || this.modal) overlay.push(renderDialogs(this, cx, t));
@@ -4003,6 +4040,245 @@ export default class Fabric extends View {
     return this.mentionActions(root);
   }
 
+  // ---------- Autopilot ----------
+
+  autopilotLogPath() {
+    const info = model.autopilotPopover(this.autopilotText, null, Date.now());
+    return info.logPath || `${this.dir}/autopilot.log`;
+  }
+
+  async loadAutopilotLog() {
+    try {
+      this.autopilotLogText = await readTextFile(this.autopilotLogPath());
+    } catch {
+      this.autopilotLogText = null;
+    }
+    this.notifyNow();
+  }
+
+  autopilotTrigger(t, cx, { compact = false, anchor = "bottom_left", popupId = "fabric-autopilot-panel", lamp = null, labelWidth = null } = {}) {
+    const current = lamp ?? model.autopilotLamp(this.autopilotText, Date.now());
+    const short = current.state === "running" ? "an"
+      : current.state === "paused" ? "pausiert"
+        : current.state === "stale" ? "keine Antwort"
+          : "aus";
+    const trigger = h_flex()
+      .id(`${popupId}-trigger`)
+      .flex_none()
+      .h(ui.SIZE.button)
+      .px(compact ? 6 : 9)
+      .gap(6)
+      .items_center()
+      .rounded(ui.RADIUS.m)
+      .border_1()
+      .border_color(this.autopilotOpen ? t.accent : t.input)
+      .bg(this.autopilotOpen ? t.selected : t.raised)
+      .cursor_pointer()
+      .hover((s) => s.opacity(0.86))
+      .tooltip(current.text)
+      .accessibility_label(current.text)
+      .on_mouse_down("left", (_event, cx) => cx.stop_propagation())
+      .on_click((_event, cx) => {
+        cx.stop_propagation();
+        this.autopilotOpen = !this.autopilotOpen;
+        this.autopilotSource = this.autopilotOpen ? popupId : null;
+        this.inboxOpen = false;
+        this.menu = null;
+        if (this.autopilotOpen) cx.spawn(async () => { await this.loadAutopilotLog(); });
+        this.notifyNow();
+      })
+      .child(ui.autopilotDot(t, { color: current.color, pulse: current.pulse }))
+      .child(div()
+        .text_size(compact ? ui.FONT.xs : ui.FONT.s)
+        .text_color(t.muted)
+        .max_w(labelWidth ?? (compact ? 110 : 220))
+        .truncate()
+        .child(compact ? short : current.text));
+
+    const panel = this.autopilotPanel(t, popupId);
+    const open = this.autopilotOpen && this.autopilotSource === popupId;
+    return Popup.new(popupId, trigger).anchor(anchor).when(open, (el) => el.content(panel));
+  }
+
+  autopilotPanel(t, popupId) {
+    const info = model.autopilotPopover(this.autopilotText, this.autopilotLogText, Date.now());
+    const lamp = info.lamp;
+    const running = lamp.state === "running";
+    const paused = lamp.state === "paused";
+    const logPath = info.logPath || `${this.dir}/autopilot.log`;
+    const logError = this.errorFor("autopilot-log");
+
+    return ui.popoverPanel(t, [
+      v_flex().w_full().px(ui.SPACE.m).pt(ui.SPACE.m).pb(ui.SPACE.s).gap(ui.SPACE.xs)
+        .child(h_flex().w_full().gap(ui.SPACE.s).items_center()
+          .child(ui.autopilotDot(t, { color: lamp.color, pulse: lamp.pulse }))
+          .child(div().flex_1().text_size(ui.FONT.l).font_semibold().child("Autopilot")))
+        .child(div()
+          .text_size(ui.FONT.xs)
+          .text_color(ui.autopilotColor(t, lamp.color))
+          .whitespace_normal()
+          .child(lamp.text))
+        .when(Boolean(info.lastAction), (el) => el.child(div()
+          .text_size(ui.FONT.xs)
+          .text_color(t.muted)
+          .whitespace_normal()
+          .child(`Zuletzt: ${info.lastAction}`)))
+        .when(Boolean(info.endLabel), (el) => el.child(div()
+          .text_size(ui.FONT.xs)
+          .text_color(t.dim)
+          .child(info.endLabel)))
+        .when(Boolean(logError), (el) => el.child(div()
+          .text_size(ui.FONT.xs)
+          .text_color(t.blocked)
+          .whitespace_normal()
+          .child(logError.text))),
+      h_flex().w_full().px(ui.SPACE.m).pb(ui.SPACE.xs).gap(ui.SPACE.xs).items_center()
+        .child(ui.button(t, {
+          id: `${popupId}-start-0800`,
+          label: "bis morgen 08:00",
+          small: true,
+          disabled: running,
+          tooltip: "Autopilot bis morgen 08:00 starten",
+          onClick: (cx) => cx.spawn(async (cx) => { await this.startAutopilot("08:00", cx); }),
+        }))
+        .child(ui.button(t, {
+          id: `${popupId}-start-2359`,
+          label: "bis heute 23:59",
+          small: true,
+          disabled: running,
+          tooltip: "Autopilot bis heute 23:59 starten",
+          onClick: (cx) => cx.spawn(async (cx) => { await this.startAutopilot("23:59", cx); }),
+        }))
+        .child(ui.button(t, {
+          id: `${popupId}-start-done`,
+          label: "bis alles fertig",
+          small: true,
+          disabled: running,
+          tooltip: "Autopilot bis alles fertig starten",
+          onClick: (cx) => cx.spawn(async (cx) => { await this.startAutopilot("done", cx); }),
+        })),
+      h_flex().w_full().px(ui.SPACE.m).pb(ui.SPACE.s).gap(ui.SPACE.xs).items_center()
+        .when(paused, (el) => el.child(ui.button(t, {
+          id: `${popupId}-resume`,
+          label: "Pause aufheben",
+          icon: "undo",
+          small: true,
+          tooltip: "Autopilot fortsetzen",
+          onClick: (cx) => cx.spawn(async (cx) => { await this.resumeAutopilot(cx); }),
+        })))
+        .child(ui.button(t, {
+          id: `${popupId}-stop`,
+          label: "Stoppen",
+          icon: "stop",
+          small: true,
+          danger: true,
+          tooltip: "Autopilot stoppen",
+          onClick: (cx) => cx.spawn(async (cx) => { await this.stopAutopilot(cx); }),
+        }))
+        .child(ui.button(t, {
+          id: `${popupId}-log`,
+          label: "Log öffnen",
+          icon: "external",
+          small: true,
+          tooltip: "Autopilot-Log im Editor öffnen",
+          onClick: (cx) => cx.spawn(async () => { await this.openAutopilotLog(); }),
+        })),
+      v_flex().w_full().border_t(1).border_color(t.border).p(ui.SPACE.m).gap(ui.SPACE.xs)
+        .child(div()
+          .text_size(ui.FONT.xs)
+          .text_color(t.dim)
+          .whitespace_nowrap()
+          .truncate()
+          .tooltip(logPath)
+          .child(logPath))
+        .when(info.lines.length > 0, (el) => el.child(
+          div()
+            .w_full()
+            .max_h(300)
+            .overflow_y_scrollbar()
+            .overflow_x_scrollbar()
+            .child(v_flex().flex_none().gap(0).children(info.lines.map((line, index) => div()
+              .id(`${popupId}-log-${index}`)
+              .flex_none()
+              .font_family("monospace")
+              .text_size(ui.FONT.xs)
+              .text_color(t.muted)
+              .whitespace_nowrap()
+              .child(line === "" ? " " : line)))),
+        ))
+        .when(info.lines.length === 0, (el) => el.child(div()
+          .text_size(ui.FONT.xs)
+          .text_color(t.dim)
+          .child("Noch kein Log."))),
+    ], 380, 600);
+  }
+
+  async startAutopilot(until, cx) {
+    const result = await this.action(`autopilot-start-${until}`, ["autopilot", "start", "--until", until], {
+      success: until === "done" ? "Autopilot startet bis alles fertig." : `Autopilot startet bis ${until}.`,
+      cwd: appHome(),
+      after: async () => {
+        this.autopilotOpen = false;
+        await this.refresh(cx);
+      },
+    });
+    if (result.ok) this.autopilotOpen = false;
+    this.notifyNow();
+  }
+
+  async resumeAutopilot(cx) {
+    const result = await this.action("autopilot-resume", ["autopilot", "resume"], {
+      success: "Autopilot fortgesetzt.",
+      cwd: appHome(),
+      after: async () => {
+        this.autopilotOpen = false;
+        await this.refresh(cx);
+      },
+    });
+    if (result.ok) this.autopilotOpen = false;
+    this.notifyNow();
+  }
+
+  async stopAutopilot(cx) {
+    const result = await this.action("autopilot-stop", ["autopilot", "stop"], {
+      success: "Autopilot gestoppt.",
+      cwd: appHome(),
+      after: async () => {
+        this.autopilotOpen = false;
+        await this.refresh(cx);
+      },
+    });
+    if (result.ok) this.autopilotOpen = false;
+    this.notifyNow();
+  }
+
+  async openAutopilotLog() {
+    const logPath = this.autopilotLogPath();
+    let text = null;
+    try {
+      text = await readTextFile(logPath);
+    } catch {
+      text = null;
+    }
+    if (text === null) {
+      const hintText = `Kein Log unter ${logPath}.`;
+      this.setError("autopilot-log", hintText);
+      notify({ title: "Fabric", body: hintText, level: "warning" });
+      this.notifyNow();
+      return;
+    }
+    this.autopilotLogText = text;
+    this.setError("autopilot-log", null);
+    try {
+      await exec("/usr/bin/open", [logPath]);
+    } catch (error) {
+      const failure = `Log ließ sich nicht öffnen: ${message(error)}`;
+      this.setError("autopilot-log", failure);
+      notify({ title: "Fabric", body: failure, level: "error" });
+    }
+    this.notifyNow();
+  }
+
   inboxButton(t, cx, compact = false) {
     const trigger = h_flex()
       .id("fabric-inbox-button")
@@ -4022,6 +4298,7 @@ export default class Fabric extends View {
         cx.stop_propagation();
         this.inboxOpen = !this.inboxOpen;
         this.menu = null;
+        this.autopilotOpen = false;
         this.notifyNow();
       })
       .child(div().flex_none().text_color(t.muted).child(ui.icon("inbox", 14)))

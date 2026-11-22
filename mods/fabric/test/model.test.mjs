@@ -17,6 +17,7 @@ import {
   FLOW_NODE_TYPES, FLOW_TRIGGER_TYPES, FLOW_ACTION_TYPES, flowNewDefinition, flowLoad, flowSerialize,
   flowParse, flowNodeTemplate, flowNodeId, flowAddNode, flowRemoveNode, flowPatchNode, flowConnect,
   flowRemoveEdge, flowPatchEdge, flowOutgoing, flowEdgeWhenOptions, flowPlaceholders, flowValidate,
+  autopilotLamp, autopilotLogLines, autopilotPopover, AUTOPILOT_STALE_MS,
 } from "../model.js";
 
 test("Tickets werden nach Stufe gruppiert, in Stufenreihenfolge", () => {
@@ -1901,4 +1902,131 @@ test("Workflow-Laden: Eingabe bleibt unverändert, unbekannte Felder bleiben", (
   const fromText = flowLoad(JSON.stringify(input));
   assert.deepEqual(fromText, flowLoad(input));
   assert.equal("updated_at" in fromText, false);
+});
+
+// ---------- Autopilot ----------
+
+const autopilotNow = new Date(2026, 10, 22, 12, 0, 0).getTime();
+
+const autopilotStatus = (patch = {}) => ({
+  state: "running",
+  reason: "",
+  end: "2026-11-22T08:00",
+  updated_at: autopilotNow,
+  last_action: "T-65 angenommen",
+  log: "/tmp/autopilot.log",
+  pid: 4711,
+  ...patch,
+});
+
+test("Autopilot-Lampe: laufend mit Endzeit", () => {
+  const lamp = autopilotLamp(autopilotStatus({ end: "2026-11-22T08:00" }), autopilotNow);
+
+  assert.deepEqual(lamp, {
+    state: "running",
+    color: "done",
+    text: "Autopilot an · bis 08:00",
+    pulse: true,
+  });
+
+  const shortEnd = autopilotLamp(autopilotStatus({ end: "07:45" }), autopilotNow);
+  assert.equal(shortEnd.text, "Autopilot an · bis 07:45");
+  assert.equal(shortEnd.state, "running");
+
+  const noEnd = autopilotLamp(autopilotStatus({ end: "" }), autopilotNow);
+  assert.equal(noEnd.text, "Autopilot an · bis alles fertig");
+  assert.equal(noEnd.pulse, true);
+});
+
+test("Autopilot-Lampe: pausiert nennt den Grund", () => {
+  const lamp = autopilotLamp(
+    autopilotStatus({ state: "paused", reason: "kein Budget mehr" }),
+    autopilotNow,
+  );
+
+  assert.equal(lamp.state, "paused");
+  assert.equal(lamp.color, "working");
+  assert.equal(lamp.pulse, false);
+  assert.match(lamp.text, /Autopilot pausiert/);
+  assert.match(lamp.text, /kein Budget mehr/);
+
+  const withoutReason = autopilotLamp(autopilotStatus({ state: "paused", reason: "" }), autopilotNow);
+  assert.equal(withoutReason.text, "Autopilot pausiert");
+});
+
+test("Autopilot-Lampe: aus bei gestoppt, fehlender Datei, kaputtem JSON und fehlendem Zustand", () => {
+  const expected = { state: "stopped", color: "dim", text: "Autopilot aus", pulse: false };
+
+  assert.deepEqual(autopilotLamp(autopilotStatus({ state: "stopped" }), autopilotNow), expected);
+  assert.deepEqual(autopilotLamp(null, autopilotNow), expected);
+  assert.deepEqual(autopilotLamp("{kaputt", autopilotNow), expected);
+  assert.deepEqual(autopilotLamp("{}", autopilotNow), expected);
+  assert.deepEqual(autopilotLamp({ state: "unbekannt" }, autopilotNow), expected);
+  assert.deepEqual(autopilotLamp(42, autopilotNow), expected);
+  assert.deepEqual(autopilotLamp([], autopilotNow), expected);
+});
+
+test("Autopilot-Lampe: veraltet nach sechs Minuten, nicht bei 5:59", () => {
+  const stale = { state: "stale", color: "dim", text: "Autopilot reagiert nicht", pulse: false };
+  const old = autopilotNow - (AUTOPILOT_STALE_MS + 1000);
+
+  assert.deepEqual(autopilotLamp(autopilotStatus({ updated_at: old }), autopilotNow), stale);
+  assert.deepEqual(
+    autopilotLamp(autopilotStatus({ state: "paused", reason: "Pause", updated_at: old }), autopilotNow),
+    stale,
+  );
+
+  const fresh = autopilotNow - (AUTOPILOT_STALE_MS - 1000);
+  assert.equal(autopilotLamp(autopilotStatus({ updated_at: fresh }), autopilotNow).state, "running");
+  assert.equal(autopilotLamp(autopilotStatus({ updated_at: fresh }), autopilotNow).pulse, true);
+
+  for (const updated_at of [undefined, null, "keine Zahl"]) {
+    assert.deepEqual(
+      autopilotLamp(autopilotStatus({ updated_at }), autopilotNow),
+      stale,
+    );
+  }
+});
+
+test("Autopilot-Logzeilen: letzte Zeilen, Umbruch am Ende zählt nicht", () => {
+  assert.deepEqual(autopilotLogLines(""), []);
+  assert.deepEqual(autopilotLogLines(null), []);
+  assert.deepEqual(autopilotLogLines("eine\n"), ["eine"]);
+  assert.deepEqual(autopilotLogLines("eine\nzwei"), ["eine", "zwei"]);
+  assert.deepEqual(autopilotLogLines("a\nb\nc", 2), ["b", "c"]);
+  assert.deepEqual(autopilotLogLines("a\nb\nc", 0), []);
+});
+
+test("Autopilot-Popover: letzte 20 von 30 Zeilen und Kopfdaten", () => {
+  const lines = Array.from({ length: 30 }, (_, index) => `Zeile ${index + 1}`);
+  const popover = autopilotPopover(autopilotStatus(), `${lines.join("\n")}\n`, autopilotNow);
+
+  assert.equal(popover.lastAction, "T-65 angenommen");
+  assert.equal(popover.endLabel, "bis 08:00");
+  assert.equal(popover.logPath, "/tmp/autopilot.log");
+  assert.equal(popover.lines.length, 20);
+  assert.deepEqual(popover.lines, lines.slice(-20));
+  assert.equal(popover.lines[0], "Zeile 11");
+  assert.equal(popover.lines[19], "Zeile 30");
+  assert.deepEqual(popover.lamp, {
+    state: "running",
+    color: "done",
+    text: "Autopilot an · bis 08:00",
+    pulse: true,
+  });
+
+  const bare = autopilotPopover({ state: "stopped" }, "");
+  assert.equal(bare.lastAction, "");
+  assert.equal(bare.endLabel, "");
+  assert.equal(bare.logPath, "");
+  assert.deepEqual(bare.lines, []);
+  assert.equal(bare.lamp.state, "stopped");
+
+  const open = autopilotPopover(autopilotStatus({ end: "" }), "", autopilotNow);
+  assert.equal(open.endLabel, "bis alles fertig");
+
+  const paused = autopilotPopover(
+    autopilotStatus({ state: "paused", reason: "Budget" }), "", autopilotNow,
+  );
+  assert.equal(paused.endLabel, "bis 08:00");
 });
