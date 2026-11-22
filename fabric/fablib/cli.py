@@ -355,6 +355,37 @@ def _print_wake_results(results):
         print(f"@{name}: {line}")
 
 
+def _new_rev(ticket):
+    return store.revision(ticket)
+
+
+def _conflict(ticket_id, fresh=None):
+    stamp = (fresh or {}).get("updated_at")
+    return store.PersistError(
+        f"{ticket_id}: Ticket wurde während der Arbeit geändert"
+        + (f" (updated_at {stamp})" if stamp else "")
+        + "; nichts eingetragen"
+    )
+
+
+def _commit(ticket, rev):
+    with store.locked():
+        fresh = store.load(ticket["id"])
+        if store.revision(fresh) != rev:
+            raise _conflict(ticket["id"], fresh)
+        store.save(ticket)
+        store.flush_deferred_events()
+        index.rebuild()
+    return store.revision(ticket)
+
+
+def _check_unchanged(ticket, rev):
+    with store.locked():
+        fresh = store.load(ticket["id"])
+        if store.revision(fresh) != rev:
+            raise _conflict(ticket["id"], fresh)
+
+
 def _short(value):
     return (value or "—")[:7]
 
@@ -1240,8 +1271,9 @@ def cmd_handover(args):
     summary = (args.summary or "").strip()
     if not summary:
         raise FabError("Die Zusammenfassung der Übergabe ist leer")
-    with store.locked():
-        ticket = store.load(args.id)
+    ticket = store.load(args.id)
+    rev = _new_rev(ticket)
+    with store.deferred_events():
         worktree = ticket.get("worktree")
         if not worktree or not os.path.isdir(worktree):
             raise FabError(f"{ticket['id']}: Worktree fehlt ({worktree or 'kein Pfad'})")
@@ -1347,8 +1379,7 @@ def cmd_handover(args):
                             ticket, ticket["base"], files
                         ),
                     )
-                store.save(ticket)
-                index.rebuild()
+                rev = _commit(ticket, rev)
                 _print_wake_results(results)
             elif merge_note:
                 wake.add_comment(ticket, actor, merge_note, roster)
@@ -1364,9 +1395,10 @@ def cmd_handover(args):
                             f"`fab handover {ticket['id']}`."
                         ),
                     )
-                store.save(ticket)
-                index.rebuild()
+                rev = _commit(ticket, rev)
                 _print_wake_results(results)
+            else:
+                _check_unchanged(ticket, rev)
             ticket.pop("merge", None)
             raise store.PersistError(
                 f"{ticket['id']}: Übergabe verweigert:\n- " + "\n- ".join(reasons)
@@ -1381,10 +1413,9 @@ def cmd_handover(args):
             ticket["waiting"].append("mensch")
         _add_comment(ticket, actor, summary)
         events.append("handover", ticket["id"], actor, "", summary)
-        store.save(ticket)
-        index.rebuild()
-    print(f"{ticket['id']}: an den Menschen übergeben (Status review)")
-    return 0
+        rev = _commit(ticket, rev)
+        print(f"{ticket['id']}: an den Menschen übergeben (Status review)")
+        return 0
 
 
 def _pr_body(ticket, branch_name):
@@ -1428,8 +1459,6 @@ def _pr_failure(ticket, reason, url):
     ticket["pr"] = {"url": url, "state": "open"}
     _add_comment(ticket, "mensch", text)
     events.append("pr", ticket["id"], "mensch", "", text)
-    store.save(ticket)
-    index.rebuild()
 
 
 def _pr_cleanup_failure(ticket, reason, url):
@@ -1440,8 +1469,6 @@ def _pr_cleanup_failure(ticket, reason, url):
     ticket["pr"] = {**(ticket.get("pr") or {}), "url": url, "state": "merged"}
     _add_comment(ticket, "mensch", text)
     events.append("pr", ticket["id"], "mensch", "", text)
-    store.save(ticket)
-    index.rebuild()
 
 
 def _accept_check_failed(ticket, report):
@@ -1513,8 +1540,6 @@ def _mark_pr_merged(ticket, url, merged):
     ticket["pr"] = {"url": url, "state": "merged", "commit": merged}
     _add_comment(ticket, "mensch", f"PR gemergt: {url}")
     events.append("pr", ticket["id"], "mensch", "", f"PR gemergt: {url}")
-    store.save(ticket)
-    index.rebuild()
 
 
 def _finish_pr_accept(ticket, roster, top, branch_name, base, merged, url):
@@ -1531,20 +1556,14 @@ def _finish_pr_accept(ticket, roster, top, branch_name, base, merged, url):
         "accept", ticket["id"], "mensch", "",
         f"{branch_name} → {base} via PR {url} @ {_short(merged)}",
     )
-    store.save(ticket)
-    index.rebuild()
-    print(
-        f"{ticket['id']}: angenommen, {branch_name} über PR {url} in {base} "
-        f"gemergt ({_short(merged)}); Worktree und Branch entfernt"
-        + (f"; {len(ended)} Session(s) beendet" if ended else "")
-    )
-    return hint_wakes
+    return hint_wakes, ended
 
 
 def cmd_accept(args):
     roster = agents.load()
-    with store.locked():
-        ticket = store.load(args.id)
+    ticket = store.load(args.id)
+    rev = _new_rev(ticket)
+    with store.deferred_events():
         if ticket["status"] != "review":
             raise FabError(
                 f"{ticket['id']}: Abnahme nur im Status review (jetzt {ticket['status']}); "
@@ -1583,17 +1602,25 @@ def cmd_accept(args):
         failure = None
         if pr_merged:
             merged = (ticket.get("pr") or {}).get("commit") or git.head(top)
+            url = ticket["pr"]["url"]
             try:
-                hint_wakes = _finish_pr_accept(
-                    ticket, roster, top, branch_name, ticket["base"], merged,
-                    ticket["pr"]["url"],
+                hint_wakes, ended = _finish_pr_accept(
+                    ticket, roster, top, branch_name, ticket["base"], merged, url,
                 )
             except store.PersistError:
                 raise
             except FabError as exc:
-                _pr_cleanup_failure(ticket, str(exc), ticket["pr"]["url"])
+                _pr_cleanup_failure(ticket, str(exc), url)
+                rev = _commit(ticket, rev)
                 failure = exc
             else:
+                rev = _commit(ticket, rev)
+                print(
+                    f"{ticket['id']}: angenommen, {branch_name} über PR {url} in "
+                    f"{ticket['base']} gemergt ({_short(merged)}); Worktree und "
+                    f"Branch entfernt"
+                    + (f"; {len(ended)} Session(s) beendet" if ended else "")
+                )
                 _print_wake_results(hint_wakes)
         else:
             here = git.branch(top)
@@ -1627,8 +1654,7 @@ def cmd_accept(args):
                     merge, text = _accept_merge_changed(
                         ticket, roster, top, base_ref, review_head
                     )
-                    store.save(ticket)
-                    index.rebuild()
+                    rev = _commit(ticket, rev)
                     raise store.PersistError(
                         f"{ticket['id']}: Merge-Stand mit {base_ref} weicht vom "
                         f"geprüften Tree {_short(expected)} ab (jetzt "
@@ -1648,8 +1674,7 @@ def cmd_accept(args):
                 if not report["ok"]:
                     git.reset_keep(top, before)
                     _accept_check_failed(ticket, report)
-                    store.save(ticket)
-                    index.rebuild()
+                    rev = _commit(ticket, rev)
                     raise store.PersistError(
                         f"{ticket['id']}: herdr-app check rot; "
                         f"Merge auf {_short(before)} zurückgesetzt"
@@ -1665,8 +1690,7 @@ def cmd_accept(args):
                     "accept", ticket["id"], "mensch", "",
                     f"{branch_name} → {ticket['base']} @ {_short(merged)}",
                 )
-                store.save(ticket)
-                index.rebuild()
+                rev = _commit(ticket, rev)
                 print(
                     f"{ticket['id']}: angenommen, {branch_name} in {ticket.get('base')} gemergt "
                     f"({_short(merged)}); Worktree und Branch entfernt"
@@ -1698,8 +1722,7 @@ def cmd_accept(args):
                     merge, text = _accept_merge_changed(
                         ticket, roster, top, ref, review_head
                     )
-                    store.save(ticket)
-                    index.rebuild()
+                    rev = _commit(ticket, rev)
                     raise store.PersistError(
                         f"{ticket['id']}: Merge-Stand mit {ref} weicht vom geprüften "
                         f"Tree {_short(expected)} ab (jetzt {_short(tree)}); nichts "
@@ -1718,8 +1741,7 @@ def cmd_accept(args):
                 ticket["pr"] = {"url": url, "state": "open"}
                 _add_comment(ticket, "mensch", f"PR geöffnet: {url}")
                 events.append("pr", ticket["id"], "mensch", "", f"PR geöffnet: {url}")
-                store.save(ticket)
-                index.rebuild()
+                rev = _commit(ticket, rev)
                 if args.pr_only:
                     print(f"{ticket['id']}: PR geöffnet: {url}")
                     return 0
@@ -1733,15 +1755,20 @@ def cmd_accept(args):
                         git.revert(top, merged)
                         git.push(top, "origin", base)
                         _accept_check_failed(ticket, report)
-                        store.save(ticket)
-                        index.rebuild()
+                        rev = _commit(ticket, rev)
                         raise store.PersistError(
                             f"{ticket['id']}: herdr-app check rot; Merge "
                             f"{_short(merged)} als Revert nach origin/{base} gepusht"
                         )
                     _mark_pr_merged(ticket, url, merged)
-                    hint_wakes = _finish_pr_accept(
+                    hint_wakes, ended = _finish_pr_accept(
                         ticket, roster, top, branch_name, base, merged, url
+                    )
+                    rev = _commit(ticket, rev)
+                    print(
+                        f"{ticket['id']}: angenommen, {branch_name} über PR {url} in {base} "
+                        f"gemergt ({_short(merged)}); Worktree und Branch entfernt"
+                        + (f"; {len(ended)} Session(s) beendet" if ended else "")
                     )
                     _print_wake_results(hint_wakes)
                 except store.PersistError:
@@ -1751,9 +1778,10 @@ def cmd_accept(args):
                         _pr_cleanup_failure(ticket, str(exc), url)
                     else:
                         _pr_failure(ticket, str(exc), url)
+                    rev = _commit(ticket, rev)
                     failure = exc
-    if failure is not None:
-        raise failure
+        if failure is not None:
+            raise failure
     _autostart(_unblocked_by(ticket["id"]))
     return 0
 
@@ -2134,8 +2162,7 @@ def cmd_agents(args):
 
 
 def cmd_inbox(args):
-    with store.locked():
-        payload = index.rebuild()
+    payload = index.build()
     if args.team:
         roster = agents.load()
         teams.team(roster, args.team)
@@ -3577,7 +3604,7 @@ def _publish_tick_alarm(args):
         want = str(state["last_tick"]) if state["stale"] else ""
         if (store.meta_get(TICK_ALARM_SHOWN) or "") == want:
             return
-        with store.locked():
+        with store.locked(timeout=0.5):
             state = store.tick_alarm()
             want = str(state["last_tick"]) if state["stale"] else ""
             if (store.meta_get(TICK_ALARM_SHOWN) or "") == want:
