@@ -4,8 +4,10 @@ import os
 import plistlib
 import subprocess
 import sys
+import types
+from unittest import mock
 
-from fabric.fablib import store
+from fabric.fablib import store, tick
 from fabric.tests.support import FAB, FabricCase
 
 MINUTE = 60 * 1000
@@ -17,6 +19,9 @@ class TickCase(FabricCase):
 
     def ago(self, minutes):
         return self.now() - int(minutes * MINUTE)
+
+    def standard_home(self):
+        return os.path.join(self.fake_home, ".config", "herdr-app", "data", "fabric")
 
     def new_ticket(self, status="todo", assignee="zap", worktree=True, **fields):
         result = self.ok(
@@ -631,7 +636,7 @@ class TickCase(FabricCase):
     # -- launchd
 
     def test_install_und_uninstall(self):
-        guard = {"FAB_TICK_NO_LAUNCHCTL": "1"}
+        guard = {"FAB_TICK_NO_LAUNCHCTL": "1", "FAB_HOME": ""}
         result = self.ok("tick", "--install", env=guard)
         plist = os.path.join(
             self.fake_home, "Library", "LaunchAgents", "de.herdr.fabric.tick.plist"
@@ -647,7 +652,7 @@ class TickCase(FabricCase):
         self.assertTrue(data["ProgramArguments"][0].endswith("/fabric/fab"))
         self.assertTrue(os.path.isabs(data["ProgramArguments"][0]))
         plist_env = data["EnvironmentVariables"]
-        self.assertEqual(plist_env["FAB_HOME"], self.home)
+        self.assertEqual(plist_env["FAB_HOME"], self.standard_home())
         self.assertEqual(plist_env["FAB_ROSTER"], self.roster)
         self.assertIn("PATH", plist_env)
         self.assertIn("Hinweis", result.stdout)
@@ -661,7 +666,10 @@ class TickCase(FabricCase):
         path = os.path.join(self.bin, "launchctl")
         self._write(path, "#!/bin/sh\necho 'nicht geladen' >&2\nexit 1\n")
         os.chmod(path, 0o755)
-        result = self.ok("tick", "--install", env={"FAB_TICK_NO_LAUNCHCTL": "1"})
+        result = self.ok(
+            "tick", "--install",
+            env={"FAB_TICK_NO_LAUNCHCTL": "1", "FAB_HOME": ""},
+        )
         self.assertEqual(result.returncode, 0)
         self.assertIn("Hinweis", result.stdout)
         self.assertTrue(
@@ -674,6 +682,97 @@ class TickCase(FabricCase):
         )
 
     # -- automatische Einrichtung
+
+    def test_autostart_enabled_worktree_ohne_freigabe(self):
+        worktree = "/tmp/worktrees/x/fabric/fab"
+        with mock.patch.dict(os.environ, {"FAB_TICK_AUTOSTART": ""}):
+            with mock.patch.object(tick, "program_path", return_value=worktree):
+                self.assertFalse(tick.autostart_enabled())
+
+    def test_autostart_enabled_ausserhalb_macos(self):
+        with mock.patch.dict(os.environ, {"FAB_TICK_AUTOSTART": "1"}):
+            with mock.patch.object(
+                tick, "sys", types.SimpleNamespace(platform="linux")
+            ):
+                self.assertFalse(tick.autostart_enabled())
+
+    def test_autostart_enabled_worktree_mit_freigabe(self):
+        worktree = "/tmp/worktrees/x/fabric/fab"
+        with mock.patch.dict(os.environ, {"FAB_TICK_AUTOSTART": "1"}):
+            with mock.patch.object(tick, "program_path", return_value=worktree):
+                with mock.patch.object(
+                    tick, "sys", types.SimpleNamespace(platform="darwin")
+                ):
+                    self.assertTrue(tick.autostart_enabled())
+
+    def test_autostart_enabled_haupt_checkout_unter_macos(self):
+        with mock.patch.dict(os.environ, {"FAB_TICK_AUTOSTART": ""}):
+            with mock.patch.object(
+                tick, "program_path", return_value="/opt/fabric/fab"
+            ):
+                with mock.patch.object(
+                    tick, "sys", types.SimpleNamespace(platform="darwin")
+                ):
+                    self.assertTrue(tick.autostart_enabled())
+
+    def test_autostart_enabled_abgeschaltet(self):
+        with mock.patch.dict(os.environ, {"FAB_TICK_AUTOSTART": "0"}):
+            with mock.patch.object(
+                tick, "program_path", return_value="/opt/fabric/fab"
+            ):
+                with mock.patch.object(
+                    tick, "sys", types.SimpleNamespace(platform="darwin")
+                ):
+                    self.assertFalse(tick.autostart_enabled())
+
+    def test_install_mit_abweichendem_home_schreibt_nichts(self):
+        agents = os.path.join(self.tmp, "LaunchAgents")
+        log = self.launchctl_stub()
+        result = self.cli(
+            "tick", "--install",
+            env={
+                "FAB_HOME": self.home,
+                "FAB_LAUNCH_AGENTS_DIR": agents,
+                "LAUNCHCTL_LOG": log,
+            },
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("FAB_HOME", result.stdout)
+        self.assertFalse(os.path.exists(agents))
+        self.assertFalse(os.path.exists(log))
+
+    def test_abweichendes_home_im_auftrag_wird_repariert(self):
+        agents = os.path.join(self.tmp, "LaunchAgents")
+        log = self.launchctl_stub()
+        os.makedirs(agents, exist_ok=True)
+        plist = os.path.join(agents, "de.herdr.fabric.tick.plist")
+        with open(plist, "wb") as handle:
+            plistlib.dump(
+                {
+                    "Label": "de.herdr.fabric.tick",
+                    "EnvironmentVariables": {"FAB_HOME": "/tmp/woanders"},
+                },
+                handle,
+            )
+        self.ok(
+            "version",
+            env={
+                "FAB_TICK_AUTOSTART": "1",
+                "FAB_HOME": "",
+                "FAB_LAUNCH_AGENTS_DIR": agents,
+                "LAUNCHCTL_LOG": log,
+            },
+        )
+        with open(plist, "rb") as handle:
+            data = plistlib.load(handle)
+        self.assertEqual(
+            data["EnvironmentVariables"]["FAB_HOME"], self.standard_home()
+        )
+        with open(log, encoding="utf-8") as handle:
+            calls = handle.read().splitlines()
+        self.assertEqual(len(calls), 2)
+        self.assertIn("bootout", calls[0])
+        self.assertIn("bootstrap", calls[1])
 
     def launchctl_stub(self):
         """Stub protokolliert `launchctl`-Aufrufe, statt sie auszuführen."""
@@ -691,6 +790,7 @@ class TickCase(FabricCase):
         log = self.launchctl_stub()
         env = {
             "FAB_TICK_AUTOSTART": "1",
+            "FAB_HOME": "",
             "FAB_LAUNCH_AGENTS_DIR": agents,
             "LAUNCHCTL_LOG": log,
         }

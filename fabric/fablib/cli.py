@@ -1644,6 +1644,9 @@ def cmd_tick(args):
             raise FabError("--dry-run gilt nur für den Prüflauf, nicht für launchd")
         if args.install:
             path, ok, detail = tick.install()
+            if path is None:
+                print(f"Hinweis: {detail}")
+                return 1
             print(f"launchd-Auftrag installiert: {path}")
             if "/worktrees/" in tick.program_path():
                 print(

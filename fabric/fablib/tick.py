@@ -783,6 +783,23 @@ def program_path():
     )
 
 
+def standard_home():
+    """Datenort ohne `FAB_HOME`; launchd startet ohne die Shell-Umgebung."""
+    return os.path.abspath(os.path.expanduser(store.DEFAULT_HOME))
+
+
+def _home_deviation():
+    """Grund, warum dieser Aufruf keinen Auftrag schreiben darf, sonst `None`."""
+    current = store.home()
+    standard = standard_home()
+    if current != standard:
+        return (
+            f"FAB_HOME {current} weicht vom Standard-Home {standard} ab; "
+            "Auftrag nicht angelegt"
+        )
+    return None
+
+
 def autostart_enabled():
     """Darf dieser Aufruf den launchd-Auftrag selbst anlegen?
 
@@ -803,27 +820,50 @@ def autostart_enabled():
 def ensure_installed():
     """Fehlenden Auftrag anlegen; Rückgabe: Pfad oder `None`.
 
-    Idempotent: eine vorhandene Plist wird weder neu geschrieben noch erneut
-    bei launchd angemeldet.
+    Idempotent: eine vorhandene Plist mit Standard-Home wird weder neu
+    geschrieben noch erneut bei launchd angemeldet. Trägt sie ein abweichendes
+    `FAB_HOME`, wird der Auftrag zuvor entfernt und frisch angelegt. Ein Aufruf
+    mit abweichendem `FAB_HOME` (Vorschau/Test) lässt den Auftrag unberührt.
     """
     if not autostart_enabled():
         return None
+    if _home_deviation():
+        return None
     target = plist_path()
     if os.path.exists(target):
-        return None
+        if _plist_home(target) == standard_home():
+            return None
+        uninstall()
+        path, _ok, _detail = install()
+        return path
     path, _ok, _detail = install()
     return path
 
 
+def _plist_home(path):
+    """`FAB_HOME` aus einer vorhandenen Plist; `""` bei kaputter Datei."""
+    try:
+        with open(path, "rb") as handle:
+            data = plistlib.load(handle)
+    except (OSError, ValueError, plistlib.InvalidFileException):
+        return ""
+    return str((data.get("EnvironmentVariables") or {}).get("FAB_HOME") or "")
+
+
 def payload():
-    """Inhalt des launchd-Auftrags."""
+    """Inhalt des launchd-Auftrags.
+
+    `FAB_HOME` steht fest auf dem Standard-Home: launchd startet ohne
+    `FAB_HOME`, und ein Shell-Wert aus einem Test- oder Vorschauaufruf darf
+    nicht in den Dauerauftrag wandern.
+    """
     return {
         "Label": LABEL,
         "ProgramArguments": [program_path(), "tick"],
         "StartInterval": INTERVAL,
         "RunAtLoad": False,
         "EnvironmentVariables": {
-            "FAB_HOME": store.home(),
+            "FAB_HOME": standard_home(),
             "FAB_ROSTER": agents.roster_path(),
             "PATH": os.environ.get("PATH") or "/usr/local/bin:/usr/bin:/bin",
         },
@@ -834,8 +874,12 @@ def install():
     """Plist schreiben und `launchctl bootstrap` versuchen.
 
     Rückgabe: (Pfad, bootstrap_ok, Hinweis). Ein Bootstrap-Fehler ist nur ein
-    Hinweis; die Datei bleibt liegen.
+    Hinweis; die Datei bleibt liegen. Weicht `FAB_HOME` vom Standard ab, wird
+    nichts geschrieben und `(None, False, Grund)` zurückgegeben.
     """
+    reason = _home_deviation()
+    if reason:
+        return None, False, reason
     target = plist_path()
     text = plistlib.dumps(payload(), sort_keys=True).decode("utf-8")
     store.atomic_write(target, text, mode=0o644)
