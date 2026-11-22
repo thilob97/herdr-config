@@ -1,4 +1,6 @@
 """Beendete Agenten-Sessions: Ereignis, Sofort-Meldung, Dispatch, Anzeige."""
+import unittest
+
 from fabric.tests.support import FabricCase
 
 MINUTE = 60 * 1000
@@ -128,7 +130,7 @@ class SessionEndTests(FabricCase):
         self.assertEqual(self.hc_calls("read"), [])
         self.assertIn("beendet:", self.attention()[0]["text"])
 
-    def test_seen_live_dann_verschwunden_ist_kein_fehlstart(self):
+    def test_seen_live_dann_verschwunden_wird_als_beendet_gemeldet(self):
         tid, name = self.doing_ticket()
         self.set_terminals(
             [{"address": "t5", "name": name, "state": "live", "status": "working"}]
@@ -138,10 +140,25 @@ class SessionEndTests(FabricCase):
 
         self.set_terminals([])
         mark = self.mark()
-        self.ok("tick")
+        self.clear_log()
+        result = self.ok("tick")
 
+        self.assertIn("beendet:", result.stdout)
+        rows = self.ended_events(mark)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["target"], name)
+        self.assertIn("Verschwunden ohne Abschlusszeile", rows[0]["reason"])
+        self.assertNotIn("Fehlstart", rows[0]["reason"])
+        self.assertIsInstance(self.ticket(tid)["sessions"][0].get("ended"), dict)
+        attention = self.attention()
+        self.assertEqual(len(attention), 1)
+        self.assertIn("beendet:", attention[0]["text"])
+        self.assertEqual(self.hc_calls("get"), [])
+        self.assertEqual(self.hc_calls("read"), [])
+
+        mark = self.mark()
+        self.ok("tick")
         self.assertEqual(self.ended_events(mark), [])
-        self.assertEqual(self.attention(), [])
 
     def test_zweiter_tick_schreibt_kein_zweites_ereignis(self):
         tid, name = self.doing_ticket()
@@ -208,3 +225,38 @@ class SessionEndTests(FabricCase):
         ticket = self.ticket(tid)
         self.assertEqual(len(ticket["sessions"]), 1)
         self.assertNotIn("ended", ticket["sessions"][0])
+
+
+class ClipTests(unittest.TestCase):
+    def test_nennt_nur_zeilen_wenn_nur_zeilen_gekuerzt(self):
+        from fabric.fablib.sessions import _clip
+
+        text = "\n".join(f"z{index:02d}" for index in range(40))
+
+        out = _clip(text)
+
+        self.assertIn("letzte 20 Zeilen", out)
+        self.assertNotIn("Zeichen", out)
+        self.assertIn("z39", out)
+        self.assertNotIn("z00", out)
+
+    def test_nennt_nur_zeichen_wenn_nur_zeichen_gekuerzt(self):
+        from fabric.fablib.sessions import _clip
+
+        out = _clip("a" * 1500 + "\n" + "b" * 1500)
+
+        self.assertIn("letzte 2000 Zeichen", out)
+        self.assertNotIn("Zeilen", out)
+        first = out.splitlines()[0]
+        self.assertLess(len(first), 1500)
+        self.assertEqual(len(first), 499)
+
+    def test_nennt_zeilen_und_zeichen_wenn_beides_gekuerzt(self):
+        from fabric.fablib.sessions import _clip
+
+        text = "\n".join("x" * 120 for _ in range(30))
+
+        out = _clip(text)
+
+        self.assertIn("letzte 20 Zeilen", out)
+        self.assertIn("letzte 2000 Zeichen", out)

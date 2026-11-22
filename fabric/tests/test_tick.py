@@ -124,6 +124,47 @@ class TickCase(FabricCase):
         self.assertNotIn("stall", self.ticket(tid))
         self.assertEqual(self.runs(), [])
 
+    def test_beendete_session_nach_entstoerung_sofort_gemeldet(self):
+        tid = self.new_ticket(status="doing", assignee="zap")
+        name = self.live_session(tid)
+        self.set_terminals(
+            [
+                {"address": "t5", "name": name, "state": "finished",
+                 "exit_code": 0, "reason": "exit"},
+            ]
+        )
+        self.set_gets(
+            {
+                "t5": {"state": "finished", "exit_code": 0, "reason": "exit",
+                       "finished_ms": self.now()},
+            }
+        )
+        self.set_reads({"t5": "letzte Zeile\n"})
+        self.ok("tick")
+        self.assertTrue(self.ticket(tid)["stall"]["attention"])
+
+        self.ok("comment", tid, "--from", "zap", "--no-wake", "kurz notiert")
+        self.assertNotIn("stall", self.ticket(tid))
+
+        mark = self.mark()
+        result = self.ok("tick")
+        self.assertIn("Regel 1 (doing)", result.stdout)
+        self.assertIn("beendet:", result.stdout)
+        self.assertIn(name, result.stdout)
+        tick_rows = self.events_since(mark, "tick")
+        self.assertEqual([row["text"] for row in tick_rows], ["attention"])
+        attention = self.attention()
+        self.assertEqual(len(attention), 1)
+        self.assertIn("beendet:", attention[0]["text"])
+        self.assertIn("Exit 0", attention[0]["text"])
+        stall = self.ticket(tid)["stall"]
+        self.assertEqual(stall["rule"], "doing")
+        self.assertTrue(stall["attention"])
+        self.assertEqual(self.runs(), [])
+
+        self.ok("tick")
+        self.assertEqual(len(self.events_since(mark, "tick")), 1)
+
     # -- Regel 2
 
     def test_regel2_unbeantwortete_erwaehnung_startet_agenten(self):
@@ -378,8 +419,8 @@ class TickCase(FabricCase):
         self.assertTrue(stall["attention"])
         self.assertIn("Start fehlgeschlagen", stall["reason"])
 
-    def test_regel6_ueberlebt_lebende_session(self):
-        """Adas Ablauf: Start, Session lebt, Session stirbt, attention."""
+    def test_verschwundene_session_sofort_statt_zweitem_versuch(self):
+        """Start, Session lebt, Session verschwindet: sofort attention."""
         tid = self.new_ticket(status="doing", assignee="zap")
         self.patch_ticket(tid, updated_at=self.ago(11))
         result = self.ok("tick")
@@ -393,22 +434,20 @@ class TickCase(FabricCase):
         self.assertEqual(self.ticket(tid)["stall"]["attempts"], 1)
         self.assertEqual(self.events_since(mark, "tick"), [])
 
+        # Eine sichtbare, dann verschwundene Session gilt als beendet: die
+        # Meldung kommt sofort statt eines zweiten Startversuchs.
         self.set_live({})
-        stamp = self.ago(11)
-        stall = dict(self.ticket(tid)["stall"])
-        stall["last_attempt"] = stamp
-        self.patch_ticket(tid, updated_at=stamp, stall=stall)
+        mark = self.mark()
         result = self.ok("tick")
-        self.assertIn("gestartet", result.stdout)
-        self.assertEqual(self.ticket(tid)["stall"]["attempts"], 2)
+        self.assertIn("Regel 1 (doing)", result.stdout)
+        self.assertIn("beendet:", result.stdout)
+        self.assertIn("Verschwunden ohne Abschlusszeile", result.stdout)
+        self.assertEqual(self.ticket(tid)["stall"]["attempts"], 1)
+        self.assertEqual(
+            [row["text"] for row in self.events_since(mark, "tick")],
+            ["attention"],
+        )
 
-        self.set_live({})
-        stall = dict(self.ticket(tid)["stall"])
-        stall["last_attempt"] = self.ago(11)
-        self.patch_ticket(tid, updated_at=self.ago(11), stall=stall)
-        result = self.ok("tick")
-        self.assertIn("Regel 6 (doing)", result.stdout)
-        self.assertIn("attention", result.stdout)
         runs = len(self.runs())
         result = self.ok("tick")
         self.assertIn("Keine Aktion.", result.stdout)
