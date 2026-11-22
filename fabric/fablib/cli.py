@@ -1682,7 +1682,9 @@ def cmd_accept(args):
                         f"origin/{base}; nichts gepusht."
                     )
                 expected = (ticket.get("merge") or {}).get("tree")
-                ref = f"origin/{base}" if remote_base else base
+                # Geprüft wird wie bei handover gegen die lokale Basis. Sie wird
+                # gleich nach origin gepusht; origin darf nur hinter ihr liegen.
+                ref = base
                 tree, conflict_files = git.merge_state(top, ref, branch_name)
                 if conflict_files or not expected or tree != expected:
                     merge, text = _accept_merge_changed(

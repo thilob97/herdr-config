@@ -78,15 +78,19 @@ if args[:2] == ["pr", "merge"]:
                 capture_output=True, text=True,
             )
             tree = subprocess.run(
-                ["git", "--git-dir", bare, "rev-parse", f"{sha.stdout.strip()}^{{tree}}"],
+                [
+                    "git", "--git-dir", bare, "merge-tree", "--write-tree",
+                    base.stdout.strip(), sha.stdout.strip(),
+                ],
                 capture_output=True, text=True,
             )
             if base.returncode == 0 and tree.returncode == 0:
+                tree_sha = (tree.stdout.strip().splitlines() or [""])[0]
                 commit = subprocess.run(
                     [
                         "git", "--git-dir", bare,
                         "-c", "user.name=Test", "-c", "user.email=test@example.com",
-                        "commit-tree", tree.stdout.strip(),
+                        "commit-tree", tree_sha,
                         "-p", base.stdout.strip(),
                         "-p", sha.stdout.strip(),
                         "-m", "Merge PR",
@@ -438,6 +442,27 @@ class PrAcceptTests(FabricCase):
         self.assertEqual(self.git_out(repo, "rev-parse", "main^{tree}"), recorded)
         self.assertFalse(
             [call for call in self.gh_calls() if call[:2] == ["pr", "create"]]
+        )
+
+    def test_pr_accept_prueft_die_lokale_basis_vor_origin(self):
+        repo, tid, worktree = self.ready_ticket()
+        bare = self.setup_origin(repo)
+        self.write_file(os.path.join(repo, "chore.txt"), "nur lokal\n")
+        self.git_out(repo, "add", "chore.txt")
+        self.git_out(repo, "commit", "-qm", "chore: lokal noch nicht gepusht")
+        self.commit_in(worktree, "aenderung.txt", "wert\n")
+        self.passing_verify(worktree)
+        self.ok("verify", tid)
+        self.ok("verdict", tid, "pass", "--from", "ada", "gut")
+        self.ok("handover", tid, "--from", "zap", "fertig")
+
+        result = self.ok("accept", tid, env=self.gh_env(bare, GH_MERGE_COMMIT="1"))
+
+        self.assertIn(URL, result.stdout)
+        self.assertEqual(self.ticket(tid)["status"], "done")
+        self.assertEqual(
+            self.git(bare, "cat-file", "-e", "refs/heads/main:chore.txt").returncode,
+            0,
         )
 
     def test_pr_accept_verweigert_neuen_merge_tree(self):
