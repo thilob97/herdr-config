@@ -1489,6 +1489,18 @@ def attachment_add(source, tid, wanted_name):
 # ---------------------------------------------------------------- Backup
 
 
+_BACKUP_NAME = re.compile(r"^fabric-(\d{8}-\d{6}-\d{6})(?:-(\d+))?\.db$")
+
+
+def _backup_order(path):
+    """Erzeugungsreihenfolge: gleicher Stempel, Basis = 1, dann -2, -3, ..."""
+    name = os.path.basename(path)
+    match = _BACKUP_NAME.match(name)
+    if match:
+        return (match.group(1), int(match.group(2) or 1))
+    return (name, 0)
+
+
 def backup_files():
     folder = backups_dir()
     if not os.path.isdir(folder):
@@ -1498,7 +1510,7 @@ def backup_files():
         for name in os.listdir(folder)
         if name.startswith("fabric-") and name.endswith(".db")
     ]
-    return [os.path.join(folder, name) for name in sorted(names)]
+    return [os.path.join(folder, name) for name in sorted(names, key=_backup_order)]
 
 
 def prune_backups(keep=14):
