@@ -10,7 +10,7 @@ import json
 import os
 import stat
 
-from . import agents, events, git, hc, index, store, teams
+from . import agents, context, events, git, hc, index, store, teams
 from .errors import FabError, HcError
 
 NAME_RE = teams.NAME_RE
@@ -956,6 +956,12 @@ def set_setting(key, value, actor, team=None):
         )
     elif key == "context_limit":
         number = teams.check_context_limit(raw)
+        if 0 < number < context.MIN_LIMIT:
+            raise FabError(
+                f"context_limit muss 0 (aus) oder mindestens "
+                f"{context.MIN_LIMIT} sein, damit der Hinweis "
+                f"„{context.SHORT_HINT}“ vollständig bleibt, nicht {number}"
+            )
         old = data.get(key)
         data[key] = number
         text = f"context_limit: {old if old is not None else '—'} → {number}"
