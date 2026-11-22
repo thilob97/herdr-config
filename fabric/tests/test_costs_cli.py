@@ -3,7 +3,6 @@ import json
 import os
 import re
 import time
-from datetime import datetime, time as dtime
 from unittest import mock
 
 from fabric.tests.support import FabricCase
@@ -73,21 +72,24 @@ class CostsCliCase(FabricCase):
         tid = self.new("Kosten")
         folder = self.worktree(tid)
         os.makedirs(folder, exist_ok=True)
-        # "heute" ist der lokale Kalendertag: kurz nach Mitternacht liegt
-        # `now - 1 h` gestern. Die Abstände schrumpfen deshalb auf den seit
-        # Mitternacht verstrichenen Anteil, bleiben aber positiv.
         now = self.now()
-        day = datetime.fromtimestamp(now / 1000).date()
-        day_start = int(datetime.combine(day, dtime.min).timestamp() * 1000)
-        span = min(3_600_000, max(1, (now - day_start) // 4))
-        started = now - span
+        local = time.localtime(now / 1000)
+        midnight = int(time.mktime(
+            (local.tm_year, local.tm_mon, local.tm_mday, 0, 0, 0, 0, 0,
+             local.tm_isdst)
+        ) * 1000)
+        # Kurz nach Mitternacht liegt "vor einer Stunde" noch am Vortag; dann
+        # beginnt das Fenster heute und die Ereignisse liegen im verstrichenen Teil.
+        started = max(now - 3_600_000, midnight)
+        elapsed = max(now - started, 1)
         self.add_events(
             [
                 {"kind": "status", "ticket": tid, "text": "todo → doing",
                  "at": started},
-                {"kind": "handover", "ticket": tid, "at": started + span // 2},
+                {"kind": "handover", "ticket": tid,
+                 "at": started + elapsed // 2},
                 {"kind": "wake", "ticket": tid, "target": "ada",
-                 "at": started + (span * 2) // 3},
+                 "at": started + elapsed * 3 // 4},
             ]
         )
         self.write_omp(folder, started, cost)

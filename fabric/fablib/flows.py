@@ -23,7 +23,7 @@ import shlex
 import subprocess
 import sys
 
-from . import costs, events, git, store, templates
+from . import costs, events, git, store, templates, wake
 from .errors import FabError
 
 NODE_TYPES = ("trigger", "agent", "action", "condition", "approval", "end")
@@ -239,8 +239,11 @@ def add_file(path, actor="mensch"):
 
 
 def edit(name, path, actor="mensch"):
+    value = str(name or "").strip()
+    if store.flow_definition_load(value) is None:
+        raise FlowError(f"Workflow „{value}“ gibt es nicht")
     data = _read_file(path)
-    data["name"] = str(name or "").strip()
+    data["name"] = value
     return save(data, actor)
 
 
@@ -275,7 +278,7 @@ def start(name, actor="mensch", dry=False, now=None):
         return _start_locked(definition, actor, now)
 
 
-def _start_locked(definition, actor, now):
+def _start_locked(definition, actor, now, chain=(), advance=True):
     trigger = next(
         node for node in definition["nodes"] if node["type"] == "trigger"
     )
@@ -287,6 +290,7 @@ def _start_locked(definition, actor, now):
         "repo": _repo_for(definition),
         "limits": dict(definition.get("limits") or {}),
         "started_at": now,
+        "chain": [str(item) for item in chain],
     }
     run_id = store.flow_run_new(definition["name"], data)
     events.append(
@@ -295,7 +299,8 @@ def _start_locked(definition, actor, now):
     )
     run = store.flow_run_load(run_id)
     try:
-        _advance(run, definition, now=now)
+        if advance:
+            _advance(run, definition, now=now)
     except FlowError as exc:
         _finish(run, "failed", str(exc))
     lines = [
@@ -377,25 +382,49 @@ def _triggers(definition, now, dry):
         if kind == "ticket_done":
             for ticket in _done_candidates(name):
                 number = _number(ticket["id"])
-                if _self_triggered(ticket, name):
+                chain = _ticket_chain(ticket)
+                if name in chain:
+                    found = (
+                        "Selbstauslösung"
+                        if str((ticket.get("flow") or {}).get("workflow") or "")
+                        == name
+                        else "Ping-Pong"
+                    )
                     if dry:
                         lines.append(
                             f"geplant: {ticket['id']} startet Workflow „{name}“ "
-                            f"verweigert (Selbstauslösung)"
+                            f"verweigert ({found})"
                         )
                     else:
                         store.meta_set(_done_marker_key(name), str(number))
-                        lines.append(
-                            f"{ticket['id']}: Selbstauslösung von „{name}“ "
-                            f"verweigert"
-                        )
+                        if found == "Ping-Pong":
+                            reason = "Ping-Pong: " + " → ".join(chain + [name])
+                            started = _start_locked(
+                                definition, "tick", now, chain=chain,
+                                advance=False,
+                            )
+                            refused = store.flow_run_load(started["run"])
+                            _finish(refused, "failed", reason)
+                            lines.append(
+                                f"{ticket['id']}: {found} von „{name}“ "
+                                f"verweigert (Lauf {started['run']})"
+                            )
+                        else:
+                            lines.append(
+                                f"{ticket['id']}: {found} von „{name}“ "
+                                f"verweigert"
+                            )
                     continue
                 if dry:
                     lines.append(
                         f"geplant: Workflow „{name}“ starten ({ticket['id']})"
                     )
                 else:
-                    lines.append(_started_line(_start_locked(definition, "tick", now)))
+                    lines.append(
+                        _started_line(
+                            _start_locked(definition, "tick", now, chain=chain)
+                        )
+                    )
                     store.meta_set(_done_marker_key(name), str(number))
             continue
         if kind == "github_issue":
@@ -521,6 +550,8 @@ def _set_state(raw, status, word, actor, paused_kind=None):
             "flow", "", actor, (run["data"] or {}).get("current") or "",
             f"Lauf {run_id} {word}", reason=run["workflow"],
         )
+        if status == "cancelled":
+            _comment_open_tickets(run, f"Lauf {run_id} abgebrochen")
     return _run_row(run)
 
 
@@ -679,6 +710,31 @@ def _finish(run, status, reason):
         "flow", "", "flow", (run["data"] or {}).get("current") or "", text,
         reason=run["workflow"],
     )
+    if status == "failed":
+        _comment_open_tickets(run, reason)
+
+
+def _comment_open_tickets(run, reason):
+    """Offene Agent-Tickets eines beendeten Laufs über den Grund informieren."""
+    data = run.get("data") if isinstance(run.get("data"), dict) else {}
+    tickets = data.get("tickets") if isinstance(data.get("tickets"), dict) else {}
+    seen = set()
+    for raw in tickets.values():
+        ticket_id = str(raw or "")
+        if not ticket_id or ticket_id in seen:
+            continue
+        seen.add(ticket_id)
+        try:
+            ticket = store.load(ticket_id)
+        except FabError:
+            continue
+        if str(ticket.get("status") or "") in ("done", "dropped"):
+            continue
+        wake.add_comment(
+            ticket, "flow",
+            f"Workflow „{run['workflow']}“: {reason}. Bitte Arbeit einstellen.",
+        )
+        store.save(ticket)
 
 
 def _step(run, node, status, data):
@@ -811,6 +867,10 @@ def _ticket_create(run, definition, node):
         "workflow": definition["name"],
         "run": run["id"],
         "step": node["id"],
+        "chain": [
+            *(run["data"].get("chain") or []),
+            definition["name"],
+        ],
     }
     store.save(ticket)
     events.append("created", ticket_id, "flow", "", title)
@@ -821,9 +881,8 @@ def _ticket_outputs(ticket):
     ticket_id = ticket["id"]
     summary = ""
     try:
-        for row in events.read_all():
-            if row.get("ticket") == ticket_id and row.get("kind") == "handover":
-                summary = str(row.get("text") or "")
+        for row in store.event_rows_for_ticket(ticket_id, "handover"):
+            summary = str(row.get("text") or "")
     except FabError:
         summary = ""
     if not summary and ticket.get("comments"):
@@ -1018,14 +1077,24 @@ def _number(ticket_id):
         return 0
 
 
-def _self_triggered(ticket, name):
+def _ticket_chain(ticket):
+    """Workflows, die dieses Ticket (mit) erzeugt haben; alte Tickets nur direkt."""
     flow = ticket.get("flow")
-    return isinstance(flow, dict) and flow.get("workflow") == name
+    if not isinstance(flow, dict):
+        return []
+    chain = flow.get("chain")
+    if isinstance(chain, list) and chain:
+        return [str(item) for item in chain]
+    creator = str(flow.get("workflow") or "")
+    return [creator] if creator else []
 
 
 def _cron_due(definition, trigger, now):
     latest = None
     for run in store.flow_run_list(definition["name"]):
+        if run["status"] in ("running", "paused"):
+            # Laufsperre: ein offener Lauf desselben Workflows blockiert cron.
+            return False
         data = run.get("data") if isinstance(run.get("data"), dict) else {}
         stamp = int(data.get("started_at") or run.get("started_at") or 0)
         latest = stamp if latest is None else max(latest, stamp)

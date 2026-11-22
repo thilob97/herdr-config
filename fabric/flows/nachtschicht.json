@@ -11,7 +11,7 @@
       "id": "nachtfenster",
       "type": "action",
       "action": "shell",
-      "command": "test \"$(date +%H%M)\" -lt 2330"
+      "command": "h=$(date +%H%M); test \"$h\" -ge 1800 && test \"$h\" -lt 2330"
     },
     {
       "id": "pause-pruefen",
