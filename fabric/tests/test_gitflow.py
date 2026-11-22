@@ -147,6 +147,19 @@ class GitflowTests(FabricCase):
         self.assertEqual(ticket["comments"][-1]["author"], "zap")
         self.assertEqual([row["kind"] for row in self.events()][-1], "handover")
 
+    def test_handover_gate_zaehlt_urteil_nicht_bei_neuem_head(self):
+        repo, tid, worktree = self.ready_ticket()
+        self.passing_verify(worktree)
+        self.ok("verify", tid)
+        self.ok("verdict", tid, "pass", "--from", "ada", "gut")
+        self.commit_in(worktree, "nachher.txt")
+        self.ok("verify", tid)
+        result = self.cli("handover", tid, "--from", "zap", "fertig")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Urteil gilt für HEAD", result.stderr)
+        self.assertNotIn("Checks", result.stderr)
+        self.assertEqual(self.ticket(tid)["status"], "doing")
+
     def test_handover_ohne_urteil(self):
         repo, tid, worktree = self.ready_ticket()
         self.passing_verify(worktree)

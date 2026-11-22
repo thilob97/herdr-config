@@ -1,6 +1,7 @@
 """Abnahme per GitHub-PR: `fab accept` mit und ohne `--pr-only`."""
 import json
 import os
+import shutil
 import subprocess
 
 from fabric.tests.support import FabricCase
@@ -133,6 +134,24 @@ class PrAcceptTests(FabricCase):
         self.ok("handover", tid, "--from", "zap", "Fertig")
         return repo, tid, worktree
 
+    def add_git_shim(self):
+        """`git branch -D` einmalig scheitern lassen, alles andere durchreichen."""
+        real_git = shutil.which("git")
+        self.assertTrue(real_git, "git nicht gefunden")
+        shim = os.path.join(self.bin, "git")
+        self.write_file(
+            shim,
+            "#!/bin/sh\n"
+            'if [ "$1" = "branch" ] && [ "$2" = "-D" ] '
+            '&& [ -n "${GIT_FAIL_BRANCH_DELETE:-}" ]; then\n'
+            '  echo "Branch kann nicht gelöscht werden" >&2\n'
+            "  exit 1\n"
+            "fi\n"
+            f'exec "{real_git}" "$@"\n',
+        )
+        os.chmod(shim, 0o755)
+        return shim
+
     def setup_origin(self, repo, push_main=True):
         bare = os.path.join(self.tmp, "origin.git")
         subprocess.run(["git", "init", "--bare", "-q", bare], check=True)
@@ -190,6 +209,42 @@ class PrAcceptTests(FabricCase):
         self.assertIn(URL, pr_rows[-1]["text"])
         accept_rows = [row for row in self.events() if row["kind"] == "accept"]
         self.assertIn(URL, accept_rows[-1]["text"])
+
+    def test_accept_nach_gemergtem_pr_haengt_bei_geloeschtem_branch(self):
+        repo, tid, worktree = self.review_ticket()
+        bare = self.setup_origin(repo)
+        self.add_git_shim()
+
+        result = self.cli(
+            "accept", tid, env=self.gh_env(bare, GIT_FAIL_BRANCH_DELETE="1")
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("konnte nicht gelöscht werden", result.stderr)
+        ticket = self.ticket(tid)
+        self.assertEqual(ticket["status"], "review")
+        self.assertEqual(ticket["pr"], {"url": URL, "state": "merged"})
+        self.assertFalse(os.path.exists(worktree))
+        self.assertNotEqual(self.git_out(repo, "branch", "--list", BRANCH), "")
+        texts = [comment["text"] for comment in ticket["comments"]]
+        self.assertTrue(
+            any("PR gemergt, Aufräumen unvollständig" in text for text in texts), texts
+        )
+
+        merges_before = [
+            call for call in self.gh_calls() if call[:2] == ["pr", "merge"]
+        ]
+        second = self.ok("accept", tid, env=self.gh_env(bare))
+        self.assertNotIn("nicht lesbar", second.stderr)
+        self.assertIn("angenommen", second.stdout)
+        ticket = self.ticket(tid)
+        self.assertEqual(ticket["status"], "done")
+        self.assertEqual(ticket["pr"], {"url": URL, "state": "merged"})
+        self.assertEqual(self.git_out(repo, "branch", "--list", BRANCH), "")
+        self.assertFalse(os.path.exists(worktree))
+        merges_after = [
+            call for call in self.gh_calls() if call[:2] == ["pr", "merge"]
+        ]
+        self.assertEqual(merges_after, merges_before)
 
     def test_erster_lauf_pusht_basis_nach_origin(self):
         repo, tid, worktree = self.review_ticket()
