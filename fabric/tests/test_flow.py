@@ -546,7 +546,31 @@ class FlowCase(FabricCase):
                 flows.tick(now=now + 59 * MINUTE)
                 self.assertEqual(len(store.flow_run_list()), 1)
                 flows.tick(now=now + 61 * MINUTE)
+                self.assertEqual(len(store.flow_run_list()), 1)
+                flows.cancel(1)
+                flows.tick(now=now + 61 * MINUTE)
                 self.assertEqual(len(store.flow_run_list()), 2)
+
+    def test_cron_lock_blocks_new_run_while_same_workflow_open(self):
+        data = self.base()
+        data["nodes"][0] = {"id": "start", "type": "trigger",
+                            "trigger": "cron", "every_minutes": 60}
+        self.add(data)
+        now = 1_700_000_000_000
+        with self.store_env():
+            with store.locked():
+                flows.tick(now=now)
+                run_id = store.flow_run_list()[0]["id"]
+                self.assertEqual(store.flow_run_list()[0]["status"], "running")
+                # laufender Lauf blockiert den nächsten cron-Start
+                flows.tick(now=now + 120 * MINUTE)
+                self.assertEqual(len(store.flow_run_list()), 1)
+                # auch ein pausierter Lauf gilt als offen
+                flows.pause(run_id)
+                flows.tick(now=now + 180 * MINUTE)
+                rows = store.flow_run_list()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["status"], "paused")
 
     def test_ticket_done_trigger_starts_run(self):
         data = self.base()

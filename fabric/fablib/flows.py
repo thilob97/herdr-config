@@ -1092,6 +1092,9 @@ def _ticket_chain(ticket):
 def _cron_due(definition, trigger, now):
     latest = None
     for run in store.flow_run_list(definition["name"]):
+        if run["status"] in ("running", "paused"):
+            # Laufsperre: ein offener Lauf desselben Workflows blockiert cron.
+            return False
         data = run.get("data") if isinstance(run.get("data"), dict) else {}
         stamp = int(data.get("started_at") or run.get("started_at") or 0)
         latest = stamp if latest is None else max(latest, stamp)

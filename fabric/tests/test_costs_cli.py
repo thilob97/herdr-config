@@ -72,14 +72,24 @@ class CostsCliCase(FabricCase):
         tid = self.new("Kosten")
         folder = self.worktree(tid)
         os.makedirs(folder, exist_ok=True)
-        started = self.now() - 3_600_000
+        now = self.now()
+        local = time.localtime(now / 1000)
+        midnight = int(time.mktime(
+            (local.tm_year, local.tm_mon, local.tm_mday, 0, 0, 0, 0, 0,
+             local.tm_isdst)
+        ) * 1000)
+        # Kurz nach Mitternacht liegt "vor einer Stunde" noch am Vortag; dann
+        # beginnt das Fenster heute und die Ereignisse liegen im verstrichenen Teil.
+        started = max(now - 3_600_000, midnight)
+        elapsed = max(now - started, 1)
         self.add_events(
             [
                 {"kind": "status", "ticket": tid, "text": "todo → doing",
                  "at": started},
-                {"kind": "handover", "ticket": tid, "at": started + 1_800_000},
+                {"kind": "handover", "ticket": tid,
+                 "at": started + elapsed // 2},
                 {"kind": "wake", "ticket": tid, "target": "ada",
-                 "at": started + 2_400_000},
+                 "at": started + elapsed * 3 // 4},
             ]
         )
         self.write_omp(folder, started, cost)
