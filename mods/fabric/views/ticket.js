@@ -42,6 +42,14 @@ function head(app, cx, t, ticket) {
         .child(ui.chip(t, model.statusWord(ticket.status), ui.statusColor(t, ticket.status)))
         .when(ticket.waiting?.includes("mensch"), (el) => el.child(ui.chip(t, "wartet auf dich", t.accent)))
         .child(div().flex_1())
+        .child(ui.button(t, {
+          id: "fabric-ticket-context",
+          label: app.compact ? "Kontext" : "Was sieht der Agent?",
+          icon: "eye",
+          small: true,
+          tooltip: "Kontextvorschau des Tickets öffnen",
+          onClick: (cx) => app.toggleContextPreview("ticket", ticket.id, cx),
+        }))
         .when(Boolean(ticket.branch) && !app.compact, (el) => el.child(ui.chip(t, ticket.branch, t.muted))),
     )
     .child(
@@ -362,6 +370,7 @@ function historyRow(app, cx, t, row, index) {
   }
   const comment = row.comment;
   const images = model.imageRefs(comment.text ?? "");
+  const sentence = model.decisionSentence(comment.text);
   return v_flex()
     .id(`fabric-entry-${comment.n ?? index}`)
     .w_full()
@@ -376,6 +385,16 @@ function historyRow(app, cx, t, row, index) {
           .child(model.relativeTime(comment.at))
           .tooltip(model.absoluteTime(comment.at)))
         .child(div().flex_1())
+        .child(ui.button(t, {
+          id: `fabric-comment-decide-${comment.n ?? index}`,
+          label: "Als Entscheidung",
+          icon: "check",
+          small: true,
+          disabled: Boolean(app.busy) || !sentence,
+          reason: sentence ? "" : "Nur ein nichtleerer Kommentar",
+          tooltip: `Kommentar als Entscheidung festhalten (fab decide ${app.ticket?.id ?? "T-x"} --from mensch). Zeilenumbrüche werden zu Leerzeichen.`,
+          onClick: (cx) => app.markDecision(comment, cx),
+        }))
         .when(!app.compact && Boolean(comment.mentions?.length), (el) => el.child(
           ui.chip(t, `${comment.mentions.length} Erwähnung${comment.mentions.length === 1 ? "" : "en"}`, t.muted))),
     )
@@ -389,6 +408,74 @@ function historyRow(app, cx, t, row, index) {
         .child(ui.imageGallery(t, images, (image) => app.openImage(image),
           `fabric-comment-image-${comment.n ?? index}`)),
     ));
+}
+
+function decisionsBlock(app, cx, t, ticket) {
+  const proposals = model.decisionProposals(ticket);
+  const error = app.errorFor("decision");
+  if (!proposals.length && !error) return null;
+  const busy = app.busy === "decision";
+  return v_flex()
+    .w_full()
+    .px(S.l)
+    .py(S.s)
+    .gap(S.s)
+    .border_b(1)
+    .border_color(t.border)
+    .child(
+      h_flex().w_full().gap(S.s).items_center()
+        .child(div().text_size(T.s).font_semibold().text_color(t.muted).child("Entscheidungen"))
+        .child(ui.chip(t, `${proposals.length} offen`, proposals.length ? t.working : t.dim,
+          "fabric-decisions-count", { tooltip: "Vorschläge, die auf Bestätigung oder Verwerfen warten" }))
+        .child(div().flex_1()),
+    )
+    .children(proposals.map((proposal) => v_flex()
+      .w_full()
+      .gap(4)
+      .p(S.s)
+      .rounded(ui.RADIUS.s)
+      .border_1()
+      .border_color(t.border)
+      .bg(t.raised)
+      .child(
+        h_flex().w_full().gap(S.s).items_center()
+          .child(ui.chip(t, proposal.id || "—", t.accent, `fabric-decision-${proposal.key}`))
+          .child(div().flex_1())
+          .child(div().text_size(T.xs).text_color(t.dim).child(`von ${proposal.by || "—"}`)),
+      )
+      .child(div().w_full().text_size(T.s).text_color(t.foreground).whitespace_normal()
+        .child(proposal.text))
+      .when(Boolean(proposal.reason), (el) => el.child(
+        div().w_full().text_size(T.xs).text_color(t.dim).whitespace_normal()
+          .child(proposal.reason),
+      ))
+      .child(
+        h_flex().w_full().gap(S.xs).items_center()
+          .child(div().flex_1())
+          .child(ui.button(t, {
+            id: `fabric-decision-confirm-${proposal.key}`,
+            label: "Bestätigen",
+            icon: "check",
+            small: true,
+            primary: true,
+            disabled: busy || proposal.confirm.disabled,
+            reason: proposal.confirm.disabled ? "Vorschlag ohne ID" : "",
+            tooltip: `Vorschlag ${proposal.id || ""} bestätigen (fab decide confirm)`,
+            onClick: (cx) => app.decideProposal("confirm", proposal, cx),
+          }))
+          .child(ui.button(t, {
+            id: `fabric-decision-reject-${proposal.key}`,
+            label: "Verwerfen",
+            icon: "close",
+            small: true,
+            danger: true,
+            disabled: busy || proposal.reject.disabled,
+            reason: proposal.reject.disabled ? "Vorschlag ohne ID" : "",
+            tooltip: `Vorschlag ${proposal.id || ""} verwerfen (fab decide reject)`,
+            onClick: (cx) => app.decideProposal("reject", proposal, cx),
+          })),
+      )))
+    .when(Boolean(error), (el) => el.child(ui.notice(t, error.text, error.level)));
 }
 
 function history(app, cx, t, ticket) {
@@ -907,6 +994,7 @@ export function renderTicket(app, cx, t) {
       .child(ui.loading(t, app.ticketError ?? "Das Ticket wird geladen …"));
   }
   const headBlock = head(app, cx, t, ticket);
+  const decisions = decisionsBlock(app, cx, t, ticket);
   if (app.compact) {
     return v_flex()
       .size_full()
@@ -924,6 +1012,7 @@ export function renderTicket(app, cx, t) {
           .child(body(app, cx, t, ticket))
           .when(ticket.status === "review" && Boolean(ticket.branch), (el) =>
             el.child(changesSection(app, cx, t, ticket)))
+          .when(Boolean(decisions), (el) => el.child(decisions))
           .children(history(app, cx, t, ticket))
           .children(properties(app, cx, t, ticket, { compact: true })),
       )
@@ -955,6 +1044,7 @@ export function renderTicket(app, cx, t) {
                 .child(body(app, cx, t, ticket))
                 .when(ticket.status === "review" && Boolean(ticket.branch), (el) =>
                   el.child(changesSection(app, cx, t, ticket)))
+                .when(Boolean(decisions), (el) => el.child(decisions))
                 .children(history(app, cx, t, ticket)),
             )
             .child(commentBox(app, cx, t, ticket)),
