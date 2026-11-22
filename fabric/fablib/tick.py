@@ -199,16 +199,20 @@ def _tick_ticket(ticket, roster, live, cfg, by_id, lines, dry, ended=()):
     blocked, cost_changed = _cost_limit(ticket, lines, dry)
     if blocked:
         return cost_changed
-    if ended and status == "doing" and not _live_session(ticket, live):
-        return _attention(
-            ticket,
-            "doing",
-            _assignee(ticket) or "orchestrator",
-            _ended_reason(ended),
-            lines,
-            dry,
-            number=1,
-        ) or cost_changed
+    if status == "doing" and not _live_session(ticket, live):
+        # Nach dem Entstören (z. B. Kommentar löscht `stall`) muss die
+        # Meldung sofort wiederkommen, nicht erst nach der Frist von Regel 1.
+        pending = ended or sessions.ended(ticket)
+        if pending:
+            return _attention(
+                ticket,
+                "doing",
+                _assignee(ticket) or "orchestrator",
+                _ended_reason(pending),
+                lines,
+                dry,
+                number=1,
+            ) or cost_changed
     now = store.now_ms()
     changed = False
     stall = ticket.get("stall")

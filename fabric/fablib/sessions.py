@@ -83,8 +83,8 @@ def _ticket(ticket, live, by_address, by_name, lines, dry):
             item = _missing(ticket, session, lines, dry)
         else:
             # War schon sichtbar und ist ohne Terminalzeile verschwunden:
-            # ein aufgeräumtes Terminal, kein belegbarer Fehlstart.
-            continue
+            # als beendet melden, aber ohne belegbaren Fehlstart.
+            item = _vanished(ticket, session, lines, dry)
         if item:
             found.append(item)
             dirty = True
@@ -152,6 +152,52 @@ def _missing(ticket, session, lines, dry):
     return {"session": session, "summary": summary, "line": line}
 
 
+def _vanished(ticket, session, lines, dry):
+    """Sichtbare Session ohne Terminalzeile: beendet, aber kein Fehlstart."""
+    name = str(session.get("name") or "")
+    summary = "Verschwunden ohne Abschlusszeile"
+    if dry:
+        lines.append(
+            f"{ticket['id']}: geplant: session_ended für {name} – {summary}"
+        )
+        return {"session": session, "summary": summary, "line": ""}
+    events.append("session_ended", ticket["id"], "fab", name, "", reason=summary)
+    session["ended"] = {
+        "at": store.now_ms(),
+        "code": None,
+        "reason": summary,
+        "terminal": session.get("terminal"),
+    }
+    line = f"{ticket['id']}: Session {name} beendet – {summary}"
+    lines.append(line)
+    return {"session": session, "summary": summary, "line": line}
+
+
+def ended(ticket):
+    """Zuletzt beendete Session eines Tickets als Meldung, sonst []."""
+    best = None
+    best_at = None
+    for session in (ticket or {}).get("sessions") or []:
+        if not isinstance(session, dict):
+            continue
+        marker = session.get("ended")
+        if not isinstance(marker, dict):
+            continue
+        at = int(marker.get("at") or 0)
+        if best_at is None or at >= best_at:
+            best_at = at
+            best = (session, marker)
+    if best is None:
+        return []
+    session, marker = best
+    summary = _summary(
+        marker.get("code"),
+        marker.get("at"),
+        str(marker.get("reason") or "").strip(),
+    )
+    return [{"session": session, "summary": summary, "line": ""}]
+
+
 def _summary(code, finished_ms, reason):
     parts = [f"Exit {code}" if code is not None else "Exit unbekannt"]
     if finished_ms:
@@ -166,21 +212,26 @@ def _when(ms):
 
 
 def _clip(text, limit_lines=LAST_LINES, limit_chars=LAST_CHARS):
-    """Letzte Zeilen; der Hinweis nennt die gekürzte Quelle."""
+    """Letzte Zeilen; der Hinweis nennt die tatsächlich gekürzte Quelle."""
     lines = [line.rstrip() for line in str(text or "").splitlines()]
     while lines and not lines[0].strip():
         lines.pop(0)
     while lines and not lines[-1].strip():
         lines.pop()
-    clipped = False
-    if len(lines) > limit_lines:
+    cut_lines = len(lines) > limit_lines
+    cut_chars = False
+    if cut_lines:
         lines = lines[-limit_lines:]
-        clipped = True
     out = "\n".join(lines)
     if len(out) > limit_chars:
         out = out[-limit_chars:]
-        clipped = True
-    if clipped:
-        note = f"[… gekürzt: hc read, letzte {limit_lines} Zeilen]"
+        cut_chars = True
+    if cut_lines or cut_chars:
+        parts = []
+        if cut_lines:
+            parts.append(f"letzte {limit_lines} Zeilen")
+        if cut_chars:
+            parts.append(f"letzte {limit_chars} Zeichen")
+        note = "[… gekürzt: hc read, " + " und ".join(parts) + "]"
         out = f"{out}\n{note}" if out else note
     return out
