@@ -199,20 +199,6 @@ def _tick_ticket(ticket, roster, live, cfg, by_id, lines, dry, ended=()):
     blocked, cost_changed = _cost_limit(ticket, lines, dry)
     if blocked:
         return cost_changed
-    if status == "doing" and not _live_session(ticket, live):
-        # Nach dem Entstören (z. B. Kommentar löscht `stall`) muss die
-        # Meldung sofort wiederkommen, nicht erst nach der Frist von Regel 1.
-        pending = ended or sessions.ended(ticket)
-        if pending:
-            return _attention(
-                ticket,
-                "doing",
-                _assignee(ticket) or "orchestrator",
-                _ended_reason(pending),
-                lines,
-                dry,
-                number=1,
-            ) or cost_changed
     now = store.now_ms()
     changed = False
     stall = ticket.get("stall")
@@ -243,6 +229,34 @@ def _tick_ticket(ticket, roster, live, cfg, by_id, lines, dry, ended=()):
     if stall and stall.get("rule") == "blocked":
         changed = _dissolve(ticket, lines, dry) or changed
         stall = None
+
+    # Beendete Session eines doing-Tickets sofort melden – aber nur ohne
+    # Sonderzustand. Nach dem Entstören (z. B. Kommentar löscht `stall`) muss
+    # die Meldung wiederkommen, nicht erst nach der Frist von Regel 1.
+    if (
+        status == "doing"
+        and not _live_session(ticket, live)
+        and "mensch" not in (ticket.get("waiting") or [])
+        and _assignee(ticket) not in ("", "mensch")
+    ):
+        pending = ended
+        if not pending and stall is None:
+            pending = sessions.ended(ticket)
+        if pending:
+            handled = _attention(
+                ticket,
+                "doing",
+                _assignee(ticket),
+                _ended_reason(pending),
+                lines,
+                dry,
+                number=1,
+            )
+            # Ein frisches Ende und die Entstörung melden sofort; ein bereits
+            # gesetzter `stall` fällt durch, damit Regel 1 nach der Frist
+            # wieder weckt.
+            if dry or ended or handled:
+                return handled or changed or cost_changed
 
     working = _working_session(ticket, live)
     chosen = None

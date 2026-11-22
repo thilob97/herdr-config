@@ -70,6 +70,27 @@ class TickCase(FabricCase):
         self.set_live({name: address})
         return name
 
+    def ended_session(self, tid, agent="zap", at=None, code=0):
+        """Ticket mit einer beendeten, bereits gemeldeten Session."""
+        name = f"fab-herdr-app-{agent}-{tid.lower()}"
+        self.patch_ticket(
+            tid,
+            sessions=[{
+                "agent": agent,
+                "terminal": "t5",
+                "name": name,
+                "started_at": self.ago(30),
+                "seen_live": True,
+                "ended": {
+                    "at": self.ago(5) if at is None else at,
+                    "code": code,
+                    "reason": "exit",
+                    "terminal": "t5",
+                },
+            }],
+        )
+        return name
+
     # -- Regel 1
 
     def test_regel1_doing_ohne_session_weckt_zustaendigen(self):
@@ -164,6 +185,121 @@ class TickCase(FabricCase):
 
         self.ok("tick")
         self.assertEqual(len(self.events_since(mark, "tick")), 1)
+
+    def test_beendete_session_wartet_auf_mensch_ohne_sofortmeldung(self):
+        tid = self.new_ticket(status="doing", assignee="zap", waiting=["mensch"])
+        self.ended_session(tid)
+        self.patch_ticket(tid, updated_at=self.ago(20))
+        mark = self.mark()
+        result = self.ok("tick")
+        self.assertIn("Keine Aktion.", result.stdout)
+        self.assertNotIn("stall", self.ticket(tid))
+        self.assertEqual(self.events_since(mark, "tick"), [])
+        self.assertEqual(self.attention(), [])
+        self.assertEqual(self.runs(), [])
+
+    def test_beendete_session_mit_zustaendigem_mensch_ohne_sofortmeldung(self):
+        tid = self.new_ticket(status="doing", assignee="mensch")
+        self.ended_session(tid, agent="mensch")
+        self.patch_ticket(tid, updated_at=self.ago(20))
+        mark = self.mark()
+        result = self.ok("tick")
+        self.assertIn("Keine Aktion.", result.stdout)
+        self.assertNotIn("stall", self.ticket(tid))
+        self.assertEqual(self.events_since(mark, "tick"), [])
+        self.assertEqual(self.attention(), [])
+        self.assertEqual(self.runs(), [])
+
+    def test_beendete_session_mit_offenem_blocker_meldet_blocked(self):
+        blocker = self.new_ticket(status="review")
+        self.patch_ticket(blocker, updated_at=self.ago(45))
+        tid = self.new_ticket(status="doing", assignee="zap",
+                              blocked_by=[blocker])
+        self.ended_session(tid)
+        self.patch_ticket(tid, updated_at=self.ago(20))
+        mark = self.mark()
+        result = self.ok("tick")
+        self.assertIn("Regel 5 (blocked)", result.stdout)
+        self.assertNotIn("Regel 1 (doing)", result.stdout)
+        stall = self.ticket(tid)["stall"]
+        self.assertEqual(stall["rule"], "blocked")
+        self.assertTrue(stall["attention"])
+        self.assertIn(blocker, stall["reason"])
+        rows = self.events_since(mark, "tick")
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0]["reason"].startswith("Regel 5 (blocked):"))
+        self.assertEqual(self.runs(), [])
+
+    def test_beendete_session_ohne_sonderzustand_sofort_gemeldet(self):
+        tid = self.new_ticket(status="doing", assignee="zap")
+        name = self.ended_session(tid)
+        self.patch_ticket(tid, updated_at=self.ago(20))
+        mark = self.mark()
+        result = self.ok("tick")
+        self.assertIn("Regel 1 (doing)", result.stdout)
+        self.assertIn("beendet:", result.stdout)
+        self.assertIn(name, result.stdout)
+        self.assertEqual(
+            [row["text"] for row in self.events_since(mark, "tick")],
+            ["attention"],
+        )
+        stall = self.ticket(tid)["stall"]
+        self.assertEqual(stall["rule"], "doing")
+        self.assertTrue(stall["attention"])
+        self.assertEqual(self.runs(), [])
+
+    def test_regel1_weckt_nach_frist_trotz_beendeter_aelterer_session(self):
+        tid = self.new_ticket(status="doing", assignee="zap")
+        self.ended_session(tid, at=self.ago(30))
+        current = f"fab-herdr-app-zap-{tid.lower()}-2"
+        ticket = self.ticket(tid)
+        ticket["sessions"].append(
+            {
+                "agent": "zap",
+                "terminal": "t9",
+                "name": current,
+                "started_at": self.ago(11),
+                "seen_live": True,
+            }
+        )
+        self.patch_ticket(tid, sessions=ticket["sessions"],
+                          updated_at=self.ago(11))
+        self.set_terminals(
+            [
+                {"address": "t9", "name": current, "state": "live",
+                 "status": "idle"},
+            ]
+        )
+        result = self.ok("tick")
+        self.assertIn("Regel 1 (doing)", result.stdout)
+        self.assertIn("@zap", result.stdout)
+        self.assertEqual(len(self.runs()), 1)
+        self.assertIn("fab-herdr-app-zap-", self.runs()[0])
+        self.assertEqual(self.ticket(tid)["stall"]["attempts"], 1)
+
+    def test_regel1_weckt_nach_sofortmeldung_wieder(self):
+        tid = self.new_ticket(status="doing", assignee="zap")
+        self.ended_session(tid)
+        self.patch_ticket(tid, updated_at=self.ago(20))
+        self.ok("tick")
+        stall = self.ticket(tid)["stall"]
+        self.assertEqual(stall["rule"], "doing")
+        self.assertTrue(stall["attention"])
+
+        # Frist erneut verstrichen: Regel 1 weckt wie vor T-87.
+        self.patch_ticket(tid, updated_at=self.ago(11))
+        mark = self.mark()
+        result = self.ok("tick")
+        self.assertIn("Regel 1 (doing)", result.stdout)
+        self.assertNotIn("attention", result.stdout)
+        self.assertEqual(len(self.runs()), 1)
+        self.assertEqual(
+            [row["text"] for row in self.events_since(mark, "tick")],
+            ["gestartet"],
+        )
+        stall = self.ticket(tid)["stall"]
+        self.assertFalse(stall["attention"])
+        self.assertEqual(stall["attempts"], 1)
 
     # -- Regel 2
 
