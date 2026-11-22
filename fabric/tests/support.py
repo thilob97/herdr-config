@@ -155,12 +155,14 @@ class FabricCase(unittest.TestCase):
         self.fake_home = os.path.join(self.tmp, "home")
         self.roster_dir = os.path.join(self.tmp, "fabric")
         self.bin = os.path.join(self.tmp, "bin")
+        self.tmpdir = os.path.join(self.tmp, "tmp")
         for folder in (
             self.home,
             self.fake_home,
             self.roster_dir,
             os.path.join(self.roster_dir, "prompts"),
             self.bin,
+            self.tmpdir,
         ):
             os.makedirs(folder, exist_ok=True)
         self._write(os.path.join(self.roster_dir, "prompts", "preamble.md"), PREAMBLE)
@@ -204,6 +206,7 @@ class FabricCase(unittest.TestCase):
             HERDR_LOG=self.herdr_log,
             HERDR_LS=self.herdr_ls,
             FAB_TICK_AUTOSTART="0",
+            TMPDIR=self.tmpdir,
             PATH=self.bin + os.pathsep + os.environ.get("PATH", ""),
             GIT_CONFIG_NOSYSTEM="1",
         )
