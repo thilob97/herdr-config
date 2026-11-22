@@ -230,6 +230,32 @@ class TickCase(FabricCase):
         self.assertTrue(rows[0]["reason"].startswith("Regel 5 (blocked):"))
         self.assertEqual(self.runs(), [])
 
+    def test_beendete_session_ohne_zustaendigen_meldet_orchestrator(self):
+        tid = self.new_ticket(status="doing", assignee=None)
+        name = self.ended_session(tid)
+        self.patch_ticket(tid, updated_at=self.ago(20))
+        mark = self.mark()
+        result = self.ok("tick")
+        self.assertIn("Regel 1 (doing)", result.stdout)
+        self.assertIn("beendet:", result.stdout)
+        self.assertIn(name, result.stdout)
+        self.assertEqual(
+            [row["text"] for row in self.events_since(mark, "tick")],
+            ["attention"],
+        )
+        attention = self.attention()
+        self.assertEqual(len(attention), 1)
+        self.assertEqual(attention[0]["agent"], "orchestrator")
+        stall = self.ticket(tid)["stall"]
+        self.assertEqual(stall["agent"], "orchestrator")
+        self.assertTrue(stall["attention"])
+        self.assertEqual(self.runs(), [])
+
+        # Ohne Zuständigen weckt Regel 1 nie: die Meldung bleibt stehen.
+        self.ok("tick")
+        self.assertEqual(len(self.events_since(mark, "tick")), 1)
+        self.assertEqual(self.attention(), attention)
+
     def test_beendete_session_ohne_sonderzustand_sofort_gemeldet(self):
         tid = self.new_ticket(status="doing", assignee="zap")
         name = self.ended_session(tid)
@@ -249,6 +275,12 @@ class TickCase(FabricCase):
         self.assertEqual(self.runs(), [])
 
     def test_regel1_weckt_nach_frist_trotz_beendeter_aelterer_session(self):
+        """Beendete ältere Session verdeckt die Frist von Regel 1 nicht.
+
+        Hier lebt die aktuelle Session, deshalb greift der Sofortpfad gar
+        nicht. Den Sofortpfad selbst (Ende melden und danach Regel 1 nach
+        Frist) belegt `test_regel1_weckt_nach_sofortmeldung_wieder`.
+        """
         tid = self.new_ticket(status="doing", assignee="zap")
         self.ended_session(tid, at=self.ago(30))
         current = f"fab-herdr-app-zap-{tid.lower()}-2"
