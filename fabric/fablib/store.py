@@ -15,13 +15,17 @@ Migration fehl, bleiben die Altdateien unangetastet und der alte Dateipfad
 dient weiter (Fallback).
 """
 import contextlib
+import errno
 import fcntl
+import hashlib
 import json
 import os
 import re
 import shutil
 import sqlite3
+import sys
 import tempfile
+import time
 from datetime import datetime
 
 from . import clock
@@ -36,6 +40,8 @@ class PersistError(FabError):
     """
 
 DEFAULT_HOME = "~/.config/herdr-app/data/fabric"
+LOCK_TIMEOUT_DEFAULT = 30.0
+_SCHEMA_VERSION = 1
 STATUSES = ("draft", "todo", "doing", "review", "done", "dropped")
 MAX_CHILDREN = 3
 _ID_RE = re.compile(r"^[Tt]-(\d+)$")
@@ -172,6 +178,10 @@ def lock_path():
     return os.path.join(home(), "lock")
 
 
+def holder_path():
+    return lock_path() + ".holder"
+
+
 def db_path():
     return os.path.join(home(), "fabric.db")
 
@@ -212,6 +222,7 @@ _fallback = {}          # home -> True, wenn Bootstrap/Migration scheiterte
 _bootstrapped = set()   # home -> Bootstrap einmal versucht
 _legacy_meta = {}       # home -> {key: value} für den Datei-Fallback
 _bootstrapping = 0      # Migration hält den flock; kein zweites Mal anfordern
+_deferred_events = None # aktiver Puffer für Ereignisse, die ein CAS verwerfen darf
 
 
 def bootstrap_active():
@@ -263,18 +274,111 @@ def _connect():
     conn.execute("PRAGMA busy_timeout=30000")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA foreign_keys=ON")
-    conn.execute("PRAGMA journal_mode=WAL")
+    mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+    if str(mode).lower() != "wal":
+        conn.execute("PRAGMA journal_mode=WAL")
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(comments)")}
     if "data" not in columns:
         try:
             conn.execute("ALTER TABLE comments ADD COLUMN data TEXT")
         except sqlite3.OperationalError:
             pass
-    for statement in _FLOW_SCHEMA:
-        conn.execute(statement)
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if version < _SCHEMA_VERSION:
+        for statement in _FLOW_SCHEMA:
+            conn.execute(statement)
+        conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
     _conn = conn
     _conn_home = current
     return conn
+
+
+def _lock_timeout():
+    """Zeitlimit für den flock aus `FAB_LOCK_TIMEOUT` (Sekunden, >= 0)."""
+    raw = os.environ.get("FAB_LOCK_TIMEOUT")
+    if raw is None or not str(raw).strip():
+        return LOCK_TIMEOUT_DEFAULT
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return LOCK_TIMEOUT_DEFAULT
+    return value if value >= 0 else LOCK_TIMEOUT_DEFAULT
+
+
+def _holder_command():
+    command = " ".join(sys.argv).strip() or "fab"
+    return command[:120]
+
+
+def _write_holder():
+    """Halterinformation neben dem Lock hinterlegen (atomar)."""
+    payload = {
+        "pid": os.getpid(),
+        "command": _holder_command(),
+        "started": time.time(),
+    }
+    atomic_write(holder_path(), _json_line(payload))
+
+
+def _read_holder():
+    try:
+        with open(holder_path(), encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    pid = data.get("pid")
+    if not isinstance(pid, int):
+        return None
+    command = data.get("command")
+    if not isinstance(command, str) or not command:
+        command = "fab"
+    try:
+        started = float(data.get("started"))
+    except (TypeError, ValueError):
+        started = None
+    return {"pid": pid, "command": command, "started": started}
+
+
+def _clear_holder():
+    try:
+        os.unlink(holder_path())
+    except OSError:
+        pass
+
+
+def _lock_busy_text():
+    holder = _read_holder()
+    if holder is None:
+        return "fabric-Lock gesperrt (Halter unbekannt)"
+    age = 0
+    if holder["started"] is not None:
+        age = max(0, int(time.time() - holder["started"]))
+    return (
+        f"fabric-Lock gesperrt von PID {holder['pid']} "
+        f"({holder['command']}) seit {age} s"
+    )
+
+
+def _acquire(handle, timeout=None):
+    """flock mit Zeitlimit; schreibt bei Erfolg die Halterinformation."""
+    limit = _lock_timeout() if timeout is None else float(timeout)
+    if limit < 0:
+        limit = 0.0
+    deadline = time.monotonic() + limit
+    while True:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            if exc.errno not in (errno.EACCES, errno.EAGAIN):
+                raise
+            if time.monotonic() >= deadline:
+                raise FabError(_lock_busy_text()) from None
+            time.sleep(0.05)
+        else:
+            _write_holder()
+            return
 
 
 @contextlib.contextmanager
@@ -284,7 +388,11 @@ def _flock():
     handle = open(lock_path(), "a+", encoding="utf-8")
     try:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        yield
+        _write_holder()
+        try:
+            yield
+        finally:
+            _clear_holder()
     finally:
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
@@ -350,6 +458,7 @@ def _install_empty_db():
         try:
             for statement in _SCHEMA:
                 conn.execute(statement)
+            conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
         finally:
             conn.close()
         _close_conn()
@@ -366,7 +475,7 @@ def _install_empty_db():
 
 
 @contextlib.contextmanager
-def locked():
+def locked(timeout=None):
     """Exklusiver flock; im selben Prozess reentrant, äußerste Ebene = Transaktion."""
     global _lock_depth, _lock_handle, _tx_open
 
@@ -375,7 +484,7 @@ def locked():
         if _lock_depth == 0:
             handle = open(lock_path(), "a+", encoding="utf-8")
             try:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                _acquire(handle, timeout)
             except BaseException:
                 handle.close()
                 raise
@@ -399,7 +508,7 @@ def locked():
 
     handle = open(lock_path(), "a+", encoding="utf-8")
     try:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        _acquire(handle, timeout)
     except BaseException:
         handle.close()
         raise
@@ -444,6 +553,7 @@ def _unlock():
     _lock_handle = None
     if handle is None:
         return
+    _clear_holder()
     try:
         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
     finally:
@@ -786,6 +896,14 @@ def load(raw_id):
     return _legacy_load(raw_id)
 
 
+def revision(ticket):
+    """Stabile SHA-256-Prüfsumme über den vollständigen Ticketinhalt."""
+    canonical = json.dumps(
+        ticket, sort_keys=True, ensure_ascii=False, separators=(",", ":")
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def _save_db(ticket, touch):
     global _index_dirty
     tid = normalize_id(ticket.get("id"))
@@ -990,6 +1108,56 @@ def _event_dict(row):
     }
 
 
+def _insert_event(conn, row):
+    conn.execute(
+        "INSERT INTO events(at,kind,ticket,actor,target,text,reason) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (
+            row["at"],
+            row["kind"],
+            row["ticket"],
+            row["actor"],
+            row["target"],
+            row["text"],
+            row["reason"],
+        ),
+    )
+
+
+@contextlib.contextmanager
+def deferred_events():
+    """Ereignisse sammeln, damit ein CAS-Konflikt sie verwerfen kann."""
+    global _deferred_events
+
+    _deferred_events = []
+    try:
+        yield _deferred_events
+    finally:
+        _deferred_events = None
+
+
+def flush_deferred_events():
+    """Gepufferte Ereignisse in die laufende Transaktion schreiben."""
+    global _index_dirty
+
+    buffer = _deferred_events
+    if buffer is None:
+        return
+    if not buffer:
+        return
+    conn = _connect()
+    for row in buffer:
+        _insert_event(conn, row)
+        _index_dirty = True
+    buffer[:] = []
+
+
+def discard_deferred_events():
+    """Gepufferte Ereignisse verwerfen."""
+    if _deferred_events is not None:
+        _deferred_events[:] = []
+
+
 def event_append(kind, ticket, actor="", target="", text="", reason="", at=None):
     row = {
         "at": now_ms() if at is None else int(at),
@@ -1000,24 +1168,15 @@ def event_append(kind, ticket, actor="", target="", text="", reason="", at=None)
         "text": text or "",
         "reason": reason or "",
     }
+    if _deferred_events is not None:
+        _deferred_events.append(row)
+        return row
     ensure()
     if _db_ready():
         global _index_dirty
         with _auto_tx():
             conn = _connect()
-            conn.execute(
-                "INSERT INTO events(at,kind,ticket,actor,target,text,reason) "
-                "VALUES (?,?,?,?,?,?,?)",
-                (
-                    row["at"],
-                    row["kind"],
-                    row["ticket"],
-                    row["actor"],
-                    row["target"],
-                    row["text"],
-                    row["reason"],
-                ),
-            )
+            _insert_event(conn, row)
             _index_dirty = True
         return row
     with open(events_path(), "a", encoding="utf-8") as handle:
@@ -1786,6 +1945,7 @@ def _migrate_locked(force=False):
         try:
             for statement in _SCHEMA:
                 conn.execute(statement)
+            conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
             conn.execute("BEGIN IMMEDIATE")
             for tid, ticket in tickets:
                 _write_ticket(conn, tid, ticket)
