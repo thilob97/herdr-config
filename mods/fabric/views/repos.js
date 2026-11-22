@@ -34,7 +34,8 @@ function repoRow(app, cx, t, repo) {
           .child(repo.branch || "kein Branch").tooltip(repo.path))
         .child(ui.chip(t, repo.verify_exists ? "verify" : "kein verify", repo.verify_exists ? t.done : t.dim,
           null, { tooltip: repo.verify_exists ? ".fabric/verify.sh vorhanden" : ".fabric/verify.sh fehlt" }))
-        .when(repo.lessons_exists, (el) => el.child(ui.chip(t, "lessons", t.muted, null, { tooltip: ".fabric/lessons.md vorhanden" }))),
+        .when(repo.lessons_exists, (el) => el.child(ui.chip(t, "lessons", t.muted, null, { tooltip: ".fabric/lessons.md vorhanden" })))
+        .when(repo.project_exists, (el) => el.child(ui.chip(t, "Steckbrief", t.muted, null, { tooltip: ".fabric/project.md vorhanden" }))),
     );
 }
 
@@ -92,11 +93,17 @@ function detail(app, cx, t) {
   }
   const repo = app.repoDetail;
   const tab = app.repoTab;
-  const editor = tab === "verify" ? app.verifyEditor : app.lessonsEditor;
-  const saved = tab === "verify" ? app.verifySaved : app.lessonsSaved;
+  const editor = tab === "verify" ? app.verifyEditor
+    : tab === "project" ? app.projectEditor
+      : app.lessonsEditor;
+  const saved = tab === "verify" ? app.verifySaved
+    : tab === "project" ? app.projectSaved
+      : app.lessonsSaved;
   const dirty = editor ? model.isDirty(editor.value(), saved) : false;
   const missingVerify = !repo.verify?.exists;
-  const activeMissing = tab === "verify" && missingVerify && !app.verifyEditor;
+  const missingProject = !repo.project?.exists;
+  const activeMissing = (tab === "verify" && missingVerify && !app.verifyEditor)
+    || (tab === "project" && missingProject && !app.projectEditor);
   const output = tab === "verify" ? testOutput(app, cx, t) : null;
 
   return v_flex()
@@ -130,6 +137,7 @@ function detail(app, cx, t) {
           items: [
             { value: "verify", label: "Prüfskript" },
             { value: "lessons", label: "Lernnotizen" },
+            { value: "project", label: "Steckbrief" },
           ],
           onPick: (value) => { app.repoTab = value; cx.notify(); },
         }))
@@ -173,19 +181,24 @@ function detail(app, cx, t) {
     })
     .when(tab === "verify", (el) => el.child(ui.hint(t, "Ausführbares sh-Skript im Haupt-Checkout. Exit 0 heißt grün.")))
     .when(tab === "lessons", (el) => el.child(ui.hint(t, "Gelerntes für dieses Repo, Markdown. Leer heißt: noch nichts notiert.")))
+    .when(tab === "project", (el) => el.child(ui.hint(t,
+      "Steckbrief des Projekts, Markdown: Ziele, Prioritäten, Definition of Done, Glossar, Stil und Entscheider. Er ist Prompt-Kontext für den Agenten; Speichern ruft fab repo set … project.")))
     .when(activeMissing, (el) => el.child(
       v_flex().w_full().gap(S.s).p(S.m).rounded(ui.RADIUS.m)
         .border_1().border_color(t.border).bg(t.raised)
-        .child(div().text_size(T.s).text_color(t.foreground).child(".fabric/verify.sh fehlt"))
-        .child(ui.hint(t, "Eine Vorlage einsetzen, anpassen und speichern. Sie wird ausführbar geschrieben."))
+        .child(div().text_size(T.s).text_color(t.foreground)
+          .child(tab === "project" ? ".fabric/project.md fehlt" : ".fabric/verify.sh fehlt"))
+        .child(ui.hint(t, tab === "project"
+          ? "Eine Vorlage mit den üblichen Abschnitten einsetzen, anpassen und speichern."
+          : "Eine Vorlage einsetzen, anpassen und speichern. Sie wird ausführbar geschrieben."))
         .child(h_flex().gap(S.s)
           .child(ui.button(t, {
-            id: "fabric-repo-create-verify",
+            id: tab === "project" ? "fabric-repo-create-project" : "fabric-repo-create-verify",
             label: "Fehlt – anlegen",
             icon: "plus",
             primary: true,
             tooltip: "Vorlage einsetzen",
-            onClick: (cx) => app.createVerify(cx),
+            onClick: (cx) => (tab === "project" ? app.createProject(cx) : app.createVerify(cx)),
           })))),
     )
     .when(!activeMissing, (el) => el
