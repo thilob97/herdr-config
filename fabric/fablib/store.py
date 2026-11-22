@@ -22,9 +22,9 @@ import re
 import shutil
 import sqlite3
 import tempfile
-import time
-from datetime import date, datetime
+from datetime import datetime
 
+from . import clock
 from .errors import FabError
 
 
@@ -194,7 +194,7 @@ def ticket_path(tid):
 
 
 def now_ms():
-    return int(time.time() * 1000)
+    return clock.now_ms()
 
 
 # ---------------------------------------------------------------- Zustand
@@ -1517,8 +1517,12 @@ def backup():
     if not _db_ready():
         return ""
     os.makedirs(backups_dir(), exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    stamp = datetime.fromtimestamp(now_ms() / 1000).strftime("%Y%m%d-%H%M%S-%f")
     target = os.path.join(backups_dir(), f"fabric-{stamp}.db")
+    suffix = 2
+    while os.path.exists(target):
+        target = os.path.join(backups_dir(), f"fabric-{stamp}-{suffix}.db")
+        suffix += 1
     fd, tmp = tempfile.mkstemp(dir=backups_dir(), prefix=".fabric-", suffix=".tmp")
     os.close(fd)
     try:
@@ -1541,7 +1545,7 @@ def backup():
 def _maybe_daily_backup():
     if not _db_ready():
         return
-    today = date.today().isoformat()
+    today = datetime.fromtimestamp(now_ms() / 1000).date().isoformat()
     conn = _connect()
     row = conn.execute("SELECT value FROM meta WHERE key='last_backup_day'").fetchone()
     if row is not None and row["value"] == today:
@@ -1653,7 +1657,7 @@ def _move_legacy():
             continue
         target = os.path.join(legacy_dir(), name)
         if os.path.exists(target):
-            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            stamp = datetime.fromtimestamp(now_ms() / 1000).strftime("%Y%m%d-%H%M%S")
             candidate = f"{target}-{stamp}"
             suffix = 2
             while os.path.exists(candidate):

@@ -2,6 +2,7 @@
 import os
 import time
 
+from fabric.fablib import store
 from fabric.tests.support import FabricCase
 
 
@@ -66,7 +67,7 @@ class WakeTests(FabricCase):
     def test_pingpong_bremse_und_eine_orchestrator_nachricht(self):
         tid = self.new("Ping")
         self.set_live({"fab-ada-t-1": "t1", "fab-orchestrator": "t0"})
-        now = int(time.time() * 1000)
+        now = store.now_ms()
         self.add_events(
             [
                 {"at": now - 1000, "kind": "wake", "ticket": tid, "actor": "zap",
@@ -619,7 +620,7 @@ class WakeTests(FabricCase):
 
     def test_attention_verschwindet_nach_erneutem_start(self):
         tid = self.new("Wieder da")
-        now = int(time.time() * 1000)
+        now = store.now_ms()
         self.add_events(
             [
                 {

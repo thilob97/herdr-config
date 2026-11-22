@@ -4,6 +4,8 @@ import os
 import subprocess
 import sys
 import threading
+import time
+from datetime import datetime
 from unittest import mock
 
 from fabric.fablib import store
@@ -109,3 +111,23 @@ class StoreTests(FabricCase):
         payload = self.index()
         self.assertEqual(payload["tickets"][0]["id"], tid)
         self.assertFalse(os.path.exists(os.path.join(self.home, "index.json.tmp")))
+
+    def test_jetzt_liest_naive_lokale_iso_zeit(self):
+        with mock.patch.dict(os.environ, {"FAB_NOW": "2026-11-22T12:00:00"}):
+            self.assertEqual(
+                store.now_ms(),
+                int(datetime(2026, 11, 22, 12, 0).timestamp() * 1000),
+            )
+
+    def test_jetzt_gibt_millisekunden_unveraendert_zurueck(self):
+        with mock.patch.dict(os.environ, {"FAB_NOW": "1700000000123"}):
+            self.assertEqual(store.now_ms(), 1700000000123)
+
+    def test_jetzt_ohne_fab_now_nutzt_die_echte_uhr(self):
+        with mock.patch.dict(os.environ):
+            os.environ.pop("FAB_NOW", None)
+            before = time.time() * 1000
+            value = store.now_ms()
+            after = time.time() * 1000
+        self.assertGreaterEqual(value, int(before))
+        self.assertLessEqual(value, int(after))

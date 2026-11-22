@@ -96,22 +96,7 @@ class TeamBriefTests(ContextCase):
 
 
 class PromptContextTests(ContextCase):
-    def test_kuerzung_nennt_auch_die_team_konfiguration(self):
-        repo = self.make_repo()
-        self.project(repo, "# Steckbrief\n\nZweck: Test.\n")
-        text = context.build_paths(
-            [repo], "B" * 200, 150, "/r/roster.json"
-        )
-        self.assertIn("[…] gekürzt, vollständig in", text)
-        self.assertIn("/r/roster.json", text)
-        self.assertIn(os.path.join(repo, ".fabric", "project.md"), text)
-
-    def test_kleine_obergrenze_kuerzt_nur_den_hinweis_hinten(self):
-        text = context.clip("x" * 100, 40, "/sehr/langer/pfad/zum/projekt.md")
-        self.assertLessEqual(len(text), 40)
-        self.assertIn("[…] gekürzt", text)
-
-    def test_ohne_team_nur_steckbrief_ohne_fremden_brief(self):
+    def _fremdes_repo(self):
         owned = self.make_repo("eigen")
         self.own_repo(owned)
         self.brief("GEHEIM: fremder Brief.\n")
@@ -122,12 +107,68 @@ class PromptContextTests(ContextCase):
             "context_limit": 6000,
             "teams": [{"name": "herdr-app", "repos": [owned]}],
         }
+        return foreign, roster
+
+    def test_kuerzung_nennt_auch_die_team_konfiguration_bei_mehreren_quellen(self):
+        first = self.make_repo("eins")
+        second = self.make_repo("zwei")
+        self.project(first, "# Steckbrief\n\nZweck: eins.\n")
+        self.project(second, "# Steckbrief\n\nZweck: zwei.\n")
+        text = context.build_paths(
+            [first, second], "B" * 2000, 800, "/r/roster.json"
+        )
+        self.assertIn("[…] gekürzt, vollständig in", text)
+        self.assertIn("/r/roster.json", text)
+        for repo in (first, second):
+            self.assertIn(os.path.join(repo, ".fabric", "project.md"), text)
+
+    def test_kleine_obergrenze_kuerzt_nur_den_hinweis_hinten(self):
+        text = context.clip("x" * 100, 40, "/sehr/langer/pfad/zum/projekt.md")
+        self.assertLessEqual(len(text), 40)
+        self.assertIn("[…] gekürzt", text)
+
+    def test_obergrenze_unter_hinweislänge_schneidet_den_hinweis_nicht(self):
+        source = "/sehr/langer/pfad/zum/projekt.md"
+        for maximum in range(1, context.MIN_LIMIT):
+            text = context.clip("x" * 100, maximum, source)
+            self.assertTrue(text.endswith(context.SHORT_HINT), text)
+        self.assertEqual(
+            context.clip("x" * 100, context.MIN_LIMIT, source),
+            context.SHORT_HINT,
+        )
+        self.assertEqual(context.clip("x" * 100, 0, source), "")
+
+    def test_settings_lehnt_limit_unter_hinweislänge_ab(self):
+        for value in (1, context.MIN_LIMIT // 2, context.MIN_LIMIT - 1):
+            result = self.cli(
+                "settings", "set", "context_limit", str(value),
+                "--from", "mensch",
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("context_limit", result.stderr)
+            self.assertIn("0 (aus)", result.stderr)
+            self.assertIn(str(context.MIN_LIMIT), result.stderr)
+        self.ok("settings", "set", "context_limit", "0", "--from", "mensch")
+        self.assertEqual(self.load_roster()["context_limit"], 0)
+        self.ok(
+            "settings", "set", "context_limit", str(context.MIN_LIMIT),
+            "--from", "mensch",
+        )
+        self.assertEqual(self.load_roster()["context_limit"], context.MIN_LIMIT)
+
+    def test_repo_ohne_team_hat_steckbrief_ohne_fremden_brief(self):
+        foreign, roster = self._fremdes_repo()
         text = context.for_ticket(roster, {"repo": foreign})
         self.assertIn("Zweck: fremd.", text)
         self.assertNotIn("GEHEIM", text)
+        self.assertNotIn(context.BRIEF_TITLE, text)
+
+    def test_for_entry_ohne_team_nimmt_steckbrief_mit(self):
+        foreign, roster = self._fremdes_repo()
         legacy = context.for_entry(roster, None, [foreign])
         self.assertIn("Zweck: fremd.", legacy)
         self.assertNotIn("GEHEIM", legacy)
+        self.assertNotIn(context.BRIEF_TITLE, legacy)
 
     def test_prompts_enthalten_steckbrief_und_brief(self):
         repo = self.make_repo()

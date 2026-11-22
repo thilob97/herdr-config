@@ -4,8 +4,8 @@ import os
 import plistlib
 import subprocess
 import sys
-import time
 
+from fabric.fablib import store
 from fabric.tests.support import FAB, FabricCase
 
 MINUTE = 60 * 1000
@@ -13,7 +13,7 @@ MINUTE = 60 * 1000
 
 class TickCase(FabricCase):
     def now(self):
-        return int(time.time() * 1000)
+        return store.now_ms()
 
     def ago(self, minutes):
         return self.now() - int(minutes * MINUTE)
