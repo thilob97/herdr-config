@@ -73,6 +73,7 @@ while [ "$round" -le "$rounds" ]; do
             end=$(date +%s)
             printf '%s\t%s\t%s\t%s\t%s\n' \
                 "$round" "$lane" "$code" "$((end - start))" "$log" >> "$summary"
+            exit "$code"
         ) &
         pids="$pids $!"
         lane=$((lane + 1))
