@@ -1164,7 +1164,7 @@ def _merge_red_text(ticket, base, ref, head, tree, report):
     )
 
 
-def _reviewer(ticket, roster):
+def _ticket_reviewer(ticket, roster):
     team = _ticket_team(ticket, roster) or {}
     name = str(team.get("reviewer") or (roster or {}).get("reviewer") or "").strip()
     return name
@@ -1212,7 +1212,7 @@ def _accept_merge_changed(ticket, roster, repo, ref, head):
                 ),
             )
         return merge, text
-    reviewer = _reviewer(ticket, roster)
+    reviewer = _ticket_reviewer(ticket, roster)
     text = (
         f"Merge-Stand mit {base} hat sich geändert: Tree {_short(tree)} "
         f"({ref} @ {_short(head)}) wurde neu geprüft und ist grün"
