@@ -18,7 +18,7 @@ Konzept: `docs/concept.md`. Wer davon abweicht, ändert zuerst diese Datei.
 | Worktrees | `~/.herdr/worktrees/<repo-basename>/<branch-slug>` | — |
 | Vorschau-Home | `/tmp/fab-preview/<ID>/` (Home, User-Home, FAB_HOME; eigener Core `fabp-<id>`) | — |
 | Orchestrator-Arbeitsordner | `~/.herdr/fabric-orchestrator/` (bekommt `AGENTS.md` aus `fabric/prompts/orchestrator.md` bei jedem Start) | — |
-| launchd-Agent `fab tick` (optional) | `~/Library/LaunchAgents/de.herdr.fabric.tick.plist`, nur per `fab tick --install` | — |
+| launchd-Agent `fab tick` (macOS) | `~/Library/LaunchAgents/de.herdr.fabric.tick.plist`; legt der erste `fab`-Aufruf idempotent an, `FAB_TICK_AUTOSTART=0` schaltet ab, `FAB_LAUNCH_AGENTS_DIR` lenkt das Verzeichnis um | — |
 
 `fab` findet seinen Code über den eigenen Pfad (Symlink `~/.local/bin/fab` → `fabric/fab` ist erlaubt). Der Mod ruft immer den absoluten Pfad `${appHome()}/fabric/fab` auf.
 
@@ -121,6 +121,7 @@ Bei `tick` steht in `text` eines von: `geweckt`, `gestartet`, `an orchestrator`,
 {
   "version": 1,
   "generated_at": 1790000000000,
+  "tick": {"last_tick": 0, "age_ms": 360000, "limit_ms": 300000, "stale": true},
   "tickets": [
     {"id": "T-1", "title": "…", "status": "doing", "assignee": "zap", "repo": "…", "branch": "…",
      "updated_at": 0, "comment_count": 3, "waiting": [], "blocked_by": [],
@@ -140,7 +141,10 @@ Bei `tick` steht in `text` eines von: `geweckt`, `gestartet`, `an orchestrator`,
     {"id": "review:T-2:0", "kind": "review", "ticket": "T-2", "at": 0, "from": "zap", "text": "Zusammenfassung"},
     {"id": "attention:T-3:0", "kind": "attention", "ticket": "T-3", "at": 0, "from": "fab",
      "text": "stockt seit 12 min – Regel 1 (doing): …", "agent": "zap",
-     "reason": "Regel 1 (doing): …", "since": 0}
+     "reason": "Regel 1 (doing): …", "since": 0},
+    {"id": "attention:tick:1790000000000", "kind": "attention", "ticket": "", "at": 0,
+     "from": "fab", "text": "fab tick seit 6 min nicht gelaufen – Stillstands-Wächter prüfen",
+     "reason": "letzter Tick vor 6 min", "since": 1790000000000}
   ],
   "roster": [{"name": "zap", "role": "umsetzer", "color": "c1", "program": "omp",
               "model": "…", "teams": ["herdr-app"]}],
@@ -152,6 +156,7 @@ Bei `tick` steht in `text` eines von: `geweckt`, `gestartet`, `an orchestrator`,
 
 - `inbox` wird **nur** in `fab` berechnet: `question` = Ticket nicht done, `mensch` in `waiting`; `review` = Status `review`; `attention` = Wecken unterdrückt durch Ping-Pong-Bremse oder Start fehlgeschlagen, solange danach nichts Neues im Ticket passiert ist. Hat ein `todo`/`doing`-Ticket `stall.attention`, gilt genau **ein** `attention`-Eintrag aus dem Stillstand (`stockt seit …`, Grund und `agent` für „Erneut versuchen“); der aus `wake` abgeleitete Eintrag entfällt dann.
 - Pro Ticket höchstens **ein** Eintrag aus `question` und `review`: Steht das Ticket auf `review`, gilt nur `review`, `question` entfällt (auch wenn `mensch` in `waiting` steht). `attention` darf daneben stehen.
+- Lebt `last_tick` länger als 5 min zurück, steht zusätzlich genau **ein** `attention`-Eintrag ohne Ticket in der Inbox (`attention:tick:<last_tick>`); der nächste Tick räumt ihn ab. Der Zustand steht zusätzlich als `tick` im Lesemodell.
 - Der Mod zählt nichts selbst: Inbox-Zahl = `inbox.length`, Stufen = Tickets nach `status`.
 - Jeder Inbox-Eintrag trägt eine stabile `id`; sie bleibt über Neuberechnungen von `index.json` gleich, solange der Eintrag besteht.
 - `index.json` bleibt unter 1 MiB: Ticket-Einträge ohne `body` und ohne `comments`, höchstens 300 Ereignisse.
@@ -181,7 +186,7 @@ Alle schreibenden Befehle laufen in genau einer Transaktion, hängen Ereignisse 
 | `fab reject ID "<feedback>"` | Nur der Mensch. Kommentar von `mensch`, Status `doing`, weckt `assignee`. |
 | `fab drop ID --from NAME "<grund>"` | Status `dropped`, Sessions beenden (auch ohne Eintrag unter `## Sessions`, per Label `fab.ticket` oder Namen), Worktree bleibt. |
 | `fab wake ID NAME --from NAME ["<text>"]` | Wecken von Hand, gleiche Regeln wie bei Erwähnungen |
-| `fab tick [--dry-run] [--install\|--uninstall]` | Stillstandswächter (Abschnitt 4b). Ohne Optionen ein Lauf: wecken/starten oder `attention`, sonst nichts; zusätzlich meldet und beendet er lebende Sessions zu `done`/`dropped`-Tickets (per Label `fab.ticket` oder Namen `fab-<team>-<agent>-t-<n>`). `--dry-run` zeigt nur die geplanten Aktionen. `--install` legt den launchd-Agent `~/Library/LaunchAgents/de.herdr.fabric.tick.plist` (Intervall 60 s) an, `--uninstall` entfernt ihn. Kein `--from`. |
+| `fab tick [--dry-run] [--install\|--uninstall]` | Stillstandswächter (Abschnitt 4b). Ohne Optionen ein Lauf: wecken/starten oder `attention`, sonst nichts; zusätzlich meldet und beendet er lebende Sessions zu `done`/`dropped`-Tickets (per Label `fab.ticket` oder Namen `fab-<team>-<agent>-t-<n>`). Jeder echte Lauf schreibt `last_tick`; ist er älter als 5 min, erscheint ein `attention`-Eintrag in der Inbox. `--dry-run` zeigt nur die geplanten Aktionen und schreibt insbesondere kein `last_tick`. `--install` legt den launchd-Agent `~/Library/LaunchAgents/de.herdr.fabric.tick.plist` (Intervall 60 s) an, `--uninstall` entfernt ihn; ohne Auftrag legt der erste `fab`-Aufruf ihn unter macOS selbst an (Abschnitt 4b). Kein `--from`. |
 | `fab orchestrator start\|stop\|status [TEAM]` | Orchestrator-Terminal je Team verwalten (Abschnitt 5) |
 | `fab autopilot start [--until HH:MM\|done] \| stop \| resume \| status [--json]` | Autopilot-Terminal `autopilot` ohne Parent starten, beenden, eine Pause aufheben oder den Status zeigen; `--json` liefert genau den Inhalt von `$FAB_HOME/autopilot.json`. Ein zweiter Start bei laufendem Terminal bricht mit Meldung ab (Abschnitt 4d). |
 | `fab agents [--json]` | Mitglieder aller Teams mit Teamzuordnung (`teams`) und laufende Sessions. Beendete Sessions zeigen `beendet`; je Ticket und Terminalname erscheint nur der neueste Start. |
@@ -283,7 +288,8 @@ Jedes Ergebnis wird als `wake`-Ereignis geschrieben, auch jede Unterdrückung. I
 - `attention` erscheint genau einmal pro Ticket in der Inbox: Text `stockt seit <Dauer> – <Grund>`, `agent` für den Knopf „Erneut versuchen“ im Mod. Der Knopf ruft `fab wake … --from mensch "Erneut starten"`; eine zugestellte Weckung oder ein Kommentar löst `stall` auf. Board-Karten zeigen `stockt seit …`.
 - `--dry-run` plant nur: kein Schreiben, kein `hc send`/`hc run`; Ausgabe nennt die geplanten Aktionen.
 - Kostenlimit: Ist `max_cost` gesetzt und die frische Summe aus `costs.collect` überschreitet es, beendet `tick` vor allen Regeln jede Session (`hc kill` über Terminal/Name), setzt `mensch` in `waiting` (Regel 1 startet nicht neu) und meldet einmalig `attention` mit `Kostenlimit überschritten: $x > $y` (Regel 6); weitere Ticks ändern nichts. `--dry-run` meldet nur die geplante Aufmerksamkeit.
-- Auslöser: der Mod ruft `fab tick` jede Minute auf, solange das Fenster offen ist. Optional installiert der Mensch einen launchd-Agent (Intervall 60 s) mit `fab tick --install`, entfernt ihn mit `--uninstall`. Automatisch wird nichts installiert. `--install` im Haupt-Checkout ausführen: der Auftrag trägt den absoluten Pfad der aufrufenden `fabric/fab`; aus einem Worktree zeigt er nach dem Aufräumen ins Leere.
+- Auslöser: Jeder echte `fab tick` schreibt `last_tick` (Millisekunden, zentrale Uhr) in die Tabelle `meta`. Fehlt der launchd-Auftrag, legt der erste `fab`-Aufruf ihn unter macOS idempotent an (Intervall 60 s, `RunAtLoad` aus); `FAB_TICK_AUTOSTART=0` schaltet das ab, `FAB_LAUNCH_AGENTS_DIR` lenkt das Verzeichnis um, und ohne ausdrückliche Freigabe (`=1`) wird aus einem Worktree nichts angelegt, weil dessen Pfad beim Aufräumen verschwindet. Zusätzlich ruft der Mod den Tick jede Minute auf: der Inbox-Block lebt in der Seitenleiste auch bei geschlossenem Fabric-Fenster, beide Ansichten teilen sich den letzten Versuch. Scheitert der Aufruf, stößt der Mod einen Index-Lauf an, der den Alarm veröffentlicht.
+- Alarm: Ist `last_tick` älter als 5 min, enthält `index.json` unter `tick` den Zustand `{last_tick, age_ms, limit_ms, stale: true}` und die Inbox genau einen `attention`-Eintrag `attention:tick:<last_tick>` mit Text `fab tick seit … nicht gelaufen`. Derselbe Ausfall erzeugt keinen zweiten Eintrag; der nächste erfolgreiche Tick schreibt `last_tick` neu und löst den Eintrag auf. Ohne bekannten `last_tick` gibt es keinen Alarm. Banner und rote Lampe baut T-75 auf diesem Zustand.
 
 ## 4c. Neustart des Orchestrators
 

@@ -189,6 +189,7 @@ class FabricCase(unittest.TestCase):
             HC_GET=self.get_json,
             HERDR_LOG=self.herdr_log,
             HERDR_LS=self.herdr_ls,
+            FAB_TICK_AUTOSTART="0",
             PATH=self.bin + os.pathsep + os.environ.get("PATH", ""),
             GIT_CONFIG_NOSYSTEM="1",
         )

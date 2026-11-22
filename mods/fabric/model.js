@@ -2673,3 +2673,12 @@ export function autopilotActions(lamp) {
     stop: state === "running" || state === "paused",
   };
 }
+
+export const TICK_INTERVAL_MS = 60000;
+
+/** Ist der nächste `fab tick` fällig? Ohne bekannten Versuch sofort. */
+export function tickDue(lastAttempt, now = Date.now(), interval = TICK_INTERVAL_MS) {
+  const stamp = Number(lastAttempt);
+  if (!Number.isFinite(stamp) || stamp <= 0) return true;
+  return Number(now) - stamp >= interval;
+}

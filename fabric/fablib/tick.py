@@ -10,6 +10,7 @@ Team-Orchestrators wegen Leerlauf schreibt stattdessen ein
 import os
 import plistlib
 import subprocess
+import sys
 
 from . import agents, costs, events, flows, hc, orchestrator, store, teams, wake
 from .errors import FabError, HcError
@@ -105,6 +106,12 @@ def run(roster, dry=False):
             result.append(line)
             if not dry:
                 result.changed = True
+    if not dry:
+        # Jeder echte Lauf hält die Uhr frisch; war der Alarm vorher schon
+        # gesetzt, muss der Index den verschwundenen Eintrag neu schreiben.
+        if store.tick_alarm()["stale"]:
+            result.changed = True
+        store.set_last_tick()
     return result
 
 
@@ -714,16 +721,60 @@ def _event_reason(number, rule, reason):
 
 # ---------------------------------------------------------------- launchd
 
+AUTOSTART_ENV = "FAB_TICK_AUTOSTART"
+LAUNCH_AGENTS_ENV = "FAB_LAUNCH_AGENTS_DIR"
+_OFF = ("0", "false", "off", "no")
+_ON = ("1", "true", "on", "yes")
+
+
+def launch_agents_dir():
+    """LaunchAgents-Verzeichnis; `FAB_LAUNCH_AGENTS_DIR` lenkt Tests um."""
+    raw = (os.environ.get(LAUNCH_AGENTS_ENV) or "").strip()
+    if raw:
+        return os.path.abspath(os.path.expanduser(raw))
+    return os.path.join(os.path.expanduser("~"), "Library", "LaunchAgents")
+
+
 def plist_path():
-    return os.path.join(
-        os.path.expanduser("~"), "Library", "LaunchAgents", f"{LABEL}.plist"
-    )
+    return os.path.join(launch_agents_dir(), f"{LABEL}.plist")
 
 
 def program_path():
     return os.path.join(
         os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "fab"
     )
+
+
+def autostart_enabled():
+    """Darf dieser Aufruf den launchd-Auftrag selbst anlegen?
+
+    Nur unter macOS, abschaltbar über `FAB_TICK_AUTOSTART=0`. Ohne ausdrückliche
+    Freigabe (`=1`) bleibt ein Aufruf aus einem Worktree außen vor: dessen Pfad
+    verschwindet beim Aufräumen, der Auftrag zeigte danach ins Leere.
+    """
+    raw = (os.environ.get(AUTOSTART_ENV) or "").strip().lower()
+    if raw in _OFF:
+        return False
+    if sys.platform != "darwin":
+        return False
+    if raw in _ON:
+        return True
+    return "/worktrees/" not in program_path()
+
+
+def ensure_installed():
+    """Fehlenden Auftrag anlegen; Rückgabe: Pfad oder `None`.
+
+    Idempotent: eine vorhandene Plist wird weder neu geschrieben noch erneut
+    bei launchd angemeldet.
+    """
+    if not autostart_enabled():
+        return None
+    target = plist_path()
+    if os.path.exists(target):
+        return None
+    path, _ok, _detail = install()
+    return path
 
 
 def payload():

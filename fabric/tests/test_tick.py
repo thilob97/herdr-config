@@ -672,3 +672,103 @@ class TickCase(FabricCase):
                 )
             )
         )
+
+    # -- automatische Einrichtung
+
+    def launchctl_stub(self):
+        """Stub protokolliert `launchctl`-Aufrufe, statt sie auszuführen."""
+        log = os.path.join(self.tmp, "launchctl.log")
+        path = os.path.join(self.bin, "launchctl")
+        self._write(
+            path,
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$LAUNCHCTL_LOG\"\nexit 0\n",
+        )
+        os.chmod(path, 0o755)
+        return log
+
+    def test_erster_aufruf_installiert_den_auftrag_genau_einmal(self):
+        agents = os.path.join(self.tmp, "LaunchAgents")
+        log = self.launchctl_stub()
+        env = {
+            "FAB_TICK_AUTOSTART": "1",
+            "FAB_LAUNCH_AGENTS_DIR": agents,
+            "LAUNCHCTL_LOG": log,
+        }
+        self.ok("version", env=env)
+        plist = os.path.join(agents, "de.herdr.fabric.tick.plist")
+        self.assertTrue(os.path.isfile(plist))
+        with open(plist, "rb") as handle:
+            data = plistlib.load(handle)
+        self.assertEqual(data["Label"], "de.herdr.fabric.tick")
+        self.assertEqual(data["ProgramArguments"][1:], ["tick"])
+        with open(log, encoding="utf-8") as handle:
+            calls = handle.read().splitlines()
+        self.assertEqual(len(calls), 1)
+        self.assertIn("bootstrap", calls[0])
+
+        with open(plist, encoding="utf-8") as handle:
+            before = handle.read()
+        self.ok("version", env=env)
+        with open(plist, encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), before)
+        with open(log, encoding="utf-8") as handle:
+            self.assertEqual(len(handle.read().splitlines()), 1)
+
+    def test_abgeschalteter_autostart_schreibt_nichts(self):
+        agents = os.path.join(self.tmp, "LaunchAgents")
+        log = self.launchctl_stub()
+        env = {
+            "FAB_TICK_AUTOSTART": "0",
+            "FAB_LAUNCH_AGENTS_DIR": agents,
+            "LAUNCHCTL_LOG": log,
+        }
+        self.ok("version", env=env)
+        self.assertFalse(os.path.exists(agents))
+        self.assertFalse(os.path.exists(log))
+
+    # -- Alarm bei ausbleibendem Tick
+
+    def set_last_tick(self, at):
+        with self.store_env():
+            with store.locked():
+                store.set_last_tick(at)
+
+    def tick_alerts(self):
+        return [
+            row
+            for row in self.index()["inbox"]
+            if str(row.get("id") or "").startswith("attention:tick:")
+        ]
+
+    def test_tick_4_59_min_alt_ist_kein_alarm(self):
+        now = 1800000000000
+        self.set_last_tick(now - 4 * MINUTE - 59000)
+        self.ok("index", env={"FAB_NOW": str(now)})
+        self.assertEqual(self.tick_alerts(), [])
+        self.assertFalse(self.index()["tick"]["stale"])
+
+    def test_tick_5_01_min_alt_erzeugt_genau_einen_alarm(self):
+        now = 1800000000000
+        last = now - 5 * MINUTE - 1000
+        self.set_last_tick(last)
+        self.ok("index", env={"FAB_NOW": str(now)})
+        alerts = self.tick_alerts()
+        self.assertEqual(len(alerts), 1)
+        self.assertEqual(alerts[0]["kind"], "attention")
+        self.assertEqual(alerts[0]["since"], last)
+        self.assertIn("fab tick", alerts[0]["text"])
+
+        self.ok("inbox", env={"FAB_NOW": str(now)})
+        self.assertEqual(len(self.tick_alerts()), 1)
+
+    def test_neuer_tick_loescht_den_alarm(self):
+        now = 1800000000000
+        self.set_last_tick(now - 6 * MINUTE)
+        self.ok("index", env={"FAB_NOW": str(now)})
+        self.assertEqual(len(self.tick_alerts()), 1)
+
+        self.ok("tick", env={"FAB_NOW": str(now)})
+        self.ok("index", env={"FAB_NOW": str(now)})
+        self.assertEqual(self.tick_alerts(), [])
+        self.assertFalse(self.index()["tick"]["stale"])
+        self.assertEqual(self.meta("last_tick"), str(now))

@@ -119,6 +119,29 @@ def _waiting_entries(questions, reviews):
             )
 
 
+def _tick_entry(now):
+    """Inbox-Alarm, solange der letzte `fab tick` zu alt ist; sonst nichts.
+
+    Die `id` hängt am beobachteten `last_tick`: derselbe Ausfall erzeugt genau
+    einen Eintrag, ein späterer neuer Tick löst ihn auf.
+    """
+    state = store.tick_alarm(now)
+    if not state["stale"]:
+        return None
+    last = state["last_tick"]
+    age = _stall_age(last, now)
+    return {
+        "id": f"attention:tick:{last}",
+        "kind": "attention",
+        "ticket": "",
+        "at": last + state["limit_ms"],
+        "from": "fab",
+        "text": f"fab tick seit {age} nicht gelaufen – Stillstands-Wächter prüfen",
+        "reason": f"letzter Tick vor {age}",
+        "since": last,
+    }
+
+
 def _inbox(stalled, questions, reviews, rows, tickets=(), approvals=()):
     entries = []
     stalled_ids = set()
@@ -146,6 +169,9 @@ def _inbox(stalled, questions, reviews, rows, tickets=(), approvals=()):
             }
         )
         stalled_ids.add(ticket_id)
+    tick = _tick_entry(now)
+    if tick is not None:
+        entries.append(tick)
     for kind, ticket, last, at in _waiting_entries(questions, reviews):
         entries.append(
             {
@@ -303,6 +329,7 @@ def build():
     payload = {
         "version": 1,
         "generated_at": store.now_ms(),
+        "tick": store.tick_alarm(),
         "tickets": entries,
         "inbox": inbox,
         "roster": agents.roster_rows(roster) if roster else [],
