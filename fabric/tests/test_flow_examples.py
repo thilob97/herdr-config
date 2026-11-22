@@ -3,7 +3,7 @@ import json
 import os
 import subprocess
 
-from fabric.fablib import flows
+from fabric.fablib import flows, store
 from fabric.tests.support import FabricCase
 
 FABRIC = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -75,6 +75,32 @@ class FlowExamplesCase(FabricCase):
                     self.nachtfenster_at(clock).returncode, 0,
                     f"{clock} liegt im Nachtfenster",
                 )
+
+    def test_nachtschicht_outside_window_ends_without_ticket(self):
+        self.add("nachtschicht")
+        bindir = os.path.join(self.tmp, "clock-1200")
+        os.makedirs(bindir, exist_ok=True)
+        fake_date = os.path.join(bindir, "date")
+        self.write_file(fake_date, "#!/bin/sh\necho 1200\n")
+        os.chmod(fake_date, 0o755)
+        env = {"PATH": bindir + os.pathsep + self.env.get("PATH", "")}
+
+        result = self.ok("flow", "run", "nachtschicht", env=env)
+        self.assertIn("Lauf 1", result.stdout)
+
+        with self.store_env():
+            runs = store.flow_run_list("nachtschicht")
+            self.assertEqual(len(runs), 1)
+            self.assertEqual(runs[0]["status"], "done")
+            self.assertEqual(runs[0]["reason"], "")
+            self.assertEqual(runs[0]["data"].get("current"), "ende")
+            steps = [(step["node"], step["status"])
+                     for step in store.flow_steps(runs[0]["id"])]
+            self.assertIn(("nachtfenster", "fail"), steps)
+            self.assertIn(("ende", "done"), steps)
+            self.assertNotIn("pause-pruefen", [node for node, _ in steps])
+            self.assertNotIn("abnahme", [node for node, _ in steps])
+            self.assertEqual(store.all_tickets(), [])
 
     def test_revert_command_handles_merge_commit(self):
         repo = self.make_repo()
