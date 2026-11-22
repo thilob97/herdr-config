@@ -9,6 +9,7 @@ import unicodedata
 
 from . import (
     agents,
+    autopilot,
     config,
     context,
     costs,
@@ -1024,6 +1025,24 @@ def cmd_verdict(args):
         head = git.head(worktree)
         if not head:
             raise FabError(f"{ticket['id']}: HEAD des Worktrees {worktree} ist nicht lesbar")
+        if args.head:
+            resolved = git.git(
+                ["rev-parse", "--verify", "--quiet", f"{args.head}^{{commit}}"], worktree
+            )
+            given = resolved.stdout.strip() if resolved.returncode == 0 else ""
+            if not given:
+                raise FabError(
+                    f"{ticket['id']}: --head {args.head} ist kein Commit im Worktree "
+                    f"{worktree}"
+                )
+            if given != head:
+                raise FabError(
+                    f"{ticket['id']}: --head {_short(given)} passt nicht zum "
+                    f"Worktree-HEAD {_short(head)}; es kam ein neuer Commit seit dem "
+                    f"Prüfbeginn. Prüfe den neuen HEAD oder buche das Urteil auf "
+                    f"{_short(given)}."
+                )
+            head = given
         ticket["verdict"] = {
             "state": args.state,
             "by": actor,
@@ -1320,6 +1339,19 @@ def cmd_accept(args):
         if children:
             raise FabError(
                 f"{ticket['id']}: Abnahme verweigert: {_children_reason(children)}"
+            )
+        review_worktree = ticket.get("worktree")
+        review_head = git.head(review_worktree) if review_worktree else ""
+        verdict = ticket.get("verdict") or {}
+        if not review_head:
+            raise FabError(
+                f"{ticket['id']}: HEAD des Worktrees {review_worktree or '—'} ist "
+                f"nicht lesbar; Urteil nicht prüfbar"
+            )
+        if verdict.get("head") != review_head:
+            raise FabError(
+                f"{ticket['id']}: Urteil gilt für HEAD {_short(verdict.get('head'))}, "
+                f"Worktree-HEAD ist {_short(review_head)}; bitte erneut prüfen"
             )
         repo = ticket.get("repo")
         branch_name = ticket.get("branch")
@@ -2358,7 +2390,9 @@ def cmd_lesson(args):
         ]
         target = ""
         if args.action == "confirm":
-            target = repos.append_lesson(ticket["repo"], sentence)
+            target = repos.append_lesson(
+                ticket["repo"], sentence, f"Lehre aus {ticket['id']} bestätigt"
+            )
             events.append(
                 "lesson", ticket["id"], actor, "", f"bestätigt: {sentence}"
             )
@@ -2452,6 +2486,42 @@ def cmd_context(args):
 def _git_value(*args):
     result = git.git(list(args), agents.FABRIC_DIR)
     return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def cmd_autopilot(args):
+    action = args.action
+    if action == "start":
+        result = autopilot.start(args.until)
+        print(f"Autopilot gestartet in {result['repo']} (bis {args.until})")
+        return 0
+    if action == "stop":
+        autopilot.stop()
+        print("Autopilot gestoppt")
+        return 0
+    if action == "resume":
+        if autopilot.resume():
+            print("Autopilot fortgesetzt")
+        else:
+            print("Autopilot: kein Status, nichts fortgesetzt")
+        return 0
+    if action == "run":
+        return autopilot.run(args.until)
+    state = autopilot.status()
+    if args.json:
+        print(json.dumps(state, ensure_ascii=False, indent=2))
+        return 0
+    if not state.get("state"):
+        print("Autopilot: kein Status (nicht gestartet)")
+        return 0
+    live = "läuft" if autopilot.is_live() else "nicht aktiv"
+    reason = f" · {state['reason']}" if state.get("reason") else ""
+    print(
+        f"Autopilot: {state['state']}{reason} · "
+        f"Ende {state.get('end') or 'offen'} · {live}"
+    )
+    if state.get("last_action"):
+        print(f"Zuletzt: {state['last_action']}")
+    return 0
 
 
 def cmd_version(args):
@@ -2616,6 +2686,10 @@ def build_parser():
     item.add_argument("id", metavar="ID")
     item.add_argument("state", metavar="URTEIL", choices=("pass", "fail"))
     item.add_argument("--from", dest="from_", metavar="NAME", required=True)
+    item.add_argument(
+        "--head", metavar="SHA",
+        help="geprüfter Commit; bricht ab, wenn der Worktree-HEAD davon abweicht",
+    )
     item.add_argument("summary", metavar="ZUSAMMENFASSUNG")
 
     item = command("handover", "An den Menschen übergeben (Gates: checks und Urteil)", cmd_handover)
@@ -2918,6 +2992,40 @@ def build_parser():
     discard_lesson.add_argument("value", metavar="VORSCHLAG")
     discard_lesson.add_argument("--from", dest="from_", metavar="NAME", required=True)
 
+    item = command(
+        "autopilot",
+        "Autopilot: nimmt Tickets ab, prüft main und hält den Betrieb am Laufen",
+        cmd_autopilot,
+    )
+    auto_sub = item.add_subparsers(dest="action", metavar="AKTION", required=True)
+    auto_start = auto_sub.add_parser(
+        "start", help="Autopilot im Terminal autopilot starten",
+        description="Autopilot im Terminal autopilot starten",
+    )
+    auto_start.add_argument(
+        "--until", metavar="HH:MM|done", default="done",
+        help="Endzeit als HH:MM oder done (Standard: done)",
+    )
+    auto_sub.add_parser("stop", help="Autopilot beenden", description="Autopilot beenden")
+    auto_status = auto_sub.add_parser(
+        "status", help="Status des Autopiloten zeigen",
+        description="Status des Autopiloten zeigen",
+    )
+    auto_status.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe")
+    auto_sub.add_parser(
+        "resume", help="Pausemarke entfernen und weiterlaufen",
+        description="Pausemarke entfernen und weiterlaufen",
+    )
+    auto_run = auto_sub.add_parser(
+        "run", help="Autopilot-Schleife (intern)", description="Autopilot-Schleife (intern)",
+    )
+    auto_run.add_argument(
+        "--until", metavar="HH:MM|done", default="done", help=argparse.SUPPRESS,
+    )
+    # Die interne Schleife bleibt wählbar, wird aber nicht als Aktion beworben.
+    auto_sub._choices_actions = [
+        action for action in auto_sub._choices_actions if action.dest != "run"
+    ]
     command("version", "Version und Git-HEAD des Fabric-Codes", cmd_version)
     command("index", "index.json neu erzeugen", cmd_index)
     item = command("migrate", "Altdaten in die SQLite-Datenbank übernehmen", cmd_migrate)

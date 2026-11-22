@@ -258,6 +258,8 @@ class GitflowTests(FabricCase):
         self.git_out(worktree, "add", "mods")
         commit = self.git(worktree, "commit", "-qm", "mods")
         self.assertEqual(commit.returncode, 0, commit.stderr)
+        self.ok("verify", tid)
+        self.ok("verdict", tid, "pass", "--from", "ada", "Nachtrag geprüft")
         main_before = self.git_out(repo, "rev-parse", "main")
 
         result = self.cli("accept", tid, env={"HERDR_APP_FAIL": "1"})
