@@ -2563,3 +2563,113 @@ export function flowValidate(definition) {
 
   return { ok: errors.length === 0, errors };
 }
+
+// ---------- Autopilot ----------
+
+// Nach sechs Minuten ohne Lebenszeichen gilt ein laufender oder pausierter
+// Autopilot als veraltet. Die Grenze selbst zählt noch als frisch.
+export const AUTOPILOT_STALE_MS = 6 * 60 * 1000;
+
+const AUTOPILOT_STATES = ["running", "paused", "stopped"];
+
+/** Statusdatei des Autopiloten lesen; alles Unbrauchbare wird zu `null`. */
+function autopilotStatus(raw) {
+  let value = raw;
+  if (typeof value === "string") {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value;
+}
+
+/** Endzeit als `HH:MM` aus `YYYY-MM-DDTHH:MM` oder `HH:MM`; sonst `""`. */
+function autopilotEndTime(end) {
+  const match = /(?:^|T)(\d{2}):(\d{2})$/.exec(String(end ?? "").trim());
+  return match ? `${match[1]}:${match[2]}` : "";
+}
+
+function autopilotEndLabel(status) {
+  const time = autopilotEndTime(status?.end);
+  return time ? `bis ${time}` : "bis alles fertig";
+}
+
+/** Lampe des Autopiloten: Zustand, Farbe, Text und Puls aus der Statusdatei.
+ *  Veraltet hat Vorrang vor running und paused. */
+export function autopilotLamp(raw, now = Date.now()) {
+  const status = autopilotStatus(raw);
+  const state = typeof status?.state === "string" ? status.state : "";
+  if (!AUTOPILOT_STATES.includes(state)) {
+    return { state: "stopped", color: "dim", text: "Autopilot aus", pulse: false };
+  }
+  if (state === "stopped") {
+    return { state: "stopped", color: "dim", text: "Autopilot aus", pulse: false };
+  }
+
+  const updated = status.updated_at;
+  const stamp = updated === null || updated === undefined || updated === "" ? NaN : Number(updated);
+  if (!Number.isFinite(stamp) || Number(now) - stamp > AUTOPILOT_STALE_MS) {
+    return { state: "stale", color: "dim", text: "Autopilot reagiert nicht", pulse: false };
+  }
+
+  if (state === "paused") {
+    const reason = typeof status.reason === "string" ? status.reason.trim() : "";
+    return {
+      state: "paused",
+      color: "working",
+      text: reason ? `Autopilot pausiert · ${reason}` : "Autopilot pausiert",
+      pulse: false,
+    };
+  }
+
+  return {
+    state: "running",
+    color: "done",
+    text: `Autopilot an · ${autopilotEndLabel(status)}`,
+    pulse: true,
+  };
+}
+
+/** Letzte `limit` Zeilen eines Logtexts; ein abschließender Zeilenumbruch zählt nicht. */
+export function autopilotLogLines(text, limit = 20) {
+  if (typeof text !== "string" || text === "") return [];
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  if (lines[lines.length - 1] === "") lines.pop();
+  const count = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 0;
+  if (count === 0 || lines.length === 0) return [];
+  return lines.slice(-count);
+}
+
+/** Inhalt des Autopilot-Popovers: Lampe, letzte Aktion, Endzeit, Logpfad und Logzeilen. */
+export function autopilotPopover(raw, logText, now = Date.now()) {
+  const status = autopilotStatus(raw);
+  const lamp = autopilotLamp(status, now);
+  // Die Endzeit gehört auch zu einem pausierten oder verstummten Lauf; nur
+  // „aus“ hat keine. Ohne Endzeit heißt der Lauf „bis alles fertig“.
+  const endTime = autopilotEndTime(status?.end);
+  const endLabel = lamp.state === "stopped"
+    ? ""
+    : endTime ? `bis ${endTime}` : lamp.state === "running" ? "bis alles fertig" : "";
+  return {
+    lamp,
+    lastAction: typeof status?.last_action === "string" ? status.last_action : "",
+    endLabel,
+    logPath: typeof status?.log === "string" ? status.log : "",
+    lines: autopilotLogLines(logText, 20),
+  };
+}
+
+/** Welche Popover-Knöpfe der Zustand anbietet. „Log öffnen“ gibt es immer;
+ *  Starten nur aus dem Stand, Pause aufheben nur pausiert, Stoppen nur für
+ *  einen laufenden oder pausierten Autopiloten. */
+export function autopilotActions(lamp) {
+  const state = lamp?.state ?? "stopped";
+  return {
+    start: state === "stopped" || state === "stale",
+    resume: state === "paused",
+    stop: state === "running" || state === "paused",
+  };
+}

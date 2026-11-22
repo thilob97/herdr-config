@@ -176,6 +176,20 @@ export function dot(t, color) {
   return div().flex_none().size(SIZE.dot).rounded(SIZE.dot / 2).bg(color);
 }
 
+/** Lampe des Autopiloten: Farbe aus dem Theme, Puls als nativer Loop.
+ *  „Läuft“ ist grün (`ansi2`, sonst `done`), damit die Lampe nicht mit dem
+ *  blauen Fertig-Ton anderer Themes verwechselt wird. */
+export function autopilotColor(t, key) {
+  if (key === "done") return t.ansi2 ?? t.done;
+  return sessionColor(t, key);
+}
+
+export function autopilotDot(t, { color = "dim", pulse = false, size = SIZE.dot } = {}) {
+  let el = div().flex_none().size(size).rounded(size / 2).bg(autopilotColor(t, color));
+  if (pulse) el = el.loop("opacity", { from: 0.35, to: 1, period: 900 });
+  return el;
+}
+
 export function pill(t, { label, color, tooltip = null, onClick = null, id = null }) {
   let el = h_flex()
     .flex_none()
@@ -826,10 +840,10 @@ export function drawer(t, offer = {}, children = []) {
       )));
 }
 
-export function popoverPanel(t, children, width = 360) {
+export function popoverPanel(t, children, width = 360, maxHeight = 420) {
   return v_flex()
     .w(width)
-    .max_h(420)
+    .max_h(maxHeight)
     .overflow_y_scrollbar()
     .rounded(RADIUS.l)
     .border_1()
