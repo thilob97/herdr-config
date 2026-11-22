@@ -399,21 +399,6 @@ function membersBlock(app, cx, t, team, form) {
         .child(ui.numberInput(t, form.maxSessions))));
 }
 
-function briefBlock(app, cx, t, team, form) {
-  const chars = [...form.brief.value()].length;
-  return v_flex()
-    .w_full()
-    .gap(S.s)
-    .child(sectionHead(t, "Brief", [
-      ui.chip(t, `${chars} Zeichen`, t.dim, `fabric-team-brief-count-${team.name}`, {
-        tooltip: "Zeichen im Brief",
-      }),
-    ]))
-    .child(ui.textarea(t, form.brief, { height: 110 }))
-    .child(ui.hint(t,
-      "Der Brief ist Prompt-Kontext für den Agenten und zählt gegen die Obergrenze context_limit."));
-}
-
 function teamCard(app, cx, t, team) {
   const form = app.teamForms[team.name];
   if (!form) return null;
@@ -447,14 +432,6 @@ function teamCard(app, cx, t, team) {
       .when(Boolean(team.prompt_shared), (el) => el.child(ui.chip(t, "Prompt geteilt", t.working,
         `fabric-team-prompt-shared-${team.name}`, { tooltip: sharedTip })))
       .child(div().flex_1())
-      .child(ui.button(t, {
-        id: `fabric-team-context-${team.name}`,
-        label: app.compact ? "Kontext" : "Was sieht der Agent?",
-        icon: "eye",
-        small: true,
-        tooltip: "Kontextvorschau des Teams öffnen",
-        onClick: (cx) => app.toggleContextPreview("team", team.name, cx),
-      }))
       .when(dirty, (el) => el.child(ui.chip(t, "ungespeichert", t.working,
         `fabric-team-dirty-${team.name}`, { tooltip: "Änderungen sind noch nicht gespeichert" })))
       .child(ui.button(t, {
@@ -468,7 +445,6 @@ function teamCard(app, cx, t, team) {
         onClick: (cx) => app.confirmDeleteTeam(team, cx),
       })),
     orchestratorBlock(app, cx, t, team),
-    briefBlock(app, cx, t, team, form),
     reposBlock(app, cx, t, team, form),
     membersBlock(app, cx, t, team, form),
     h_flex().w_full().gap(S.s).items_center()

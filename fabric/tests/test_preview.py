@@ -113,30 +113,6 @@ class PreviewTests(FabricCase):
             os.kill(pid, 0)
         self.assertIn(["server", "stop"], self.hc_calls("server"))
 
-    def test_start_seedet_repos_und_kontextseite(self):
-        repo, tid, worktree = self.preview_ticket()
-        shared_path = os.path.join(preview_root(tid), "home", "shared.json")
-        self.ok(
-            "preview", "start", tid, "--page", "repos",
-            env={"HERDR_APP_SLEEP": "1"},
-        )
-        seeded = json.loads(self._text(shared_path))
-        self.assertEqual(seeded["fabric.route"], {"page": "repos"})
-        self.assertNotIn("fabric.contextPreview", seeded)
-
-        self.ok("preview", "stop", tid)
-        self.ok(
-            "preview", "start", tid, "--page", "context",
-            env={"HERDR_APP_SLEEP": "1"},
-        )
-        seeded = json.loads(self._text(shared_path))
-        self.assertEqual(seeded["fabric.route"], {"page": "ticket"})
-        preview = seeded["fabric.contextPreview"]
-        self.assertEqual(preview["kind"], "ticket")
-        self.assertEqual(preview["ref"], "T-1")
-        self.assertIsInstance(preview["at"], int)
-        self.assertGreater(preview["at"], 0)
-
     def test_preamble_erklaert_vorschau(self):
         text = self._text(os.path.join(FABRIC, "prompts", "preamble.md"))
         self.assertIn("fab preview", text)
