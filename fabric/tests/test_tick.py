@@ -726,7 +726,10 @@ class TickCase(FabricCase):
         worktree = "/tmp/worktrees/x/fabric/fab"
         with mock.patch.dict(os.environ, {"FAB_TICK_AUTOSTART": ""}):
             with mock.patch.object(tick, "program_path", return_value=worktree):
-                self.assertFalse(tick.autostart_enabled())
+                with mock.patch.object(
+                    tick, "sys", types.SimpleNamespace(platform="darwin")
+                ):
+                    self.assertFalse(tick.autostart_enabled())
 
     def test_autostart_enabled_ausserhalb_macos(self):
         with mock.patch.dict(os.environ, {"FAB_TICK_AUTOSTART": "1"}):
