@@ -265,6 +265,7 @@ class ContextCommandTests(ContextCase):
         self.assertIn("Ziele: Anzeige.", data["text"])
         self.assertEqual(data["chars"], len(data["text"]))
         self.assertEqual(data["limit"], 1234)
+        self.assertFalse(data["clipped"])
         self.assertEqual(data["scope"], "ticket")
         self.assertEqual(data["id"], tid)
         self.assertIsNone(data["team"])
@@ -279,6 +280,7 @@ class ContextCommandTests(ContextCase):
         self.assertIn("Ziele: Anzeige.", team["text"])
         self.assertEqual(team["chars"], len(team["text"]))
         self.assertEqual(team["limit"], 1234)
+        self.assertFalse(team["clipped"])
 
     def test_fab_context_json_leer(self):
         repo = self.make_repo()
@@ -299,3 +301,22 @@ class ContextCommandTests(ContextCase):
         self.assertEqual(team["chars"], 0)
         self.assertEqual(team["scope"], "team")
         self.assertEqual(team["team"], "herdr-app")
+        self.assertFalse(team["clipped"])
+
+    def test_fab_context_json_kuerzung_kommt_aus_clip_nicht_aus_dem_wort(self):
+        repo = self.make_repo()
+        self.own_repo(repo)
+        self.project(repo, "# Steckbrief\n\n" + "Zeile mit Inhalt.\n" * 80)
+        self.set_limit(200)
+        tid = self.new("Grenze", repo=repo)
+        data = json.loads(self.ok("context", tid, "--json").stdout)
+        self.assertTrue(data["clipped"])
+        self.assertLessEqual(data["chars"], 200)
+        self.assertEqual(data["chars"], len(data["text"]))
+        self.assertIn("gekürzt", data["text"])
+
+        self.project(repo, "# Steckbrief\n\nBudget wurde gekürzt.\n")
+        self.set_limit(6000)
+        plain = json.loads(self.ok("context", tid, "--json").stdout)
+        self.assertFalse(plain["clipped"])
+        self.assertIn("Budget wurde gekürzt.", plain["text"])

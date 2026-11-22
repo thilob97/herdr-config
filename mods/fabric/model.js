@@ -637,14 +637,17 @@ export function decisionProposals(ticket) {
 }
 
 /** Kontextvorschau als Anzeigewerte: Text, Zeichen, Obergrenze und die Zeile
- *  darüber. `chars` und `limit` kommen aus `fab context --json`; fehlen sie,
- *  zählt der Text und die Obergrenze bleibt 0. */
+ *  darüber. `chars`, `limit` und `clipped` kommen aus `fab context --json`;
+ *  fehlen sie, zählt der Text, die Obergrenze bleibt 0 und nur der echte
+ *  Kürzungshinweis am Ende gilt als gekürzt. */
 export function contextDisplay(data) {
   const text = String(data?.text ?? "");
   const chars = Number.isInteger(data?.chars) && data.chars >= 0 ? data.chars : [...text].length;
   const limit = Number.isInteger(data?.limit) && data.limit >= 0 ? data.limit : 0;
   const empty = chars === 0;
-  const clipped = text.includes("gekürzt");
+  const clipped = typeof data?.clipped === "boolean"
+    ? data.clipped
+    : text.endsWith("[…] gekürzt") || /\n\n\[…\] gekürzt(?:, vollständig in .*)?$/.test(text);
   const over = limit > 0 && chars > limit;
   const ratio = limit > 0 ? Math.min(1, chars / limit) : 0;
   let label;

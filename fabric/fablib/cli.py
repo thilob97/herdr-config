@@ -2628,9 +2628,10 @@ def cmd_context(args):
     roster = agents.load()
     if args.id:
         ticket = store.load(args.id)
-        text = context.for_ticket(roster, ticket)
+        report = context.for_ticket(roster, ticket, report=True)
     else:
-        text = context.for_team(roster, args.team)
+        report = context.for_team(roster, args.team, report=True)
+    text = report["text"]
     if args.json:
         print(
             json.dumps(
@@ -2638,6 +2639,7 @@ def cmd_context(args):
                     "text": text,
                     "chars": len(text),
                     "limit": context.limit(roster),
+                    "clipped": report["clipped"],
                     "scope": "ticket" if args.id else "team",
                     "id": args.id or None,
                     "team": args.team or None,

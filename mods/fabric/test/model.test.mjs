@@ -1053,7 +1053,7 @@ test("decisionProposals leitet Knopfzustand und Argumente aus den Ticketdaten ab
 
 test("contextDisplay: normale Zeile, leerer Text und gekürzter Text", async () => {
   const { contextDisplay } = await import("../model.js");
-  assert.deepEqual(contextDisplay({ text: "abc", chars: 3, limit: 10 }), {
+  assert.deepEqual(contextDisplay({ text: "abc", chars: 3, limit: 10, clipped: false }), {
     text: "abc",
     chars: 3,
     limit: 10,
@@ -1066,9 +1066,25 @@ test("contextDisplay: normale Zeile, leerer Text und gekürzter Text", async () 
   const empty = contextDisplay({ text: "", chars: 0, limit: 10 });
   assert.equal(empty.empty, true);
   assert.equal(empty.label, "0 Zeichen · noch kein Kontext");
-  const clipped = contextDisplay({ text: "abc … gekürzt", chars: 12, limit: 20 });
+  const clipped = contextDisplay({ text: "abc\n\n[…] gekürzt", chars: 20, limit: 20, clipped: true });
   assert.equal(clipped.clipped, true);
-  assert.equal(clipped.label, "12 von höchstens 20 Zeichen · gekürzt");
+  assert.equal(clipped.label, "20 von höchstens 20 Zeichen · gekürzt");
+});
+
+test("contextDisplay: „gekürzt“ im Inhalt ist kein Kürzungshinweis", async () => {
+  const { contextDisplay } = await import("../model.js");
+  const prose = contextDisplay({
+    text: "## Steckbrief\n\nBudget wurde gekürzt.",
+    chars: 33,
+    limit: 6000,
+    clipped: false,
+  });
+  assert.equal(prose.clipped, false);
+  assert.equal(prose.label, "33 von höchstens 6000 Zeichen");
+  const legacy = contextDisplay({ text: "abc\n\n[…] gekürzt, vollständig in /r/project.md" });
+  assert.equal(legacy.clipped, true, "ohne Feld zählt nur der echte Hinweis am Ende");
+  const mid = contextDisplay({ text: "Budget wurde gekürzt. Danach folgt Text." });
+  assert.equal(mid.clipped, false);
 });
 
 test("contextDisplay: Kontext aus, über der Obergrenze und Zeichen aus dem Text", async () => {
