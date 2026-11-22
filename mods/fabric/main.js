@@ -4103,8 +4103,7 @@ export default class Fabric extends View {
   autopilotPanel(t, popupId) {
     const info = model.autopilotPopover(this.autopilotText, this.autopilotLogText, Date.now());
     const lamp = info.lamp;
-    const running = lamp.state === "running";
-    const paused = lamp.state === "paused";
+    const actions = model.autopilotActions(lamp);
     const logPath = info.logPath || `${this.dir}/autopilot.log`;
     const logError = this.errorFor("autopilot-log");
 
@@ -4132,33 +4131,31 @@ export default class Fabric extends View {
           .text_color(t.blocked)
           .whitespace_normal()
           .child(logError.text))),
-      h_flex().w_full().px(ui.SPACE.m).pb(ui.SPACE.xs).gap(ui.SPACE.xs).items_center()
-        .child(ui.button(t, {
-          id: `${popupId}-start-0800`,
-          label: "bis morgen 08:00",
-          small: true,
-          disabled: running,
-          tooltip: "Autopilot bis morgen 08:00 starten",
-          onClick: (cx) => cx.spawn(async (cx) => { await this.startAutopilot("08:00", cx); }),
-        }))
-        .child(ui.button(t, {
-          id: `${popupId}-start-2359`,
-          label: "bis heute 23:59",
-          small: true,
-          disabled: running,
-          tooltip: "Autopilot bis heute 23:59 starten",
-          onClick: (cx) => cx.spawn(async (cx) => { await this.startAutopilot("23:59", cx); }),
-        }))
-        .child(ui.button(t, {
-          id: `${popupId}-start-done`,
-          label: "bis alles fertig",
-          small: true,
-          disabled: running,
-          tooltip: "Autopilot bis alles fertig starten",
-          onClick: (cx) => cx.spawn(async (cx) => { await this.startAutopilot("done", cx); }),
-        })),
+      v_flex().w_full().when(actions.start, (row) => row.child(
+        h_flex().w_full().px(ui.SPACE.m).pb(ui.SPACE.xs).gap(ui.SPACE.xs).items_center()
+          .child(ui.button(t, {
+            id: `${popupId}-start-0800`,
+            label: "bis morgen 08:00",
+            small: true,
+            tooltip: "Autopilot bis morgen 08:00 starten",
+            onClick: (cx) => cx.spawn(async (cx) => { await this.startAutopilot("08:00", cx); }),
+          }))
+          .child(ui.button(t, {
+            id: `${popupId}-start-2359`,
+            label: "bis heute 23:59",
+            small: true,
+            tooltip: "Autopilot bis heute 23:59 starten",
+            onClick: (cx) => cx.spawn(async (cx) => { await this.startAutopilot("23:59", cx); }),
+          }))
+          .child(ui.button(t, {
+            id: `${popupId}-start-done`,
+            label: "bis alles fertig",
+            small: true,
+            tooltip: "Autopilot bis alles fertig starten",
+            onClick: (cx) => cx.spawn(async (cx) => { await this.startAutopilot("done", cx); }),
+          })))),
       h_flex().w_full().px(ui.SPACE.m).pb(ui.SPACE.s).gap(ui.SPACE.xs).items_center()
-        .when(paused, (el) => el.child(ui.button(t, {
+        .when(actions.resume, (el) => el.child(ui.button(t, {
           id: `${popupId}-resume`,
           label: "Pause aufheben",
           icon: "undo",
@@ -4166,7 +4163,7 @@ export default class Fabric extends View {
           tooltip: "Autopilot fortsetzen",
           onClick: (cx) => cx.spawn(async (cx) => { await this.resumeAutopilot(cx); }),
         })))
-        .child(ui.button(t, {
+        .when(actions.stop, (el) => el.child(ui.button(t, {
           id: `${popupId}-stop`,
           label: "Stoppen",
           icon: "stop",
@@ -4174,7 +4171,7 @@ export default class Fabric extends View {
           danger: true,
           tooltip: "Autopilot stoppen",
           onClick: (cx) => cx.spawn(async (cx) => { await this.stopAutopilot(cx); }),
-        }))
+        })))
         .child(ui.button(t, {
           id: `${popupId}-log`,
           label: "Log öffnen",

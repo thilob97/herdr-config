@@ -17,7 +17,7 @@ import {
   FLOW_NODE_TYPES, FLOW_TRIGGER_TYPES, FLOW_ACTION_TYPES, flowNewDefinition, flowLoad, flowSerialize,
   flowParse, flowNodeTemplate, flowNodeId, flowAddNode, flowRemoveNode, flowPatchNode, flowConnect,
   flowRemoveEdge, flowPatchEdge, flowOutgoing, flowEdgeWhenOptions, flowPlaceholders, flowValidate,
-  autopilotLamp, autopilotLogLines, autopilotPopover, AUTOPILOT_STALE_MS,
+  autopilotLamp, autopilotLogLines, autopilotPopover, autopilotActions, AUTOPILOT_STALE_MS,
 } from "../model.js";
 
 test("Tickets werden nach Stufe gruppiert, in Stufenreihenfolge", () => {
@@ -2029,4 +2029,21 @@ test("Autopilot-Popover: letzte 20 von 30 Zeilen und Kopfdaten", () => {
     autopilotStatus({ state: "paused", reason: "Budget" }), "", autopilotNow,
   );
   assert.equal(paused.endLabel, "bis 08:00");
+});
+
+test("Autopilot-Aktionen: Starten, Pause aufheben und Stoppen je Zustand", () => {
+  assert.deepEqual(autopilotActions(autopilotLamp(autopilotStatus(), autopilotNow)), {
+    start: false, resume: false, stop: true,
+  });
+  assert.deepEqual(autopilotActions(autopilotLamp(
+    autopilotStatus({ state: "paused", reason: "rot" }), autopilotNow,
+  )), { start: false, resume: true, stop: true });
+  assert.deepEqual(autopilotActions(autopilotLamp(
+    autopilotStatus({ state: "stopped" }), autopilotNow,
+  )), { start: true, resume: false, stop: false });
+  assert.deepEqual(autopilotActions(autopilotLamp(
+    autopilotStatus({ updated_at: autopilotNow - (AUTOPILOT_STALE_MS + 1000) }), autopilotNow,
+  )), { start: true, resume: false, stop: false });
+  assert.deepEqual(autopilotActions(null), { start: true, resume: false, stop: false });
+  assert.deepEqual(autopilotActions({ state: "unbekannt" }), { start: false, resume: false, stop: false });
 });

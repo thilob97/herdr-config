@@ -2661,3 +2661,15 @@ export function autopilotPopover(raw, logText, now = Date.now()) {
     lines: autopilotLogLines(logText, 20),
   };
 }
+
+/** Welche Popover-Knöpfe der Zustand anbietet. „Log öffnen“ gibt es immer;
+ *  Starten nur aus dem Stand, Pause aufheben nur pausiert, Stoppen nur für
+ *  einen laufenden oder pausierten Autopiloten. */
+export function autopilotActions(lamp) {
+  const state = lamp?.state ?? "stopped";
+  return {
+    start: state === "stopped" || state === "stale",
+    resume: state === "paused",
+    stop: state === "running" || state === "paused",
+  };
+}
