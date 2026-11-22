@@ -631,6 +631,43 @@ test at fail.mjs:6:1
         self.assertNotIn("weitere Zeilen", quote)
         self.assertNotIn("failing tests:", quote)
 
+    def test_spec_section_keeps_message_line_starting_with_at(self):
+        text = """✖ schlägt fehl (1.0ms)
+ℹ fail 1
+
+✖ failing tests:
+
+test at fail.mjs:3:1
+✖ schlägt fehl (1.0ms)
+  AssertionError [ERR_ASSERTION]: ungleiche Werte:
+  at least one value differs
+  
+      at TestContext.<anonymous> (/pfad/x.test.js:5:1)
+"""
+        quote = autopilot._first_errors(text)
+        self.assertIn("at least one value differs", quote)
+
+    def test_spec_section_drops_stack_frames(self):
+        text = """✖ schlägt fehl (1.0ms)
+ℹ fail 1
+
+✖ failing tests:
+
+test at fail.mjs:3:1
+✖ schlägt fehl (1.0ms)
+  AssertionError [ERR_ASSERTION]: ungleiche Werte:
+  at least one value differs
+  
+    at TestContext.<anonymous> (/pfad/x.test.js:5:1)
+    at /pfad/x.test.js:5:1
+    at Test.runInAsyncScope (node:async_hooks:226:14)
+"""
+        quote = autopilot._first_errors(text)
+        self.assertIn("at least one value differs", quote)
+        self.assertNotIn("TestContext.<anonymous>", quote)
+        self.assertNotIn("at /pfad/x.test.js:5:1", quote)
+        self.assertNotIn("runInAsyncScope", quote)
+
     def test_error_quote_names_each_truncated_stream(self):
         stdout = "\n".join(f"ERROR: stdout_{number}" for number in range(30))
         stderr = "\n".join(f"ERROR: stderr_{number}" for number in range(30))
