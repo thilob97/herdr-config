@@ -33,6 +33,7 @@ CONFIG_PATHS = ("fabric/roster.json", "fabric/prompts/")
 VERIFY_SCRIPT = ".fabric/verify.sh"
 ERROR_MARKERS = ("FAIL", "ERROR", "Traceback", "not ok", "failing tests")
 SPEC_SECTION = re.compile(r"^test at \S+:\d+:\d+$")  # node --test, spec-Reporter
+STACK_FRAME = re.compile(r"^at .*:\d+:\d+\)?\s*\{?$")
 QUOTE_MAX_LINES = 20     # Obergrenze für das Zitat
 QUOTE_MAX_CHARS = 1200
 TAIL_CHARS = 600
@@ -309,6 +310,22 @@ def _block_end(lines, start):
     return len(lines)
 
 
+def _is_stack_line(line):
+    """Nur echte Stack-Zeilen auslassen, nicht Meldungen, die mit `at ` beginnen.
+
+    Ein Stack-Rahmen trägt ein Ziel `Datei:Zeile:Spalte` (mit oder ohne
+    Klammer) oder ist tiefer eingerückt als die Meldung. Eine Meldungszeile wie
+    `  at least one value differs` erfüllt beides nicht.
+    """
+    stripped = line.strip()
+    if not stripped.startswith("at "):
+        return False
+    if STACK_FRAME.match(stripped):
+        return True
+    indent = len(line) - len(line.lstrip())
+    return indent >= 4
+
+
 def _spec_section(lines, start):
     """Node-spec: Detailblock ab `test at …` bis zum nächsten Detailblock.
 
@@ -326,7 +343,7 @@ def _spec_section(lines, start):
         if object_depth:
             object_depth += stripped.count("{") - stripped.count("}")
             continue
-        if stripped.startswith("at "):
+        if _is_stack_line(line):
             if stripped.endswith("{"):
                 object_depth = 1 + stripped.count("{") - stripped.count("}")
             continue
