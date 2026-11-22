@@ -1024,6 +1024,24 @@ def cmd_verdict(args):
         head = git.head(worktree)
         if not head:
             raise FabError(f"{ticket['id']}: HEAD des Worktrees {worktree} ist nicht lesbar")
+        if args.head:
+            resolved = git.git(
+                ["rev-parse", "--verify", "--quiet", f"{args.head}^{{commit}}"], worktree
+            )
+            given = resolved.stdout.strip() if resolved.returncode == 0 else ""
+            if not given:
+                raise FabError(
+                    f"{ticket['id']}: --head {args.head} ist kein Commit im Worktree "
+                    f"{worktree}"
+                )
+            if given != head:
+                raise FabError(
+                    f"{ticket['id']}: --head {_short(given)} passt nicht zum "
+                    f"Worktree-HEAD {_short(head)}; es kam ein neuer Commit seit dem "
+                    f"Prüfbeginn. Prüfe den neuen HEAD oder buche das Urteil auf "
+                    f"{_short(given)}."
+                )
+            head = given
         ticket["verdict"] = {
             "state": args.state,
             "by": actor,
@@ -1320,6 +1338,19 @@ def cmd_accept(args):
         if children:
             raise FabError(
                 f"{ticket['id']}: Abnahme verweigert: {_children_reason(children)}"
+            )
+        review_worktree = ticket.get("worktree")
+        review_head = git.head(review_worktree) if review_worktree else ""
+        verdict = ticket.get("verdict") or {}
+        if not review_head:
+            raise FabError(
+                f"{ticket['id']}: HEAD des Worktrees {review_worktree or '—'} ist "
+                f"nicht lesbar; Urteil nicht prüfbar"
+            )
+        if verdict.get("head") != review_head:
+            raise FabError(
+                f"{ticket['id']}: Urteil gilt für HEAD {_short(verdict.get('head'))}, "
+                f"Worktree-HEAD ist {_short(review_head)}; bitte erneut prüfen"
             )
         repo = ticket.get("repo")
         branch_name = ticket.get("branch")
@@ -2618,6 +2649,10 @@ def build_parser():
     item.add_argument("id", metavar="ID")
     item.add_argument("state", metavar="URTEIL", choices=("pass", "fail"))
     item.add_argument("--from", dest="from_", metavar="NAME", required=True)
+    item.add_argument(
+        "--head", metavar="SHA",
+        help="geprüfter Commit; bricht ab, wenn der Worktree-HEAD davon abweicht",
+    )
     item.add_argument("summary", metavar="ZUSAMMENFASSUNG")
 
     item = command("handover", "An den Menschen übergeben (Gates: checks und Urteil)", cmd_handover)

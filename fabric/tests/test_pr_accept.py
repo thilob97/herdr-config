@@ -263,6 +263,8 @@ class PrAcceptTests(FabricCase):
         self.git_out(worktree, "add", "mods")
         commit = self.git(worktree, "commit", "-qm", "mods")
         self.assertEqual(commit.returncode, 0, commit.stderr)
+        self.ok("verify", tid)
+        self.ok("verdict", tid, "pass", "--from", "ada", "Nachtrag geprüft")
         bare = self.setup_origin(repo)
 
         result = self.cli(
