@@ -303,22 +303,33 @@ export default class Fabric extends View {
       this.commandLoop(cx);
     });
     cx.timer.every(5000, (cx) => { if (!this.closed) this.refresh(cx); });
-    if (this.isApp) {
-      // `fab tick` prüft Stillstand und weckt/erinnert; kein Startlauf, damit
-      // das Öffnen des Fensters nichts anstößt. Der 5-s-Refresh liest danach.
-      cx.timer.every(60000, (cx) => {
+    if (this.isApp || this.view === "inbox") {
+      // Der Inbox-Block lebt in der Seitenleiste auch bei geschlossenem
+      // Fabric-Fenster; dort läuft der Tick-Takt. Beide Instanzen teilen sich
+      // den letzten Versuch, damit jede Minute genau ein Lauf startet.
+      cx.timer.every(10000, (cx) => {
         if (this.closed || this.tickRunning) return;
+        const now = Date.now();
+        if (!model.tickDue(shared("fabric.tickAttempt"), now)) return;
+        setShared("fabric.tickAttempt", now);
         this.tickRunning = true;
         cx.spawn(async () => {
           try {
-            await this.execFab(["tick"], { timeout: 120000 });
+            const result = await this.execFab(["tick"], { timeout: 120000 });
+            // Scheitert der Lauf, bleibt `last_tick` stehen; der Index-Lauf
+            // veröffentlicht den fälligen Alarm im Posteingang.
+            if (result?.code !== 0) {
+              await this.execFab(["index"], { timeout: 30000 });
+            }
           } catch {
-            // still: der nächste Lauf versucht es erneut
+            try { await this.execFab(["index"], { timeout: 30000 }); } catch { /* still */ }
           } finally {
             this.tickRunning = false;
           }
         });
       });
+    }
+    if (this.isApp) {
       cx.timer.every(300, (cx) => {
         if (this.closed) return;
         const request = Number(shared("fabric.newRequest") ?? 0);

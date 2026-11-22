@@ -18,6 +18,7 @@ import {
   flowParse, flowNodeTemplate, flowNodeId, flowAddNode, flowRemoveNode, flowPatchNode, flowConnect,
   flowRemoveEdge, flowPatchEdge, flowOutgoing, flowEdgeWhenOptions, flowPlaceholders, flowValidate,
   autopilotLamp, autopilotLogLines, autopilotPopover, autopilotActions, AUTOPILOT_STALE_MS,
+  tickDue, TICK_INTERVAL_MS,
 } from "../model.js";
 
 test("Tickets werden nach Stufe gruppiert, in Stufenreihenfolge", () => {
@@ -2046,4 +2047,16 @@ test("Autopilot-Aktionen: Starten, Pause aufheben und Stoppen je Zustand", () =>
   )), { start: true, resume: false, stop: false });
   assert.deepEqual(autopilotActions(null), { start: true, resume: false, stop: false });
   assert.deepEqual(autopilotActions({ state: "unbekannt" }), { start: false, resume: false, stop: false });
+});
+
+test("Tick ist jede Minute fällig, auch ohne offenes Fabric-Fenster", () => {
+  assert.equal(TICK_INTERVAL_MS, 60000);
+  assert.equal(tickDue(undefined, 1000), true);
+  assert.equal(tickDue(null, 1000), true);
+  assert.equal(tickDue(0, 1000), true);
+  assert.equal(tickDue("kaputt", 1000), true);
+  assert.equal(tickDue(1000, 1000), false);
+  assert.equal(tickDue(1000, 1000 + TICK_INTERVAL_MS - 1), false);
+  assert.equal(tickDue(1000, 1000 + TICK_INTERVAL_MS), true);
+  assert.equal(tickDue(5000, 1000), false);
 });

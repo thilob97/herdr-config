@@ -1220,6 +1220,41 @@ def meta_set(key, value):
         )
 
 
+TICK_ALARM_MS = 5 * 60 * 1000
+
+
+def last_tick():
+    """Zeitpunkt des letzten `fab tick` in Millisekunden, sonst `None`."""
+    try:
+        return int(meta_get("last_tick"))
+    except (TypeError, ValueError):
+        return None
+
+
+def set_last_tick(at=None):
+    meta_set("last_tick", now_ms() if at is None else int(at))
+
+
+def tick_alarm(now=None, limit_ms=TICK_ALARM_MS):
+    """Alarmzustand des Wächters: stale, sobald der letzte Tick zu alt ist."""
+    last = last_tick()
+    if last is None:
+        return {
+            "last_tick": None,
+            "age_ms": None,
+            "limit_ms": limit_ms,
+            "stale": False,
+        }
+    current = now_ms() if now is None else int(now)
+    age = max(0, current - last)
+    return {
+        "last_tick": last,
+        "age_ms": age,
+        "limit_ms": limit_ms,
+        "stale": age > limit_ms,
+    }
+
+
 # ---------------------------------------------------------------- Workflows
 
 

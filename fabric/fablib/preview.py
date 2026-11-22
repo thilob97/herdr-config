@@ -120,6 +120,7 @@ def environment(state):
             "HOME": state["userhome"],
             "HERDR_APP_HOME": state["home"],
             "FAB_HOME": state["fab_home"],
+            "FAB_TICK_AUTOSTART": "0",
             "HC_SESSION": state["session"],
         }
     )

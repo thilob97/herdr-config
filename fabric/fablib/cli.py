@@ -1657,6 +1657,7 @@ def cmd_tick(args):
     with store.locked():
         result = tick.run(roster, dry=args.dry_run)
         if result.changed:
+            store.meta_set(TICK_ALARM_SHOWN, "")
             index.rebuild()
     for line in result:
         print(line)
@@ -3306,11 +3307,56 @@ def _normalize_argv(argv):
     return ["wake", *options, *positionals, *tail]
 
 
+TICK_ALARM_SHOWN = "tick_alarm_shown"
+
+
+def _ensure_tick_agent():
+    """Fehlenden launchd-Auftrag beim ersten `fab`-Aufruf anlegen.
+
+    Der Auftrag ist Beiwerk: ein Schreib- oder launchctl-Fehler darf den
+    eigentlichen Befehl nicht aufhalten.
+    """
+    try:
+        tick.ensure_installed()
+    except Exception:
+        pass
+
+
+def _publish_tick_alarm(args):
+    """`index.json` neu schreiben, wenn der Wächter-Alarm kippt.
+
+    Nur der Übergang kostet einen Schreibvorgang; solange derselbe Ausfall
+    anhält, bleibt der bereits veröffentlichte Eintrag stehen. `--dry-run`
+    schreibt nichts, und `fab migrate` entscheidet allein über die Migration.
+    """
+    if getattr(args, "dry_run", False):
+        return
+    if getattr(args, "func", None) is cmd_migrate:
+        return
+    try:
+        state = store.tick_alarm()
+        want = str(state["last_tick"]) if state["stale"] else ""
+        if (store.meta_get(TICK_ALARM_SHOWN) or "") == want:
+            return
+        with store.locked():
+            state = store.tick_alarm()
+            want = str(state["last_tick"]) if state["stale"] else ""
+            if (store.meta_get(TICK_ALARM_SHOWN) or "") == want:
+                return
+            store.meta_set(TICK_ALARM_SHOWN, want)
+            index.rebuild()
+    except Exception:
+        pass
+
+
 def main(argv=None):
     if argv is None:
         argv = sys.argv[1:]
     parser = build_parser()
     args = parser.parse_args(_normalize_argv(list(argv)))
+    if not (getattr(args, "install", False) or getattr(args, "uninstall", False)):
+        _ensure_tick_agent()
+    _publish_tick_alarm(args)
     try:
         return args.func(args) or 0
     except (FabError, HcError) as exc:
