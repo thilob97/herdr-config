@@ -2408,6 +2408,159 @@ def cmd_lesson(args):
     return 0
 
 
+def _decision_proposal(ticket, proposal):
+    wanted = str(proposal or "").strip().upper()
+    for item in ticket.get("decision_proposals") or []:
+        if isinstance(item, dict) and str(item.get("id") or "").upper() == wanted:
+            return item
+    raise FabError(
+        f"{ticket['id']}: Entscheidungen-Vorschlag {proposal or '—'} gibt es nicht"
+    )
+
+
+def _decide_list(args):
+    if args.repo is not None:
+        path = _abs_repo(args.repo or os.getcwd())
+        lines = repos.decisions(path)
+        if not lines:
+            print(f"Keine bestätigten Entscheidungen in {path}")
+            return 0
+        for line in lines:
+            print(f"- {line}")
+        return 0
+
+    rows = []
+    for ticket in store.all_tickets():
+        for proposal in ticket.get("decision_proposals") or []:
+            if not isinstance(proposal, dict):
+                continue
+            ticket_match = re.fullmatch(r"T-(\d+)", str(ticket.get("id") or ""))
+            proposal_match = re.fullmatch(
+                r"D(\d+)", str(proposal.get("id") or "")
+            )
+            rows.append(
+                (
+                    int(ticket_match.group(1)) if ticket_match else 0,
+                    int(proposal_match.group(1)) if proposal_match else 0,
+                    ticket,
+                    proposal,
+                )
+            )
+    if not rows:
+        print("Keine offenen Entscheidungs-Vorschläge")
+        return 0
+    rows.sort(key=lambda row: (row[0], row[1]))
+    for _, _, ticket, proposal in rows:
+        line = (
+            f"{ticket['id']} {proposal.get('id')} · "
+            f"{proposal.get('by') or 'fab'} · {proposal.get('text') or ''}"
+        )
+        if proposal.get("reason"):
+            line += f" · Begründung: {proposal.get('reason')}"
+        print(line)
+    return 0
+
+
+def cmd_decide(args):
+    if args.action == "list":
+        return _decide_list(args)
+    actor = _require_actor(args)
+    if args.action == "propose":
+        sentence = (args.value or "").strip()
+        if not sentence or "\n" in sentence or "\r" in sentence:
+            raise FabError(
+                "Eine Entscheidung ist ein Satz: kein leerer Text und kein Zeilenumbruch"
+            )
+        raw_reason = args.reason or ""
+        reason = raw_reason.strip()
+        if "\n" in raw_reason or "\r" in raw_reason:
+            raise FabError(
+                "Eine Begründung ist ein Satz: kein leerer Text und kein Zeilenumbruch"
+            )
+        if actor == "mensch":
+            ticket = store.load(args.id)
+            if not ticket.get("repo"):
+                raise FabError(
+                    f"{ticket['id']} hat kein Repo; eine Entscheidung gehört in einen Checkout"
+                )
+            target = repos.append_decision(
+                ticket["repo"], ticket["id"], sentence, reason or None
+            )
+            events.append(
+                "decision", ticket["id"], actor, "", f"bestätigt: {sentence}"
+            )
+            print(f"{args.id}: Entscheidung bestätigt in {target}: {sentence}")
+            return 0
+
+        with store.locked():
+            ticket = store.load(args.id)
+            proposals = ticket.get("decision_proposals")
+            if not isinstance(proposals, list):
+                proposals = []
+            numbers = []
+            for item in proposals:
+                if not isinstance(item, dict):
+                    continue
+                match = re.fullmatch(r"D(\d+)", str(item.get("id") or ""))
+                if match:
+                    numbers.append(int(match.group(1)))
+            proposal_id = f"D{max(numbers, default=0) + 1}"
+            proposals.append(
+                {
+                    "id": proposal_id,
+                    "text": sentence,
+                    "reason": reason,
+                    "at": store.now_ms(),
+                    "by": actor,
+                }
+            )
+            ticket["decision_proposals"] = proposals
+            events.append(
+                "decision", ticket["id"], actor, "", f"vorschlag: {sentence}"
+            )
+            store.save(ticket)
+            index.rebuild()
+        print(f"{args.id}: Entscheidungs-Vorschlag {proposal_id} angelegt: {sentence}")
+        return 0
+
+    with store.locked():
+        ticket = store.load(args.id)
+        proposal = _decision_proposal(ticket, args.proposal)
+        text = str(proposal.get("text") or "")
+        if args.action == "confirm" and not ticket.get("repo"):
+            raise FabError(
+                f"{ticket['id']} hat kein Repo; eine Entscheidung gehört in einen Checkout"
+            )
+        ticket["decision_proposals"] = [
+            item
+            for item in ticket.get("decision_proposals") or []
+            if isinstance(item, dict)
+            and str(item.get("id") or "") != str(proposal.get("id") or "")
+        ]
+        target = ""
+        if args.action == "confirm":
+            target = repos.append_decision(
+                ticket["repo"],
+                ticket["id"],
+                text,
+                proposal.get("reason") or None,
+            )
+            events.append(
+                "decision", ticket["id"], actor, "", f"bestätigt: {text}"
+            )
+        else:
+            events.append(
+                "decision", ticket["id"], actor, "", f"verworfen: {text}"
+            )
+        store.save(ticket)
+        index.rebuild()
+    if args.action == "confirm":
+        print(f"{args.id}: Entscheidung bestätigt in {target}: {text}")
+    else:
+        print(f"{args.id}: Entscheidungs-Vorschlag {proposal.get('id')} verworfen")
+    return 0
+
+
 def cmd_repos(args):
     rows = repos.known(args.add or ())
     if args.json:
@@ -2955,6 +3108,42 @@ def build_parser():
     discard_lesson.add_argument("value", metavar="VORSCHLAG")
     discard_lesson.add_argument("--from", dest="from_", metavar="NAME", required=True)
 
+    item = command(
+        "decide", "Entscheidungen vorschlagen, bestätigen, verwerfen und anzeigen",
+        cmd_decide,
+    )
+    decide_sub = item.add_subparsers(dest="action", metavar="AKTION", required=True)
+    propose_decide = decide_sub.add_parser(
+        "propose", help="Entscheidung vorschlagen",
+        description="Entscheidung vorschlagen",
+    )
+    propose_decide.add_argument("id", metavar="ID")
+    propose_decide.add_argument("value", metavar="ENTSCHEIDUNG")
+    propose_decide.add_argument("--from", dest="from_", metavar="NAME", required=True)
+    propose_decide.add_argument("--reason", metavar="TEXT")
+    confirm_decide = decide_sub.add_parser(
+        "confirm", help="Entscheidung bestätigen",
+        description="Entscheidung bestätigen",
+    )
+    confirm_decide.add_argument("id", metavar="ID")
+    confirm_decide.add_argument("proposal", metavar="VORSCHLAG")
+    confirm_decide.add_argument("--from", dest="from_", metavar="NAME", required=True)
+    reject_decide = decide_sub.add_parser(
+        "reject", help="Entscheidung verwerfen",
+        description="Entscheidung verwerfen",
+    )
+    reject_decide.add_argument("id", metavar="ID")
+    reject_decide.add_argument("proposal", metavar="VORSCHLAG")
+    reject_decide.add_argument("--from", dest="from_", metavar="NAME", required=True)
+    list_decide = decide_sub.add_parser(
+        "list", help="Entscheidungen anzeigen",
+        description="Entscheidungen anzeigen",
+    )
+    list_decide.add_argument(
+        "--repo", nargs="?", const="", metavar="PFAD",
+        help="bestätigte Entscheidungen dieses Checkouts, Standard: aktueller Ordner",
+    )
+
     command("version", "Version und Git-HEAD des Fabric-Codes", cmd_version)
     command("index", "index.json neu erzeugen", cmd_index)
     item = command("migrate", "Altdaten in die SQLite-Datenbank übernehmen", cmd_migrate)
@@ -2974,7 +3163,14 @@ def _normalize_argv(argv):
     Text vor `--from`, verbrauchte ihn `nargs="?"` schon vor dem `--` und der
     Rest landete in „unbekannte Argumente“.
     """
-    if not argv or argv[0] != "wake":
+    if not argv:
+        return argv
+    if argv[0] == "decide":
+        actions = ("propose", "confirm", "reject", "list", "-h", "--help")
+        if len(argv) > 1 and argv[1] in actions:
+            return argv
+        return ["decide", "propose", *argv[1:]]
+    if argv[0] != "wake":
         return argv
     body, tail = list(argv[1:]), []
     if "--" in body:

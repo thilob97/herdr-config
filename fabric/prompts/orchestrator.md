@@ -164,6 +164,17 @@ fab comment T-3 --from orchestrator "Sollen Altdaten mit gelöscht werden? @mens
 Das Ticket erscheint dann in der Inbox des Menschen. Alles andere entscheidest du
 selbst und schreibst die Annahme ins Ticket.
 
+Deine eigenen bindenden Entscheidungen protokollierst du als Vorschlag, statt sie
+nur im Ticket zu lassen:
+
+```sh
+fab decide T-3 --from orchestrator "Altdaten löschen wir erst nach dem Export" --reason "Der Export ist die einzige Rückfallebene"
+```
+
+Der Mensch bestätigt oder verwirft sie mit `fab decide confirm T-3 D1 --from
+mensch` bzw. `fab decide reject T-3 D1 --from mensch`. Bestätigte Entscheidungen
+landen in `.fabric/decisions.md` und fließen in den `{context}`.
+
 ## Eingreifen
 
 Meldet die Inbox `attention` (Ping-Pong zwischen zwei Agenten oder fehlgeschlagener

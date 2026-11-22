@@ -1,4 +1,5 @@
-"""Repo-Dateien: `.fabric/verify.sh`, `.fabric/lessons.md` und `.fabric/project.md`."""
+"""Repo-Dateien: `.fabric/verify.sh`, `.fabric/lessons.md`, `.fabric/decisions.md` und `.fabric/project.md`."""
+import datetime
 import os
 import re
 import stat
@@ -11,12 +12,15 @@ VERIFY_TIMEOUT = 600
 TAIL_LINES = 40
 VERIFY = "verify.sh"
 LESSONS = "lessons.md"
+DECISIONS = "decisions.md"
 PROJECT = "project.md"
 FILES = {"verify": VERIFY, "lessons": LESSONS, "project": PROJECT}
 KINDS = tuple(FILES)
 KIND_LABELS = {"verify": "Prüfskript", "lessons": "Lernnotizen", "project": "Steckbrief"}
 LESSON_LIMIT = 8
 EMPTY_LESSONS = "- noch keine bestätigten Lehren"
+DECISION_LIMIT = 5
+EMPTY_DECISIONS = "- noch keine bestätigten Entscheidungen"
 _LESSON_MARKER = re.compile(r"^(?:[-*+]|\d+\.)\s+")
 PROJECT_TEMPLATE = """# Projekt-Steckbrief
 
@@ -214,6 +218,66 @@ def project_path(raw):
     return _repo_file(raw, PROJECT)
 
 
+def decision_path(raw):
+    """(Repo-Wurzel, decisions.md) eines vorhandenen Repos; sonst (None, None)."""
+    return _repo_file(raw, DECISIONS)
+
+
+def decisions(raw, limit=DECISION_LIMIT):
+    """Bestätigte Entscheidungen eines Repos, letzte `limit` in Dateireihenfolge."""
+    _top, target = decision_path(raw)
+    if not target:
+        return []
+    try:
+        text = _read(target)
+    except FabError:
+        return []
+    lines = _lesson_lines(text)
+    return lines[-limit:] if limit else []
+
+
+def decisions_text(raw, limit=DECISION_LIMIT):
+    """Entscheidungen als Prompt-Block; ohne Einträge ein Platzhalter."""
+    lines = decisions(raw, limit=limit)
+    if not lines:
+        return EMPTY_DECISIONS
+    return "\n".join(f"- {line}" for line in lines)
+
+
+def decisions_many(paths, limit=DECISION_LIMIT):
+    """Entscheidungen aller Repos, letzte `limit` insgesamt.
+
+    Bei mehr als einem Repo mit Entscheidungen wird jede Zeile mit
+    `<basename>: <satz>` gekennzeichnet, sonst bleibt der Satz nackt.
+    Die Reihenfolge folgt wie bei `lessons_many` der Team-Repo-Liste.
+    """
+    groups = []
+    for raw in paths or ():
+        top, _target = decision_path(raw)
+        if not top:
+            continue
+        lines = decisions(raw, limit=limit)
+        if lines:
+            groups.append((os.path.basename(top), lines))
+    if not groups:
+        return []
+    flattened = []
+    for name, lines in groups:
+        for line in lines:
+            flattened.append(f"{name}: {line}" if len(groups) > 1 else line)
+    return flattened[-limit:]
+
+
+def decision_paths(paths):
+    """Vorhandene decisions.md-Pfade der Repos, für den Kürzungs-Hinweis."""
+    found = []
+    for raw in paths or ():
+        _top, target = decision_path(raw)
+        if target and os.path.isfile(target):
+            found.append(target)
+    return found
+
+
 def project_text(raw):
     """Steckbrief eines Repos; None, wenn Repo oder Datei fehlt."""
     _top, target = project_path(raw)
@@ -307,6 +371,41 @@ def append_lesson(raw, sentence, reason=None):
     text += f"- {sentence}\n"
     store.atomic_write(target, text, mode=0o644)
     _commit(top, target, reason or "Lehre bestätigt")
+    return target
+
+
+def append_decision(raw, ticket_id, sentence, reason=None, day=None):
+    """Eine bestätigte Entscheidung atomar an decisions.md anhängen."""
+    sentence = str(sentence or "").strip()
+    if not sentence:
+        raise FabError("Der Entscheidungssatz darf nicht leer sein")
+    if "\n" in sentence or "\r" in sentence:
+        raise FabError("Der Entscheidungssatz muss eine Zeile bleiben")
+    reason = str(reason or "").strip()
+    if "\n" in reason or "\r" in reason:
+        raise FabError("Die Begründung muss eine Zeile bleiben")
+    day = str(day).strip() if day else datetime.date.today().isoformat()
+    if not day or "\n" in day or "\r" in day:
+        raise FabError("Das Datum muss eine Zeile bleiben")
+    top = _root(raw)
+    folder = _fabric_folder(top)
+    target = os.path.join(folder, DECISIONS)
+    root = os.path.realpath(top)
+    real = os.path.realpath(target)
+    if os.path.commonpath([root, real]) != root:
+        raise FabError(
+            f"{target} zeigt nach {real} außerhalb von {root}; "
+            f".fabric-Dateien bleiben im Repo"
+        )
+    text = _read(target) or ""
+    if text and not text.endswith("\n"):
+        text += "\n"
+    text += f"- {day} · {ticket_id}: {sentence}"
+    if reason:
+        text += f" · Begründung: {reason}"
+    text += "\n"
+    store.atomic_write(target, text, mode=0o644)
+    _commit(top, target, f"Entscheidung aus {ticket_id} bestätigt")
     return target
 
 
