@@ -229,7 +229,7 @@ Das UI pflegt alles über diese Befehle. Alle schreiben atomar (tmp + `os.replac
 | `fab orchestrator start\|stop\|restart [TEAM] [--from N]` | Orchestrator des Teams starten, stoppen oder neu starten |
 | `fab repos --json` | Bekannte Repos aus Tickets und `--add PFAD…` (das UI gibt die Space-Ordner mit): `[{path, branch, open_tickets, verify_exists, lessons_exists, project_exists}]`, nur Git-Wurzeln, ohne Doppelte |
 | `fab repo show PFAD --json` | `{path, branch, verify: {exists, text}, lessons: {exists, text}, project: {exists, text}, project_template}`; fehlt der Steckbrief, zeigt die Textausgabe seine Vorlage |
-| `fab repo set PFAD verify\|lessons\|project --text T --from N` | Schreibt `.fabric/verify.sh` (ausführbar), `.fabric/lessons.md` bzw. den Steckbrief `.fabric/project.md` im Haupt-Checkout. Verweigert außerhalb einer Git-Wurzel. |
+| `fab repo set PFAD verify\|lessons\|project --text T --from N` | Schreibt `.fabric/verify.sh` (ausführbar), `.fabric/lessons.md` bzw. den Steckbrief `.fabric/project.md` im Haupt-Checkout und committet die geschriebene Datei als eigenen Commit `chore(fabric): …`. Ist nicht der Basisbranch ausgecheckt, wird nur geschrieben. Verweigert außerhalb einer Git-Wurzel. |
 | `fab context ID` bzw. `fab context --team NAME` | Gibt genau den Text aus, der im Startprompt eines Agenten bzw. im Orchestrator-Prompt an `{context}` steht: Steckbrief(e) und Team-Brief, gekürzt auf `context_limit` mit Hinweis „gekürzt, vollständig in PFAD“. |
 | `fab repo test PFAD [--json]` | Führt `.fabric/verify.sh` im Haupt-Checkout aus (Timeout 600 s): `{exit, tail}` |
 | `fab link ID --remove ID… --from N` | Abhängigkeiten entfernen |
