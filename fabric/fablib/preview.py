@@ -31,7 +31,8 @@ FAB = os.path.join(
 def root(ticket_id):
     # Bewusst /tmp statt tempfile: unter macOS liegt TMPDIR so tief, dass der
     # Core-Socket-Pfad der Vorschau das Systemlimit überschreitet.
-    return os.path.join("/tmp", "fab-preview", str(ticket_id))
+    base = os.environ.get("FAB_PREVIEW_ROOT") or os.path.join("/tmp", "fab-preview")
+    return os.path.join(base, str(ticket_id))
 
 
 def home(ticket_id):

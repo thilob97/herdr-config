@@ -6,12 +6,12 @@ import shutil
 from fabric.tests.support import FABRIC, FabricCase
 
 
-def preview_root(tid):
-    return os.path.join("/tmp", "fab-preview", tid)
-
-
 class PreviewTests(FabricCase):
+    def preview_root(self, tid):
+        return os.path.join(self.env["FAB_PREVIEW_ROOT"], tid)
+
     def preview_ticket(self):
+        self.env["FAB_PREVIEW_ROOT"] = os.path.join(self.tmp, "preview")
         repo, tid, worktree = self.ready_ticket()
         self.write_file(
             os.path.join(worktree, "mods", "demo", "main.js"), "export default {}\n"
@@ -22,7 +22,7 @@ class PreviewTests(FabricCase):
         self.write_file(
             os.path.join(worktree, "layouts", "fabric.json"), '{"l": 1}\n'
         )
-        root = preview_root(tid)
+        root = self.preview_root(tid)
         self.addCleanup(shutil.rmtree, root, ignore_errors=True)
         self.addCleanup(self.cli, "preview", "stop", tid)
         shutil.rmtree(root, ignore_errors=True)
@@ -51,7 +51,7 @@ class PreviewTests(FabricCase):
         result = self.ok("preview", "start", tid, env={"HERDR_APP_SLEEP": "1"})
         self.assertIn("Vorschau läuft", result.stdout)
 
-        root = preview_root(tid)
+        root = self.preview_root(tid)
         home = os.path.join(root, "home")
         self.assertEqual(
             self._text(os.path.join(home, "mods", "demo", "main.js")),
@@ -102,7 +102,7 @@ class PreviewTests(FabricCase):
     def test_stop_beendet_prozess_und_raeumt_auf(self):
         repo, tid, worktree = self.preview_ticket()
         self.ok("preview", "start", tid, env={"HERDR_APP_SLEEP": "1"})
-        root = preview_root(tid)
+        root = self.preview_root(tid)
         state = json.loads(self._text(os.path.join(root, "preview.json")))
         pid = state["pid"]
 
