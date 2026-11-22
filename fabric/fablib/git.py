@@ -207,18 +207,25 @@ def diff_text(repo, base, branch_name, path):
     return result.stdout
 
 
-def merge_conflicts(repo_top, base, branch_name):
-    """Konfliktdateien beim Mergen von branch_name in base; schreibt nichts.
+def merge_state(repo_top, base, branch_name):
+    """(tree, konfliktdateien) des Merge-Stands branch_name in base; schreibt nichts.
 
     Nutzt `git merge-tree --write-tree`; das ändert weder Worktree noch Refs.
-    Rückgabe [] bedeutet konfliktfrei. Scheitert die Prüfung selbst
-    (z. B. unbekannte Basis), FabError.
+    Bei Konflikten ist `tree` None; ohne Konflikte ist die Dateiliste leer.
+    Scheitert die Prüfung selbst (z. B. unbekannte Basis), FabError.
     """
     result = git(
         ["merge-tree", "--write-tree", base, branch_name], repo_top, timeout=600
     )
     if result.returncode == 0:
-        return []
+        lines = result.stdout.splitlines()
+        if not lines or not lines[0].strip():
+            detail = (result.stderr or result.stdout).strip() or "unbekannter Fehler"
+            raise FabError(
+                f"Merge-Prüfung von {branch_name} gegen {base} lieferte keinen "
+                f"Tree: {detail}"
+            )
+        return lines[0].strip(), []
     paths = []
     for line in result.stdout.splitlines():
         meta, tab, path = line.partition("\t")
@@ -230,11 +237,60 @@ def merge_conflicts(repo_top, base, branch_name):
         if path not in paths:
             paths.append(path)
     if paths:
-        return paths
+        return None, paths
     detail = (result.stderr or result.stdout).strip() or "unbekannter Fehler"
     raise FabError(
         f"Merge-Prüfung von {branch_name} gegen {base} ist fehlgeschlagen: {detail}"
     )
+
+
+def merge_conflicts(repo_top, base, branch_name):
+    """Konfliktdateien beim Mergen von branch_name in base; schreibt nichts."""
+    _tree, paths = merge_state(repo_top, base, branch_name)
+    return paths
+
+
+def rev_parse(repo, ref):
+    """Voller Commit-SHA einer Referenz; FabError, wenn sie nicht auflösbar ist."""
+    result = git(["rev-parse", "--verify", f"{ref}^{{commit}}"], repo)
+    sha = result.stdout.strip()
+    if result.returncode != 0 or not sha:
+        detail = (result.stderr or result.stdout).strip() or "unbekannter Fehler"
+        raise FabError(f"{ref} ist nicht auflösbar: {detail}")
+    return sha
+
+
+def tree_sha(repo, ref):
+    """Tree-Hash einer Referenz; FabError, wenn sie nicht auflösbar ist."""
+    result = git(["rev-parse", "--verify", f"{ref}^{{tree}}"], repo)
+    sha = result.stdout.strip()
+    if result.returncode != 0 or not sha:
+        detail = (result.stderr or result.stdout).strip() or "unbekannter Fehler"
+        raise FabError(f"Tree von {ref} ist nicht auflösbar: {detail}")
+    return sha
+
+
+def merge_commit(repo, tree, base, branch_name, message):
+    """Synthetischer Merge-Commit für den Tree; bewegt keine Refs."""
+    result = git(
+        ["commit-tree", tree, "-p", base, "-p", branch_name, "-m", message], repo
+    )
+    sha = result.stdout.strip()
+    if result.returncode != 0 or not sha:
+        detail = (result.stderr or result.stdout).strip() or "unbekannter Fehler"
+        raise FabError(f"Merge-Commit für {tree} konnte nicht erzeugt werden: {detail}")
+    return sha
+
+
+def create_detached_worktree(repo_top, folder, commit):
+    """Worktree auf einem Commit ohne Branch; entfernt nichts Bestehendes."""
+    folder = os.path.abspath(os.path.expanduser(folder))
+    os.makedirs(os.path.dirname(folder), exist_ok=True)
+    result = git(["worktree", "add", "--detach", folder, commit], repo_top)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        raise FabError(f"Worktree {folder} konnte nicht angelegt werden: {detail}")
+    return folder
 
 
 def base_branch(path):

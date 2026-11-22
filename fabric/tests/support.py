@@ -499,6 +499,12 @@ class FabricCase(unittest.TestCase):
         result = self.git(worktree, "commit", "-qm", f"ändere {name}")
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def passing_verify(self, worktree):
+    def passing_verify(self, worktree, commit=True):
+        """Grünes Prüfskript anlegen; standardmäßig committen, damit es auch im
+        temporären Merge-Worktree (nur committete Dateien) vorhanden ist."""
         path = os.path.join(worktree, ".fabric", "verify.sh")
         self._write(path, "#!/bin/sh\necho 'prüfung ok'\necho 'zweite zeile'\nexit 0\n")
+        if commit:
+            self.git(worktree, "add", ".fabric/verify.sh")
+            result = self.git(worktree, "commit", "-qm", "Prüfskript")
+            self.assertEqual(result.returncode, 0, result.stderr)

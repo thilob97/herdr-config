@@ -78,15 +78,19 @@ if args[:2] == ["pr", "merge"]:
                 capture_output=True, text=True,
             )
             tree = subprocess.run(
-                ["git", "--git-dir", bare, "rev-parse", f"{sha.stdout.strip()}^{{tree}}"],
+                [
+                    "git", "--git-dir", bare, "merge-tree", "--write-tree",
+                    base.stdout.strip(), sha.stdout.strip(),
+                ],
                 capture_output=True, text=True,
             )
             if base.returncode == 0 and tree.returncode == 0:
+                tree_sha = (tree.stdout.strip().splitlines() or [""])[0]
                 commit = subprocess.run(
                     [
                         "git", "--git-dir", bare,
                         "-c", "user.name=Test", "-c", "user.email=test@example.com",
-                        "commit-tree", tree.stdout.strip(),
+                        "commit-tree", tree_sha,
                         "-p", base.stdout.strip(),
                         "-p", sha.stdout.strip(),
                         "-m", "Merge PR",
@@ -315,11 +319,16 @@ class PrAcceptTests(FabricCase):
             os.path.join(worktree, "mods", "demo", "main.js"), "export default {}\n"
         )
         self.write_file(os.path.join(worktree, "mods", "demo", "mod.json"), "{}\n")
+        self.write_file(
+            os.path.join(worktree, "mods", "demo", "test", "demo.test.mjs"),
+            "// Test für die Logik\n",
+        )
         self.git_out(worktree, "add", "mods")
         commit = self.git(worktree, "commit", "-qm", "mods")
         self.assertEqual(commit.returncode, 0, commit.stderr)
         self.ok("verify", tid)
         self.ok("verdict", tid, "pass", "--from", "ada", "Nachtrag geprüft")
+        self.ok("handover", tid, "--from", "zap", "Nachtrag")
         bare = self.setup_origin(repo)
 
         result = self.cli(
@@ -412,6 +421,83 @@ class PrAcceptTests(FabricCase):
             ],
             [],
         )
+
+    def test_lokaler_accept_prueft_die_lokale_basis_trotz_origin(self):
+        repo, tid, worktree = self.review_ticket()
+        recorded = self.ticket(tid)["merge"]["tree"]
+        bare = self.setup_origin(repo)
+        clone = os.path.join(self.tmp, "clone-lokal")
+        subprocess.run(["git", "clone", "-q", bare, clone], check=True)
+        self.git(clone, "config", "user.email", "test@example.com")
+        self.git(clone, "config", "user.name", "Test")
+        self.write_file(os.path.join(clone, "nur-origin.txt"), "origin\n")
+        self.git_out(clone, "add", "nur-origin.txt")
+        self.git_out(clone, "commit", "-qm", "origin läuft weiter")
+        self.git_out(clone, "push", "-q", "origin", "main")
+
+        result = self.ok("accept", tid, env=self.gh_env(GH_AUTH_FAIL="1"))
+
+        self.assertIn("angenommen", result.stdout)
+        self.assertEqual(self.ticket(tid)["status"], "done")
+        self.assertEqual(self.git_out(repo, "rev-parse", "main^{tree}"), recorded)
+        self.assertFalse(
+            [call for call in self.gh_calls() if call[:2] == ["pr", "create"]]
+        )
+
+    def test_pr_accept_prueft_die_lokale_basis_vor_origin(self):
+        repo, tid, worktree = self.ready_ticket()
+        bare = self.setup_origin(repo)
+        self.write_file(os.path.join(repo, "chore.txt"), "nur lokal\n")
+        self.git_out(repo, "add", "chore.txt")
+        self.git_out(repo, "commit", "-qm", "chore: lokal noch nicht gepusht")
+        self.commit_in(worktree, "aenderung.txt", "wert\n")
+        self.passing_verify(worktree)
+        self.ok("verify", tid)
+        self.ok("verdict", tid, "pass", "--from", "ada", "gut")
+        self.ok("handover", tid, "--from", "zap", "fertig")
+
+        result = self.ok("accept", tid, env=self.gh_env(bare, GH_MERGE_COMMIT="1"))
+
+        self.assertIn(URL, result.stdout)
+        self.assertEqual(self.ticket(tid)["status"], "done")
+        self.assertEqual(
+            self.git(bare, "cat-file", "-e", "refs/heads/main:chore.txt").returncode,
+            0,
+        )
+
+    def test_pr_accept_verweigert_neuen_merge_tree(self):
+        repo, tid, worktree = self.review_ticket()
+        old_tree = self.ticket(tid)["merge"]["tree"]
+        bare = self.setup_origin(repo)
+        self.write_file(os.path.join(repo, "fremd.txt"), "fremd\n")
+        self.git_out(repo, "add", "fremd.txt")
+        self.git_out(repo, "commit", "-qm", "main läuft weiter")
+        self.git_out(repo, "push", "-q", "origin", "main")
+        self.set_live({"fab-ada-t-1": "t1"})
+        self.clear_log()
+        mark = self.mark()
+
+        result = self.cli("accept", tid, env=self.gh_env(bare))
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Merge-Stand", result.stderr)
+        self.assertIn("nicht abgenommen", result.stderr)
+        self.assertFalse(
+            [call for call in self.gh_calls() if call[:2] == ["pr", "merge"]]
+        )
+        self.assertFalse(
+            [call for call in self.gh_calls() if call[:2] == ["pr", "create"]]
+        )
+        ticket = self.ticket(tid)
+        self.assertEqual(ticket["status"], "doing")
+        self.assertIsNone(ticket.get("verdict"))
+        self.assertNotEqual(ticket["merge"]["tree"], old_tree)
+        self.assertEqual(ticket["merge"]["state"], "pass")
+        self.assertEqual(
+            [row["target"] for row in self.wake_since(mark, tid)], ["ada"]
+        )
+        self.assertFalse(self.bare_branch(bare, BRANCH))
+        self.assertTrue(os.path.isdir(worktree))
 
     def test_nicht_fast_forward_basis_bricht_ab(self):
         repo, tid, worktree = self.review_ticket()
