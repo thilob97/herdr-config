@@ -684,6 +684,7 @@ export default class Fabric extends View {
       autopilot = null;
     }
     this.autopilotText = autopilot;
+    if (this.autopilotOpen) await this.loadAutopilotLog();
     let next = null;
     this.loadError = null;
     if (text !== null) {
