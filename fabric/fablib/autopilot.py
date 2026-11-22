@@ -31,6 +31,11 @@ DISPATCH_MIN = 30 * 60
 NUDGE_LOCK = 30 * 60
 CONFIG_PATHS = ("fabric/roster.json", "fabric/prompts/")
 VERIFY_SCRIPT = ".fabric/verify.sh"
+ERROR_MARKERS = ("FAIL", "ERROR", "Traceback", "not ok")
+QUOTE_AFTER = 2          # Folgezeilen nach der ersten Fehlerzeile
+QUOTE_MAX_LINES = 20     # Obergrenze für das Zitat
+QUOTE_MAX_CHARS = 1200
+TAIL_CHARS = 600
 DECIDE = ("@orchestrator Autopilot heute: Der Mensch ist den ganzen Tag nicht da. "
           "Triff die offene Entscheidung selbst – die vorsichtigste, umkehrbare Option –, "
           "begründe sie hier im Ticket und mach weiter. Warten nur bei Löschen außerhalb "
@@ -182,8 +187,8 @@ def reset():
 # ---------------------------------------------------------------- Befehle
 
 
-def _sh(*args, cwd=None, timeout=900):
-    """Externen Befehl ausführen; (Exit, Ausgabe) wie im alten Skript."""
+def _run(*args, cwd=None, timeout=900):
+    """Externen Befehl ausführen; (Exit, stdout, stderr) getrennt."""
     try:
         result = subprocess.run(
             [str(arg) for arg in args],
@@ -192,9 +197,24 @@ def _sh(*args, cwd=None, timeout=900):
             text=True,
             timeout=timeout,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return 1, str(exc)
-    return result.returncode, (result.stdout + result.stderr).strip()
+    except subprocess.TimeoutExpired as exc:
+        out, err = _stream_text(exc.stdout), _stream_text(exc.stderr)
+        return 1, out, err + f"\nTimeout nach {timeout}s"
+    except OSError as exc:
+        return 1, "", str(exc)
+    return result.returncode, result.stdout or "", result.stderr or ""
+
+
+def _stream_text(value):
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "replace")
+    return value or ""
+
+
+def _sh(*args, cwd=None, timeout=900):
+    """Externen Befehl ausführen; (Exit, kombinierte Ausgabe) wie im alten Skript."""
+    code, out, err = _run(*args, cwd=cwd, timeout=timeout)
+    return code, (out + err).strip()
 
 
 def fab_json(*args):
@@ -267,28 +287,82 @@ def ensure_clean_main(repo=None):
     return False
 
 
+def _first_errors(text):
+    """Erster Fehlerblock: Trefferzeile plus wenige Folgezeilen, begrenzt."""
+    lines = (text or "").splitlines()
+    start = next(
+        (
+            index
+            for index, line in enumerate(lines)
+            if any(marker in line for marker in ERROR_MARKERS)
+        ),
+        None,
+    )
+    if start is None:
+        return ""
+    block = lines[start:start + 1 + QUOTE_AFTER][:QUOTE_MAX_LINES]
+    quote = "\n".join(block)
+    if len(quote) > QUOTE_MAX_CHARS:
+        quote = quote[:QUOTE_MAX_CHARS].rstrip() + "\n… (gekürzt)"
+    rest = len(lines) - start - len(block)
+    if rest > 0:
+        quote += f"\n… ({rest} weitere Zeilen)"
+    return quote
+
+
+def _error_quote(stdout, stderr):
+    """Kommentarabschnitt: erste Fehlerzeilen je Strom, sonst Ende mit Hinweis."""
+    sections = []
+    for label, text in (("stdout", stdout), ("stderr", stderr)):
+        block = _first_errors(text)
+        if block:
+            sections.append(f"{label}:\n{block}")
+    if sections:
+        return "Fehlerzeilen:\n" + "\n".join(sections)
+    combined = "\n".join(part for part in (stdout, stderr) if part and part.strip())
+    return (
+        "Ende der Ausgabe (keine Fehlerzeile erkannt):\n" + combined[-TAIL_CHARS:]
+    )
+
+
+def _attach_output(tid, stdout, stderr):
+    """Vollständige Ausgabe als zwei Anhänge ablegen; liefert ihre Pfade."""
+    stamp = now().strftime("%Y%m%d-%H%M%S")
+    paths = []
+    with tempfile.TemporaryDirectory(prefix="fab-verify-") as folder:
+        for stream, text in (("stdout", stdout), ("stderr", stderr)):
+            source = os.path.join(folder, f"{stream}.log")
+            with open(source, "w", encoding="utf-8") as handle:
+                handle.write(text or "")
+            _name, relative = store.attachment_add(
+                source, tid, f"main-verify-{stamp}-{stream}.log"
+            )
+            paths.append(relative)
+    return paths
+
+
 def check_main(repo=None):
     """main nach einem Merge prüfen, bei zweimal Rot den Merge zurücknehmen.
 
-    Rückgabe `(grün, ausgabe)`. Ein fehlgeschlagener Revert ändert nichts an
-    der Entscheidung: der Aufrufer pausiert die Abnahmen in jedem Fall.
+    Rückgabe `(grün, stdout, stderr)`. Ein fehlgeschlagener Revert ändert nichts
+    an der Entscheidung: der Aufrufer pausiert die Abnahmen in jedem Fall.
     """
     repo = repo or _repo_root()
-    code, out = _sh("sh", VERIFY_SCRIPT, cwd=repo, timeout=900)
+    code, out, err = _run("sh", VERIFY_SCRIPT, cwd=repo, timeout=900)
     if code == 0:
-        return True, out
+        return True, out, err
     # Ein Rot kann ein wackliger Test sein: einmal wiederholen.
     log("main rot, zweite Prüfung")
     time.sleep(60)
-    code, out = _sh("sh", VERIFY_SCRIPT, cwd=repo, timeout=900)
+    code, out, err = _run("sh", VERIFY_SCRIPT, cwd=repo, timeout=900)
     if code == 0:
         log("main beim zweiten Lauf grün (wackliger Test?)")
-        return True, out
+        return True, out, err
     reverted = git.git(["revert", "-m", "1", "--no-edit", "HEAD"], repo)
     if reverted.returncode != 0:
         detail = (reverted.stderr or reverted.stdout).strip()
         log(f"Revert fehlgeschlagen: {detail}")
-    return False, out
+    return False, out, err
 
 
 def start(until="done", cwd=None):
@@ -411,17 +485,28 @@ def try_accept(ticket):
             )
             log(f"Konflikt {tid}: an {agent} übergeben")
         return False
-    ok, out = check_main(repo)
+    ok, out, err = check_main(repo)
     if ok:
         log(f"main nach {tid} grün")
         return True
     # Der Schutzschritt hängt nicht am Erfolg des Reverts.
     _paused = True
     _pause("main nach Merge rot")
+    try:
+        paths = _attach_output(tid, out, err)
+    except (FabError, OSError) as exc:
+        log(f"Anhänge {tid} fehlgeschlagen: {exc}")
+        paths = []
+    message = [
+        "Autopilot: Nach dem Merge war main rot (.fabric/verify.sh). Merge per Revert "
+        "zurückgenommen, weitere Abnahmen pausiert."
+    ]
+    if paths:
+        message.append("Anhänge: " + ", ".join(paths))
+    message.append(_error_quote(out, err))
     _sh(
         "fab", "comment", tid, "--from", "mensch", "--no-wake", "--",
-        "Autopilot: Nach dem Merge war main rot (.fabric/verify.sh). Merge per Revert "
-        f"zurückgenommen, weitere Abnahmen pausiert. Ausgabe: {out[-600:]}",
+        "\n".join(message),
     )
     log(f"ROT nach {tid}: Revert, Abnahmen pausiert")
     return False
