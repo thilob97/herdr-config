@@ -199,6 +199,8 @@ Alle schreibenden Befehle laufen in genau einer Transaktion, hängen Ereignisse 
 
 `--from` ist bei allen schreibenden Befehlen außer `new`, `accept`, `reject` und `verify` Pflicht. `verify` nimmt `--from NAME` optional; Standard ist der `assignee`. `accept` und `reject` schreiben als `mensch`.
 
+Der Diff des Tickets ist `git diff main...HEAD`: die Merge-Basis des Branches gegen seinen HEAD, nicht die aktuelle Spitze von `main`. Alles, was inzwischen auf `main` gelandet ist, gehört nicht zu den Nachweisen dieses Tickets; `fab diff ID` und die Gates von `fab handover` rechnen genauso mit `base...branch`.
+
 ### Test-Policy
 
 `fab handover` prüft, ob zu geänderten Logikdateien mindestens eine geänderte Testdatei gehört. Welche Pfade zählen, steht in `.fabric/testpolicy.json` im **Haupt-Checkout** des Repos (nicht im Worktree); fehlt die Datei, gelten die Standardmuster.
