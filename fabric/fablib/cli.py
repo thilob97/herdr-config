@@ -9,6 +9,7 @@ import unicodedata
 
 from . import (
     agents,
+    autopilot,
     config,
     context,
     costs,
@@ -2487,6 +2488,42 @@ def _git_value(*args):
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
+def cmd_autopilot(args):
+    action = args.action
+    if action == "start":
+        result = autopilot.start(args.until)
+        print(f"Autopilot gestartet in {result['repo']} (bis {args.until})")
+        return 0
+    if action == "stop":
+        autopilot.stop()
+        print("Autopilot gestoppt")
+        return 0
+    if action == "resume":
+        if autopilot.resume():
+            print("Autopilot fortgesetzt")
+        else:
+            print("Autopilot: kein Status, nichts fortgesetzt")
+        return 0
+    if action == "run":
+        return autopilot.run(args.until)
+    state = autopilot.status()
+    if args.json:
+        print(json.dumps(state, ensure_ascii=False, indent=2))
+        return 0
+    if not state.get("state"):
+        print("Autopilot: kein Status (nicht gestartet)")
+        return 0
+    live = "läuft" if autopilot.is_live() else "nicht aktiv"
+    reason = f" · {state['reason']}" if state.get("reason") else ""
+    print(
+        f"Autopilot: {state['state']}{reason} · "
+        f"Ende {state.get('end') or 'offen'} · {live}"
+    )
+    if state.get("last_action"):
+        print(f"Zuletzt: {state['last_action']}")
+    return 0
+
+
 def cmd_version(args):
     try:
         head = _git_value("rev-parse", "--short", "HEAD")
@@ -2955,6 +2992,40 @@ def build_parser():
     discard_lesson.add_argument("value", metavar="VORSCHLAG")
     discard_lesson.add_argument("--from", dest="from_", metavar="NAME", required=True)
 
+    item = command(
+        "autopilot",
+        "Autopilot: nimmt Tickets ab, prüft main und hält den Betrieb am Laufen",
+        cmd_autopilot,
+    )
+    auto_sub = item.add_subparsers(dest="action", metavar="AKTION", required=True)
+    auto_start = auto_sub.add_parser(
+        "start", help="Autopilot im Terminal autopilot starten",
+        description="Autopilot im Terminal autopilot starten",
+    )
+    auto_start.add_argument(
+        "--until", metavar="HH:MM|done", default="done",
+        help="Endzeit als HH:MM oder done (Standard: done)",
+    )
+    auto_sub.add_parser("stop", help="Autopilot beenden", description="Autopilot beenden")
+    auto_status = auto_sub.add_parser(
+        "status", help="Status des Autopiloten zeigen",
+        description="Status des Autopiloten zeigen",
+    )
+    auto_status.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe")
+    auto_sub.add_parser(
+        "resume", help="Pausemarke entfernen und weiterlaufen",
+        description="Pausemarke entfernen und weiterlaufen",
+    )
+    auto_run = auto_sub.add_parser(
+        "run", help="Autopilot-Schleife (intern)", description="Autopilot-Schleife (intern)",
+    )
+    auto_run.add_argument(
+        "--until", metavar="HH:MM|done", default="done", help=argparse.SUPPRESS,
+    )
+    # Die interne Schleife bleibt wählbar, wird aber nicht als Aktion beworben.
+    auto_sub._choices_actions = [
+        action for action in auto_sub._choices_actions if action.dest != "run"
+    ]
     command("version", "Version und Git-HEAD des Fabric-Codes", cmd_version)
     command("index", "index.json neu erzeugen", cmd_index)
     item = command("migrate", "Altdaten in die SQLite-Datenbank übernehmen", cmd_migrate)
