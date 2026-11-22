@@ -170,13 +170,25 @@ def _seed_window(state, page="board"):
     path = os.path.join(state["home"], "shared.json")
     if os.path.exists(path):
         return
+    if page == "context":
+        route = {"page": "ticket"}
+    else:
+        route = {"page": page or "board"}
     payload = {
         "frame.welcomed": "finished",
         "layout": "fabric",
-        "fabric.route": {"page": page or "board"},
+        "fabric.route": route,
         "fabric.selected": "T-1",
         "fabric.previewWindow": True,
     }
+    if page == "repos":
+        payload["fabric.repoTab"] = "project"
+    if page == "context":
+        payload["fabric.contextPreview"] = {
+            "kind": "ticket",
+            "ref": "T-1",
+            "at": clock.now_ms(),
+        }
     with open(path, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, ensure_ascii=False)
 

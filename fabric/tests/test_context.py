@@ -251,3 +251,51 @@ class ContextCommandTests(ContextCase):
         result = self.cli("context")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("ID oder --team", result.stderr)
+
+    def test_fab_context_json_mit_steckbrief_brief_und_obergrenze(self):
+        repo = self.make_repo()
+        self.own_repo(repo)
+        self.project(repo, "# Steckbrief\n\nZweck: Anzeige.\n")
+        self.brief("Ziele: Anzeige.\n")
+        self.set_limit(1234)
+        tid = self.new("Anzeige", repo=repo)
+
+        data = json.loads(self.ok("context", tid, "--json").stdout)
+        self.assertIn("Zweck: Anzeige.", data["text"])
+        self.assertIn("Ziele: Anzeige.", data["text"])
+        self.assertEqual(data["chars"], len(data["text"]))
+        self.assertEqual(data["limit"], 1234)
+        self.assertEqual(data["scope"], "ticket")
+        self.assertEqual(data["id"], tid)
+        self.assertIsNone(data["team"])
+
+        team = json.loads(
+            self.ok("context", "--team", "herdr-app", "--json").stdout
+        )
+        self.assertEqual(team["scope"], "team")
+        self.assertEqual(team["team"], "herdr-app")
+        self.assertIsNone(team["id"])
+        self.assertIn("Zweck: Anzeige.", team["text"])
+        self.assertIn("Ziele: Anzeige.", team["text"])
+        self.assertEqual(team["chars"], len(team["text"]))
+        self.assertEqual(team["limit"], 1234)
+
+    def test_fab_context_json_leer(self):
+        repo = self.make_repo()
+        self.own_repo(repo)
+        tid = self.new("Leer", repo=repo)
+        data = json.loads(self.ok("context", tid, "--json").stdout)
+        self.assertEqual(data["text"], "")
+        self.assertEqual(data["chars"], 0)
+        self.assertIsInstance(data["limit"], int)
+        self.assertGreaterEqual(data["limit"], 0)
+        self.assertEqual(data["scope"], "ticket")
+        self.assertEqual(data["id"], tid)
+
+        team = json.loads(
+            self.ok("context", "--team", "herdr-app", "--json").stdout
+        )
+        self.assertEqual(team["text"], "")
+        self.assertEqual(team["chars"], 0)
+        self.assertEqual(team["scope"], "team")
+        self.assertEqual(team["team"], "herdr-app")
