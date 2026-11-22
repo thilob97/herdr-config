@@ -9,7 +9,7 @@ import {
   stallLabel, stallReason,
   wakeLine, sessionChips, sessionStatus, childrenOf, childProgress,
   teamForTicket, teamAgents,
-  decisionSentence, decideArgs, decideConfirmArgs, decideRejectArgs, decisionProposals, contextDisplay,
+  decisionSentence, decideArgs, decideConfirmArgs, decideRejectArgs, decisionComment, decisionProposals, contextDisplay,
   NOTIFY_SETTINGS_KEY, NOTIFY_SEEN_KEY, NOTIFY_DEFAULTS, normalizeNotifySettings, inQuietHours, minuteOfDay,
   INBOX_LEVELS, inboxNotifyLevel, inboxNotifySound, inboxEntryId, inboxNotifications,
   formatCost, formatDuration, ticketCost, costTotals,
@@ -997,6 +997,21 @@ test("decisionSentence faltet Leerraum zu einem Satz", async () => {
   assert.equal(decisionSentence(""), "");
   assert.equal(decisionSentence(null), "");
   assert.equal(decisionSentence(undefined), "");
+});
+
+test("decisionComment faltet den Kommentar und sperrt leere oder ticketlose Fälle", async () => {
+  const { decisionComment } = await import("../model.js");
+  assert.deepEqual(decisionComment({ id: "T-7" }, { text: " Erste\nzweite " }), {
+    sentence: "Erste zweite",
+    disabled: false,
+    args: ["decide", "T-7", "--from=mensch", "--", "Erste zweite"],
+  });
+  const empty = decisionComment({ id: "T-7" }, { text: "   " });
+  assert.equal(empty.disabled, true);
+  assert.equal(empty.args, null);
+  const noTicket = decisionComment(null, { text: "Satz" });
+  assert.equal(noTicket.disabled, true);
+  assert.equal(noTicket.args, null);
 });
 
 test("decide-Argumente halten den Satz hinter -- und bestätigen oder verwerfen exakt", async () => {

@@ -370,7 +370,7 @@ function historyRow(app, cx, t, row, index) {
   }
   const comment = row.comment;
   const images = model.imageRefs(comment.text ?? "");
-  const sentence = model.decisionSentence(comment.text);
+  const decision = model.decisionComment(app.ticket, comment);
   return v_flex()
     .id(`fabric-entry-${comment.n ?? index}`)
     .w_full()
@@ -390,8 +390,8 @@ function historyRow(app, cx, t, row, index) {
           label: "Als Entscheidung",
           icon: "check",
           small: true,
-          disabled: Boolean(app.busy) || !sentence,
-          reason: sentence ? "" : "Nur ein nichtleerer Kommentar",
+          disabled: Boolean(app.busy) || decision.disabled,
+          reason: decision.disabled ? (decision.sentence ? "Ticket fehlt" : "Nur ein nichtleerer Kommentar") : "",
           tooltip: `Kommentar als Entscheidung festhalten (fab decide ${app.ticket?.id ?? "T-x"} --from mensch). Zeilenumbrüche werden zu Leerzeichen.`,
           onClick: (cx) => app.markDecision(comment, cx),
         }))

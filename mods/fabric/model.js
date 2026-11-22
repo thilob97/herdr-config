@@ -597,6 +597,18 @@ export function decideRejectArgs(id, proposal, from = "mensch") {
   return ["decide", "reject", id, proposal, `--from=${from}`];
 }
 
+/** Ein Kommentar als Entscheidung: Satz, Knopfzustand und Argumente. */
+export function decisionComment(ticket, comment) {
+  const id = String(ticket?.id ?? "").trim();
+  const sentence = decisionSentence(comment?.text);
+  const disabled = !id || !sentence;
+  return {
+    sentence,
+    disabled,
+    args: disabled ? null : decideArgs(id, sentence),
+  };
+}
+
 /** Offene Entscheidungs-Vorschläge samt Knopfzustand. Nur ein Vorschlag mit
  *  ID und ein Ticket mit ID lassen sich bestätigen oder verwerfen. */
 export function decisionProposals(ticket) {
