@@ -1437,7 +1437,7 @@ def _pr_cleanup_failure(ticket, reason, url):
         f"PR gemergt, Aufräumen unvollständig: {reason.strip()} — PR: {url}; "
         f"fab accept erneut ausführen"
     )
-    ticket["pr"] = {"url": url, "state": "merged"}
+    ticket["pr"] = {**(ticket.get("pr") or {}), "url": url, "state": "merged"}
     _add_comment(ticket, "mensch", text)
     events.append("pr", ticket["id"], "mensch", "", text)
     store.save(ticket)
@@ -1509,8 +1509,8 @@ def _wake_review_hints(ticket, roster):
     )
 
 
-def _mark_pr_merged(ticket, url):
-    ticket["pr"] = {"url": url, "state": "merged"}
+def _mark_pr_merged(ticket, url, merged):
+    ticket["pr"] = {"url": url, "state": "merged", "commit": merged}
     _add_comment(ticket, "mensch", f"PR gemergt: {url}")
     events.append("pr", ticket["id"], "mensch", "", f"PR gemergt: {url}")
     store.save(ticket)
@@ -1582,11 +1582,19 @@ def cmd_accept(args):
             raise FabError(f"{ticket['id']}: {repo} ist kein Git-Repository")
         failure = None
         if pr_merged:
-            hint_wakes = _finish_pr_accept(
-                ticket, roster, top, branch_name, ticket["base"], git.head(top),
-                ticket["pr"]["url"],
-            )
-            _print_wake_results(hint_wakes)
+            merged = (ticket.get("pr") or {}).get("commit") or git.head(top)
+            try:
+                hint_wakes = _finish_pr_accept(
+                    ticket, roster, top, branch_name, ticket["base"], merged,
+                    ticket["pr"]["url"],
+                )
+            except store.PersistError:
+                raise
+            except FabError as exc:
+                _pr_cleanup_failure(ticket, str(exc), ticket["pr"]["url"])
+                failure = exc
+            else:
+                _print_wake_results(hint_wakes)
         else:
             here = git.branch(top)
             if here != ticket["base"]:
@@ -1731,7 +1739,7 @@ def cmd_accept(args):
                             f"{ticket['id']}: herdr-app check rot; Merge "
                             f"{_short(merged)} als Revert nach origin/{base} gepusht"
                         )
-                    _mark_pr_merged(ticket, url)
+                    _mark_pr_merged(ticket, url, merged)
                     hint_wakes = _finish_pr_accept(
                         ticket, roster, top, branch_name, base, merged, url
                     )
