@@ -198,7 +198,9 @@ class PrAcceptTests(FabricCase):
         self.assertIn(URL, result.stdout)
         ticket = self.ticket(tid)
         self.assertEqual(ticket["status"], "done")
-        self.assertEqual(ticket["pr"], {"url": URL, "state": "merged"})
+        self.assertEqual(ticket["pr"]["url"], URL)
+        self.assertEqual(ticket["pr"]["state"], "merged")
+        self.assertRegex(ticket["pr"]["commit"], r"^[0-9a-f]{40}$")
         self.assertEqual(ticket["waiting"], [])
         self.assertFalse(os.path.exists(worktree))
         self.assertEqual(
@@ -226,7 +228,9 @@ class PrAcceptTests(FabricCase):
         self.assertIn("konnte nicht gelöscht werden", result.stderr)
         ticket = self.ticket(tid)
         self.assertEqual(ticket["status"], "review")
-        self.assertEqual(ticket["pr"], {"url": URL, "state": "merged"})
+        self.assertEqual(ticket["pr"]["url"], URL)
+        self.assertEqual(ticket["pr"]["state"], "merged")
+        self.assertRegex(ticket["pr"]["commit"], r"^[0-9a-f]{40}$")
         self.assertFalse(os.path.exists(worktree))
         self.assertNotEqual(self.git_out(repo, "branch", "--list", BRANCH), "")
         texts = [comment["text"] for comment in ticket["comments"]]
@@ -242,13 +246,66 @@ class PrAcceptTests(FabricCase):
         self.assertIn("angenommen", second.stdout)
         ticket = self.ticket(tid)
         self.assertEqual(ticket["status"], "done")
-        self.assertEqual(ticket["pr"], {"url": URL, "state": "merged"})
+        self.assertEqual(ticket["pr"]["url"], URL)
+        self.assertEqual(ticket["pr"]["state"], "merged")
+        self.assertRegex(ticket["pr"]["commit"], r"^[0-9a-f]{40}$")
         self.assertEqual(self.git_out(repo, "branch", "--list", BRANCH), "")
         self.assertFalse(os.path.exists(worktree))
         merges_after = [
             call for call in self.gh_calls() if call[:2] == ["pr", "merge"]
         ]
         self.assertEqual(merges_after, merges_before)
+
+    def test_wiederholung_scheitert_erneut_beim_aufraeumen(self):
+        repo, tid, worktree = self.review_ticket()
+        bare = self.setup_origin(repo)
+        self.add_git_shim()
+
+        first = self.cli(
+            "accept", tid, env=self.gh_env(bare, GIT_FAIL_BRANCH_DELETE="1")
+        )
+        self.assertEqual(first.returncode, 1)
+        second = self.cli(
+            "accept", tid, env=self.gh_env(bare, GIT_FAIL_BRANCH_DELETE="1")
+        )
+
+        self.assertNotEqual(second.returncode, 0)
+        self.assertIn("konnte nicht gelöscht werden", second.stderr)
+        ticket = self.ticket(tid)
+        self.assertEqual(ticket["status"], "review")
+        self.assertEqual(ticket["pr"]["state"], "merged")
+        texts = [comment["text"] for comment in ticket["comments"]]
+        failures = [
+            text for text in texts if "PR gemergt, Aufräumen unvollständig" in text
+        ]
+        self.assertEqual(len(failures), 2, texts)
+        pr_rows = [row for row in self.events() if row["kind"] == "pr"]
+        self.assertIn("Aufräumen unvollständig", pr_rows[-1]["text"])
+
+    def test_wiederholung_meldet_den_merge_commit(self):
+        repo, tid, worktree = self.review_ticket()
+        bare = self.setup_origin(repo)
+        self.add_git_shim()
+
+        first = self.cli(
+            "accept", tid,
+            env=self.gh_env(bare, GIT_FAIL_BRANCH_DELETE="1", GH_MERGE_COMMIT="1"),
+        )
+        self.assertEqual(first.returncode, 1)
+        merge_commit = self.git_out(bare, "rev-parse", "refs/heads/main")
+        self.commit_in(repo, "spaeter.txt", "main läuft weiter\n")
+        local_head = self.git_out(repo, "rev-parse", "HEAD")
+        self.assertNotEqual(local_head, merge_commit)
+
+        second = self.ok("accept", tid, env=self.gh_env(bare))
+
+        self.assertIn(merge_commit[:7], second.stdout)
+        self.assertNotIn(local_head[:7], second.stdout)
+        ticket = self.ticket(tid)
+        self.assertEqual(ticket["status"], "done")
+        self.assertEqual(ticket["pr"]["commit"], merge_commit)
+        accept_rows = [row for row in self.events() if row["kind"] == "accept"]
+        self.assertIn(merge_commit[:7], accept_rows[-1]["text"])
 
     def test_erster_lauf_pusht_basis_nach_origin(self):
         repo, tid, worktree = self.review_ticket()
