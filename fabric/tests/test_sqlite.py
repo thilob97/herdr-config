@@ -8,6 +8,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+from datetime import datetime
 from unittest import mock
 
 from fabric.fablib import events, store
@@ -272,6 +273,26 @@ class SqliteTests(FabricCase):
         self.assertGreater(len(after), len(before))
         self.assertLessEqual(len(after), 14)
         self.assertTrue(after - before)
+
+        # Eingefrorene Uhr: viele Sicherungen im selben Stempel, Prune behält
+        # die neuesten (numerische Reihenfolge, nicht lexikalisch).
+        with self._env():
+            store.prune_backups(keep=0)
+            self.assertEqual(store.backup_files(), [])
+            with mock.patch.dict(os.environ, {"FAB_NOW": "1700000000000"}):
+                for _ in range(12):
+                    store.backup()
+                stamp = datetime.fromtimestamp(
+                    1700000000000 / 1000).strftime("%Y%m%d-%H%M%S-%f")
+                expected = [f"fabric-{stamp}.db"] + [
+                    f"fabric-{stamp}-{suffix}.db" for suffix in range(2, 13)
+                ]
+                ordered = [os.path.basename(path) for path in store.backup_files()]
+                self.assertEqual(len(ordered), 12)
+                self.assertEqual(ordered, expected)
+                store.prune_backups(keep=5)
+                remaining = [os.path.basename(path) for path in store.backup_files()]
+                self.assertEqual(remaining, expected[-5:])
 
     def test_sicherung_integritaet_und_zaehlergleich(self):
         tid = self.new("Sicherungsinhalt")
