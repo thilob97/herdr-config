@@ -1,0 +1,3 @@
+- Wenn du zusammengesetzten Text kürzt, nenne im Hinweis die Quelle, die tatsächlich abgeschnitten wurde, und teste die Kürzung bei mehreren vorhandenen Quellen, nicht nur bei einer.
+- Leite Anzeige-Status aus der Bedeutung je Knotentyp und Laufstatus der Engine ab, nicht aus dem Rohwert, und teste jeden Zweig einer Verzweigung sowie den fehlgeschlagenen Lauf.
+- Führe Git-Befehle, die auf main wirken, gegen einen echten Merge-Commit von fab accept (merge --no-ff) aus, bevor du sie als abgebildet meldest, und hänge Schutzschritte wie eine Pause nicht per && an deren Erfolg.
