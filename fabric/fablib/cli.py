@@ -2358,7 +2358,9 @@ def cmd_lesson(args):
         ]
         target = ""
         if args.action == "confirm":
-            target = repos.append_lesson(ticket["repo"], sentence)
+            target = repos.append_lesson(
+                ticket["repo"], sentence, f"Lehre aus {ticket['id']} bestätigt"
+            )
             events.append(
                 "lesson", ticket["id"], actor, "", f"bestätigt: {sentence}"
             )

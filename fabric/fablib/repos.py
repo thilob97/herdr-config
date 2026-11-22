@@ -14,6 +14,7 @@ LESSONS = "lessons.md"
 PROJECT = "project.md"
 FILES = {"verify": VERIFY, "lessons": LESSONS, "project": PROJECT}
 KINDS = tuple(FILES)
+KIND_LABELS = {"verify": "Prüfskript", "lessons": "Lernnotizen", "project": "Steckbrief"}
 LESSON_LIMIT = 8
 EMPTY_LESSONS = "- noch keine bestätigten Lehren"
 _LESSON_MARKER = re.compile(r"^(?:[-*+]|\d+\.)\s+")
@@ -283,7 +284,12 @@ def lessons_many(paths, limit=LESSON_LIMIT):
     return flattened[-limit:]
 
 
-def append_lesson(raw, sentence):
+def _commit(top, target, reason):
+    """Eine `.fabric`-Datei in einem eigenen Commit festhalten; ohne Basisbranch kein Fehler."""
+    return git.commit_paths(top, [target], f"chore(fabric): {reason}")
+
+
+def append_lesson(raw, sentence, reason=None):
     """Eine bestätigte Lehre als `- <Satz>` atomar an lessons.md anhängen."""
     top = _root(raw)
     folder = _fabric_folder(top)
@@ -300,6 +306,7 @@ def append_lesson(raw, sentence):
         text += "\n"
     text += f"- {sentence}\n"
     store.atomic_write(target, text, mode=0o644)
+    _commit(top, target, reason or "Lehre bestätigt")
     return target
 
 
@@ -320,6 +327,7 @@ def set_file(raw, kind, text, actor):
         )
     mode = 0o755 if kind == "verify" else 0o644
     store.atomic_write(target, text, mode=mode)
+    _commit(top, target, f"{KIND_LABELS[kind]} gespeichert")
     rel = f".fabric/{os.path.basename(target)}"
     events.append("config", "", actor, "", f"{rel} in {top} gespeichert")
     index.rebuild()

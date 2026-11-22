@@ -89,6 +89,51 @@ class LessonTests(FabricCase):
         events = [row for row in self.events() if row["kind"] == "lesson"]
         self.assertEqual(events[-1]["text"], "bestätigt: Erst prüfen, dann mergen.")
 
+    def test_confirm_committet_nur_die_lehre(self):
+        repo, tid, worktree = self.ready_ticket()
+        self.patch_ticket(tid, repo=worktree)
+        before = self.git_out(repo, "rev-parse", "HEAD")
+        self.ok(
+            "lesson", "propose", tid, "Erst prüfen, dann mergen.", "--from", "ada"
+        )
+        self.ok("lesson", "confirm", tid, "L1", "--from", "mensch")
+
+        self.assertEqual(
+            self.git_out(repo, "rev-list", "--count", f"{before}..HEAD"), "1"
+        )
+        lines = [
+            line
+            for line in self.git_out(
+                repo, "show", "--name-only", "--format=%s", "HEAD"
+            ).splitlines()
+            if line.strip()
+        ]
+        self.assertIn(tid, lines[0])
+        self.assertEqual(lines[1:], [".fabric/lessons.md"])
+
+        target = os.path.join(repo, ".fabric", "lessons.md")
+        with open(target, encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), "- Erst prüfen, dann mergen.\n")
+
+    def test_confirm_auf_anderem_branch_schreibt_ohne_commit(self):
+        repo = self.make_repo()
+        self.git_out(repo, "checkout", "-q", "-b", "seitlich")
+        tid = self.new("Lehre", repo=repo)
+        before = self.git_out(repo, "rev-parse", "HEAD")
+        self.ok("lesson", "propose", tid, "Seitlich schreiben.", "--from", "ada")
+        self.ok("lesson", "confirm", tid, "L1", "--from", "mensch")
+
+        target = os.path.join(repo, ".fabric", "lessons.md")
+        self.assertTrue(os.path.isfile(target))
+        with open(target, encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), "- Seitlich schreiben.\n")
+        self.assertEqual(self.git_out(repo, "rev-parse", "HEAD"), before)
+        status = self.git_out(
+            repo, "status", "--porcelain", "--untracked-files=all"
+        )
+        self.assertIn(".fabric/lessons.md", status)
+        self.assertIn("??", status)
+
     def test_discard_entfernt_ohne_lessons_datei(self):
         repo = self.make_repo()
         tid = self.new("Lehre", repo=repo)
