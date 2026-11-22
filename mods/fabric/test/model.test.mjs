@@ -9,6 +9,7 @@ import {
   stallLabel, stallReason,
   wakeLine, sessionChips, sessionStatus, childrenOf, childProgress,
   teamForTicket, teamAgents,
+  decisionSentence, decideArgs, decideConfirmArgs, decideRejectArgs, decisionProposals, contextDisplay,
   NOTIFY_SETTINGS_KEY, NOTIFY_SEEN_KEY, NOTIFY_DEFAULTS, normalizeNotifySettings, inQuietHours, minuteOfDay,
   INBOX_LEVELS, inboxNotifyLevel, inboxNotifySound, inboxEntryId, inboxNotifications,
   formatCost, formatDuration, ticketCost, costTotals,
@@ -972,6 +973,7 @@ test("teamDraft liest die Teamkarte ohne Zusatzfelder", async () => {
   const { teamDraft } = await import("../model.js");
   assert.deepEqual(teamDraft(TEAM), {
     name: "herdr-app",
+    brief: "",
     repos: ["/r/a", "/r/b"],
     members: [
       { blueprint: "zap", model: "sonnet", max_cost: 7 },
@@ -980,6 +982,93 @@ test("teamDraft liest die Teamkarte ohne Zusatzfelder", async () => {
     reviewer: "ada",
     max_sessions: 4,
   });
+});
+
+test("teamDraft übernimmt den Steckbrief des Teams", async () => {
+  const { teamDraft } = await import("../model.js");
+  assert.equal(teamDraft({ ...TEAM, brief: "  Kurz und knapp.  " }).brief, "  Kurz und knapp.  ");
+});
+
+// ---------- Entscheidungen und Kontext ----------
+
+test("decisionSentence faltet Leerraum zu einem Satz", async () => {
+  const { decisionSentence } = await import("../model.js");
+  assert.equal(decisionSentence("  Erste\tZeile\n\nzweite   Zeile  "), "Erste Zeile zweite Zeile");
+  assert.equal(decisionSentence(""), "");
+  assert.equal(decisionSentence(null), "");
+  assert.equal(decisionSentence(undefined), "");
+});
+
+test("decide-Argumente halten den Satz hinter -- und bestätigen oder verwerfen exakt", async () => {
+  const { decideArgs, decideConfirmArgs, decideRejectArgs } = await import("../model.js");
+  const args = decideArgs("T-1", "-wichtig");
+  assert.deepEqual(args, ["decide", "T-1", "--from=mensch", "--", "-wichtig"]);
+  assert.equal(args.indexOf("--"), args.length - 2);
+  assert.deepEqual(decideArgs("T-1", "Satz", "ada"), ["decide", "T-1", "--from=ada", "--", "Satz"]);
+  assert.deepEqual(decideConfirmArgs("T-1", "D1"), ["decide", "confirm", "T-1", "D1", "--from=mensch"]);
+  assert.deepEqual(decideRejectArgs("T-1", "D1"), ["decide", "reject", "T-1", "D1", "--from=mensch"]);
+  assert.deepEqual(decideConfirmArgs("T-1", "D1", "ada"), ["decide", "confirm", "T-1", "D1", "--from=ada"]);
+  assert.deepEqual(decideRejectArgs("T-1", "D1", "ada"), ["decide", "reject", "T-1", "D1", "--from=ada"]);
+});
+
+test("decisionProposals leitet Knopfzustand und Argumente aus den Ticketdaten ab", async () => {
+  const { decisionProposals } = await import("../model.js");
+  const rows = decisionProposals({
+    id: "T-9",
+    decision_proposals: [
+      { id: "D1", text: "SQLite", reason: "Ein File", by: "orchestrator" },
+      { id: " ", text: "ohne ID" },
+      "kaputt",
+    ],
+  });
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows[0], {
+    key: "D1-0", id: "D1", text: "SQLite", reason: "Ein File", by: "orchestrator",
+    confirm: { disabled: false, args: ["decide", "confirm", "T-9", "D1", "--from=mensch"] },
+    reject: { disabled: false, args: ["decide", "reject", "T-9", "D1", "--from=mensch"] },
+  });
+  assert.equal(rows[1].confirm.disabled, true);
+  assert.equal(rows[1].confirm.args, null);
+  assert.equal(rows[1].reject.disabled, true);
+  assert.deepEqual(decisionProposals({ id: "T-9", decision_proposals: [] }), []);
+  assert.deepEqual(decisionProposals(null), []);
+  const withoutTicket = decisionProposals({ decision_proposals: [{ id: "D1" }] });
+  assert.equal(withoutTicket[0].confirm.disabled, true, "ohne Ticket-ID gibt es kein fab decide");
+});
+
+test("contextDisplay: normale Zeile, leerer Text und gekürzter Text", async () => {
+  const { contextDisplay } = await import("../model.js");
+  assert.deepEqual(contextDisplay({ text: "abc", chars: 3, limit: 10 }), {
+    text: "abc",
+    chars: 3,
+    limit: 10,
+    empty: false,
+    clipped: false,
+    over: false,
+    ratio: 0.3,
+    label: "3 von höchstens 10 Zeichen",
+  });
+  const empty = contextDisplay({ text: "", chars: 0, limit: 10 });
+  assert.equal(empty.empty, true);
+  assert.equal(empty.label, "0 Zeichen · noch kein Kontext");
+  const clipped = contextDisplay({ text: "abc … gekürzt", chars: 12, limit: 20 });
+  assert.equal(clipped.clipped, true);
+  assert.equal(clipped.label, "12 von höchstens 20 Zeichen · gekürzt");
+});
+
+test("contextDisplay: Kontext aus, über der Obergrenze und Zeichen aus dem Text", async () => {
+  const { contextDisplay } = await import("../model.js");
+  const off = contextDisplay({ text: "abc", chars: 3, limit: 0 });
+  assert.equal(off.ratio, 0);
+  assert.equal(off.label, "3 Zeichen · Kontext ist aus");
+  const over = contextDisplay({ text: "x", chars: 25, limit: 20 });
+  assert.equal(over.over, true);
+  assert.equal(over.ratio, 1);
+  assert.equal(over.label, "25 Zeichen · über der Obergrenze von 20");
+  const fallback = contextDisplay({ text: "äöü" });
+  assert.equal(fallback.chars, 3);
+  assert.equal(fallback.limit, 0);
+  assert.equal(fallback.label, "3 Zeichen · Kontext ist aus");
 });
 
 test("teamMembersJson lässt leere Übersteuerungen weg und schreibt max_cost als Zahl", async () => {
@@ -1016,6 +1105,39 @@ test("teamSaveArgs ersetzt Repos und Mitglieder als ganze Listen", async () => {
   assert.equal(plan.args.includes("--reviewer=ada"), true);
   assert.equal(plan.args.includes("--max-sessions=6"), true);
   assert.equal(plan.args.at(-1), "--from=mensch");
+});
+
+test("teamSaveArgs hängt eine Briefdatei einmal vor --from=mensch", async () => {
+  const { teamSaveArgs } = await import("../model.js");
+  const form = {
+    name: "herdr-app",
+    repos: ["/r/a"],
+    members: [{ blueprint: "zap" }, { blueprint: "ada" }],
+    reviewer: "ada",
+    max_sessions: 4,
+  };
+  const plan = teamSaveArgs(TEAM, form, { briefFile: "/tmp/b.md" });
+  assert.equal(plan.error, undefined);
+  assert.equal(plan.args.filter((arg) => arg === "--brief-file=/tmp/b.md").length, 1);
+  assert.equal(plan.args.indexOf("--brief-file=/tmp/b.md"), plan.args.indexOf("--from=mensch") - 1);
+  assert.equal(plan.args.at(-1), "--from=mensch");
+  assert.equal(plan.args.some((arg) => arg.startsWith("--brief-file=")), true);
+});
+
+test("teamSaveArgs sendet ohne Briefdatei kein --brief-file", async () => {
+  const { teamSaveArgs } = await import("../model.js");
+  const form = {
+    name: "herdr-app",
+    repos: ["/r/a"],
+    members: [{ blueprint: "zap" }, { blueprint: "ada" }],
+    reviewer: "ada",
+    max_sessions: 4,
+  };
+  for (const options of [undefined, {}, { briefFile: "" }]) {
+    const plan = options === undefined ? teamSaveArgs(TEAM, form) : teamSaveArgs(TEAM, form, options);
+    assert.equal(plan.error, undefined);
+    assert.equal(plan.args.some((arg) => arg.startsWith("--brief-file=")), false);
+  }
 });
 
 test("teamSaveArgs verlangt Repos, Mitglieder und einen Prüfer aus dem Team", async () => {
@@ -1161,6 +1283,8 @@ test("teamDirty erkennt Änderungen an Repos, Mitgliedern, Prüfer und Sitzungen
   assert.equal(teamDirty(TEAM, { ...form, repos: ["/r/a"] }), true);
   assert.equal(teamDirty(TEAM, { ...form, members: [{ blueprint: "zap" }, { blueprint: "ada" }] }), true);
   assert.equal(teamDirty(TEAM, { ...form, reviewer: "zap" }), true);
+  assert.equal(teamDirty(TEAM, { ...form, brief: "Neu" }), true);
+  assert.equal(teamDirty(TEAM, { ...form, brief: "" }), false);
   assert.equal(teamDirty(TEAM, { ...form, max_sessions: "5" }), true);
   assert.equal(teamDirty(TEAM, { ...form, name: "neu" }), true);
   assert.equal(teamDirty(TEAM, { ...form, name: "  herdr-app  " }), false);

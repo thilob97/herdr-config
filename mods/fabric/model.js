@@ -577,12 +577,80 @@ export function blueprintSaveArgs(draft, form) {
   return { args, name, argv };
 }
 
+// ---------- Entscheidungen und Kontext ----------
+
+/** Ein Kommentar als Satz: Leerraum wird zu einem Leerzeichen, außen bleibt nichts. */
+export function decisionSentence(text) {
+  return String(text ?? "").replace(/\s+/g, " ").trim();
+}
+
+/** `fab decide`; der Satz steht hinter `--`, damit auch ein führendes `-` Text bleibt. */
+export function decideArgs(id, sentence, from = "mensch") {
+  return ["decide", id, `--from=${from}`, "--", sentence];
+}
+
+export function decideConfirmArgs(id, proposal, from = "mensch") {
+  return ["decide", "confirm", id, proposal, `--from=${from}`];
+}
+
+export function decideRejectArgs(id, proposal, from = "mensch") {
+  return ["decide", "reject", id, proposal, `--from=${from}`];
+}
+
+/** Offene Entscheidungs-Vorschläge samt Knopfzustand. Nur ein Vorschlag mit
+ *  ID und ein Ticket mit ID lassen sich bestätigen oder verwerfen. */
+export function decisionProposals(ticket) {
+  const ticketId = String(ticket?.id ?? "").trim();
+  return (Array.isArray(ticket?.decision_proposals) ? ticket.decision_proposals : [])
+    .filter((item) => item && typeof item === "object")
+    .map((item, index) => {
+      const id = String(item.id ?? "").trim();
+      const actionable = Boolean(ticketId && id);
+      return {
+        key: `${id || "ohne-id"}-${index}`,
+        id,
+        text: String(item.text ?? ""),
+        reason: String(item.reason ?? ""),
+        by: String(item.by ?? ""),
+        confirm: {
+          disabled: !actionable,
+          args: actionable ? decideConfirmArgs(ticketId, id) : null,
+        },
+        reject: {
+          disabled: !actionable,
+          args: actionable ? decideRejectArgs(ticketId, id) : null,
+        },
+      };
+    });
+}
+
+/** Kontextvorschau als Anzeigewerte: Text, Zeichen, Obergrenze und die Zeile
+ *  darüber. `chars` und `limit` kommen aus `fab context --json`; fehlen sie,
+ *  zählt der Text und die Obergrenze bleibt 0. */
+export function contextDisplay(data) {
+  const text = String(data?.text ?? "");
+  const chars = Number.isInteger(data?.chars) && data.chars >= 0 ? data.chars : [...text].length;
+  const limit = Number.isInteger(data?.limit) && data.limit >= 0 ? data.limit : 0;
+  const empty = chars === 0;
+  const clipped = text.includes("gekürzt");
+  const over = limit > 0 && chars > limit;
+  const ratio = limit > 0 ? Math.min(1, chars / limit) : 0;
+  let label;
+  if (over) label = `${chars} Zeichen · über der Obergrenze von ${limit}`;
+  else if (limit === 0) label = `${chars} Zeichen · Kontext ist aus`;
+  else if (empty) label = "0 Zeichen · noch kein Kontext";
+  else if (clipped) label = `${chars} von höchstens ${limit} Zeichen · gekürzt`;
+  else label = `${chars} von höchstens ${limit} Zeichen`;
+  return { text, chars, limit, empty, clipped, over, ratio, label };
+}
+
 // ---------- Teams ----------
 
 /** Formularwerte einer Teamkarte aus dem Roster. */
 export function teamDraft(team) {
   return {
     name: String(team?.name ?? ""),
+    brief: String(team?.brief ?? ""),
     repos: (team?.repos ?? []).map((repo) => String(repo)),
     members: (team?.members ?? [])
       .filter((member) => member && typeof member === "object" && member.blueprint)
@@ -630,7 +698,7 @@ export function teamMembersJson(members) {
 }
 
 /** Speicherargumente einer Teamkarte; Repos bleiben eine geordnete Liste. */
-export function teamSaveArgs(team, form) {
+export function teamSaveArgs(team, form, { briefFile = "" } = {}) {
   const name = String(team?.name ?? "").trim();
   const repos = (form?.repos ?? []).map((repo) => String(repo ?? "").trim()).filter(Boolean);
   const members = normalizeMembers(form?.members);
@@ -658,8 +726,10 @@ export function teamSaveArgs(team, form) {
     `--members-json=${teamMembersJson(members)}`,
     `--reviewer=${reviewer}`,
     `--max-sessions=${sessions}`,
-    "--from=mensch",
   );
+  const brief = String(briefFile ?? "");
+  if (brief) args.push(`--brief-file=${brief}`);
+  args.push("--from=mensch");
   return { args, name, sessions };
 }
 
@@ -720,6 +790,7 @@ export function teamDirty(team, form) {
   const base = teamDraft(team);
   const next = {
     name: String(form.name ?? base.name).trim(),
+    brief: String(form.brief ?? base.brief),
     repos: (form.repos ?? []).map((repo) => String(repo)),
     members: normalizeMembers(form.members),
     reviewer: String(form.reviewer ?? ""),
