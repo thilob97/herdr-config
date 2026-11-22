@@ -1,4 +1,4 @@
-"""Repo-Dateien: `.fabric/verify.sh` und `.fabric/lessons.md` (Abschnitt 3b)."""
+"""Repo-Dateien: `.fabric/verify.sh`, `.fabric/lessons.md` und `.fabric/project.md`."""
 import os
 import re
 import stat
@@ -11,10 +11,35 @@ VERIFY_TIMEOUT = 600
 TAIL_LINES = 40
 VERIFY = "verify.sh"
 LESSONS = "lessons.md"
-KINDS = ("verify", "lessons")
+PROJECT = "project.md"
+FILES = {"verify": VERIFY, "lessons": LESSONS, "project": PROJECT}
+KINDS = tuple(FILES)
 LESSON_LIMIT = 8
 EMPTY_LESSONS = "- noch keine bestätigten Lehren"
 _LESSON_MARKER = re.compile(r"^(?:[-*+]|\d+\.)\s+")
+PROJECT_TEMPLATE = """# Projekt-Steckbrief
+
+## Zweck
+Wofür ist das Projekt da, in zwei bis drei Sätzen.
+
+## Nutzer
+Wer benutzt es und wofür.
+
+## Architektur
+Die wichtigsten Bausteine und ihr Zusammenspiel, kurz.
+
+## Wichtige Befehle
+Bauen, testen, prüfen.
+
+## Konventionen
+Stil und Abläufe; verweist auf AGENTS.md, statt sie zu doppeln.
+
+## Tabus
+Was niemand anfassen oder ändern darf.
+
+## Links
+Issues, Doku, Vorschauen.
+"""
 
 
 def _checkout(path):
@@ -129,7 +154,7 @@ def known(extra=()):
             tickets_by_root.setdefault(top, [])
     rows = []
     for top in sorted(tickets_by_root):
-        script, lessons, _folder = _paths(top)
+        script, lessons, folder = _paths(top)
         rows.append(
             {
                 "path": top,
@@ -141,6 +166,7 @@ def known(extra=()):
                 ),
                 "verify_exists": os.path.isfile(script),
                 "lessons_exists": os.path.isfile(lessons),
+                "project_exists": os.path.isfile(os.path.join(folder, PROJECT)),
             }
         )
     return rows
@@ -148,17 +174,20 @@ def known(extra=()):
 
 def show(raw):
     top = _root(raw)
-    script, lessons, _folder = _paths(top)
+    script, lessons, folder = _paths(top)
+    project = os.path.join(folder, PROJECT)
     return {
         "path": top,
         "branch": git.branch(top),
         "verify": {"exists": os.path.isfile(script), "text": _read(script)},
         "lessons": {"exists": os.path.isfile(lessons), "text": _read(lessons)},
+        "project": {"exists": os.path.isfile(project), "text": _read(project)},
+        "project_template": PROJECT_TEMPLATE,
     }
 
 
-def _lessons_path(raw):
-    """(Repo-Wurzel, lessons.md) eines vorhandenen Repos; sonst (None, None)."""
+def _repo_file(raw, name):
+    """(Repo-Wurzel, Datei) eines vorhandenen Repos; sonst (None, None)."""
     if not raw:
         return None, None
     path = os.path.abspath(os.path.expanduser(str(raw)))
@@ -170,8 +199,29 @@ def _lessons_path(raw):
         return None, None
     if not top:
         return None, None
-    _script, target, _folder = _paths(top)
-    return top, target
+    _script, _lessons, folder = _paths(top)
+    return top, os.path.join(folder, name)
+
+
+def _lessons_path(raw):
+    """(Repo-Wurzel, lessons.md) eines vorhandenen Repos; sonst (None, None)."""
+    return _repo_file(raw, LESSONS)
+
+
+def project_path(raw):
+    """(Repo-Wurzel, project.md) eines vorhandenen Repos; sonst (None, None)."""
+    return _repo_file(raw, PROJECT)
+
+
+def project_text(raw):
+    """Steckbrief eines Repos; None, wenn Repo oder Datei fehlt."""
+    _top, target = project_path(raw)
+    if not target:
+        return None
+    try:
+        return _read(target)
+    except FabError:
+        return None
 
 
 def _lesson_lines(text):
@@ -260,7 +310,7 @@ def set_file(raw, kind, text, actor):
         )
     top = _root(raw)
     folder = _fabric_folder(top)
-    target = os.path.join(folder, VERIFY if kind == "verify" else LESSONS)
+    target = os.path.join(folder, FILES[kind])
     root = os.path.realpath(top)
     real = os.path.realpath(target)
     if os.path.commonpath([root, real]) != root:

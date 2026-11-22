@@ -10,6 +10,7 @@ import unicodedata
 from . import (
     agents,
     config,
+    context,
     costs,
     events,
     flows,
@@ -2085,6 +2086,8 @@ def cmd_team(args):
             )
             if overrides:
                 line += " · Übersteuerungen " + "; ".join(overrides)
+            if row.get("brief"):
+                line += f" · Brief {len(row['brief'])} Zeichen"
             print(line)
         return 0
     actor = _require_actor(args)
@@ -2112,6 +2115,15 @@ def cmd_team(args):
             )
             return 0
         if args.action == "edit":
+            brief = args.brief
+            if args.brief_file:
+                try:
+                    with open(args.brief_file, encoding="utf-8") as handle:
+                        brief = handle.read()
+                except OSError as exc:
+                    raise FabError(
+                        f"Brief-Datei {args.brief_file} ist nicht lesbar: {exc}"
+                    )
             print(
                 config.edit_team(
                     args.name,
@@ -2122,6 +2134,7 @@ def cmd_team(args):
                     orchestrator_prompt=args.orchestrator_prompt,
                     reviewer=args.reviewer,
                     max_sessions=args.max_sessions,
+                    brief=brief,
                     actor=actor,
                 )
             )
@@ -2376,6 +2389,8 @@ def cmd_repos(args):
             marks.append("Prüfskript")
         if row["lessons_exists"]:
             marks.append("Lernnotizen")
+        if row["project_exists"]:
+            marks.append("Steckbrief")
         print(
             f"{row['path']} · {row['branch'] or '—'} · "
             f"offen {row['open_tickets']} · "
@@ -2391,9 +2406,16 @@ def cmd_repo(args):
             print(json.dumps(data, ensure_ascii=False, indent=2))
             return 0
         print(f"{data['path']} · {data['branch'] or '—'}")
-        for key, label in (("verify", "Prüfskript"), ("lessons", "Lernnotizen")):
+        for key, label in (
+            ("verify", "Prüfskript"),
+            ("lessons", "Lernnotizen"),
+            ("project", "Steckbrief"),
+        ):
             state = "vorhanden" if data[key]["exists"] else "fehlt"
             print(f"{label}: {state}")
+        if not data["project"]["exists"]:
+            print("Vorlage für den Steckbrief:")
+            print(data["project_template"].rstrip())
         return 0
     if args.action == "test":
         result = repos.test(args.path)
@@ -2408,6 +2430,22 @@ def cmd_repo(args):
     with store.locked():
         target = repos.set_file(args.path, args.kind, args.text, actor)
     print(f"{target} gespeichert")
+    return 0
+
+
+def cmd_context(args):
+    if args.id and args.team:
+        raise FabError("Bitte ID oder --team NAME, nicht beides")
+    if not args.id and not args.team:
+        raise FabError("Fehlt: ID oder --team NAME")
+    roster = agents.load()
+    if args.id:
+        ticket = store.load(args.id)
+        text = context.for_ticket(roster, ticket)
+    else:
+        text = context.for_team(roster, args.team)
+    if text:
+        sys.stdout.write(text + "\n")
     return 0
 
 
@@ -2705,6 +2743,11 @@ def build_parser():
     edit.add_argument("--max-sessions", metavar="N")
     edit.add_argument("--orchestrator-argv-json", metavar="JSON")
     edit.add_argument("--orchestrator-prompt", metavar="PFAD")
+    brief = edit.add_mutually_exclusive_group()
+    brief.add_argument("--brief", metavar="TEXT",
+                       help="Team-Brief (leer entfernt ihn)")
+    brief.add_argument("--brief-file", metavar="PFAD",
+                       help="Team-Brief aus Datei lesen")
     edit.add_argument("--from", dest="from_", metavar="NAME", required=True)
 
     remove = team_sub.add_parser("rm", help="Team entfernen", description="Team entfernen")
@@ -2775,7 +2818,8 @@ def build_parser():
                                        description="Einstellung setzen")
     set_item.add_argument("key", metavar="SCHLÜSSEL",
                           help="max_sessions, reviewer, orchestrator_argv, "
-                               "max_sessions_total, tick_*_minutes oder "
+                               "max_sessions_total, context_limit, "
+                               "tick_*_minutes oder "
                                "orchestrator_dispatches/orchestrator_idle_minutes")
     set_item.add_argument("value", metavar="WERT")
     set_item.add_argument("--team", metavar="NAME",
@@ -2837,13 +2881,21 @@ def build_parser():
     set_repo = repo_sub.add_parser("set", help="Repo-Datei schreiben",
                                    description="Repo-Datei schreiben")
     set_repo.add_argument("path", metavar="PFAD")
-    set_repo.add_argument("kind", metavar="DATEI", choices=("verify", "lessons"))
+    set_repo.add_argument("kind", metavar="DATEI",
+                          choices=("verify", "lessons", "project"))
     set_repo.add_argument("--text", metavar="T", required=True)
     set_repo.add_argument("--from", dest="from_", metavar="NAME", required=True)
     test_repo = repo_sub.add_parser("test", help="Prüfskript ausführen",
                                     description="Prüfskript ausführen")
     test_repo.add_argument("path", metavar="PFAD")
     test_repo.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe")
+
+    item = command("context", "Prompt-Kontext aus Steckbrief und Team-Brief zeigen",
+                   cmd_context)
+    item.add_argument("id", metavar="ID", nargs="?",
+                      help="Ticket-ID; zeigt den Kontext dieses Tickets")
+    item.add_argument("--team", metavar="NAME",
+                      help="Kontext eines ganzen Teams")
 
     item = command("lesson", "Lehren vorschlagen, bestätigen und verwerfen", cmd_lesson)
     lesson_sub = item.add_subparsers(dest="action", metavar="AKTION", required=True)

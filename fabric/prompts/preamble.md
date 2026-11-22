@@ -31,6 +31,10 @@ fab preview shot {id}    # PNG landet über `fab attach` am Ticket
 fab preview stop {id}
 ```
 
+## Projekt und Team
+
+{context}
+
 ## Lehren aus früheren Tickets
 
 Diese bestätigten Lehren stammen aus `.fabric/lessons.md` des Repos. Prüfe sie

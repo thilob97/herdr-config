@@ -24,6 +24,8 @@ MIN_SESSIONS, MAX_SESSIONS = 1, 16
 MAX_SESSIONS_TOTAL = 64
 DEFAULT_MAX_SESSIONS = 4
 DEFAULT_ORCHESTRATOR_PROMPT = "prompts/orchestrator.md"
+DEFAULT_CONTEXT_LIMIT = 6000
+MAX_CONTEXT_LIMIT = 100000
 
 
 # ---------------------------------------------------------------- Prüfungen
@@ -89,6 +91,22 @@ def check_total_sessions(raw):
         raise FabError(
             f"{GLOBAL_KEY} muss zwischen {MIN_SESSIONS} und {MAX_SESSIONS_TOTAL} "
             f"liegen, nicht {value}"
+        )
+    return value
+
+
+def check_context_limit(raw):
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        raise FabError(
+            f"context_limit muss eine ganze Zahl zwischen 0 und "
+            f"{MAX_CONTEXT_LIMIT} sein"
+        )
+    if value < 0 or value > MAX_CONTEXT_LIMIT:
+        raise FabError(
+            f"context_limit muss zwischen 0 und {MAX_CONTEXT_LIMIT} liegen, "
+            f"nicht {value}"
         )
     return value
 
@@ -507,6 +525,16 @@ def _total(data, fallback):
     return max(MIN_SESSIONS, fallback)
 
 
+def _context_limit(data):
+    raw = data.get("context_limit") if isinstance(data, dict) else None
+    if raw is None:
+        return DEFAULT_CONTEXT_LIMIT
+    try:
+        return check_context_limit(raw)
+    except FabError:
+        return DEFAULT_CONTEXT_LIMIT
+
+
 def _orchestrator(raw):
     entry = raw if isinstance(raw, dict) else {}
     return {
@@ -535,6 +563,7 @@ def _legacy_agents(data):
 
 
 def expansion(data):
+    limit = _context_limit(data)
     if is_migrated(data):
         entry = first_team(data) or {}
         max_sessions = _team_limit(entry)
@@ -545,6 +574,7 @@ def expansion(data):
             "orchestrator": _orchestrator(entry.get("orchestrator")),
             "agents": all_agents(data),
             "team": str(entry.get("name") or "") or None,
+            "context_limit": limit,
         }
 
     raw_limit = data.get("max_sessions") if isinstance(data, dict) else None
@@ -560,6 +590,7 @@ def expansion(data):
         ),
         "agents": _legacy_agents(data),
         "team": None,
+        "context_limit": limit,
     }
 
 
@@ -629,6 +660,7 @@ def team_rows(data):
                 "members": members,
                 "reviewer": str(entry.get("reviewer") or ""),
                 "max_sessions": _team_limit(entry),
+                "brief": str(entry.get("brief") or ""),
                 "agents": expand_team(data, entry),
                 "prompt_shared": counts[prompt] > 1,
                 "shared_with": shared_with,
