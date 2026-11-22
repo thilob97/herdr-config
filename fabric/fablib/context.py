@@ -13,6 +13,9 @@ DEFAULT_LIMIT = teams.DEFAULT_CONTEXT_LIMIT
 PROJECT_TITLE = "Projekt-Steckbrief"
 BRIEF_TITLE = "Team-Brief"
 HINT = "[…] gekürzt, vollständig in {source}"
+SHORT_HINT = "[…] gekürzt"
+# Kürzester vollständiger Hinweis; `fab settings` weist kleinere Grenzen ab.
+MIN_LIMIT = len(SHORT_HINT)
 
 
 def limit(roster):
@@ -37,18 +40,25 @@ def compose(sections):
 
 
 def clip(text, maximum, source=""):
-    """Auf höchstens `maximum` Zeichen kürzen; der Hinweis nennt den Pfad."""
+    """Auf höchstens `maximum` Zeichen kürzen; der Hinweis nennt den Pfad.
+
+    `maximum == 0` schaltet den Kontext ab. Liegt `maximum` unter der Länge
+    des kürzesten Hinweises, bleibt der Hinweis trotzdem vollständig; `fab
+    settings` weist solche Werte ab.
+    """
     maximum = teams.check_context_limit(maximum)
+    if maximum == 0:
+        return ""
     if len(text) <= maximum:
         return text
     marker = "\n\n" + (
-        HINT.format(source=source) if source else "[…] gekürzt"
+        HINT.format(source=source) if source else SHORT_HINT
     )
     if len(marker) > maximum:
-        marker = "[…] gekürzt"
+        marker = SHORT_HINT
     room = maximum - len(marker)
     if room < 1:
-        return marker[:maximum]
+        return marker
     return text[:room].rstrip() + marker
 
 
