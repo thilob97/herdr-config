@@ -8,7 +8,8 @@ import subprocess
 from . import events, git, index, store
 from .errors import FabError
 
-VERIFY_TIMEOUT = 600
+# Die Testsuite dauert inzwischen über zehn Minuten; 600 s reichten nicht mehr.
+VERIFY_TIMEOUT = 1200
 TAIL_LINES = 40
 VERIFY = "verify.sh"
 LESSONS = "lessons.md"
