@@ -548,3 +548,38 @@ class CliTests(FabricCase):
             ["fab-zwei-bob-t-2"],
         )
         self.assertEqual(rows["ada"]["running"], [])
+
+    def test_verdict_mit_altem_head_bucht_nicht_auf_neuen_head(self):
+        repo, tid, worktree = self.ready_ticket()
+        self.commit_in(worktree, "aenderung.txt", "wert\n")
+        self.passing_verify(worktree)
+        self.ok("verify", tid)
+        old = self.git_out(worktree, "rev-parse", "HEAD")
+        self.commit_in(worktree, "nachher.txt", "neu\n")
+        result = self.cli(
+            "verdict", tid, "pass", "--from", "ada", "--head", old, "alter Stand"
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("neuer Commit", result.stderr)
+        self.assertIn(old[:7], result.stderr)
+        self.assertIsNone(self.ticket(tid)["verdict"])
+        new = self.git_out(worktree, "rev-parse", "HEAD")
+        self.ok("verdict", tid, "pass", "--from", "ada", "--head", new, "neuer Stand")
+        self.assertEqual(self.ticket(tid)["verdict"]["head"], new)
+
+    def test_accept_verweigert_urteil_auf_altem_head(self):
+        repo, tid, worktree = self.ready_ticket()
+        self.commit_in(worktree, "aenderung.txt", "wert\n")
+        self.passing_verify(worktree)
+        self.ok("verify", tid)
+        old = self.git_out(worktree, "rev-parse", "HEAD")
+        self.ok("verdict", tid, "pass", "--from", "ada", "gut")
+        self.ok("handover", tid, "--from", "zap", "fertig")
+        self.commit_in(worktree, "nachher.txt", "neu\n")
+        result = self.cli("accept", tid)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(f"Urteil gilt für HEAD {old[:7]}", result.stderr)
+        ticket = self.ticket(tid)
+        self.assertEqual(ticket["status"], "review")
+        self.assertEqual(ticket["verdict"]["head"], old)
+        self.assertTrue(os.path.isdir(worktree))

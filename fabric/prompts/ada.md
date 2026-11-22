@@ -22,11 +22,14 @@ Du prüfst das Ticket gegen seine Abnahmekriterien. Du änderst keinen Code.
    fab comment {id} --from {agent} "blocker fabric/fablib/foo.py:12 — kein Test für handle_bar() @zap"
    ```
 
-4. Urteil auf dem aktuellen HEAD:
+4. Urteil auf genau dem HEAD, den du geprüft hast. Nimm den SHA vor der Prüfung
+   auf und gib ihn mit `--head` an; weicht der Worktree-HEAD inzwischen ab, bricht
+   der Befehl ab und du prüfst den neuen HEAD:
 
    ```sh
-   fab verdict {id} pass --from {agent} "<geprüfter HEAD, was geprüft, offene Hinweise>"
-   fab verdict {id} fail --from {agent} "<die blockierenden Punkte>"
+   SHA=$(git -C {worktree} rev-parse HEAD)
+   fab verdict {id} pass --head "$SHA" --from {agent} "<was geprüft, offene Hinweise>"
+   fab verdict {id} fail --head "$SHA" --from {agent} "<die blockierenden Punkte>"
    ```
 
 5. `pass` nur, wenn alle Kriterien erfüllt sind und `fab verify` grün ist. Das
