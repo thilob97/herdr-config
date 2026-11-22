@@ -135,10 +135,7 @@ def send(address, text):
 
 
 def run(name, cwd, argv, prompt, labels=None, want_json=True):
-    """`hc run --bg …`; gibt die JSON-Antwort zurück (mit `address`).
-
-    `prompt=None` hängt keinen Prompt als letztes Argument an.
-    """
+    """`hc run --bg …`; gibt die JSON-Antwort zurück (mit `address`)."""
     if not argv:
         raise HcError("Startbefehl fehlt (argv im Roster)")
     args = ["run", "--bg"]
@@ -147,9 +144,7 @@ def run(name, cwd, argv, prompt, labels=None, want_json=True):
     args += ["--name", name, "--cwd", cwd]
     for key, value in (labels or {}).items():
         args += ["--label", f"{key}={value}"]
-    args += ["--no-parent", "--outlive-parent", "--", *argv]
-    if prompt is not None:
-        args.append(prompt)
+    args += ["--no-parent", "--outlive-parent", "--", *argv, prompt]
     result = _run(args, timeout=120)
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip() or f"Exit {result.returncode}"
