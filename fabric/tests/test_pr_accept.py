@@ -418,6 +418,28 @@ class PrAcceptTests(FabricCase):
             [],
         )
 
+    def test_lokaler_accept_prueft_die_lokale_basis_trotz_origin(self):
+        repo, tid, worktree = self.review_ticket()
+        recorded = self.ticket(tid)["merge"]["tree"]
+        bare = self.setup_origin(repo)
+        clone = os.path.join(self.tmp, "clone-lokal")
+        subprocess.run(["git", "clone", "-q", bare, clone], check=True)
+        self.git(clone, "config", "user.email", "test@example.com")
+        self.git(clone, "config", "user.name", "Test")
+        self.write_file(os.path.join(clone, "nur-origin.txt"), "origin\n")
+        self.git_out(clone, "add", "nur-origin.txt")
+        self.git_out(clone, "commit", "-qm", "origin läuft weiter")
+        self.git_out(clone, "push", "-q", "origin", "main")
+
+        result = self.ok("accept", tid, env=self.gh_env(GH_AUTH_FAIL="1"))
+
+        self.assertIn("angenommen", result.stdout)
+        self.assertEqual(self.ticket(tid)["status"], "done")
+        self.assertEqual(self.git_out(repo, "rev-parse", "main^{tree}"), recorded)
+        self.assertFalse(
+            [call for call in self.gh_calls() if call[:2] == ["pr", "create"]]
+        )
+
     def test_pr_accept_verweigert_neuen_merge_tree(self):
         repo, tid, worktree = self.review_ticket()
         old_tree = self.ticket(tid)["merge"]["tree"]
@@ -443,6 +465,7 @@ class PrAcceptTests(FabricCase):
         )
         ticket = self.ticket(tid)
         self.assertEqual(ticket["status"], "doing")
+        self.assertIsNone(ticket.get("verdict"))
         self.assertNotEqual(ticket["merge"]["tree"], old_tree)
         self.assertEqual(ticket["merge"]["state"], "pass")
         self.assertEqual(

@@ -243,6 +243,7 @@ class GitflowTests(FabricCase):
         ticket = self.ticket(tid)
         self.assertEqual(ticket["status"], "doing")
         self.assertNotIn("mensch", ticket["waiting"])
+        self.assertIsNone(ticket.get("verdict"))
         self.assertNotEqual(ticket["merge"]["tree"], old_tree)
         self.assertEqual(ticket["merge"]["state"], "pass")
         self.assertEqual(
@@ -251,6 +252,75 @@ class GitflowTests(FabricCase):
         self.assertEqual([row[1] for row in self.hc_calls("send")], ["t1"])
         self.assertFalse(os.path.isfile(os.path.join(repo, "aenderung.txt")))
         self.assertEqual(self.merge_worktrees(tid), [])
+        # Ohne neues Urteil darf die Übergabe nicht wieder durchgehen.
+        again = self.cli("handover", tid, "--from", "zap", "nochmal")
+        self.assertNotEqual(again.returncode, 0)
+        self.assertIn("kein Urteil", again.stderr)
+
+    def test_accept_weckt_bei_rotem_neuen_merge_stand_zustaendigen(self):
+        repo, tid, worktree = self.ready_ticket()
+        self.commit_in(worktree, "aenderung.txt", "wert\n")
+        self.write_file(
+            os.path.join(worktree, ".fabric", "verify.sh"),
+            "#!/bin/sh\ntest ! -f main-rot.txt\n",
+        )
+        self.git_out(worktree, "add", ".fabric/verify.sh")
+        self.git_out(worktree, "commit", "-qm", "Prüfskript")
+        self.ok("verify", tid)
+        self.ok("verdict", tid, "pass", "--from", "ada", "gut")
+        self.ok("handover", tid, "--from", "zap", "fertig")
+        self.write_file(os.path.join(repo, "main-rot.txt"), "rot\n")
+        self.git_out(repo, "add", "main-rot.txt")
+        self.git_out(repo, "commit", "-qm", "main macht den Merge rot")
+        self.set_live({"fab-zap-t-1": "t7"})
+        self.clear_log()
+        mark = self.mark()
+
+        result = self.cli("accept", tid)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ist rot", result.stderr)
+        self.assertIn("nicht abgenommen", result.stderr)
+        ticket = self.ticket(tid)
+        self.assertEqual(ticket["status"], "doing")
+        self.assertIsNone(ticket.get("verdict"))
+        self.assertNotIn("mensch", ticket["waiting"])
+        self.assertEqual(ticket["merge"]["state"], "fail")
+        self.assertEqual(
+            [row["target"] for row in self.wake_since(mark, tid)], ["zap"]
+        )
+        self.assertEqual([row[1] for row in self.hc_calls("send")], ["t7"])
+        self.assertFalse(os.path.isfile(os.path.join(repo, "aenderung.txt")))
+        self.assertEqual(self.merge_worktrees(tid), [])
+
+    def test_accept_weckt_bei_neuem_merge_konflikt_zustaendigen(self):
+        repo, tid, worktree = self.review_ticket()
+        self.write_file(os.path.join(repo, "aenderung.txt"), "von main\n")
+        self.git_out(repo, "add", "aenderung.txt")
+        self.git_out(repo, "commit", "-qm", "main ändert dieselbe Datei")
+        self.set_live({"fab-zap-t-1": "t7"})
+        self.clear_log()
+        mark = self.mark()
+
+        result = self.cli("accept", tid)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Merge-Konflikt", result.stderr)
+        self.assertIn("nicht abgenommen", result.stderr)
+        ticket = self.ticket(tid)
+        self.assertEqual(ticket["status"], "doing")
+        self.assertIsNone(ticket.get("verdict"))
+        self.assertNotIn("merge", ticket)
+        self.assertNotIn("mensch", ticket["waiting"])
+        self.assertEqual(
+            [row["target"] for row in self.wake_since(mark, tid)], ["zap"]
+        )
+        self.assertEqual([row[1] for row in self.hc_calls("send")], ["t7"])
+        with open(os.path.join(repo, "aenderung.txt")) as handle:
+            self.assertEqual(handle.read(), "von main\n")
+        self.assertEqual(
+            self.git_out(repo, "log", "--merges", "--oneline"), ""
+        )
 
     def test_accept_nimmt_bei_gleichem_merge_tree_ab(self):
         repo, tid, worktree = self.review_ticket()
