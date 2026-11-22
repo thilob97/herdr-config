@@ -237,7 +237,7 @@ def _tick_ticket(ticket, roster, live, cfg, by_id, lines, dry, ended=()):
         status == "doing"
         and not _live_session(ticket, live)
         and "mensch" not in (ticket.get("waiting") or [])
-        and _assignee(ticket) not in ("", "mensch")
+        and _assignee(ticket) != "mensch"
     ):
         pending = ended
         if not pending and stall is None:
@@ -246,7 +246,7 @@ def _tick_ticket(ticket, roster, live, cfg, by_id, lines, dry, ended=()):
             handled = _attention(
                 ticket,
                 "doing",
-                _assignee(ticket),
+                _assignee(ticket) or "orchestrator",
                 _ended_reason(pending),
                 lines,
                 dry,
@@ -267,7 +267,10 @@ def _tick_ticket(ticket, roster, live, cfg, by_id, lines, dry, ended=()):
     ):
         assignee = _assignee(ticket)
         if not assignee or assignee == "mensch":
-            if stall and not _live_session(ticket, live):
+            # Ohne Zuständigen weckt Regel 1 nie; die Sofortmeldung an den
+            # Orchestrator bleibt stehen, bis das Ticket übernommen wird.
+            keep = not assignee and (stall or {}).get("rule") == "doing"
+            if stall and not keep and not _live_session(ticket, live):
                 changed = _dissolve(ticket, lines, dry) or changed
             return changed
         chosen = (
