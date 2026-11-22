@@ -448,8 +448,11 @@ def remember_session(ticket, agent, name, terminal=None):
     for session in ticket.get("sessions") or []:
         if (session or {}).get("name") != name:
             continue
-        if terminal and not session.get("terminal"):
-            session["terminal"] = terminal
+        if terminal:
+            if session.get("terminal") != terminal:
+                session["terminal"] = terminal
+                session.pop("seen_live", None)
+            session.pop("ended", None)
         return session
     session = {
         "agent": agent,

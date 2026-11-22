@@ -22,6 +22,7 @@ from . import (
     prompts,
     render,
     repos,
+    sessions,
     store,
     teams,
     templates,
@@ -152,6 +153,9 @@ def _dispatch_locked(ticket, agent_name, actor, roster):
         live = hc.live()
     except HcError as exc:
         raise FabError(f"Agenten nicht prüfbar: {exc}")
+    # Beendete Sessions zuerst festhalten: „läuft schon“ gilt nur für eine
+    # lebende Session, sonst startet der Lauf unten neu.
+    sessions.report([ticket], live)
     terminal = hc.terminal_name(agent_name, ticket["id"], team_name)
     candidates = [terminal]
     if team_name == teams.legacy_team_name(roster):
@@ -509,9 +513,8 @@ def cmd_show(args):
     ticket = store.load(args.id)
     roster = agents.load(required=False)
     cost = costs.collect(ticket)
-    waits = costs.waits(
-        ticket, store.event_rows_for(ticket["id"]), _reviewer(roster)
-    )
+    rows = store.event_rows_for(ticket["id"])
+    waits = costs.waits(ticket, rows, _reviewer(roster))
     if args.json:
         data = dict(ticket)
         data["cost"] = cost
@@ -520,7 +523,9 @@ def cmd_show(args):
     else:
         children = store.children_of(store.all_tickets(), ticket["id"])
         sys.stdout.write(
-            render.ticket_text(ticket, children=children, cost=cost, waits=waits)
+            render.ticket_text(
+                ticket, children=children, cost=cost, waits=waits, events=rows
+            )
         )
     return 0
 

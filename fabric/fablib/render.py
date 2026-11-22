@@ -73,7 +73,7 @@ def _wait_section(waits):
     return lines
 
 
-def ticket_text(ticket, children=None, cost=None, waits=None):
+def ticket_text(ticket, children=None, cost=None, waits=None, events=None):
     lines = [f"# {ticket['id']} {ticket['title']}", ""]
     meta = [
         f"Status: {ticket['status']}",
@@ -133,6 +133,20 @@ def ticket_text(ticket, children=None, cost=None, waits=None):
                 f"- {session.get('agent')} · {session.get('name')} · "
                 f"{session.get('terminal')} · {fmt_ms(session.get('started_at'))}"
             )
+    ended = [
+        row for row in (events or [])
+        if isinstance(row, dict) and row.get("kind") == "session_ended"
+    ]
+    if ended:
+        lines.extend(["", "## Beendete Sessions"])
+        for row in ended:
+            head = f"- {fmt_ms(row.get('at'))} · {row.get('target') or '—'}"
+            reason = str(row.get("reason") or "").strip()
+            if reason:
+                head += f": {reason}"
+            lines.append(head)
+            for text_line in str(row.get("text") or "").splitlines():
+                lines.append(f"  {text_line}")
     snapshot = cost if cost is not None else ticket.get("cost")
     if isinstance(snapshot, dict):
         lines.extend(_cost_section(ticket, snapshot))
