@@ -4,6 +4,8 @@ import glob
 import json
 import os
 import subprocess
+import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -496,6 +498,131 @@ FAILED (failures=2)
         self.assertLessEqual(len(quote.splitlines()), autopilot.QUOTE_MAX_LINES)
         self.assertIn("ERROR: fehler_0", quote)
         self.assertIn("weitere Zeilen", quote)
+        self.assertNotIn("Zeichen gekürzt", quote)
+
+    def test_quote_names_line_and_char_truncation(self):
+        """Echte Python-3.11-Ausgabe: zwei Fehler, Caret-Zeilen, lange Pfade."""
+        module = '''import unittest
+
+
+class Zeichenfolgen(unittest.TestCase):
+    def test_alpha(self):
+        self.assertEqual(
+            "ein sehr langer erwarteter text mit vielen zeichen",
+            "ein sehr langer tatsaechlicher text mit vielen zeichen",
+        )
+
+    def test_beta(self):
+        self.assertEqual(
+            {"schluessel": "ein sehr langer wert mit vielen zeichen"},
+            {"schluessel": "ein anderer sehr langer wert mit zeichen"},
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
+'''
+        with tempfile.TemporaryDirectory() as folder:
+            folder = os.path.join(folder, "very_long_directory_name_for_paths")
+            os.makedirs(folder)
+            path = os.path.join(folder, "test_long_paths.py")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(module)
+            proc = subprocess.run(
+                [sys.executable, path, "-v"], capture_output=True, text=True
+            )
+        text = proc.stdout + proc.stderr
+        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(text.count("FAIL: "), 2)
+        self.assertIn("\n? ", text)
+        self.assertIn(folder, text)
+        self.assertGreater(len(text.splitlines()), autopilot.QUOTE_MAX_LINES)
+        self.assertGreater(len(text), autopilot.QUOTE_MAX_CHARS)
+        quote = autopilot._first_errors(text)
+        self.assertIn("FAIL: test_alpha", quote)
+        self.assertIn("AssertionError", quote)
+        self.assertRegex(quote, r"… \(\d+ weitere Zeilen, Zeichen gekürzt\)")
+        self.assertLessEqual(len(quote), autopilot.QUOTE_MAX_CHARS)
+
+    def test_quote_is_capped_at_max_chars(self):
+        text = "ERROR: " + "x" * 2000
+        quote = autopilot._first_errors(text)
+        self.assertLessEqual(len(quote), autopilot.QUOTE_MAX_CHARS)
+        self.assertIn("Zeichen gekürzt", quote)
+        self.assertNotIn("weitere Zeilen", quote)
+        self.assertTrue(quote.startswith("ERROR: x"))
+
+    def test_quote_contains_node_spec_reporter_failure(self):
+        text = """✖ bricht bei ungleichen Werten ab (1.417583ms)
+✖ zweiter Fehler (1.366209ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 0
+ℹ fail 2
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 93.049291
+
+✖ failing tests:
+
+test at fail.mjs:3:1
+✖ bricht bei ungleichen Werten ab (1.417583ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  1 !== 2
+  
+      at TestContext.<anonymous> (file:///private/tmp/t84/fail.mjs:4:10)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.start (node:internal/test_runner/test:1096:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:385:17) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 1,
+    expected: 2,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at fail.mjs:6:1
+✖ zweiter Fehler (1.366209ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    {
+  +   a: 1
+  -   a: 2
+    }
+  
+      at TestContext.<anonymous> (file:///private/tmp/t84/fail.mjs:7:10)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1201:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
+      at Test.postRun (node:internal/test_runner/test:1330:19)
+      at Test.run (node:internal/test_runner/test:1258:12)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: { a: 1 },
+    expected: { a: 2 },
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+"""
+        quote = autopilot._first_errors(text)
+        self.assertIn("✖ bricht bei ungleichen Werten ab", quote)
+        self.assertIn("AssertionError [ERR_ASSERTION]", quote)
+        self.assertIn("1 !== 2", quote)
+        self.assertNotIn("failing tests:", quote)
+
+    def test_error_quote_names_each_truncated_stream(self):
+        stdout = "\n".join(f"ERROR: stdout_{number}" for number in range(30))
+        stderr = "\n".join(f"ERROR: stderr_{number}" for number in range(30))
+        quote = autopilot._error_quote(stdout, stderr)
+        self.assertIn("stdout:", quote)
+        self.assertIn("stderr:", quote)
+        self.assertEqual(quote.count("weitere Zeilen"), 2)
 
     def test_attach_output_keeps_equal_streams_separate(self):
         cases = (("leer", "", ""), ("gleich", "gleicher Text\n", "gleicher Text\n"))

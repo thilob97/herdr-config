@@ -31,7 +31,8 @@ DISPATCH_MIN = 30 * 60
 NUDGE_LOCK = 30 * 60
 CONFIG_PATHS = ("fabric/roster.json", "fabric/prompts/")
 VERIFY_SCRIPT = ".fabric/verify.sh"
-ERROR_MARKERS = ("FAIL", "ERROR", "Traceback", "not ok")
+ERROR_MARKERS = ("FAIL", "ERROR", "Traceback", "not ok", "failing tests")
+SPEC_SECTION = re.compile(r"^test at \S+:\d+:\d+$")  # node --test, spec-Reporter
 QUOTE_MAX_LINES = 20     # Obergrenze für das Zitat
 QUOTE_MAX_CHARS = 1200
 TAIL_CHARS = 600
@@ -308,13 +309,34 @@ def _block_end(lines, start):
     return len(lines)
 
 
+def _spec_section(lines, start):
+    """Node-spec: Detailblock ab `test at …` bis zum nächsten Detailblock."""
+    end = start + 1
+    while end < len(lines) and not SPEC_SECTION.match(lines[end].strip()):
+        end += 1
+    section = lines[start:end]
+    while section and not section[-1].strip():
+        section.pop()
+    return section, end
+
+
 def _first_errors(text):
     """Alle Fehlerblöcke eines Stroms: Trefferzeile plus Kontext, begrenzt."""
     lines = (text or "").splitlines()
+    spec = any("failing tests" in line for line in lines)
     blocks = []
     index = 0
     while index < len(lines):
-        if not any(marker in lines[index] for marker in ERROR_MARKERS):
+        line = lines[index]
+        if spec and SPEC_SECTION.match(line.strip()):
+            section, index = _spec_section(lines, index)
+            blocks.append(section)
+            continue
+        if not any(marker in line for marker in ERROR_MARKERS):
+            index += 1
+            continue
+        if "failing tests" in line:
+            # Kopf des spec-Reporters; die Details stehen in den Blöcken darunter.
             index += 1
             continue
         end = _block_end(lines, index)
@@ -323,14 +345,19 @@ def _first_errors(text):
     if not blocks:
         return ""
     flat = [line for block in blocks for line in block]
+    notes = []
     if len(flat) > QUOTE_MAX_LINES:
         kept = flat[:QUOTE_MAX_LINES - 1]
-        quote = "\n".join(kept) + f"\n… ({len(flat) - len(kept)} weitere Zeilen)"
+        notes.append(f"{len(flat) - len(kept)} weitere Zeilen")
     else:
-        quote = "\n".join(flat)
-    if len(quote) > QUOTE_MAX_CHARS:
-        quote = quote[:QUOTE_MAX_CHARS].rstrip() + "\n… (gekürzt)"
-    return quote
+        kept = flat
+    body = "\n".join(kept)
+    suffix = f"\n… ({', '.join(notes)})" if notes else ""
+    if len(body + suffix) > QUOTE_MAX_CHARS:
+        notes.append("Zeichen gekürzt")
+        suffix = f"\n… ({', '.join(notes)})"
+        body = body[:max(0, QUOTE_MAX_CHARS - len(suffix))].rstrip()
+    return body + suffix
 
 
 def _error_quote(stdout, stderr):
