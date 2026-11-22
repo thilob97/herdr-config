@@ -1,8 +1,8 @@
 """Lesemodell: Struktur, Inbox-Arten, Grenzen von index.json."""
 import json
 import os
-import time
 
+from fabric.fablib import store
 from fabric.tests.support import FabricCase
 
 
@@ -64,7 +64,7 @@ class IndexTests(FabricCase):
 
     def test_inbox_attention_pingpong_und_erloeschen(self):
         tid = self.new("Ping")
-        now = int(time.time() * 1000)
+        now = store.now_ms()
         self.add_events(
             [
                 {"at": now - 1000, "kind": "wake", "ticket": tid, "actor": "zap",
@@ -84,7 +84,7 @@ class IndexTests(FabricCase):
         self.assertEqual(attention, [])
 
     def test_hoechstens_300_ereignisse_und_unter_1_mib(self):
-        now = int(time.time() * 1000)
+        now = store.now_ms()
         self.add_events(
             [
                 {"at": now + index, "kind": "comment", "ticket": "T-9",

@@ -402,9 +402,9 @@ class SqliteTests(FabricCase):
 
     @staticmethod
     def today():
-        from datetime import date
+        from datetime import datetime
 
-        return date.today().isoformat()
+        return datetime.fromtimestamp(store.now_ms() / 1000).date().isoformat()
 
     # 8
 

@@ -3,6 +3,7 @@ import json
 import os
 import re
 import time
+from datetime import datetime, timedelta
 from unittest import mock
 
 from fabric.tests.support import FabricCase
@@ -33,9 +34,25 @@ class CostsCliCase(FabricCase):
         )
         patcher.start()
         self.addCleanup(patcher.stop)
+        if "FAB_NOW" in os.environ:
+            self._saved_now = os.environ["FAB_NOW"]
+            self.addCleanup(os.environ.__setitem__, "FAB_NOW", self._saved_now)
+        else:
+            self.addCleanup(os.environ.pop, "FAB_NOW", None)
+        noon = datetime.now().replace(
+            hour=12, minute=0, second=0, microsecond=0
+        )
+        self.set_now(noon)
+
+    def set_now(self, moment):
+        """Fixtuhr für Subprozesse und direkte store-Aufrufe setzen."""
+        self._now = moment
+        raw = moment.isoformat(timespec="milliseconds")
+        self.env["FAB_NOW"] = raw
+        os.environ["FAB_NOW"] = raw
 
     def now(self):
-        return int(time.time() * 1000)
+        return int(self._now.timestamp() * 1000)
 
     def omp_key(self, path):
         home = str(self.env.get("HOME") or "").rstrip("/")
@@ -73,15 +90,8 @@ class CostsCliCase(FabricCase):
         folder = self.worktree(tid)
         os.makedirs(folder, exist_ok=True)
         now = self.now()
-        local = time.localtime(now / 1000)
-        midnight = int(time.mktime(
-            (local.tm_year, local.tm_mon, local.tm_mday, 0, 0, 0, 0, 0,
-             local.tm_isdst)
-        ) * 1000)
-        # Kurz nach Mitternacht liegt "vor einer Stunde" noch am Vortag; dann
-        # beginnt das Fenster heute und die Ereignisse liegen im verstrichenen Teil.
-        started = max(now - 3_600_000, midnight)
-        elapsed = max(now - started, 1)
+        started = now - 3_600_000
+        elapsed = 3_600_000
         self.add_events(
             [
                 {"kind": "status", "ticket": tid, "text": "todo → doing",
@@ -189,3 +199,24 @@ class CostsCliCase(FabricCase):
         self.assertEqual(len(again), 1)
         self.assertEqual(ticket["cost"]["total"], 0.42)
         self.assertIn("waits", self.ticket(tid))
+
+    def test_nachts_zaehlt_die_session_von_gestern_nicht_heute(self):
+        midnight = datetime.now().replace(
+            hour=0, minute=30, second=0, microsecond=0
+        )
+        self.set_now(midnight)
+        tid = self.prepare()
+        expected = int((midnight - timedelta(hours=1)).timestamp() * 1000)
+        payload = json.loads(self.ok("show", tid, "--json").stdout)
+        self.assertEqual(payload["cost"]["total"], 0.42)
+        self.assertEqual(payload["cost"]["today"], 0.0)
+        self.assertEqual(
+            payload["cost"]["sessions"][0]["started_at"], expected
+        )
+        team = json.loads(
+            self.ok("stats", "--team", "herdr-app", "--json").stdout
+        )
+        self.assertEqual(team["total"], 0.42)
+        self.assertEqual(team["today"], 0.0)
+        today = json.loads(self.ok("stats", "--today", "--json").stdout)
+        self.assertEqual(today["today"], 0.0)

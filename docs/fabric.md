@@ -37,6 +37,7 @@ lock                 flock für Schreibvorgänge und die einmalige Migration
 
 Die gesamte Datenhaltung läuft über die schmale Schnittstelle in `fabric/fablib/store.py`; kein anderes Modul öffnet `fabric.db` oder die Dateien unter `data/fabric/` selbst. Ausnahme ist die Erzeugung der Lesemodelle `index.json` und `tickets/<ID>.json`.
 
+- **Zeit.** Alle Uhrleser (`store.now_ms()`, Kosten, Liegezeiten, Vorschau, Sicherung) nutzen die zentrale Uhr in `fabric/fablib/clock.py`. Ohne `FAB_NOW` gilt die echte Uhr; `FAB_NOW` (Epoch-Millisekunden oder ISO 8601, ohne Zone lokal) friert sie für Tests ein.
 - **Eine Änderung = eine Transaktion.** Ticket, Ereignis und Zähler werden gemeinsam festgeschrieben oder gar nicht; ein abgebrochener Schreibvorgang hinterlässt keinen halben Zustand.
 - **Lesemodelle aus der DB.** Nach dem Commit schreibt `fab` die betroffenen `tickets/<ID>.json` und `index.json` neu. Der Mod und die Seitenleiste lesen weiterhin nur diese Dateien und bleiben unverändert.
 - **Migration.** Fehlt `fabric.db` und liegen Altdateien (`tickets/*.json`, `counter`, `events.jsonl`) vor, überführt der erste Aufruf sie automatisch; `fab migrate` macht dasselbe ausdrücklich. Der Bericht vergleicht Tickets, Kommentare, Sessions, Ereignisse, Anhänge und Zähler in Alt und Neu. Bei Abweichung bleibt die DB aus, die Altdateien bleiben unberührt, und `fab` arbeitet weiter auf ihnen, bis die Migration gelingt. Nach Erfolg wandern die Altdateien nach `legacy/`.

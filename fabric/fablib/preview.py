@@ -13,6 +13,7 @@ import sys
 import time
 from datetime import datetime
 
+from . import clock
 from .errors import FabError
 
 APP = "herdr-app"
@@ -188,7 +189,7 @@ def _seed_metrics(state):
     """
     from . import events, index, store
 
-    now = int(time.time() * 1000)
+    now = clock.now_ms()
     sessions = [
         {
             "agent": "zap",
@@ -348,7 +349,7 @@ def start(ticket, page="board"):
         "fab_home": fab_home(ticket_id),
         "log": os.path.join(base, "app.log"),
         "page": page or "board",
-        "started_at": int(time.time() * 1000),
+        "started_at": clock.now_ms(),
     }
     for folder in (
         state["home"],
@@ -388,7 +389,9 @@ def shot(ticket):
         raise FabError(f"{ticket_id}: keine Vorschau")
     shots = os.path.join(root(ticket_id), "shots")
     os.makedirs(shots, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")[:-3]
+    stamp = datetime.fromtimestamp(clock.now_ms() / 1000).strftime(
+        "%Y%m%d-%H%M%S-%f"
+    )[:-3]
     png = os.path.join(shots, f"{stamp}-{state.get('pid')}.png")
     try:
         result = subprocess.run(

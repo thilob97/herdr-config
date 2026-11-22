@@ -1,7 +1,7 @@
 """Neustart des Team-Orchestrators: Zähler, Leerlauf, Sperre (T-31)."""
 import json
-import time
 
+from fabric.fablib import store
 from fabric.tests.support import FabricCase
 
 MINUTE = 60 * 1000
@@ -10,7 +10,7 @@ ORCHESTRATOR = "fab-herdr-app-orchestrator"
 
 class OrchestratorRestartCase(FabricCase):
     def now(self):
-        return int(time.time() * 1000)
+        return store.now_ms()
 
     def ticket_id(self):
         return self.ok(

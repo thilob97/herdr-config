@@ -17,8 +17,9 @@ import bisect
 import json
 import os
 import re
-import time
 from datetime import datetime, timezone
+
+from . import clock
 
 FOLDER_RE = re.compile(r"[^A-Za-z0-9]")
 START_RE = re.compile(r"(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z")
@@ -32,7 +33,7 @@ STAGES = (
 
 
 def _now(now=None):
-    return int(time.time() * 1000) if now is None else int(now)
+    return clock.now_ms() if now is None else int(now)
 
 
 def _number(value):
