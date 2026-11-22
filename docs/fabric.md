@@ -182,6 +182,7 @@ Alle schreibenden Befehle laufen in genau einer Transaktion, hängen Ereignisse 
 | `fab wake ID NAME --from NAME ["<text>"]` | Wecken von Hand, gleiche Regeln wie bei Erwähnungen |
 | `fab tick [--dry-run] [--install\|--uninstall]` | Stillstandswächter (Abschnitt 4b). Ohne Optionen ein Lauf: wecken/starten oder `attention`, sonst nichts; zusätzlich meldet und beendet er lebende Sessions zu `done`/`dropped`-Tickets (per Label `fab.ticket` oder Namen `fab-<team>-<agent>-t-<n>`). `--dry-run` zeigt nur die geplanten Aktionen. `--install` legt den launchd-Agent `~/Library/LaunchAgents/de.herdr.fabric.tick.plist` (Intervall 60 s) an, `--uninstall` entfernt ihn. Kein `--from`. |
 | `fab orchestrator start\|stop\|status [TEAM]` | Orchestrator-Terminal je Team verwalten (Abschnitt 5) |
+| `fab autopilot start [--until HH:MM\|done] \| stop \| resume \| status [--json]` | Autopilot-Terminal `autopilot` ohne Parent starten, beenden, eine Pause aufheben oder den Status zeigen; `--json` liefert genau den Inhalt von `$FAB_HOME/autopilot.json`. Ein zweiter Start bei laufendem Terminal bricht mit Meldung ab (Abschnitt 4d). |
 | `fab agents [--json]` | Mitglieder aller Teams mit Teamzuordnung (`teams`) und laufende Sessions. Beendete Sessions zeigen `beendet`; je Ticket und Terminalname erscheint nur der neueste Start. |
 | `fab inbox [--json]` | wie `index.json.inbox` |
 | `fab index` | `index.json` neu erzeugen |
@@ -289,6 +290,21 @@ Der Kontext des Team-Orchestrators bleibt begrenzt. Zähler und Leerlauf werden 
 - **Zähler:** Gezählt werden erfolgreiche `fab dispatch`-Aufrufe mit `--from orchestrator` seit dem letzten Start; Dispatch-Versuche mit `Start fehlgeschlagen` zählen nicht. Beim nächsten Wecken mit `@orchestrator` startet `fab` neu, statt `hc send` an die alte Session zu richten; die Weckernachricht geht an die neue Session. Schwelle `orchestrator_dispatches` (Standard 5, 0 schaltet ab).
 - **Leerlauf:** `fab tick` startet einen laufenden Orchestrator neu, wenn sein Terminal nicht `working`/`blocked` ist und seit `orchestrator_idle_minutes` (Standard 30, 0 schaltet ab) weder ein fab-Aufruf noch eine Ausgabe beobachtet wurde. Ausgabe kommt aus `hc get` (`status_ms`, sonst `created_ms`), fab-Aufrufe aus Ereignissen mit `actor: "orchestrator"` des Teams. Wartet ein offenes Ticket auf ihn (letzte Erwähnung ohne spätere Reaktion oder `orchestrator` in `waiting`), bleibt er stehen; `--dry-run` nennt den geplanten Neustart nur.
 - Der Zähler gilt je Team; `fab settings set … --team NAME` schreibt `orchestrator.dispatches` bzw. `orchestrator.idle_minutes` in das Team.
+
+## 4d. Autopilot `fab autopilot`
+
+`fab autopilot start` startet die Schleife als hc-Terminal `autopilot` ohne Parent im Haupt-Checkout. `--until HH:MM` setzt die Endzeit (heute, sonst morgen), `--until done` beendet erst, wenn nichts mehr offen ist. `stop` beendet das Terminal, `resume` hebt eine Pause auf, `status` zeigt den Status; `status --json` gibt genau die Statusdatei aus.
+
+Die Schleife läuft alle 120 s:
+
+- **Abnahme:** Tickets in `review` werden angenommen, wenn `checks` und `verdict` `pass` auf dem aktuellen Worktree-HEAD sind. Das Haupt-Checkout muss sauber sein; nur `fabric/roster.json` und `fabric/prompts/` dürfen uncommittet sein und werden als `chore: UI-Konfiguration (Autopilot)` committet.
+- **main nach dem Merge:** `.fabric/verify.sh` im Haupt-Checkout. Rot ⇒ ein zweiter Lauf nach 60 s; bleibt es rot, nimmt `git revert -m 1 --no-edit HEAD` den Merge zurück und der Autopilot pausiert. Die Pause gilt auch, wenn der Revert fehlschlägt; der Schutzschritt hängt nicht an dessen Exit-Code.
+- **Konflikt:** Scheitert `fab accept` an einem Merge-Konflikt, geht genau ein Hinweis je HEAD an den Zuständigen.
+- **Rückfragen:** Steht `mensch` in `waiting` (außer bei `review`), geht einmal je Ticket die Entscheidungsbitte an den Orchestrator.
+- **Stillstand:** Ohne lebende Session und ohne Ereignis seit 20 min wird der Zuständige geweckt (höchstens dreimal, dann der Orchestrator); zwischen Weckungen liegen mindestens 30 min.
+- **Verteilen:** Offene `todo` ohne Blocker stoßen höchstens alle 30 min einen Orchestrator-Hinweis an.
+
+Statusdatei `$FAB_HOME/autopilot.json` (Standard `data/fabric/autopilot.json`): `state` (`running`/`paused`/`stopped`), `reason`, `end` (ISO `YYYY-MM-DDTHH:MM`, leer bei `done`), `updated_at` (ms), `last_action`, `log` und `pid`. Weitere Felder dürfen hinzukommen; Leser ignorieren Unbekanntes. Die Pausemarke liegt daneben in `autopilot-pause`, das Log in `autopilot.log`.
 
 ## 5. Agenten starten
 
