@@ -3,6 +3,7 @@ import datetime
 import glob
 import json
 import os
+import subprocess
 import unittest
 from unittest import mock
 
@@ -422,6 +423,97 @@ class AutopilotCase(FabricCase):
         self.assertEqual(code, 0)
         self.assertEqual(out, "aus\n")
         self.assertEqual(err, "fehler\n")
+
+    def test_run_timeout_decodes_bytes_and_returns_124(self):
+        expired = subprocess.TimeoutExpired(
+            ["langsam"], 5, output=b"teil\n", stderr=b"fehler\n"
+        )
+        with mock.patch.object(autopilot.subprocess, "run", side_effect=expired):
+            code, out, err = autopilot._run("langsam", timeout=5)
+        self.assertEqual(code, 124)
+        self.assertEqual(out, "teil\n")
+        self.assertEqual(err, "fehler\n\nTimeout nach 5s")
+
+    def test_quote_contains_all_unittest_failures(self):
+        text = """F.
+======================================================================
+FAIL: test_alpha (tests.test_mod.Fall.test_alpha)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/tests/test_mod.py", line 8, in test_alpha
+    self.assertEqual(1, 2)
+AssertionError: 1 != 2
+
+======================================================================
+FAIL: test_beta (tests.test_mod.Fall.test_beta)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/tests/test_mod.py", line 11, in test_beta
+    self.assertEqual('a', 'b')
+AssertionError: 'a' != 'b'
+
+----------------------------------------------------------------------
+Ran 2 tests in 0.001s
+
+FAILED (failures=2)
+"""
+        quote = autopilot._first_errors(text)
+        self.assertIn("FAIL: test_alpha", quote)
+        self.assertIn("FAIL: test_beta", quote)
+        self.assertIn("AssertionError: 1 != 2", quote)
+        self.assertIn("AssertionError: 'a' != 'b'", quote)
+
+    def test_quote_contains_node_test_yaml_message(self):
+        text = """not ok 1 - bricht bei ungleichen Werten ab
+  ---
+  duration_ms: 12.3
+  type: 'test'
+  location: '/tmp/test.mjs:4:3'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+
+    1 !== 2
+
+  code: 'ERR_ASSERTION'
+  expected: 1
+  actual: 2
+  operator: 'strictEqual'
+  ...
+1..1
+# tests 1
+# pass 0
+# fail 1
+"""
+        quote = autopilot._first_errors(text)
+        self.assertIn("not ok 1 - bricht bei ungleichen Werten ab", quote)
+        self.assertIn("1 !== 2", quote)
+        self.assertNotIn("1..1", quote)
+
+    def test_quote_is_capped_at_max_lines(self):
+        text = "\n".join(f"ERROR: fehler_{number} (test_mod.Fall)" for number in range(30))
+        quote = autopilot._first_errors(text)
+        self.assertLessEqual(len(quote.splitlines()), autopilot.QUOTE_MAX_LINES)
+        self.assertIn("ERROR: fehler_0", quote)
+        self.assertIn("weitere Zeilen", quote)
+
+    def test_attach_output_keeps_equal_streams_separate(self):
+        cases = (("leer", "", ""), ("gleich", "gleicher Text\n", "gleicher Text\n"))
+        for case, stdout, stderr in cases:
+            tid = self.new(f"Anhänge {case}")
+            paths = autopilot._attach_output(tid, stdout, stderr)
+            names = [os.path.basename(path) for path in paths]
+            self.assertEqual(len(names), 2, case)
+            self.assertTrue(names[0].endswith("-stdout.log"), names)
+            self.assertTrue(names[1].endswith("-stderr.log"), names)
+            for name, expected in ((names[0], stdout), (names[1], stderr)):
+                with open(
+                    os.path.join(self.home, "attachments", tid, name),
+                    encoding="utf-8",
+                ) as handle:
+                    self.assertEqual(handle.read(), expected)
+            with self.store_env():
+                self.assertEqual(len(store.load(tid)["attachments"]), 2, case)
 
     # -- Konflikt und Rückfrage
 

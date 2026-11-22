@@ -1425,7 +1425,7 @@ def flow_approvals():
 # ---------------------------------------------------------------- Anhänge
 
 
-def _copy_attachment(source, tid, wanted):
+def _copy_attachment(source, tid, wanted, dedupe=True):
     folder = attachments_dir(tid)
     os.makedirs(folder, exist_ok=True)
     try:
@@ -1433,16 +1433,17 @@ def _copy_attachment(source, tid, wanted):
             data = handle.read()
     except OSError as exc:
         raise FabError(f"Datei nicht lesbar: {source}: {exc}")
-    for name in sorted(os.listdir(folder)):
-        target = os.path.join(folder, name)
-        if not os.path.isfile(target):
-            continue
-        try:
-            with open(target, "rb") as handle:
-                if handle.read() == data:
-                    return name
-        except OSError:
-            continue
+    if dedupe:
+        for name in sorted(os.listdir(folder)):
+            target = os.path.join(folder, name)
+            if not os.path.isfile(target):
+                continue
+            try:
+                with open(target, "rb") as handle:
+                    if handle.read() == data:
+                        return name
+            except OSError:
+                continue
     stem, suffix = os.path.splitext(wanted)
     counter = 2
     while True:
@@ -1455,11 +1456,11 @@ def _copy_attachment(source, tid, wanted):
         counter += 1
 
 
-def attachment_add(source, tid, wanted_name):
+def attachment_add(source, tid, wanted_name, dedupe=True):
     """Bildkopie plus Anhangszeile; liefert (Name, relativer Pfad)."""
     ensure()
     tid = normalize_id(tid)
-    name = _copy_attachment(source, tid, wanted_name)
+    name = _copy_attachment(source, tid, wanted_name, dedupe=dedupe)
     relative = f"data/fabric/attachments/{tid}/{name}"
     if _db_ready():
         with _auto_tx():

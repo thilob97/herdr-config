@@ -32,7 +32,6 @@ NUDGE_LOCK = 30 * 60
 CONFIG_PATHS = ("fabric/roster.json", "fabric/prompts/")
 VERIFY_SCRIPT = ".fabric/verify.sh"
 ERROR_MARKERS = ("FAIL", "ERROR", "Traceback", "not ok")
-QUOTE_AFTER = 2          # Folgezeilen nach der ersten Fehlerzeile
 QUOTE_MAX_LINES = 20     # Obergrenze für das Zitat
 QUOTE_MAX_CHARS = 1200
 TAIL_CHARS = 600
@@ -199,7 +198,7 @@ def _run(*args, cwd=None, timeout=900):
         )
     except subprocess.TimeoutExpired as exc:
         out, err = _stream_text(exc.stdout), _stream_text(exc.stderr)
-        return 1, out, err + f"\nTimeout nach {timeout}s"
+        return 124, out, err + f"\nTimeout nach {timeout}s"
     except OSError as exc:
         return 1, "", str(exc)
     return result.returncode, result.stdout or "", result.stderr or ""
@@ -287,26 +286,50 @@ def ensure_clean_main(repo=None):
     return False
 
 
+def _block_end(lines, start):
+    """Ende eines Fehlerblocks: Leerzeile, Trenner oder Ende des YAML-Blocks.
+
+    Die Strichzeile direkt unter `FAIL:`/`ERROR:` gehört zum Kopf, nicht zum
+    Blockende. In einem YAML-Block (`---`) beenden Leerzeilen den Block nicht;
+    dort gilt nur `...`.
+    """
+    yaml = False
+    for index in range(start + 1, len(lines)):
+        stripped = lines[index].strip()
+        if stripped == "...":
+            return index + 1
+        if stripped == "---":
+            yaml = True
+            continue
+        if not stripped and not yaml:
+            return index
+        if index > start + 1 and re.fullmatch(r"(?:={4,}|-{4,})", stripped):
+            return index
+    return len(lines)
+
+
 def _first_errors(text):
-    """Erster Fehlerblock: Trefferzeile plus wenige Folgezeilen, begrenzt."""
+    """Alle Fehlerblöcke eines Stroms: Trefferzeile plus Kontext, begrenzt."""
     lines = (text or "").splitlines()
-    start = next(
-        (
-            index
-            for index, line in enumerate(lines)
-            if any(marker in line for marker in ERROR_MARKERS)
-        ),
-        None,
-    )
-    if start is None:
+    blocks = []
+    index = 0
+    while index < len(lines):
+        if not any(marker in lines[index] for marker in ERROR_MARKERS):
+            index += 1
+            continue
+        end = _block_end(lines, index)
+        blocks.append(lines[index:end])
+        index = end if end > index else index + 1
+    if not blocks:
         return ""
-    block = lines[start:start + 1 + QUOTE_AFTER][:QUOTE_MAX_LINES]
-    quote = "\n".join(block)
+    flat = [line for block in blocks for line in block]
+    if len(flat) > QUOTE_MAX_LINES:
+        kept = flat[:QUOTE_MAX_LINES - 1]
+        quote = "\n".join(kept) + f"\n… ({len(flat) - len(kept)} weitere Zeilen)"
+    else:
+        quote = "\n".join(flat)
     if len(quote) > QUOTE_MAX_CHARS:
         quote = quote[:QUOTE_MAX_CHARS].rstrip() + "\n… (gekürzt)"
-    rest = len(lines) - start - len(block)
-    if rest > 0:
-        quote += f"\n… ({rest} weitere Zeilen)"
     return quote
 
 
@@ -335,7 +358,7 @@ def _attach_output(tid, stdout, stderr):
             with open(source, "w", encoding="utf-8") as handle:
                 handle.write(text or "")
             _name, relative = store.attachment_add(
-                source, tid, f"main-verify-{stamp}-{stream}.log"
+                source, tid, f"main-verify-{stamp}-{stream}.log", dedupe=False
             )
             paths.append(relative)
     return paths
