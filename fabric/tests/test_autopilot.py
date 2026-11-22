@@ -200,7 +200,7 @@ class AutopilotCase(FabricCase):
         with mock.patch.object(autopilot, "head", return_value=HEAD), \
                 mock.patch.object(autopilot, "ensure_clean_main", return_value=True), \
                 mock.patch.object(
-                    autopilot, "check_main", return_value=(True, "grün")
+                    autopilot, "check_main", return_value=(True, "grün", "")
                 ), \
                 mock.patch.object(autopilot, "_sh", side_effect=fake):
             self.assertTrue(autopilot.try_accept(self.ticket()))
@@ -218,7 +218,7 @@ class AutopilotCase(FabricCase):
             with mock.patch.object(autopilot, "head", return_value=HEAD), \
                     mock.patch.object(autopilot, "ensure_clean_main", return_value=True), \
                     mock.patch.object(
-                        autopilot, "check_main", return_value=(True, "grün")
+                        autopilot, "check_main", return_value=(True, "grün", "")
                     ), \
                     mock.patch.object(autopilot, "_sh", side_effect=fake):
                 self.assertFalse(autopilot.try_accept(changed))
@@ -243,15 +243,16 @@ class AutopilotCase(FabricCase):
             calls.append((args, kwargs))
             if args[:2] == ("sh", ".fabric/verify.sh"):
                 runs = len([c for c in calls if c[0][:2] == ("sh", ".fabric/verify.sh")])
-                return (1, "rot") if runs == 1 else (0, "grün")
-            return 0, ""
+                return (1, "rot", "fehler") if runs == 1 else (0, "grün", "")
+            return 0, "", ""
 
-        with mock.patch.object(autopilot, "_sh", side_effect=fake), \
+        with mock.patch.object(autopilot, "_run", side_effect=fake), \
                 mock.patch.object(autopilot.time, "sleep") as sleep, \
                 mock.patch.object(autopilot.git, "git") as git_cmd:
-            ok, out = autopilot.check_main(self.repo)
+            ok, out, err = autopilot.check_main(self.repo)
         self.assertTrue(ok)
         self.assertEqual(out, "grün")
+        self.assertEqual(err, "")
         sleep.assert_called_once_with(60)
         git_cmd.assert_not_called()
 
@@ -261,43 +262,49 @@ class AutopilotCase(FabricCase):
         def fake(*args, **kwargs):
             calls.append((args, kwargs))
             if args[:2] == ("sh", ".fabric/verify.sh"):
-                return 1, "rot"
-            return 0, ""
+                return 1, "rot", "fehler"
+            return 0, "", ""
 
         revert = mock.Mock(returncode=0, stdout="", stderr="")
-        with mock.patch.object(autopilot, "_sh", side_effect=fake), \
+        with mock.patch.object(autopilot, "_run", side_effect=fake), \
                 mock.patch.object(autopilot.time, "sleep"), \
                 mock.patch.object(autopilot.git, "git", return_value=revert) as git_cmd:
-            ok, out = autopilot.check_main(self.repo)
+            ok, out, err = autopilot.check_main(self.repo)
         self.assertFalse(ok)
         self.assertEqual(out, "rot")
+        self.assertEqual(err, "fehler")
         git_cmd.assert_called_once_with(
             ["revert", "-m", "1", "--no-edit", "HEAD"], self.repo
         )
 
     def test_revert_failure_still_pauses_and_reports_once(self):
+        tid = self.new("Roter main")
+        calls = []
+
         def fake(*args, **kwargs):
+            calls.append((args, kwargs))
             if args[:2] == ("sh", ".fabric/verify.sh"):
-                return 1, "rot"
+                return 1, "rot", "fehler"
             if args[:2] == ("fab", "accept"):
-                return 0, "ok"
-            return 0, ""
+                return 0, "ok", ""
+            return 0, "", ""
 
         revert = mock.Mock(returncode=1, stdout="", stderr="kaputt")
         with mock.patch.object(autopilot, "head", return_value=HEAD), \
                 mock.patch.object(autopilot, "ensure_clean_main", return_value=True), \
-                mock.patch.object(autopilot, "_sh", side_effect=fake) as shell, \
+                mock.patch.object(autopilot, "_run", side_effect=fake), \
                 mock.patch.object(autopilot.time, "sleep"), \
                 mock.patch.object(autopilot.git, "git", return_value=revert):
-            self.assertFalse(autopilot.try_accept(self.ticket()))
+            self.assertFalse(
+                autopilot.try_accept(dict(self.ticket(), id=tid))
+            )
         self.assertTrue(autopilot._paused)
         self.assertTrue(os.path.exists(autopilot.pause_path()))
         comments = [
-            call for call in shell.call_args_list
-            if call.args[:2] == ("fab", "comment")
+            args for args, _ in calls if args[:2] == ("fab", "comment")
         ]
         self.assertEqual(len(comments), 1)
-        self.assertIn("--no-wake", comments[0].args)
+        self.assertIn("--no-wake", comments[0])
 
     def test_main_check_on_real_no_ff_merge_commit(self):
         """Lehre: Revert und main-Prüfung gegen einen echten Merge-Commit."""
@@ -319,13 +326,13 @@ class AutopilotCase(FabricCase):
         self.assertEqual(len(parents), 3)  # echter Merge-Commit mit zwei Eltern
 
         with mock.patch.object(autopilot.time, "sleep"):
-            ok, _out = autopilot.check_main(self.repo)
+            ok, _out, _err = autopilot.check_main(self.repo)
         self.assertTrue(ok)
 
         # Rot ohne den Merge zu ändern: der Revert muss den Merge zurücknehmen.
         self._write(verify, "#!/bin/sh\nexit 1\n")
         with mock.patch.object(autopilot.time, "sleep"):
-            ok, _out = autopilot.check_main(self.repo)
+            ok, _out, _err = autopilot.check_main(self.repo)
         self.assertFalse(ok)
         self.assertEqual(
             self.git_out(self.repo, "rev-parse", "HEAD^"), merge_head
@@ -334,6 +341,87 @@ class AutopilotCase(FabricCase):
         self.assertEqual(
             self.git_out(self.repo, "log", "-1", "--pretty=%s"), "Revert \"Merge topic\""
         )
+
+    # -- Roter main: Anhänge und Fehlerzitat
+
+    def red_run(self, stdout, stderr):
+        """`try_accept` mit rotem main; liefert (Ticket, Anhänge, Kommentar)."""
+        tid = self.new("Roter main")
+        calls = []
+
+        def fake(*args, **kwargs):
+            calls.append(args)
+            if args[:2] == ("sh", ".fabric/verify.sh"):
+                return 1, stdout, stderr
+            return 0, "", ""
+
+        revert = mock.Mock(returncode=0, stdout="", stderr="")
+        with mock.patch.object(autopilot, "head", return_value=HEAD), \
+                mock.patch.object(autopilot, "ensure_clean_main", return_value=True), \
+                mock.patch.object(autopilot, "_run", side_effect=fake), \
+                mock.patch.object(autopilot.time, "sleep"), \
+                mock.patch.object(autopilot.git, "git", return_value=revert):
+            self.assertFalse(autopilot.try_accept(dict(self.ticket(), id=tid)))
+        with self.store_env():
+            ticket = store.load(tid)
+        comments = [args[-1] for args in calls if args[:2] == ("fab", "comment")]
+        self.assertEqual(len(comments), 1)
+        return ticket, comments[0]
+
+    def test_red_main_attaches_full_streams_and_quotes_first_error(self):
+        marker = "x" * (1024 * 1024 + 4096)
+        stdout = (
+            "Zeile eins\nZeile zwei\n"
+            "FAIL: test_bruch (test_mod.TestFall)\n"
+            "  Datei test_mod.py, Zeile 7\n"
+            "Traceback (most recent call last):\n"
+            f"{marker}\nSTDOUT-ENDE"
+        )
+        stderr = "ERROR: test_zweit (test_mod.TestFall)\nkurz\n" + "E" * 5000
+
+        ticket, comment = self.red_run(stdout, stderr)
+
+        self.assertEqual(len(ticket["attachments"]), 2)
+        names = {item["name"]: item["path"] for item in ticket["attachments"]}
+        stdout_name = next(name for name in names if name.endswith("-stdout.log"))
+        stderr_name = next(name for name in names if name.endswith("-stderr.log"))
+        for name, expected in ((stdout_name, stdout), (stderr_name, stderr)):
+            with open(
+                os.path.join(self.home, "attachments", ticket["id"], name),
+                encoding="utf-8",
+            ) as handle:
+                self.assertEqual(handle.read(), expected)
+
+        self.assertIn("Anhänge:", comment)
+        self.assertIn(names[stdout_name], comment)
+        self.assertIn(names[stderr_name], comment)
+        self.assertIn("Fehlerzeilen:", comment)
+        self.assertIn("FAIL: test_bruch", comment)
+        self.assertIn("ERROR: test_zweit", comment)
+        self.assertNotIn("STDOUT-ENDE", comment)
+
+        show = self.ok("show", ticket["id"]).stdout
+        self.assertIn("## Anhänge", show)
+        self.assertIn(stdout_name, show)
+        self.assertIn(stderr_name, show)
+
+    def test_red_main_without_error_line_quotes_end_with_hint(self):
+        stdout = "viele Zeilen ohne Befund\n" * 50 + "STDOUT-ENDE"
+        stderr = "STDERR-ENDE"
+
+        _ticket, comment = self.red_run(stdout, stderr)
+
+        self.assertIn("keine Fehlerzeile erkannt", comment)
+        self.assertIn("STDERR-ENDE", comment)
+        self.assertNotIn("Fehlerzeilen:", comment)
+
+    def test_run_captures_stdout_and_stderr_separately(self):
+        code, out, err = autopilot._run(
+            "sh", "-c", "printf 'aus\\n'; printf 'fehler\\n' >&2", timeout=30
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(out, "aus\n")
+        self.assertEqual(err, "fehler\n")
 
     # -- Konflikt und Rückfrage
 
