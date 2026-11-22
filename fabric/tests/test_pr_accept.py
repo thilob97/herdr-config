@@ -315,11 +315,16 @@ class PrAcceptTests(FabricCase):
             os.path.join(worktree, "mods", "demo", "main.js"), "export default {}\n"
         )
         self.write_file(os.path.join(worktree, "mods", "demo", "mod.json"), "{}\n")
+        self.write_file(
+            os.path.join(worktree, "mods", "demo", "test", "demo.test.mjs"),
+            "// Test für die Logik\n",
+        )
         self.git_out(worktree, "add", "mods")
         commit = self.git(worktree, "commit", "-qm", "mods")
         self.assertEqual(commit.returncode, 0, commit.stderr)
         self.ok("verify", tid)
         self.ok("verdict", tid, "pass", "--from", "ada", "Nachtrag geprüft")
+        self.ok("handover", tid, "--from", "zap", "Nachtrag")
         bare = self.setup_origin(repo)
 
         result = self.cli(
@@ -412,6 +417,39 @@ class PrAcceptTests(FabricCase):
             ],
             [],
         )
+
+    def test_pr_accept_verweigert_neuen_merge_tree(self):
+        repo, tid, worktree = self.review_ticket()
+        old_tree = self.ticket(tid)["merge"]["tree"]
+        bare = self.setup_origin(repo)
+        self.write_file(os.path.join(repo, "fremd.txt"), "fremd\n")
+        self.git_out(repo, "add", "fremd.txt")
+        self.git_out(repo, "commit", "-qm", "main läuft weiter")
+        self.git_out(repo, "push", "-q", "origin", "main")
+        self.set_live({"fab-ada-t-1": "t1"})
+        self.clear_log()
+        mark = self.mark()
+
+        result = self.cli("accept", tid, env=self.gh_env(bare))
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Merge-Stand", result.stderr)
+        self.assertIn("nicht abgenommen", result.stderr)
+        self.assertFalse(
+            [call for call in self.gh_calls() if call[:2] == ["pr", "merge"]]
+        )
+        self.assertFalse(
+            [call for call in self.gh_calls() if call[:2] == ["pr", "create"]]
+        )
+        ticket = self.ticket(tid)
+        self.assertEqual(ticket["status"], "doing")
+        self.assertNotEqual(ticket["merge"]["tree"], old_tree)
+        self.assertEqual(ticket["merge"]["state"], "pass")
+        self.assertEqual(
+            [row["target"] for row in self.wake_since(mark, tid)], ["ada"]
+        )
+        self.assertFalse(self.bare_branch(bare, BRANCH))
+        self.assertTrue(os.path.isdir(worktree))
 
     def test_nicht_fast_forward_basis_bricht_ab(self):
         repo, tid, worktree = self.review_ticket()

@@ -4,6 +4,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 import time
 import unicodedata
 
@@ -1115,6 +1116,123 @@ def cmd_verdict(args):
     return 0
 
 
+def _merge_ref(repo, base):
+    """origin/<base>, wenn vorhanden; sonst der lokale Basisbranch."""
+    return f"origin/{base}" if git.remote_ref(repo, "origin", base) else base
+
+
+def _verify_merge_state(ticket, ref, tree, head):
+    """Checks auf dem Merge-Stand in einem temporären Worktree; räumt immer auf."""
+    repo = ticket["repo"]
+    commit = git.merge_commit(
+        repo, tree, ref, head, f"fab: Merge-Stand {ticket['id']} prüfen"
+    )
+    folder = os.path.join(
+        tempfile.gettempdir(),
+        f"fab-merge-{ticket['id']}-{os.getpid()}-{time.time_ns()}",
+    )
+    try:
+        git.create_detached_worktree(repo, folder, commit)
+        return git.run_verify(folder)
+    finally:
+        git.remove_worktree(repo, folder)
+
+
+def _merge_record(ticket, ref, tree, head, report):
+    repo = ticket["repo"]
+    return {
+        "tree": tree,
+        "base": git.rev_parse(repo, ref),
+        "base_ref": ref,
+        "remote_base": git.remote_ref(repo, "origin", ticket["base"]) or "",
+        "branch": head,
+        "state": report["state"],
+        "at": store.now_ms(),
+        "tail": report["tail"],
+    }
+
+
+def _merge_red_text(ticket, base, ref, head, tree, report):
+    assignee = ticket.get("assignee") or "zuständig"
+    detail = report["tail"] or "keine Ausgabe"
+    return (
+        f"@{assignee} Der Merge-Stand von {ticket['branch']} mit {base} "
+        f"({ref} @ {_short(head)}, Tree {_short(tree)}) "
+        f"ist rot, obwohl der Branch selbst grün ist:\n{detail}\n"
+        f"Bitte den Branch auf den aktuellen Stand von {base} bringen, "
+        f"`fab verify {ticket['id']}` und erneut `fab handover {ticket['id']}`."
+    )
+
+
+def _reviewer(ticket, roster):
+    team = _ticket_team(ticket, roster) or {}
+    name = str(team.get("reviewer") or (roster or {}).get("reviewer") or "").strip()
+    return name
+
+
+def _accept_merge_changed(ticket, roster, repo, ref, head):
+    """Merge-Stand neu prüfen, weil er vom abgelegten Tree abweicht.
+
+    Liefert (merge, text) nach Aktualisierung von `ticket`. Konflikte und rote
+    Checks wecken den Zuständigen, grüne Checks die Prüferin für ein neues Urteil.
+    """
+    base = ticket["base"]
+    tree, files = git.merge_state(repo, ref, ticket["branch"])
+    if files:
+        text = wake.conflict_text(ticket, base, files)
+        wake.add_comment(ticket, "mensch", text, roster)
+        assignee = ticket.get("assignee")
+        if assignee:
+            wake.process(
+                ticket, [assignee], "mensch", text, roster,
+                message_for=lambda name: wake.conflict_wake_text(ticket, base, files),
+            )
+        return None, text
+    report = _verify_merge_state(ticket, ref, tree, head)
+    merge = _merge_record(ticket, ref, tree, head, report)
+    ticket["merge"] = merge
+    ticket["status"] = "doing"
+    ticket.pop("stall", None)
+    ticket["waiting"] = [
+        waiting for waiting in ticket.get("waiting") or []
+        if waiting.lower() != "mensch"
+    ]
+    if report["state"] != "pass":
+        assignee = ticket.get("assignee")
+        text = _merge_red_text(ticket, base, ref, head, report)
+        wake.add_comment(ticket, "mensch", text, roster)
+        if assignee:
+            wake.process(
+                ticket, [assignee], "mensch", text, roster,
+                message_for=lambda name: (
+                    f"Ticket {ticket['id']} „{ticket['title']}“: Der Merge-Stand mit "
+                    f"{base} ist rot (Tree {_short(tree)}). {report['tail'][:300]} "
+                    f"Bitte den Branch aktualisieren, `fab verify {ticket['id']}` und "
+                    f"erneut `fab handover {ticket['id']}`."
+                ),
+            )
+        return merge, text
+    reviewer = _reviewer(ticket, roster)
+    text = (
+        f"Merge-Stand mit {base} hat sich geändert: Tree {_short(tree)} "
+        f"({ref} @ {_short(head)}) wurde neu geprüft und ist grün"
+        + (f". @{reviewer} bitte auf diesem Stand neu bewerten." if reviewer else ".")
+    )
+    wake.add_comment(ticket, "mensch", text, roster)
+    if reviewer:
+        wake.process(
+            ticket, [reviewer], "mensch", text, roster,
+            message_for=lambda name: (
+                f"Ticket {ticket['id']} „{ticket['title']}“: Der Merge-Stand mit {base} "
+                f"hat sich nach dem Urteil geändert (neuer Tree {_short(tree)}, "
+                f"Branch-HEAD {_short(head)}). Checks darauf sind grün. Bitte lies "
+                f"`fab show {ticket['id']}`, prüfe den neuen Stand und gib mit "
+                f"`fab verdict {ticket['id']} pass --from {name}` ein neues Urteil ab."
+            ),
+        )
+    return merge, text
+
+
 def cmd_handover(args):
     actor = _require_actor(args)
     summary = (args.summary or "").strip()
@@ -1177,24 +1295,48 @@ def cmd_handover(args):
             except FabError as exc:
                 reasons.append(str(exc))
         files = None
+        merge = None
+        merge_note = ""
         if not reasons and ticket.get("base") and ticket.get("branch") and ticket.get("repo"):
+            repo = ticket["repo"]
+            base = ticket["base"]
             try:
-                files = git.merge_conflicts(
-                    ticket["repo"], ticket["base"], ticket["branch"]
-                )
+                ref = _merge_ref(repo, base)
+                tree, files = git.merge_state(repo, ref, ticket["branch"])
             except FabError as exc:
                 reasons.append(str(exc))
-        if not reasons and files:
-            base = ticket["base"]
-            reasons.append(
-                f"Merge-Konflikt mit {base}:\n  - " + "\n  - ".join(files)
-            )
+            else:
+                if files:
+                    reasons.append(
+                        f"Merge-Konflikt mit {base}:\n  - " + "\n  - ".join(files)
+                    )
+                elif tree:
+                    try:
+                        report = _verify_merge_state(ticket, ref, tree, head)
+                    except FabError as exc:
+                        reasons.append(
+                            f"Merge-Stand mit {base} konnte nicht geprüft werden: {exc}"
+                        )
+                    else:
+                        if report["state"] != "pass":
+                            reasons.append(
+                                f"Merge-Stand mit {base} ist rot "
+                                f"(Tree {_short(tree)}):\n"
+                                + (report["tail"] or "keine Ausgabe")
+                            )
+                            merge_note = _merge_red_text(
+                                ticket, base, ref, head, tree, report
+                            )
+                        else:
+                            merge = _merge_record(
+                                ticket, ref, tree, head, report
+                            )
         if reasons:
+            roster = agents.load()
+            results = []
             if files:
-                roster = agents.load()
                 text = wake.conflict_text(ticket, ticket["base"], files)
                 wake.add_comment(ticket, actor, text, roster)
-                results = []
                 assignee = ticket.get("assignee")
                 if assignee:
                     results = wake.process(
@@ -1206,9 +1348,31 @@ def cmd_handover(args):
                 store.save(ticket)
                 index.rebuild()
                 _print_wake_results(results)
+            elif merge_note:
+                wake.add_comment(ticket, actor, merge_note, roster)
+                assignee = ticket.get("assignee")
+                if assignee:
+                    results = wake.process(
+                        ticket, [assignee], actor, merge_note, roster,
+                        message_for=lambda name: (
+                            f"Ticket {ticket['id']} „{ticket['title']}“: Der "
+                            f"Merge-Stand mit {ticket['base']} ist rot, obwohl der "
+                            f"Branch grün ist. Bitte den Branch aktualisieren, "
+                            f"`fab verify {ticket['id']}` und erneut "
+                            f"`fab handover {ticket['id']}`."
+                        ),
+                    )
+                store.save(ticket)
+                index.rebuild()
+                _print_wake_results(results)
+            ticket.pop("merge", None)
             raise store.PersistError(
                 f"{ticket['id']}: Übergabe verweigert:\n- " + "\n- ".join(reasons)
             )
+        if merge:
+            ticket["merge"] = merge
+        else:
+            ticket.pop("merge", None)
         ticket["status"] = "review"
         ticket.pop("stall", None)
         if "mensch" not in ticket["waiting"]:
@@ -1446,9 +1610,34 @@ def cmd_accept(args):
                 )
             if not pr_ready:
                 before = git.head(top)
+                expected = (ticket.get("merge") or {}).get("tree")
+                tree, conflict_files = git.merge_state(top, ticket["base"], branch_name)
+                if conflict_files:
+                    raise FabError(
+                        f"{ticket['id']}: Merge von {branch_name} scheitert an "
+                        f"Konflikten in {', '.join(conflict_files)}"
+                    )
+                if not expected or tree != expected:
+                    merge, text = _accept_merge_changed(
+                        ticket, roster, top, ticket["base"], review_head
+                    )
+                    store.save(ticket)
+                    index.rebuild()
+                    raise store.PersistError(
+                        f"{ticket['id']}: Merge-Stand mit {ticket['base']} weicht vom "
+                        f"geprüften Tree {_short(expected)} ab (jetzt "
+                        f"{_short(tree)}); nicht abgenommen. {text}"
+                    )
                 merged = git.merge_no_ff(
                     top, branch_name, f"Merge {branch_name}: {ticket['title']}"
                 )
+                if git.tree_sha(top, ticket["base"]) != expected:
+                    git.reset_keep(top, before)
+                    raise store.PersistError(
+                        f"{ticket['id']}: der gemergte Tree auf {ticket['base']} "
+                        f"weicht vom geprüften merge_tree {_short(expected)} ab; "
+                        f"Merge auf {_short(before)} zurückgesetzt"
+                    )
                 report = preview.check_mods(top)
                 if not report["ok"]:
                     git.reset_keep(top, before)
@@ -1493,6 +1682,25 @@ def cmd_accept(args):
                     raise FabError(
                         f"{ticket['id']}: {base} ist nicht fast-forward-fähig zu "
                         f"origin/{base}; nichts gepusht."
+                    )
+                expected = (ticket.get("merge") or {}).get("tree")
+                ref = f"origin/{base}" if remote_base else base
+                tree, conflict_files = git.merge_state(top, ref, branch_name)
+                if conflict_files:
+                    raise FabError(
+                        f"{ticket['id']}: Merge von {branch_name} mit {ref} scheitert "
+                        f"an Konflikten in {', '.join(conflict_files)}; nichts gepusht."
+                    )
+                if not expected or tree != expected:
+                    merge, text = _accept_merge_changed(
+                        ticket, roster, top, ref, review_head
+                    )
+                    store.save(ticket)
+                    index.rebuild()
+                    raise store.PersistError(
+                        f"{ticket['id']}: Merge-Stand mit {ref} weicht vom geprüften "
+                        f"Tree {_short(expected)} ab (jetzt {_short(tree)}); nicht "
+                        f"abgenommen. {text}"
                     )
                 if not remote_base or remote_base != local_base:
                     git.push(top, "origin", base)
