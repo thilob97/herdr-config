@@ -4,8 +4,6 @@ import glob
 import json
 import os
 import subprocess
-import sys
-import tempfile
 import unittest
 from unittest import mock
 
@@ -15,6 +13,49 @@ from fabric.tests.support import FabricCase
 
 HEAD = "abc123def456"
 OTHER = "999999999999"
+
+# Eingefrorene Ausgabe von Python 3.11.9 (`python3 … -v`, stderr): zwei
+# fehlgeschlagene Asserts mit Caret-Zeilen, langen Pfaden und mehr als
+# QUOTE_MAX_LINES/QUOTE_MAX_CHARS Zeichen.
+PYTHON311_DIR = (
+    "/tmp/fab-tests-python311/"
+    "very_long_directory_name_for_paths_with_many_more_characters"
+)
+PYTHON311_LONG_PATHS = f"""test_alpha (__main__.Zeichenfolgen.test_alpha) ... FAIL
+test_beta (__main__.Zeichenfolgen.test_beta) ... FAIL
+
+======================================================================
+FAIL: test_alpha (__main__.Zeichenfolgen.test_alpha)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "{PYTHON311_DIR}/test_long_paths.py", line 6, in test_alpha
+    self.assertEqual(
+AssertionError: 'ein sehr langer erwarteter text mit vielen zeichen' != 'ein sehr langer tatsaechlicher text mit vielen zeichen'
+- ein sehr langer erwarteter text mit vielen zeichen
+?                   --------
++ ein sehr langer tatsaechlicher text mit vielen zeichen
+?                 ++++++++++++
+
+
+======================================================================
+FAIL: test_beta (__main__.Zeichenfolgen.test_beta)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "{PYTHON311_DIR}/test_long_paths.py", line 12, in test_beta
+    self.assertEqual(
+AssertionError: {{'schluessel': 'ein sehr langer wert mit vielen zeichen'}} != {{'schluessel': 'ein anderer sehr langer wert mit zeichen'}}
+- {{'schluessel': 'ein sehr langer wert mit vielen zeichen'}}
+?                                         -------
+
++ {{'schluessel': 'ein anderer sehr langer wert mit zeichen'}}
+?                     ++++++++
+
+
+----------------------------------------------------------------------
+Ran 2 tests in 0.001s
+
+FAILED (failures=2)
+"""
 
 
 class AutopilotCase(FabricCase):
@@ -501,41 +542,11 @@ FAILED (failures=2)
         self.assertNotIn("Zeichen gekürzt", quote)
 
     def test_quote_names_line_and_char_truncation(self):
-        """Echte Python-3.11-Ausgabe: zwei Fehler, Caret-Zeilen, lange Pfade."""
-        module = '''import unittest
-
-
-class Zeichenfolgen(unittest.TestCase):
-    def test_alpha(self):
-        self.assertEqual(
-            "ein sehr langer erwarteter text mit vielen zeichen",
-            "ein sehr langer tatsaechlicher text mit vielen zeichen",
-        )
-
-    def test_beta(self):
-        self.assertEqual(
-            {"schluessel": "ein sehr langer wert mit vielen zeichen"},
-            {"schluessel": "ein anderer sehr langer wert mit zeichen"},
-        )
-
-
-if __name__ == "__main__":
-    unittest.main()
-'''
-        with tempfile.TemporaryDirectory() as folder:
-            folder = os.path.join(folder, "very_long_directory_name_for_paths")
-            os.makedirs(folder)
-            path = os.path.join(folder, "test_long_paths.py")
-            with open(path, "w", encoding="utf-8") as handle:
-                handle.write(module)
-            proc = subprocess.run(
-                [sys.executable, path, "-v"], capture_output=True, text=True
-            )
-        text = proc.stdout + proc.stderr
-        self.assertEqual(proc.returncode, 1)
+        """Eingefrorene Python-3.11-Ausgabe: zwei Fehler, Caret-Zeilen, lange Pfade."""
+        text = PYTHON311_LONG_PATHS
         self.assertEqual(text.count("FAIL: "), 2)
         self.assertIn("\n? ", text)
-        self.assertIn(folder, text)
+        self.assertIn(PYTHON311_DIR, text)
         self.assertGreater(len(text.splitlines()), autopilot.QUOTE_MAX_LINES)
         self.assertGreater(len(text), autopilot.QUOTE_MAX_CHARS)
         quote = autopilot._first_errors(text)
@@ -612,8 +623,12 @@ test at fail.mjs:6:1
 """
         quote = autopilot._first_errors(text)
         self.assertIn("✖ bricht bei ungleichen Werten ab", quote)
-        self.assertIn("AssertionError [ERR_ASSERTION]", quote)
+        self.assertIn("✖ zweiter Fehler", quote)
+        self.assertEqual(quote.count("AssertionError [ERR_ASSERTION]"), 2)
         self.assertIn("1 !== 2", quote)
+        self.assertNotIn("    at ", quote)
+        self.assertNotIn("generatedMessage", quote)
+        self.assertNotIn("weitere Zeilen", quote)
         self.assertNotIn("failing tests:", quote)
 
     def test_error_quote_names_each_truncated_stream(self):

@@ -310,11 +310,27 @@ def _block_end(lines, start):
 
 
 def _spec_section(lines, start):
-    """Node-spec: Detailblock ab `test at …` bis zum nächsten Detailblock."""
+    """Node-spec: Detailblock ab `test at …` bis zum nächsten Detailblock.
+
+    Stack-Zeilen (`at …`) und das angehängte Fehlerobjekt (`{ … }`) tragen
+    nichts zur Fehlerart bei, verbrauchen aber den Zeilendeckel und verdrängen
+    dadurch weitere Fehler. Beide werden ausgelassen.
+    """
     end = start + 1
     while end < len(lines) and not SPEC_SECTION.match(lines[end].strip()):
         end += 1
-    section = lines[start:end]
+    section = []
+    object_depth = 0
+    for line in lines[start:end]:
+        stripped = line.strip()
+        if object_depth:
+            object_depth += stripped.count("{") - stripped.count("}")
+            continue
+        if stripped.startswith("at "):
+            if stripped.endswith("{"):
+                object_depth = 1 + stripped.count("{") - stripped.count("}")
+            continue
+        section.append(line)
     while section and not section[-1].strip():
         section.pop()
     return section, end
