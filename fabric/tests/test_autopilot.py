@@ -19,7 +19,7 @@ class AutopilotCase(FabricCase):
         super().setUp()
         autopilot.reset()
         self.addCleanup(autopilot.reset)
-        env = mock.patch.dict(os.environ, {"FAB_HOME": self.home})
+        env = mock.patch.dict(os.environ, {"FAB_HOME": self.home, "FAB_NOW": ""})
         env.start()
         self.addCleanup(env.stop)
         self.repo = self.make_repo()
@@ -55,12 +55,9 @@ class AutopilotCase(FabricCase):
     def called(self, calls, *start):
         return [args for args, _ in calls if args[:len(start)] == start]
 
-    def clock(self, *values):
-        state = {"now": values[0] if values else datetime.datetime(2026, 1, 1, 7, 0)}
-        return state
-
-    def fake_now(self, state):
-        return lambda: state["now"]
+    def set_now(self, moment):
+        """Zentrale Uhr über `FAB_NOW` auf `moment` stellen."""
+        os.environ["FAB_NOW"] = str(int(moment.timestamp() * 1000))
 
     # -- parse_until
 
@@ -85,11 +82,11 @@ class AutopilotCase(FabricCase):
 
     def test_state_is_atomic_and_has_contract_fields(self):
         stamp = datetime.datetime(2026, 1, 1, 7, 0, 0)
-        with mock.patch.object(autopilot, "now", return_value=stamp):
-            autopilot.log("hallo")
-            autopilot.write_state(
-                "running", reason="Test", end="2026-01-01T08:00", last_action="x"
-            )
+        self.set_now(stamp)
+        autopilot.log("hallo")
+        autopilot.write_state(
+            "running", reason="Test", end="2026-01-01T08:00", last_action="x"
+        )
         state = autopilot.read_state()
         self.assertEqual(state["state"], "running")
         self.assertEqual(state["reason"], "Test")
@@ -165,11 +162,23 @@ class AutopilotCase(FabricCase):
         autopilot.write_state("paused", reason="rot", end="2026-01-01T08:00")
         with open(autopilot.pause_path(), "w", encoding="utf-8") as stream:
             stream.write("rot")
-        self.assertTrue(autopilot.resume())
+        self.assertEqual(autopilot.resume(), "resumed")
         self.assertFalse(os.path.exists(autopilot.pause_path()))
         state = autopilot.read_state()
         self.assertEqual(state["state"], "running")
         self.assertEqual(state["reason"], "")
+
+    def test_resume_keeps_stopped_state_and_reports_nothing_paused(self):
+        autopilot.write_state("stopped", reason="gestoppt", end="2026-01-01T08:00")
+        before = autopilot.read_state()
+        with open(autopilot.pause_path(), "w", encoding="utf-8") as stream:
+            stream.write("rot")
+        self.assertEqual(autopilot.resume(), "not-paused")
+        self.assertFalse(os.path.exists(autopilot.pause_path()))
+        self.assertEqual(autopilot.read_state(), before)
+        result = self.ok("autopilot", "resume")
+        self.assertIn("nichts pausiert", result.stdout)
+        self.assertEqual(autopilot.read_state()["state"], "stopped")
 
     def test_status_json_is_exactly_the_file(self):
         autopilot.write_state("running", end="2026-01-01T08:00")
@@ -365,24 +374,24 @@ class AutopilotCase(FabricCase):
         self.assertEqual(len(self.called(calls, "fab", "wake")), 1)
 
     def test_nudge_three_times_then_orchestrator(self):
-        state = self.clock(datetime.datetime(2026, 1, 1, 10, 0))
+        moment = datetime.datetime(2026, 1, 1, 10, 0)
+        self.set_now(moment)
         fake, calls = self.shell()
         ticket = self.ticket(status="doing")
-        with mock.patch.object(autopilot, "now", side_effect=self.fake_now(state)), \
-                mock.patch.object(autopilot, "last_event_age_min", return_value=30), \
+        with mock.patch.object(autopilot, "last_event_age_min", return_value=30), \
                 mock.patch.object(autopilot, "_sh", side_effect=fake):
             for _ in range(4):
-                state["now"] += datetime.timedelta(minutes=31)
+                moment += datetime.timedelta(minutes=31)
+                self.set_now(moment)
                 self.assertTrue(autopilot.nudge(ticket, []))
         targets = [args[3] for args in self.called(calls, "fab", "wake")]
         self.assertEqual(targets, ["zap", "zap", "zap", "orchestrator"])
 
     def test_dispatch_nudge_only_once_per_window(self):
-        state = self.clock(datetime.datetime(2026, 1, 1, 10, 0))
+        self.set_now(datetime.datetime(2026, 1, 1, 10, 0))
         fake, calls = self.shell()
         tickets = [{"id": "T-1", "status": "todo", "blocked_by": []}]
-        with mock.patch.object(autopilot, "now", side_effect=self.fake_now(state)), \
-                mock.patch.object(autopilot, "_sh", side_effect=fake):
+        with mock.patch.object(autopilot, "_sh", side_effect=fake):
             self.assertTrue(autopilot.nudge_dispatch(tickets, []))
             self.assertFalse(autopilot.nudge_dispatch(tickets, []))
         comments = self.called(calls, "fab", "comment")
@@ -409,13 +418,15 @@ class AutopilotCase(FabricCase):
             self.assertTrue(autopilot.once())
 
     def test_run_ends_at_until(self):
-        state = self.clock(datetime.datetime(2026, 1, 1, 7, 59))
+        moment = datetime.datetime(2026, 1, 1, 7, 59)
+        self.set_now(moment)
 
         def sleep(seconds):
-            state["now"] += datetime.timedelta(seconds=seconds)
+            nonlocal moment
+            moment += datetime.timedelta(seconds=seconds)
+            self.set_now(moment)
 
-        with mock.patch.object(autopilot, "now", side_effect=self.fake_now(state)), \
-                mock.patch.object(autopilot, "once", return_value=True), \
+        with mock.patch.object(autopilot, "once", return_value=True), \
                 mock.patch.object(autopilot.time, "sleep", side_effect=sleep) as pause:
             self.assertEqual(autopilot.run("08:00"), 0)
         pause.assert_called_once_with(autopilot.INTERVAL)
@@ -426,12 +437,15 @@ class AutopilotCase(FabricCase):
 
     def test_run_reads_pause_marker_again_each_round(self):
         """`resume` in einem anderen Prozess muss die laufende Schleife lösen."""
-        state = self.clock(datetime.datetime(2026, 1, 1, 7, 57))
+        moment = datetime.datetime(2026, 1, 1, 7, 57)
+        self.set_now(moment)
         with open(autopilot.pause_path(), "w", encoding="utf-8") as stream:
             stream.write("rot")
 
         def sleep(seconds):
-            state["now"] += datetime.timedelta(seconds=seconds)
+            nonlocal moment
+            moment += datetime.timedelta(seconds=seconds)
+            self.set_now(moment)
 
         seen = []
 
@@ -441,8 +455,7 @@ class AutopilotCase(FabricCase):
                 os.unlink(autopilot.pause_path())
             return True
 
-        with mock.patch.object(autopilot, "now", side_effect=self.fake_now(state)), \
-                mock.patch.object(autopilot, "once", side_effect=once), \
+        with mock.patch.object(autopilot, "once", side_effect=once), \
                 mock.patch.object(autopilot.time, "sleep", side_effect=sleep):
             self.assertEqual(autopilot.run("08:00"), 0)
         self.assertEqual(seen, [True, False])
@@ -451,8 +464,8 @@ class AutopilotCase(FabricCase):
         stamp = datetime.datetime(2026, 1, 1, 10, 0, 0)
         at = int(datetime.datetime(2026, 1, 1, 9, 50, 0).timestamp() * 1000)
         store.event_append("comment", "T-1", "zap", at=at)
-        with mock.patch.object(autopilot, "now", return_value=stamp):
-            age = autopilot.last_event_age_min("T-1")
+        self.set_now(stamp)
+        age = autopilot.last_event_age_min("T-1")
         self.assertAlmostEqual(age, 10.0, places=3)
 
 

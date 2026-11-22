@@ -65,12 +65,12 @@ def pause_path():
 
 
 def now():
-    """Jetzt; in Tests patchbar."""
-    return datetime.datetime.now()
+    """Jetzt aus der zentralen Uhr; `FAB_NOW` friert sie ein (Tests)."""
+    return datetime.datetime.fromtimestamp(store.now_ms() / 1000)
 
 
 def epoch():
-    return float(now().timestamp())
+    return store.now_ms() / 1000.0
 
 
 def parse_until(value, at=None):
@@ -334,13 +334,22 @@ def stop():
 
 
 def resume():
-    """Pausemarke entfernen; einen vorhandenen Status auf `running` setzen."""
+    """Pausemarke entfernen; nur `paused` wird wieder `running`.
+
+    Ein `stopped` ohne laufende Schleife bleibt `stopped`: die Lampe aus T-65
+    darf nicht „an“ zeigen, nur weil die Marke weg ist.
+
+    Rückgabe: `"resumed"`, `"not-paused"` (Marke weg, Status unverändert) oder
+    `"no-state"` (keine Statusdatei).
+    """
     _clear_pause()
     global _paused
     _paused = False
     previous = read_state()
     if not previous:
-        return False
+        return "no-state"
+    if previous.get("state") != "paused":
+        return "not-paused"
     log("Autopilot fortgesetzt")
     write_state(
         "running",
@@ -348,7 +357,7 @@ def resume():
         end=previous.get("end") or "",
         last_action=_last_action,
     )
-    return True
+    return "resumed"
 
 
 def status():

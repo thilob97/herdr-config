@@ -2499,8 +2499,11 @@ def cmd_autopilot(args):
         print("Autopilot gestoppt")
         return 0
     if action == "resume":
-        if autopilot.resume():
+        outcome = autopilot.resume()
+        if outcome == "resumed":
             print("Autopilot fortgesetzt")
+        elif outcome == "not-paused":
+            print("Autopilot: nichts pausiert, Status bleibt")
         else:
             print("Autopilot: kein Status, nichts fortgesetzt")
         return 0
