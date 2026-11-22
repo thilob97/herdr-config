@@ -79,15 +79,17 @@ def _run(args, timeout=120):
         raise HcError(f"hc {' '.join(args)} hat zu lange gedauert")
 
 
-def ls():
-    result = _run(["ls", "--json"], timeout=60)
+def ls(all=False):
+    """Terminalzeilen; mit `all` auch beendete (`hc ls --all --json`)."""
+    args = ["ls", "--json"] + (["--all"] if all else [])
+    result = _run(args, timeout=60)
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip() or f"Exit {result.returncode}"
-        raise HcError(f"hc ls: {detail}")
+        raise HcError(f"hc {' '.join(args)}: {detail}")
     try:
         data = json.loads(result.stdout or "{}")
     except json.JSONDecodeError:
-        raise HcError("hc ls --json liefert kein JSON")
+        raise HcError(f"hc {' '.join(args)} liefert kein JSON")
     rows = data.get("terminals") if isinstance(data, dict) else None
     return rows or []
 
@@ -112,6 +114,22 @@ def live():
         for row in ls()
         if isinstance(row, dict) and row.get("name") and row.get("state") == "live"
     }
+
+
+def read(target, timeout=60):
+    """Bildschirm und Verlauf eines Terminals als Text; "" wenn nicht lesbar."""
+    try:
+        result = _run(["read", str(target), "--json"], timeout=timeout)
+    except HcError:
+        return ""
+    if result.returncode != 0:
+        return ""
+    try:
+        data = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError:
+        return ""
+    text = data.get("text") if isinstance(data, dict) else None
+    return text if isinstance(text, str) else ""
 
 
 def send_detail(address, text):

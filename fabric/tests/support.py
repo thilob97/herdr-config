@@ -47,6 +47,18 @@ if command == "get":
     row = entries.get(args[1]) if isinstance(entries, dict) else None
     sys.stdout.write(json.dumps(row or {}))
     sys.exit(0)
+if command == "read":
+    fixture = os.environ.get("HC_READ")
+    entries = {}
+    if fixture and os.path.isfile(fixture):
+        try:
+            with open(fixture, encoding="utf-8") as handle:
+                entries = json.load(handle)
+        except ValueError:
+            entries = {}
+    text = entries.get(args[1], "") if isinstance(entries, dict) else ""
+    sys.stdout.write(json.dumps({"text": text}))
+    sys.exit(0)
 if command == "run":
     fail = os.environ.get("HC_RUN_FAIL")
     times = os.environ.get("HC_RUN_FAIL_TIMES")
@@ -164,6 +176,7 @@ class FabricCase(unittest.TestCase):
         self.hc_log = os.path.join(self.tmp, "hc.log")
         self.ls_json = os.path.join(self.tmp, "ls.json")
         self.get_json = os.path.join(self.tmp, "get.json")
+        self.read_json = os.path.join(self.tmp, "read.json")
         self.claude_json = os.path.join(self.tmp, "claude.json")
         self.herdr_log = os.path.join(self.tmp, "herdr.log")
         self.herdr_ls = os.path.join(self.tmp, "herdr-ls.json")
@@ -187,6 +200,7 @@ class FabricCase(unittest.TestCase):
             HC_LOG=self.hc_log,
             HC_LS=self.ls_json,
             HC_GET=self.get_json,
+            HC_READ=self.read_json,
             HERDR_LOG=self.herdr_log,
             HERDR_LS=self.herdr_ls,
             FAB_TICK_AUTOSTART="0",
@@ -311,6 +325,10 @@ class FabricCase(unittest.TestCase):
     def set_gets(self, rows):
         """Antworten für `hc get <name> --json` (Name → Dict)."""
         self._write(self.get_json, json.dumps(rows))
+
+    def set_reads(self, rows):
+        """Antworten für `hc read <name> --json` (Name → Text)."""
+        self._write(self.read_json, json.dumps(rows))
 
     def hc_calls(self, command=None):
         rows = [json.loads(line) for line in self._read(self.hc_log).splitlines() if line.strip()]

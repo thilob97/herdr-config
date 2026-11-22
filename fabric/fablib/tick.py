@@ -12,7 +12,18 @@ import plistlib
 import subprocess
 import sys
 
-from . import agents, costs, events, flows, hc, orchestrator, store, teams, wake
+from . import (
+    agents,
+    costs,
+    events,
+    flows,
+    hc,
+    orchestrator,
+    sessions,
+    store,
+    teams,
+    wake,
+)
 from .errors import FabError, HcError
 
 DEFAULTS = {"doing": 10, "mention": 5, "review": 5, "blocked": 30, "retry": 5}
@@ -79,14 +90,21 @@ def run(roster, dry=False):
         live = {}
     tickets = store.all_tickets()
     by_id = {ticket["id"]: ticket for ticket in tickets}
-    for ticket in store.open_tickets():
+    open_tickets = store.open_tickets()
+    ended, sessions_changed = sessions.report(
+        open_tickets, live, result, dry
+    )
+    for ticket in open_tickets:
         try:
             changed = _tick_ticket(
-                ticket, roster or {}, live, cfg, by_id, result, dry
+                ticket, roster or {}, live, cfg, by_id, result, dry,
+                ended.get(ticket["id"]) or (),
             )
         except (FabError, HcError) as exc:
             result.append(f"{ticket['id']}: Fehler: {exc}")
             continue
+        if ticket["id"] in sessions_changed:
+            changed = True
         if changed and not dry:
             store.save(ticket)
             result.changed = True
@@ -173,7 +191,7 @@ def _tick_orchestrator(roster, team_entry, live, lines, dry):
 
 # ---------------------------------------------------------------- Prüfen
 
-def _tick_ticket(ticket, roster, live, cfg, by_id, lines, dry):
+def _tick_ticket(ticket, roster, live, cfg, by_id, lines, dry, ended=()):
     """Ein Ticket; Rückgabe: wurde das Ticket geändert?"""
     status = ticket.get("status")
     if status in FROZEN or status not in OPEN:
@@ -181,6 +199,16 @@ def _tick_ticket(ticket, roster, live, cfg, by_id, lines, dry):
     blocked, cost_changed = _cost_limit(ticket, lines, dry)
     if blocked:
         return cost_changed
+    if ended and status == "doing" and not _live_session(ticket, live):
+        return _attention(
+            ticket,
+            "doing",
+            _assignee(ticket) or "orchestrator",
+            _ended_reason(ended),
+            lines,
+            dry,
+            number=1,
+        ) or cost_changed
     now = store.now_ms()
     changed = False
     stall = ticket.get("stall")
@@ -599,6 +627,16 @@ def _comment_mentions(comment, roster):
 
 
 # ---------------------------------------------------------------- Helfer
+
+def _ended_reason(items):
+    """Einzeiliger Grund für die Sofort-Meldung beendeter Sessions."""
+    parts = []
+    for item in items:
+        name = (item.get("session") or {}).get("name") or "Session"
+        summary = item.get("summary") or "beendet"
+        parts.append(f"{name}: {summary}")
+    return "beendet: " + "; ".join(parts)
+
 
 def _open_blockers(ticket, by_id):
     found = []
