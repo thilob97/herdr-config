@@ -40,18 +40,23 @@ def compose(sections):
     return "\n\n".join(parts)
 
 
-def clip(text, maximum, source=""):
+def clip(text, maximum, source="", report=False):
     """Auf höchstens `maximum` Zeichen kürzen; der Hinweis nennt den Pfad.
 
     `maximum == 0` schaltet den Kontext ab. Liegt `maximum` unter der Länge
     des kürzesten Hinweises, bleibt der Hinweis trotzdem vollständig; `fab
-    settings` weist solche Werte ab.
+    settings` weist solche Werte ab. Mit `report=True` kommt
+    `{"text", "clipped"}` zurück; `clipped` stammt aus dem Kürzen selbst und
+    nicht aus einer Textsuche.
     """
+    def result(value, clipped):
+        return {"text": value, "clipped": clipped} if report else value
+
     maximum = teams.check_context_limit(maximum)
     if maximum == 0:
-        return ""
+        return result("", False)
     if len(text) <= maximum:
-        return text
+        return result(text, False)
     marker = "\n\n" + (
         HINT.format(source=source) if source else SHORT_HINT
     )
@@ -59,16 +64,16 @@ def clip(text, maximum, source=""):
         marker = SHORT_HINT
     room = maximum - len(marker)
     if room < 1:
-        return marker
-    return text[:room].rstrip() + marker
+        return result(marker, True)
+    return result(text[:room].rstrip() + marker, True)
 
 
-def build(sections, brief="", maximum=DEFAULT_LIMIT, source=""):
+def build(sections, brief="", maximum=DEFAULT_LIMIT, source="", report=False):
     """Kontext aus Abschnitten plus Team-Brief; sichtbar gekürzt."""
     entries = list(sections)
     if (brief or "").strip():
         entries.append((BRIEF_TITLE, brief))
-    return clip(compose(entries), maximum, source)
+    return clip(compose(entries), maximum, source, report=report)
 
 
 def _project_sections(paths):
@@ -99,7 +104,8 @@ def _decision_section(paths):
     return [(DECISION_TITLE, "\n".join(f"- {line}" for line in lines))]
 
 
-def build_paths(paths, brief="", maximum=DEFAULT_LIMIT, fallback_source=""):
+def build_paths(paths, brief="", maximum=DEFAULT_LIMIT, fallback_source="",
+                report=False):
     """Steckbriefe, Entscheidungen und Brief; der Hinweis nennt alle Quellen.
 
     Der Brief steht hinten und wird darum zuerst gekürzt. Sobald er im
@@ -113,7 +119,7 @@ def build_paths(paths, brief="", maximum=DEFAULT_LIMIT, fallback_source=""):
     if (brief or "").strip() and fallback_source:
         sources.append(fallback_source)
     source = ", ".join(sources) or fallback_source
-    return build(sections, brief, maximum, source)
+    return build(sections, brief, maximum, source, report=report)
 
 
 def team_of(roster, repo):
@@ -121,7 +127,7 @@ def team_of(roster, repo):
     return teams.team_for_repo(roster, repo) if repo else None
 
 
-def for_entry(roster, entry, paths=None):
+def for_entry(roster, entry, paths=None, report=False):
     """Kontext eines Teams; ohne `paths` die Repos des Teams."""
     if not isinstance(entry, dict):
         raw = paths if paths is not None else ()
@@ -134,16 +140,17 @@ def for_entry(roster, entry, paths=None):
         brief,
         limit(roster),
         roster.get("path") or "",
+        report=report,
     )
 
 
-def for_ticket(roster, ticket):
+def for_ticket(roster, ticket, report=False):
     """Kontext eines Agenten: Steckbrief des Ticket-Repos und Team-Brief."""
     repo = ticket.get("repo")
     entry = team_of(roster, repo)
-    return for_entry(roster, entry, [repo] if repo else [])
+    return for_entry(roster, entry, [repo] if repo else [], report=report)
 
 
-def for_team(roster, name):
+def for_team(roster, name, report=False):
     """Kontext eines Orchestrators: Steckbriefe aller Team-Repos und Brief."""
-    return for_entry(roster, teams.team(roster, name))
+    return for_entry(roster, teams.team(roster, name), report=report)
