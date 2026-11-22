@@ -224,6 +224,24 @@ def _inbox(stalled, questions, reviews, rows, tickets=(), approvals=()):
                 }
             )
 
+    for ticket in tickets:
+        for proposal in ticket.get("decision_proposals") or []:
+            if not isinstance(proposal, dict):
+                continue
+            entries.append(
+                {
+                    "id": f"decision:{ticket['id']}:{proposal.get('id')}",
+                    "kind": "decision",
+                    "ticket": ticket["id"],
+                    "at": proposal.get("at"),
+                    "from": proposal.get("by") or "fab",
+                    "text": str(proposal.get("text") or ""),
+                    "reason": proposal.get("reason") or "",
+                    "proposal": proposal.get("id"),
+                    "repo": ticket.get("repo") or "",
+                }
+            )
+
     entries.sort(key=lambda item: item.get("at") or 0, reverse=True)
     return entries
 

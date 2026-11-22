@@ -1,8 +1,8 @@
 """Projekt-Steckbrief und Team-Brief als Prompt-Kontext (T-59).
 
 `build` bekommt (Titel, Text)-Abschnitte und kürzt sie sichtbar auf die
-Zeichen-Obergrenze aus `fab settings set context_limit`. T-60 hängt dort
-weitere Abschnitte an; T-61 nutzt dieselbe Ausgabe für die Vorschau.
+Zeichen-Obergrenze aus `fab settings set context_limit`. T-60 ergänzt die
+Entscheidungen der Repos; T-61 nutzt dieselbe Ausgabe für die Vorschau.
 """
 import os
 
@@ -11,6 +11,7 @@ from .errors import FabError
 
 DEFAULT_LIMIT = teams.DEFAULT_CONTEXT_LIMIT
 PROJECT_TITLE = "Projekt-Steckbrief"
+DECISION_TITLE = "Entscheidungen"
 BRIEF_TITLE = "Team-Brief"
 HINT = "[…] gekürzt, vollständig in {source}"
 SHORT_HINT = "[…] gekürzt"
@@ -90,15 +91,25 @@ def _project_sections(paths):
     return sections, [path for _label, path, _text in found if path]
 
 
+def _decision_section(paths):
+    """Entscheidungs-Abschnitt der Repos; leer, wenn es keine Einträge gibt."""
+    lines = repos.decisions_many(paths, repos.DECISION_LIMIT)
+    if not lines:
+        return []
+    return [(DECISION_TITLE, "\n".join(f"- {line}" for line in lines))]
+
+
 def build_paths(paths, brief="", maximum=DEFAULT_LIMIT, fallback_source=""):
-    """Steckbriefe der Repos plus Brief; der Hinweis nennt beide Quellen.
+    """Steckbriefe, Entscheidungen und Brief; der Hinweis nennt alle Quellen.
 
     Der Brief steht hinten und wird darum zuerst gekürzt. Sobald er im
     Kontext steht, nennt der Hinweis deshalb auch `fallback_source`
-    (die Team-Konfiguration), nicht nur die Steckbrief-Pfade.
+    (die Team-Konfiguration), nicht nur die Steckbrief- und
+    Entscheidungs-Pfade.
     """
     sections, found = _project_sections(paths)
-    sources = list(found)
+    sections += _decision_section(paths)
+    sources = list(found) + repos.decision_paths(paths)
     if (brief or "").strip() and fallback_source:
         sources.append(fallback_source)
     source = ", ".join(sources) or fallback_source

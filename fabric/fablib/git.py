@@ -7,7 +7,8 @@ import subprocess
 from . import store
 from .errors import FabError
 
-VERIFY_TIMEOUT = 600
+# Die Testsuite dauert inzwischen über zehn Minuten; 600 s reichten nicht mehr.
+VERIFY_TIMEOUT = 1200
 
 GITHUB_URL = re.compile(
     r"^(?:https?://(?:[^@/]+@)?github\.com/|ssh://(?:[^@/]+@)?github\.com/"
@@ -554,7 +555,7 @@ def gh_pr_merge(repo, url):
 
 
 def run_verify(worktree):
-    """`sh <worktree>/.fabric/verify.sh`, Timeout 600 s."""
+    """`sh <worktree>/.fabric/verify.sh`, Timeout 1200 s."""
     script = os.path.join(worktree, ".fabric", "verify.sh")
     if not os.path.isfile(script):
         raise FabError(

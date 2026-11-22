@@ -3,7 +3,7 @@ from . import store
 
 KINDS = frozenset(
     "created edited status assigned comment wake dispatch verify verdict handover "
-    "accept reject drop orchestrator config tick pr lesson flow".split()
+    "accept reject drop orchestrator config tick pr lesson flow decision".split()
 )
 
 # Weck-Ergebnisse, die einen Inbox-Eintrag `attention` erzeugen.
