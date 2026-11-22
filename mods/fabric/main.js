@@ -24,6 +24,7 @@ import { renderInboxPanel } from "./views/inbox.js";
 import { renderTimelinePanel } from "./views/timeline.js";
 import { renderSwitcher } from "./views/switcher.js";
 import { renderDialogs, renderBlueprintDrawer } from "./views/dialogs.js";
+import { renderContextPreview } from "./views/context.js";
 
 const VIEWS = ["board", "tickets", "ticket", "team", "workflows", "prompts", "templates", "repos", "settings"];
 const NAV = [
@@ -174,10 +175,15 @@ export default class Fabric extends View {
     this.repoTab = "verify";
     this.verifyEditor = null;
     this.lessonsEditor = null;
+    this.projectEditor = null;
     this.verifySaved = "";
     this.lessonsSaved = "";
+    this.projectSaved = "";
     this.repoTest = null;
     this.repoTestBusy = false;
+    this.contextPreview = null;
+    this.contextPreviewId = 0;
+    this.contextPreviewSeen = 0;
     this.flows = null;
     this.flowRuns = null;
     this.flowName = null;
@@ -675,6 +681,7 @@ export default class Fabric extends View {
         this.pending = false;
         await this.readOnce();
       } while (this.pending && !this.closed);
+      this.checkContextPreview(_cx);
     } finally {
       this.refreshing = false;
       this.notifyNow();
@@ -1126,6 +1133,7 @@ export default class Fabric extends View {
 
   ensurePage(cx) {
     if (!this.isApp || !cx) return;
+    this.checkContextPreview(cx);
     const route = this.currentRoute();
     if (route.page === "team") {
       if (!this.roster || Date.now() - this.rosterAt > 15000) cx.spawn((cx) => this.loadRoster(cx));
@@ -1347,6 +1355,7 @@ export default class Fabric extends View {
       if (this.newTeamOpen) { this.closeNewTeam(cx); return; }
       if (this.newOpen) { this.newOpen = false; this.clearMentions(this.lastCx); this.notifyNow(); return; }
       if (this.blueprintDrawer) { this.closeBlueprintDrawer(cx); return; }
+      if (this.contextPreview) { this.closeContextPreview(cx); return; }
       if (this.teamPrompt) { this.closeTeamPrompt(cx); return; }
       const route = this.currentRoute();
       if (route.page === "ticket") { this.navigate("tickets", {}, cx); return; }
@@ -1439,6 +1448,9 @@ export default class Fabric extends View {
       if (this.lessonsEditor && model.isDirty(this.lessonsEditor.value(), this.lessonsSaved)) {
         entries.push({ key: "lessons", label: "Lernnotizen" });
       }
+      if (this.projectEditor && model.isDirty(this.projectEditor.value(), this.projectSaved)) {
+        entries.push({ key: "project", label: "Steckbrief" });
+      }
     }
     if (this.blueprintDrawer && this.blueprintDirty) {
       entries.push({ key: "blueprint", label: "Blaupause im Drawer" });
@@ -1476,7 +1488,7 @@ export default class Fabric extends View {
       if (entry.key === "body") ok = await this.saveBody(cx, true);
       if (entry.key === "prompt") ok = await this.savePrompt(cx, true);
       if (entry.key === "template") ok = await this.saveTemplate(cx, true);
-      if (entry.key === "verify" || entry.key === "lessons") ok = await this.saveRepo(cx, entry.key, true);
+      if (entry.key === "verify" || entry.key === "lessons" || entry.key === "project") ok = await this.saveRepo(cx, entry.key, true);
       if (entry.key === "blueprint") ok = await this.saveBlueprint(cx, true);
       if (entry.key === "team-prompt") ok = await this.saveTeamPrompt(cx, true);
       if (entry.key.startsWith("team:")) ok = await this.saveTeam(entry.key.slice(5), cx, true);
@@ -1492,6 +1504,7 @@ export default class Fabric extends View {
     if (this.templateEditor) this.templateEditor.set_value(this.templateSaved);
     if (this.verifyEditor) this.verifyEditor.set_value(this.verifySaved);
     if (this.lessonsEditor) this.lessonsEditor.set_value(this.lessonsSaved);
+    if (this.projectEditor) this.projectEditor.set_value(this.projectSaved);
     if (this.blueprintDrawer) this.blueprintDirty = false;
     if (this.teamPrompt) this.teamPrompt.editor.set_value(this.teamPrompt.saved);
     this.resetTeamForms();
@@ -1676,10 +1689,19 @@ export default class Fabric extends View {
       this.repoError = null;
       this.verifySaved = raw.verify?.text ?? "";
       this.lessonsSaved = raw.lessons?.text ?? "";
+      this.projectSaved = raw.project?.text ?? "";
       this.verifyEditor = raw.verify?.exists ? this.newEditor("shell", this.verifySaved) : null;
       this.lessonsEditor = this.newEditor("markdown", this.lessonsSaved);
+      this.projectEditor = raw.project?.exists ? this.newEditor("markdown", this.projectSaved) : null;
       this.repoTest = null;
-      this.repoTab = "verify";
+      // Vorschau-Deeplink: einmal die gewünschte Datei zeigen, dann normal weiter.
+      const wantedTab = shared("fabric.repoTab");
+      if (wantedTab === "verify" || wantedTab === "lessons" || wantedTab === "project") {
+        this.repoTab = wantedTab;
+        setShared("fabric.repoTab", null);
+      } else {
+        this.repoTab = "verify";
+      }
     } catch (error) {
       this.repoError = `Repo nicht lesbar: ${message(error)}`;
       this.repoDetail = null;
@@ -2495,6 +2517,32 @@ export default class Fabric extends View {
     this.notifyNow();
   }
 
+  async markDecision(comment, cx) {
+    const ticket = this.ticket;
+    if (!ticket?.id) return;
+    const sentence = model.decisionSentence(comment?.text);
+    if (!sentence) return;
+    await this.action("decision", model.decideArgs(ticket.id, sentence), {
+      success: "Entscheidung festgehalten.",
+      after: async () => { await this.loadTicket(); },
+    });
+    this.notifyNow();
+  }
+
+  async decideProposal(action, proposal, cx) {
+    const ticket = this.ticket;
+    if (!ticket?.id || !proposal?.id) return;
+    const reject = action === "reject";
+    const plan = reject ? proposal.reject : proposal.confirm;
+    if (!plan || plan.disabled || !plan.args) return;
+    await this.action("decision", plan.args, {
+      success: reject ? "Vorschlag verworfen." : "Entscheidung bestätigt.",
+      after: async () => { await this.loadTicket(); },
+    });
+    this.notifyNow();
+  }
+
+
   async formulate(cx) {
     const id = this.activeTicketId();
     if (!id) return;
@@ -3201,8 +3249,15 @@ export default class Fabric extends View {
     maxSessions.on("change", (_event, cx) => cx.notify());
     maxSessions.on("submit", (_event, cx) => this.saveTeam(team.name, cx));
     this.track(maxSessions);
+    const brief = TextareaState.new({
+      value: draft.brief,
+      placeholder: "Ziele, Prioritäten, Definition of Done, Glossar, Stil, Entscheider",
+    });
+    brief.on("change", (_event, cx) => cx.notify());
+    this.track(brief);
     return {
       name,
+      brief,
       repos: [...draft.repos],
       reviewer: draft.reviewer,
       members: draft.members.map((member) => this.memberForm(member)),
@@ -3216,6 +3271,7 @@ export default class Fabric extends View {
     if (!form) return null;
     return {
       name: form.name.value(),
+      brief: form.brief.value(),
       repos: [...form.repos],
       members: form.members.map((member) => ({
         blueprint: member.blueprint,
@@ -3426,27 +3482,48 @@ export default class Fabric extends View {
     const team = this.teamFor(name);
     if (!form || !team) return false;
     const values = this.teamFormValues(name);
-    const plan = model.teamSaveArgs(team, values);
-    if (plan.error) {
-      this.setError(`team:${name}`, plan.error);
+    const temp = `${this.dir}/.tmp/brief-${name}-${Date.now()}.md`;
+    let wrote = false;
+    try {
+      try {
+        await exec("/bin/mkdir", ["-p", `${this.dir}/.tmp`]);
+      } catch {
+        // mkdir darf scheitern; writeTextFile meldet den eigentlichen Fehler.
+      }
+      await writeTextFile(temp, String(values.brief ?? ""), null);
+      wrote = true;
+      const plan = model.teamSaveArgs(team, values, { briefFile: temp });
+      if (plan.error) {
+        this.setError(`team:${name}`, plan.error);
+        this.notifyNow();
+        return false;
+      }
+      const result = await this.action(`team:${name}`, plan.args, {
+        success: `Team ${name} gespeichert.`,
+        after: async () => {
+          const current = this.teamForms[name];
+          // Nach dem Schreiben ist der eingereichte Stand die neue Vergleichsbasis.
+          if (current) current.origin = model.teamDraft(values);
+          await this.loadRoster(cx);
+        },
+      });
+      if (result.ok) {
+        await this.loadOrchestrator(cx, name);
+        this.syncTeamForms();
+      }
+      if (!silent) this.notifyNow();
+      return result.ok;
+    } catch (error) {
+      const text = `Brief konnte nicht geschrieben werden: ${message(error)}`;
+      this.setError(`team:${name}`, text);
+      notify({ title: "Fabric", body: text, level: "error" });
       this.notifyNow();
       return false;
+    } finally {
+      if (wrote) {
+        try { await exec("/bin/rm", ["-f", temp]); } catch { /* egal */ }
+      }
     }
-    const result = await this.action(`team:${name}`, plan.args, {
-      success: `Team ${name} gespeichert.`,
-      after: async () => {
-        const current = this.teamForms[name];
-        // Nach dem Schreiben ist der eingereichte Stand die neue Vergleichsbasis.
-        if (current) current.origin = model.teamDraft(values);
-        await this.loadRoster(cx);
-      },
-    });
-    if (result.ok) {
-      await this.loadOrchestrator(cx, name);
-      this.syncTeamForms();
-    }
-    if (!silent) this.notifyNow();
-    return result.ok;
   }
 
   async saveChangedTeams(cx, silent = false) {
@@ -3458,6 +3535,71 @@ export default class Fabric extends View {
     }
     if (!silent) this.notifyNow();
     return ok;
+  }
+
+  // ---------- Kontextvorschau ----------
+
+  toggleContextPreview(kind, ref, cx) {
+    if (!kind || !ref) return;
+    const current = this.contextPreview;
+    if (current && current.kind === kind && current.ref === ref) {
+      this.closeContextPreview(cx);
+      return;
+    }
+    this.openContextPreview(kind, ref, cx);
+  }
+
+  async openContextPreview(kind, ref, cx) {
+    if (!kind || !ref) return;
+    const id = ++this.contextPreviewId;
+    this.contextPreview = {
+      kind,
+      ref,
+      title: kind === "team" ? `Team ${ref}` : `Ticket ${ref}`,
+      loading: true,
+      data: null,
+      error: null,
+    };
+    this.notifyNow();
+    try {
+      const args = ["context", ...(kind === "team" ? ["--team", ref] : [ref]), "--json"];
+      const result = await this.execFab(args, { timeout: 30000 });
+      if (id !== this.contextPreviewId) return;
+      if (result.code !== 0) throw new Error((result.stderr || "").trim() || `Code ${result.code}`);
+      const raw = parseJson(result.stdout, null);
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+        throw new Error("context --json lieferte kein JSON");
+      }
+      this.contextPreview = { ...this.contextPreview, loading: false, data: raw, error: null };
+    } catch (error) {
+      if (id !== this.contextPreviewId) return;
+      this.contextPreview = {
+        ...this.contextPreview,
+        loading: false,
+        data: null,
+        error: `Kontext nicht lesbar: ${message(error)}`,
+      };
+    }
+    this.notifyNow();
+  }
+
+  closeContextPreview(cx) {
+    this.contextPreview = null;
+    this.contextPreviewId += 1;
+    this.notifyNow();
+    cx?.notify?.();
+  }
+
+  /** Vorschau-Deeplink: einmal je `at`, nur im App-Fenster. */
+  checkContextPreview(cx) {
+    if (!this.isApp) return;
+    const request = shared("fabric.contextPreview");
+    if (!request || typeof request !== "object") return;
+    if (!Number.isInteger(request.at) || request.at <= this.contextPreviewSeen) return;
+    if (request.kind !== "ticket" && request.kind !== "team") return;
+    if (!request.ref) return;
+    this.contextPreviewSeen = request.at;
+    this.openContextPreview(request.kind, request.ref, cx);
   }
 
   // ---------- Team-Prompt ----------
@@ -3723,32 +3865,47 @@ export default class Fabric extends View {
   async saveRepo(cx, only = null, silent = false) {
     if (!this.repoDetail) return false;
     const key = only ?? this.repoTab;
-    const editor = key === "verify" ? this.verifyEditor : this.lessonsEditor;
+    const editor = key === "verify" ? this.verifyEditor
+      : key === "project" ? this.projectEditor
+        : this.lessonsEditor;
     if (!editor) {
-      this.setError(key === "verify" ? "verify" : "lessons", "Noch keine Datei angelegt.");
+      this.setError(key === "verify" ? "verify" : key === "project" ? "project" : "lessons",
+        "Noch keine Datei angelegt.");
       this.notifyNow();
       return false;
     }
     const text = editor.value();
+    const success = key === "verify" ? "Prüfskript gespeichert."
+      : key === "project" ? "Steckbrief gespeichert."
+        : "Lernnotizen gespeichert.";
     const result = await this.action("repo-set", model.repoSetArgs(this.repoDetail.path, key, text), {
-      success: key === "verify" ? "Prüfskript gespeichert." : "Lernnotizen gespeichert.",
+      success,
       after: () => {
         if (key === "verify") {
           this.verifySaved = text;
           this.repoDetail.verify = { ...(this.repoDetail.verify ?? {}), exists: true, text };
+        } else if (key === "project") {
+          this.projectSaved = text;
+          this.repoDetail.project = { ...(this.repoDetail.project ?? {}), exists: true, text };
         } else {
           this.lessonsSaved = text;
           this.repoDetail.lessons = { ...(this.repoDetail.lessons ?? {}), exists: true, text };
         }
         if (this.repoDetail) {
           this.repos = (this.repos ?? []).map((repo) => repo.path === this.repoDetail.path
-            ? { ...repo, verify_exists: Boolean(this.repoDetail.verify?.exists), lessons_exists: Boolean(this.repoDetail.lessons?.exists) }
+            ? {
+              ...repo,
+              verify_exists: Boolean(this.repoDetail.verify?.exists),
+              lessons_exists: Boolean(this.repoDetail.lessons?.exists),
+              project_exists: Boolean(this.repoDetail.project?.exists),
+            }
             : repo);
         }
       },
     });
     if (result.ok) {
       if (key === "verify") this.verifySaved = text;
+      else if (key === "project") this.projectSaved = text;
       else this.lessonsSaved = text;
     }
     if (!silent) this.notifyNow();
@@ -3764,9 +3921,19 @@ export default class Fabric extends View {
     this.notifyNow();
   }
 
+  createProject(cx) {
+    this.repoTab = "project";
+    this.projectSaved = "";
+    this.projectEditor = this.newEditor("markdown", this.repoDetail?.project_template ?? "");
+    this.projectEditor.on("change", (_event, cx) => cx.notify());
+    this.setError("repo", null);
+    this.notifyNow();
+  }
+
   discardRepo(cx) {
     if (this.repoTab === "verify" && this.verifyEditor) this.verifyEditor.set_value(this.verifySaved);
     if (this.repoTab === "lessons" && this.lessonsEditor) this.lessonsEditor.set_value(this.lessonsSaved);
+    if (this.repoTab === "project" && this.projectEditor) this.projectEditor.set_value(this.projectSaved);
     this.setError("repo-set", null);
     this.notifyNow();
   }
@@ -3998,7 +4165,8 @@ export default class Fabric extends View {
           .when(!this.compact, (el) => el.child(nav))
           .child(contentPane)
           .when(Boolean(this.blueprintDrawer), (el) => el.child(renderBlueprintDrawer(this, cx, t)))
-          .when(Boolean(this.teamPrompt), (el) => el.child(renderTeamPromptDrawer(this, cx, t))),
+          .when(Boolean(this.teamPrompt), (el) => el.child(renderTeamPromptDrawer(this, cx, t)))
+          .when(Boolean(this.contextPreview), (el) => el.child(renderContextPreview(this, cx, t))),
       );
 
     const overlay = [];
