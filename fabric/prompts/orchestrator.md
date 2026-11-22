@@ -69,8 +69,12 @@ Worktree-Pfad schreiben sonst aneinander vorbei.
 fab list --status doing
 fab list --status review
 fab show T-7
-git -C /pfad/zum/worktree-des-offenen-tickets diff --name-only main
+git -C /pfad/zum/worktree-des-offenen-tickets diff --name-only main...HEAD
 ```
+
+`main...HEAD` vergleicht gegen die Merge-Basis des Branches, nicht gegen die
+aktuelle Spitze von `main`; sonst erscheinen Änderungen, die auf `main` gelandet
+sind, fälschlich als Dateikonflikt.
 
 Vergleiche die im neuen Ticket genannten Pfade mit den Pfaden aus `## Kontext` der
 offenen Tickets und deren Worktree-Diff. Überschneidung ist dieselbe Datei; ein
