@@ -219,6 +219,15 @@ class LockTests(FabricCase):
         )
         return repo, tid, worktree, proc
 
+    def assert_lock_free(self):
+        """Beweist, dass die Sperre frei ist: in-process sofort erwerbbar."""
+        began = time.monotonic()
+        with self.store_env():
+            with store.locked():
+                pass
+        elapsed = time.monotonic() - began
+        self.assertLess(elapsed, 1.0, elapsed)
+
     def noshell_path(self):
         """PATH ohne `sh`, aber mit git und den Stubs; `sh` fehlt beim Prüfen."""
         folder = os.path.join(self.tmp, "noshell")
@@ -303,12 +312,7 @@ class LockTests(FabricCase):
         release = os.path.join(self.tmp, "handover-release")
         _repo, tid, _worktree, proc = self.blocked_handover(started, release)
 
-        began = time.monotonic()
-        with self.store_env():
-            with store.locked():
-                pass
-        elapsed = time.monotonic() - began
-        self.assertLess(elapsed, 1.0, elapsed)
+        self.assert_lock_free()
 
         self.write_file(release, "")
         _out, err = proc.communicate(timeout=60)
@@ -435,6 +439,7 @@ class LockTests(FabricCase):
             self.wait_for(lambda: os.path.exists(started), timeout=20),
             "Merge-Prüfung des Accepts hat nicht begonnen",
         )
+        self.assert_lock_free()
 
         comment = self.cli("comment", tid, "--from", "mensch", "dazwischen")
         self.assertEqual(comment.returncode, 0, comment.stderr)
@@ -471,6 +476,7 @@ class LockTests(FabricCase):
             self.wait_for(lambda: os.path.exists(started), timeout=20),
             "PR-Anlegen hat nicht begonnen",
         )
+        self.assert_lock_free()
 
         comment = self.cli("comment", tid, "--from", "mensch", "dazwischen")
         self.assertEqual(comment.returncode, 0, comment.stderr)
@@ -483,6 +489,26 @@ class LockTests(FabricCase):
         ticket = self.ticket(tid)
         self.assertNotIn("pr", ticket)
         self.assertNotEqual(ticket["status"], "done")
+
+    def test_accept_pr_weg_merge_konflikt_bricht_ab(self):
+        repo, tid, _worktree = self.review_ticket()
+        self.setup_origin(repo)
+        self.write_file(os.path.join(repo, "aenderung.txt"), "von main\n")
+        self.git_out(repo, "add", "aenderung.txt")
+        self.git_out(repo, "commit", "-qm", "main ändert dieselbe Datei")
+        mark = self.mark()
+
+        result = self.cli(
+            "accept", tid,
+            env={"GH_LOG": self.gh_log, "GH_STATE": self.gh_state},
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Merge-Konflikt", result.stderr)
+        ticket = self.ticket(tid)
+        self.assertEqual(ticket["status"], "doing")
+        self.assertNotIn("pr", ticket)
+        self.assertEqual(self.events_since(mark, "accept"), [])
 
     # 8 -- Accept: rote Zweige brechen ab, kein Accept-Ereignis
 
