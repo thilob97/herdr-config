@@ -1299,6 +1299,11 @@ def _accept_merge_changed(ticket, roster, repo, ref, head):
     return merge, text, wecken
 
 
+def _no_change(ticket, repo):
+    """Branch ohne Commits über der Basis; dieselbe Basisreferenz wie der Merge-Stand."""
+    return git.commit_count(repo, ticket["base"], ticket["branch"]) == 0
+
+
 def cmd_handover(args):
     actor = _require_actor(args)
     summary = (args.summary or "").strip()
@@ -1314,33 +1319,42 @@ def cmd_handover(args):
         reasons = []
         if not head:
             reasons.append(f"HEAD des Worktrees {worktree} ist nicht lesbar")
-        checks = ticket.get("checks")
-        if not checks:
-            reasons.append("keine Checks: fab verify fehlt")
-        else:
-            if checks.get("state") != "pass":
-                reasons.append(f"Checks stehen auf {checks.get('state')}")
-            if head and checks.get("head") != head:
-                reasons.append(
-                    f"Checks gelten für HEAD {_short(checks.get('head'))}, "
-                    f"Worktree-HEAD ist {_short(head)}"
-                )
-        verdict = ticket.get("verdict")
-        if not verdict:
-            reasons.append("kein Urteil: fab verdict fehlt")
-        else:
-            if verdict.get("state") != "pass":
-                reasons.append(f"Urteil steht auf {verdict.get('state')}")
-            if head and verdict.get("head") != head:
-                reasons.append(
-                    f"Urteil gilt für HEAD {_short(verdict.get('head'))}, "
-                    f"Worktree-HEAD ist {_short(head)}"
-                )
+        no_change = False
+        if ticket.get("repo") and ticket.get("base") and ticket.get("branch"):
+            try:
+                no_change = _no_change(ticket, ticket["repo"])
+            except FabError as exc:
+                reasons.append(str(exc))
+                no_change = False
+        if not no_change:
+            checks = ticket.get("checks")
+            if not checks:
+                reasons.append("keine Checks: fab verify fehlt")
+            else:
+                if checks.get("state") != "pass":
+                    reasons.append(f"Checks stehen auf {checks.get('state')}")
+                if head and checks.get("head") != head:
+                    reasons.append(
+                        f"Checks gelten für HEAD {_short(checks.get('head'))}, "
+                        f"Worktree-HEAD ist {_short(head)}"
+                    )
+            verdict = ticket.get("verdict")
+            if not verdict:
+                reasons.append("kein Urteil: fab verdict fehlt")
+            else:
+                if verdict.get("state") != "pass":
+                    reasons.append(f"Urteil steht auf {verdict.get('state')}")
+                if head and verdict.get("head") != head:
+                    reasons.append(
+                        f"Urteil gilt für HEAD {_short(verdict.get('head'))}, "
+                        f"Worktree-HEAD ist {_short(head)}"
+                    )
         children = _open_children(ticket)
         if children:
             reasons.append(_children_reason(children))
         if (
-            not reasons
+            not no_change
+            and not reasons
             and ticket.get("repo")
             and ticket.get("base")
             and ticket.get("branch")
@@ -1364,7 +1378,13 @@ def cmd_handover(args):
         files = None
         merge = None
         merge_note = ""
-        if not reasons and ticket.get("base") and ticket.get("branch") and ticket.get("repo"):
+        if (
+            not no_change
+            and not reasons
+            and ticket.get("base")
+            and ticket.get("branch")
+            and ticket.get("repo")
+        ):
             repo = ticket["repo"]
             base = ticket["base"]
             try:
@@ -1440,10 +1460,21 @@ def cmd_handover(args):
             raise store.PersistError(
                 f"{ticket['id']}: Übergabe verweigert:\n- " + "\n- ".join(reasons)
             )
-        if merge:
-            ticket["merge"] = merge
-        else:
+        if no_change:
+            ticket["no_change"] = True
             ticket.pop("merge", None)
+            _add_comment(
+                ticket,
+                actor,
+                f"ohne Änderung: {ticket['branch']} hat keine Commits über "
+                f"{ticket['base']}; geprüft wird nur die Begründung.",
+            )
+        else:
+            ticket.pop("no_change", None)
+            if merge:
+                ticket["merge"] = merge
+            else:
+                ticket.pop("merge", None)
         ticket["status"] = "review"
         ticket.pop("stall", None)
         if "mensch" not in ticket["waiting"]:
@@ -1451,7 +1482,10 @@ def cmd_handover(args):
         _add_comment(ticket, actor, summary)
         events.append("handover", ticket["id"], actor, "", summary)
         rev = _commit(ticket, rev)
-        print(f"{ticket['id']}: an den Menschen übergeben (Status review)")
+        if no_change:
+            print(f"{ticket['id']}: ohne Änderung an den Menschen übergeben (Status review)")
+        else:
+            print(f"{ticket['id']}: an den Menschen übergeben (Status review)")
         return 0
 
 
@@ -1626,7 +1660,17 @@ def cmd_accept(args):
             )
         pr = ticket.get("pr") or {}
         pr_merged = pr.get("state") == "merged"
-        if not pr_merged:
+        repo = ticket.get("repo")
+        branch_name = ticket.get("branch")
+        worktree = ticket.get("worktree")
+        for field, value in (("repo", repo), ("branch", branch_name), ("worktree", worktree)):
+            if not value:
+                raise FabError(f"{ticket['id']}: Feld {field} fehlt; Merge nicht möglich")
+        top = git.toplevel(repo)
+        if not top:
+            raise FabError(f"{ticket['id']}: {repo} ist kein Git-Repository")
+        no_change = bool(not pr_merged and _no_change(ticket, top))
+        if not pr_merged and not no_change:
             review_worktree = ticket.get("worktree")
             review_head = git.head(review_worktree) if review_worktree else ""
             verdict = ticket.get("verdict") or {}
@@ -1640,17 +1684,8 @@ def cmd_accept(args):
                     f"{ticket['id']}: Urteil gilt für HEAD {_short(verdict.get('head'))}, "
                     f"Worktree-HEAD ist {_short(review_head)}; bitte erneut prüfen"
                 )
-        repo = ticket.get("repo")
-        branch_name = ticket.get("branch")
-        worktree = ticket.get("worktree")
-        for field, value in (("repo", repo), ("branch", branch_name), ("worktree", worktree)):
-            if not value:
-                raise FabError(f"{ticket['id']}: Feld {field} fehlt; Merge nicht möglich")
-        top = git.toplevel(repo)
-        if not top:
-            raise FabError(f"{ticket['id']}: {repo} ist kein Git-Repository")
         failure = None
-        if pr_merged:
+        if pr_merged and not no_change:
             merged = (ticket.get("pr") or {}).get("commit") or git.head(top)
             url = ticket["pr"]["url"]
             try:
@@ -1673,7 +1708,7 @@ def cmd_accept(args):
                     + (f"; {len(ended)} Session(s) beendet" if ended else "")
                 )
                 _print_wake_results(hint_wakes)
-        else:
+        elif not no_change:
             here = git.branch(top)
             if here != ticket["base"]:
                 raise FabError(
@@ -1834,6 +1869,28 @@ def cmd_accept(args):
                         _pr_failure(ticket, str(exc), url)
                     rev = _commit(ticket, rev)
                     failure = exc
+        else:
+            ended = _end_sessions(ticket)
+            git.remove_worktree(top, worktree)
+            if git.branch_exists(top, branch_name):
+                git.delete_branch(top, branch_name)
+            if git.remote_ref(top, "origin", branch_name):
+                git.push_delete(top, "origin", branch_name)
+            ticket["status"] = "done"
+            ticket.pop("stall", None)
+            ticket["waiting"] = []
+            ticket["no_change"] = True
+            text = (
+                f"ohne Änderung abgeschlossen: {branch_name} hat keine Commits "
+                f"über {ticket['base']}"
+            )
+            _add_comment(ticket, "mensch", text)
+            events.append("accept_noop", ticket["id"], "mensch", "", text)
+            rev = _commit(ticket, rev)
+            print(
+                f"{ticket['id']}: ohne Änderung abgeschlossen; Worktree und Branch entfernt"
+                + (f"; {len(ended)} Session(s) beendet" if ended else "")
+            )
         if failure is not None:
             raise failure
     _autostart(_unblocked_by(ticket["id"]))

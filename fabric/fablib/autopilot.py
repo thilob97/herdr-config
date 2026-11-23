@@ -538,8 +538,9 @@ def try_accept(ticket):
     tid = ticket["id"]
     checks = ticket.get("checks") or {}
     verdict = ticket.get("verdict") or {}
+    no_change = bool(ticket.get("no_change"))
     current = head(ticket.get("worktree") or "")
-    if not (
+    if not no_change and not (
         checks.get("state") == "pass"
         and verdict.get("state") == "pass"
         and same(checks.get("head", ""), current)
@@ -547,7 +548,7 @@ def try_accept(ticket):
     ):
         return False
     repo = _repo_root(ticket.get("repo") or os.getcwd())
-    if _paused or not ensure_clean_main(repo):
+    if _paused or (not no_change and not ensure_clean_main(repo)):
         return False
     if _conflict_sent.get(tid) == current:
         return False
@@ -567,6 +568,9 @@ def try_accept(ticket):
             )
             log(f"Konflikt {tid}: an {agent} übergeben")
         return False
+    if no_change:
+        log(f"accept {tid}: ohne Änderung, main unverändert")
+        return True
     ok, out, err, run_id = check_main(repo)
     if ok:
         log(f"main nach {tid} grün")

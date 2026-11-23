@@ -112,7 +112,7 @@ Die gesamte Datenhaltung läuft über die schmale Schnittstelle in `fabric/fabli
 {"at": 1790000000000, "kind": "comment", "ticket": "T-1", "actor": "zap", "target": "ada", "text": "…"}
 ```
 
-`kind` ∈ `created edited status assigned comment wake dispatch verify verdict handover accept reject drop orchestrator config tick pr session_ended`.
+`kind` ∈ `created edited status assigned comment wake dispatch verify verdict handover accept accept_noop reject drop orchestrator config tick pr session_ended`.
 `target` nur bei `wake` (wer geweckt wird), `assigned` (wem), `dispatch` (welcher Agent), `tick` (welcher Agent) und `session_ended` (Terminalname); sonst `""`.
 Bei `wake` steht in `text` genau eines von: `geweckt`, `gestartet`, `an orchestrator`, `unterdrückt: <grund>`.
 Bei `tick` steht in `text` eines von: `geweckt`, `gestartet`, `an orchestrator`, `attention`, `gelöst`; `reason` nennt Regel und Grund, z. B. `Regel 1 (doing): keine Session seit 12 min`.
@@ -226,6 +226,10 @@ Der Diff des Tickets ist `git diff main...HEAD`: die Merge-Basis des Branches ge
 `fab accept` berechnet den Tree erneut gegen dieselbe lokale Basis `<base>`, bevor irgendetwas gemergt oder gepusht wird; der PR-Weg prüft nach `git fetch` zuerst, dass `origin/<base>` höchstens hinter der lokalen Basis liegt, und pusht diese dann. Ist er gleich dem geprüften `merge.tree`, gilt Urteil und Abnahme weiter; das Ergebnis des `--no-ff`-Merges wird zusätzlich gegen `merge.tree` geprüft, sonst wird der Merge zurückgesetzt. Weicht der Tree ab, nimmt `fab` nicht ab: es prüft den neuen Merge-Stand (inklusive Checks), verwirft das bisherige Urteil, setzt den Status auf `doing`, entfernt `mensch` aus `waiting` und weckt die Prüferin für ein neues Urteil; sind die Checks rot oder entsteht ein Konflikt, wird stattdessen der Zuständige geweckt. Ohne neues Urteil verweigert `fab handover` wieder. Läuft `main` weiter, ohne den Merge-Tree zu ändern (z. B. ein leerer Commit), bleibt die Abnahme gültig.
 
 Fehlt dem Ticket ein `merge`-Feld (etwa weil es vor der Merge-Stand-Prüfung in `review` ging), kann `fab accept` keinen geprüften Tree vergleichen. Es behandelt das wie einen abweichenden Stand: prüft den Merge-Stand neu, verwirft ein altes Urteil, setzt den Status auf `doing` und weckt die Prüferin. Abgenommen wird erst, wenn für den neu berechneten Stand ein Urteil vorliegt und `merge.tree` dazu passt; so kann kein ungeprüfter Merge durchrutschen.
+
+### Abnahme ohne Änderung
+
+Ändert ein Branch nichts, prüft `fab` mit `git rev-list --count <base>..<branch>` (dieselbe Basisreferenz wie der Merge-Stand), ob null Commits über der Basis liegen. `fab handover` setzt dann `no_change: true`, schreibt einen Hinweis ans Ticket und braucht weder Checks noch Urteil; der Status geht wie sonst auf `review`. `fab accept` schließt das Ticket als `done` ohne Merge und ohne PR: Kommentar und Ereignis `accept_noop` enthalten „ohne Änderung abgeschlossen“, Worktree, Branch und Sessions werden entfernt. `fab show` zeigt „ohne Änderung“; der Autopilot nimmt den Stand genau einmal ab, ohne `main` erneut zu prüfen.
 
 ### Pipeline
 

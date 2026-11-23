@@ -216,6 +216,36 @@ class PrAcceptTests(FabricCase):
         accept_rows = [row for row in self.events() if row["kind"] == "accept"]
         self.assertIn(URL, accept_rows[-1]["text"])
 
+    def test_accept_ohne_commits_oeffnet_keinen_pr(self):
+        repo, tid, worktree = self.ready_ticket()
+        bare = self.setup_origin(repo)
+        main_before = self.git_out(repo, "rev-parse", "HEAD")
+        self.ok("handover", tid, "--from", "zap", "Nur Begründung")
+        mark = self.mark()
+
+        result = self.ok("accept", tid, env=self.gh_env(bare))
+
+        self.assertNotIn(URL, result.stdout)
+        creates = [
+            call for call in self.gh_calls() if call[:2] == ["pr", "create"]
+        ]
+        self.assertEqual(creates, [])
+        ticket = self.ticket(tid)
+        self.assertEqual(ticket["status"], "done")
+        self.assertTrue(ticket.get("no_change"))
+        self.assertNotIn("pr", ticket)
+        self.assertEqual(self.git_out(repo, "rev-parse", "HEAD"), main_before)
+        self.assertFalse(os.path.exists(worktree))
+        self.assertEqual(self.git_out(repo, "branch", "--list", BRANCH), "")
+        self.assertFalse(self.bare_branch(bare, BRANCH))
+        noop = self.events_since(mark, "accept_noop")
+        self.assertEqual(len(noop), 1)
+        self.assertIn("ohne Änderung abgeschlossen", noop[0]["text"])
+        texts = [comment["text"] for comment in ticket.get("comments") or []]
+        self.assertTrue(
+            any("ohne Änderung abgeschlossen" in text for text in texts), texts
+        )
+
     def test_accept_nach_gemergtem_pr_haengt_bei_geloeschtem_branch(self):
         repo, tid, worktree = self.review_ticket()
         bare = self.setup_origin(repo)
