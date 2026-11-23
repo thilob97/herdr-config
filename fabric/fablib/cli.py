@@ -1967,18 +1967,28 @@ def cmd_accept(args):
                     )
                 report = preview.check_mods(top)
                 if not report["ok"]:
-                    # Der Merge-Commit von GitHub ist das Ziel; nur wenn er
-                    # lokal (noch) nicht erreichbar ist, die Spitze der Basis.
-                    target = commit or ""
-                    if not target or not git.is_ancestor(top, target, "HEAD"):
-                        target = git.rev_parse(top, base)
-                    git.revert(top, target)
+                    # Nur den von GitHub gemeldeten Merge-Commit revertieren.
+                    # Fehlt er oder ist er lokal nicht erreichbar, wäre jede
+                    # Ersatzwahl ein fremder Commit: abbrechen, nichts pushen.
+                    if not commit:
+                        raise FabError(
+                            f"{ticket['id']}: herdr-app check rot; GitHub meldet "
+                            f"keinen Merge-Commit — kein Revert, fab accept "
+                            f"erneut ausführen"
+                        )
+                    if not git.is_ancestor(top, commit, "HEAD"):
+                        raise FabError(
+                            f"{ticket['id']}: herdr-app check rot; Merge-Commit "
+                            f"{commit} ist lokal nicht erreichbar — kein Revert, "
+                            f"fab accept erneut ausführen"
+                        )
+                    git.revert(top, commit)
                     git.push(top, "origin", base)
                     _accept_check_failed(ticket, report)
                     rev = _commit(ticket, rev)
                     raise store.PersistError(
                         f"{ticket['id']}: herdr-app check rot; Merge "
-                        f"{_short(target)} als Revert nach origin/{base} gepusht"
+                        f"{_short(commit)} als Revert nach origin/{base} gepusht"
                     )
                 _mark_pr_merged(ticket, url, commit)
                 _accept_step(steps, "pr_merged", url=url, commit=commit)
