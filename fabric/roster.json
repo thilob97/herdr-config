@@ -64,7 +64,8 @@
       "prompt": "prompts/xen.md",
       "argv": [
         "omp",
-        "--model=opencode-go/gemini-4-argon"
+        "--model=opencode-go/gemini-4-argon",
+        "--approval-mode=yolo"
       ]
     }
   ],
