@@ -10,6 +10,13 @@ import {
 } from "herdr";
 import * as model from "./model.js";
 
+// Token wie mods/fabric/ui.js: gleiche Schriftgrößen, Abstände und Radien.
+const FONT = { xs: 11, s: 12, m: 13 };
+const SPACE = { xs: 4, s: 8, m: 12, l: 16, xl: 24 };
+const RADIUS = { s: 6, m: 8, l: 12 };
+const SIZE = { rowTall: 44, nav: 34, chip: 20, badge: 18, dot: 8 };
+const ALPHA = { faint: "14", soft: "1c", tint: "24", border: "55" };
+
 const SPRITE_DIR = "mods/fabric-sidebar/sprites";
 // Eck-Symbole der Karten (die SVG-Sprites tragen die Figur).
 const CORNER_GLYPH = { zzz: "z", note: "♪", play: "▸", clock: "◷", alert: "!", dot: "·" };
@@ -70,11 +77,11 @@ function ticketChip(t, ticket) {
   return div()
     .id(`fabric-side-ticket-${ticket}`)
     .flex_none()
-    .h(17)
-    .px(5)
-    .rounded(4)
-    .bg(t.accent + "1a")
-    .text_size(10)
+    .h(SIZE.chip)
+    .px(SPACE.xs)
+    .rounded(RADIUS.s)
+    .bg(t.accent + ALPHA.tint)
+    .text_size(FONT.xs)
     .text_color(t.accent)
     .flex()
     .items_center()
@@ -90,11 +97,11 @@ function ticketChip(t, ticket) {
 function orchestratorBadge(t) {
   return div()
     .flex_none()
-    .h(17)
-    .px(6)
-    .rounded(4)
-    .bg(t.accent + "26")
-    .text_size(10)
+    .h(SIZE.chip)
+    .px(SPACE.xs)
+    .rounded(RADIUS.s)
+    .bg(t.accent + ALPHA.tint)
+    .text_size(FONT.xs)
     .font_semibold()
     .text_color(t.accent)
     .flex()
@@ -107,14 +114,14 @@ function teamHeader(t, group, first) {
   return h_flex()
     .flex_none()
     .w_full()
-    .when(!first, (el) => el.mt(4).pt(6).border_t(1).border_color(t.border))
-    .px(10)
-    .pb(2)
-    .gap(6)
+    .when(!first, (el) => el.mt(SPACE.xs).pt(SPACE.xs).border_t(1).border_color(t.border))
+    .px(SPACE.s)
+    .pb(SPACE.xs)
+    .gap(SPACE.xs)
     .items_center()
-    .child(div().flex_1().min_w(0).truncate().text_size(10.5).font_semibold().text_color(t.dim)
+    .child(div().flex_1().min_w(0).truncate().text_size(FONT.xs).font_semibold().text_color(t.dim)
       .child(group.name))
-    .child(div().flex_none().text_size(10).text_color(t.dim).child(String(group.count)));
+    .child(div().flex_none().text_size(FONT.xs).text_color(t.dim).child(String(group.count)));
 }
 
 // Farbton je Maschinengruppe; alle Farben kommen aus theme().
@@ -129,19 +136,19 @@ function monoFont() {
   return (fonts() ?? []).find((name) => /mono|menlo|courier/i.test(name)) ?? "";
 }
 
-// Abschnittskopf AGENTS mit dem BUSY-Zähler.
+// Abschnittskopf Agenten mit dem Aktiv-Zähler.
 function agentsHeader(t, free) {
   return h_flex()
     .flex_none()
     .w_full()
-    .px(10)
-    .pt(6)
-    .pb(2)
-    .gap(6)
+    .px(SPACE.s)
+    .pt(SPACE.xs)
+    .pb(SPACE.xs)
+    .gap(SPACE.xs)
     .items_center()
-    .child(div().text_size(10).font_semibold().text_color(t.muted).child("AGENTS"))
+    .child(div().text_size(FONT.xs).font_semibold().text_color(t.muted).child("Agenten"))
     .child(div()
-      .text_size(10)
+      .text_size(FONT.xs)
       .text_color(free.busy > 0 ? t.working : t.dim)
       .child(model.busyLabel(free.busy)));
 }
@@ -151,15 +158,15 @@ function freeGroupHeader(t, group, tint, first) {
   return h_flex()
     .flex_none()
     .w_full()
-    .when(!first, (el) => el.mt(5).pt(6).border_t(1).border_color(t.border))
-    .px(10)
-    .pb(3)
-    .gap(6)
+    .when(!first, (el) => el.mt(SPACE.xs).pt(SPACE.xs).border_t(1).border_color(t.border))
+    .px(SPACE.s)
+    .pb(SPACE.xs)
+    .gap(SPACE.xs)
     .items_center()
-    .child(div().size(7).flex_none().rounded(1).bg(tint))
-    .child(div().flex_none().text_size(10).font_semibold().text_color(tint).child(group.name))
-    .child(div().flex_1().min_w(4).h(1).bg(t.border))
-    .child(div().flex_none().text_size(10).text_color(t.dim)
+    .child(div().size(SIZE.dot).flex_none().rounded(SIZE.dot / 2).bg(tint))
+    .child(div().flex_none().text_size(FONT.xs).font_semibold().text_color(tint).child(group.name))
+    .child(div().flex_1().min_w(SPACE.xs).h(1).bg(t.border))
+    .child(div().flex_none().text_size(FONT.xs).text_color(t.dim)
       .child(`${group.busy}/${group.total}`));
 }
 
@@ -170,8 +177,8 @@ function pinButton(t, card) {
   return div()
     .id(`free-pin-${card.address}`)
     .flex_none()
-    .p(3)
-    .rounded(4)
+    .p(SPACE.xs)
+    .rounded(RADIUS.s)
     .text_color(card.pinned ? t.accent : t.dim)
     .cursor_pointer()
     .hover((style) => style.bg(t.hover).text_color(t.foreground))
@@ -194,42 +201,42 @@ function freeCard(t, card, tint, mono, hovered, onHover) {
     .id(`free-agent-${card.address}`)
     .w_full()
     .flex_none()
-    .gap(8)
-    .p(6)
-    .rounded(6)
+    .gap(SPACE.s)
+    .p(SPACE.s)
+    .rounded(RADIUS.s)
     .border_1()
-    .border_color(tint + "40")
-    .bg(tint + "12")
+    .border_color(tint + ALPHA.border)
+    .bg(tint + ALPHA.faint)
     .items_center()
     .cursor_pointer()
-    .hover((style) => style.bg(tint + "1e"))
+    .hover((style) => style.bg(tint + ALPHA.soft))
     .tooltip(`${card.name} öffnen`)
     .on_hover((on, cx) => onHover(card.address, on, cx))
     .on_click(() => run("agent.focus", { terminal: card.click.terminal }))
-    .child(image(`${SPRITE_DIR}/${card.sprite}.svg`).w(44).h(44).flex_none())
+    .child(image(`${SPRITE_DIR}/${card.sprite}.svg`).w(SIZE.rowTall).h(SIZE.rowTall).flex_none())
     .child(
-      v_flex().flex_1().min_w(0).gap(2)
+      v_flex().flex_1().min_w(0).gap(SPACE.xs)
         .child(
-          h_flex().w_full().items_center().gap(4)
+          h_flex().w_full().items_center().gap(SPACE.xs)
             .child(div()
-              .h(14)
-              .px(4)
-              .rounded(3)
-              .bg(status + "26")
-              .text_size(8.5)
+              .h(SIZE.chip)
+              .px(SPACE.xs)
+              .rounded(SIZE.chip / 2)
+              .bg(status + ALPHA.tint)
+              .text_size(FONT.xs)
               .font_semibold()
               .text_color(status)
               .flex()
               .items_center()
               .child(card.badge))
             .child(div().flex_1())
-            .child(div().text_size(10).text_color(status)
+            .child(div().text_size(FONT.xs).text_color(status)
               .child(CORNER_GLYPH[card.icon] ?? "·")),
         )
-        .child(div().w_full().truncate().text_size(11).font_semibold()
+        .child(div().w_full().truncate().text_size(FONT.s).font_semibold()
           .when(Boolean(mono), (el) => el.font_family(mono))
           .child(card.name))
-        .child(div().w_full().truncate().text_size(9.5).text_color(t.dim)
+        .child(div().w_full().truncate().text_size(FONT.xs).text_color(t.dim)
           .tooltip(card.task).child(card.task)),
     )
     .when(card.pinned || hovered, (el) => el.child(pinButton(t, card)));
@@ -237,8 +244,8 @@ function freeCard(t, card, tint, mono, hovered, onHover) {
 
 function metaLine(t, row) {
   return h_flex()
-    .gap(4)
-    .text_size(10.5)
+    .gap(SPACE.xs)
+    .text_size(FONT.xs)
     .when(Boolean(row.role), (el) => el.child(div().text_color(t.dim).child(row.role)))
     .when(Boolean(row.role), (el) => el.child(div().text_color(t.dim).child("·")))
     .when(Boolean(row.statusWord), (el) => el.child(div().text_color(statusColor(t, row.status)).child(row.statusWord)))
@@ -253,24 +260,24 @@ function rowView(t, row) {
     .id(`fabric-side-${row.address}`)
     .w_full()
     .flex_none()
-    .pl(8 + row.depth * 14)
-    .pr(8)
-    .py(4)
-    .gap(6)
+    .pl(SPACE.s + row.depth * SPACE.m)
+    .pr(SPACE.s)
+    .py(SPACE.xs)
+    .gap(SPACE.xs)
     .items_center()
-    .rounded(6)
+    .rounded(RADIUS.s)
     .cursor_pointer()
     .hover((style) => style.bg(t.hover))
     .tooltip(row.orchestrator ? "Orchestrator öffnen" : `${row.name} öffnen`)
     .on_click(() => run("agent.focus", { terminal: row.address }))
-    .child(div().size(7).flex_none().rounded(4).bg(statusColor(t, row.status)))
+    .child(div().size(SIZE.dot).flex_none().rounded(SIZE.dot / 2).bg(statusColor(t, row.status)))
     .child(
-      v_flex().flex_1().min_w(0).gap(1)
+      v_flex().flex_1().min_w(0).gap(SPACE.xs)
         .child(
-          h_flex().gap(5).items_center().min_w(0)
+          h_flex().gap(SPACE.xs).items_center().min_w(0)
             .when(row.orchestrator, (el) => el.child(orchestratorBadge(t)))
             .when(!row.orchestrator, (el) => el
-              .child(div().flex_1().min_w(0).truncate().text_size(12).child(row.title))),
+              .child(div().flex_1().min_w(0).truncate().text_size(FONT.s).child(row.title))),
         )
         .child(metaLine(t, row)),
     )
@@ -288,56 +295,51 @@ function publishHiddenAgents(terms, listed) {
   }
 }
 
-// Roter Alarm-Banner: ein Block je Alarm, Text bricht um, je Aktion ein
-// kleiner Knopf. Ein Schließen gibt es bewusst nicht; nur `fab alarm ack`
-// räumt den Alarm auf. Unbekannte Aktionen fallen in `model.alarmButtons` weg.
+// Alarm-Banner im Stil der Fenster-Notice: ein Block je Alarm, Text bricht um,
+// je Aktion ein kleiner Knopf. Ein Schließen gibt es bewusst nicht; nur
+// `fab alarm ack` räumt den Alarm auf. Unbekannte Aktionen fallen in
+// `model.alarmButtons` weg.
 function alarmBanner(t, alarm, onAction) {
   const buttons = model.alarmButtons(alarm);
-  return v_flex()
+  return h_flex()
     .flex_none()
     .w_full()
-    .rounded(6)
-    .bg(t.blocked + "1f")
-    .border_1()
-    .border_color(t.blocked + "66")
-    .px(8)
-    .py(6)
-    .gap(5)
-    .child(
-      h_flex()
-        .w_full()
-        .gap(6)
-        .items_start()
-        .child(div().flex_none().text_size(11).font_bold().text_color(t.blocked).child("!"))
-        .child(div()
-          .flex_1()
-          .min_w(0)
-          .text_size(10.5)
-          .text_color(t.foreground)
-          .whitespace_normal()
-          .child(String(alarm.text ?? ""))),
-    )
+    .px(SPACE.l)
+    .py(SPACE.s)
+    .gap(SPACE.s)
+    .items_start()
+    .bg(t.blocked + ALPHA.soft)
+    .border_b(1)
+    .border_color(t.border)
+    .child(div().flex_none().mt(1).size(6).rounded(3).bg(t.blocked))
+    .child(div()
+      .flex_1()
+      .min_w(0)
+      .whitespace_normal()
+      .text_size(FONT.s)
+      .text_color(t.blocked)
+      .child(String(alarm.text ?? "")))
     .when(buttons.length > 0, (el) => el.child(
       h_flex()
-        .w_full()
-        .gap(4)
-        .flex_wrap()
-        .children(buttons.map(({ action, label }) => div()
+        .flex_none()
+        .gap(SPACE.xs)
+        .items_center()
+        .children(buttons.map(({ action, label }) => h_flex()
           .id(`fabric-alarm-${alarm.id ?? "?"}-${action}`)
           .flex_none()
-          .h(18)
-          .px(7)
-          .rounded(4)
-          .border_1()
-          .border_color(t.blocked + "66")
-          .bg(t.blocked + "18")
-          .text_size(10)
-          .font_semibold()
-          .text_color(t.blocked)
-          .flex()
+          .h(24)
+          .px(SPACE.s)
           .items_center()
+          .justify_center()
+          .rounded(RADIUS.m)
+          .border_1()
+          .border_color(t.input)
+          .bg(t.raised)
+          .text_size(FONT.s)
+          .font_medium()
+          .text_color(t.foreground)
           .cursor_pointer()
-          .hover((style) => style.bg(t.blocked + "33"))
+          .hover((style) => style.opacity(0.86))
           .on_click((_event, cx) => onAction(alarm, action, cx))
           .child(label))),
     ));
@@ -476,19 +478,19 @@ export default class FabricSidebar extends View {
         h_flex()
           .flex_none()
           .w_full()
-          .h(34)
-          .px(10)
-          .gap(6)
+          .h(SIZE.nav)
+          .px(SPACE.s)
+          .gap(SPACE.xs)
           .items_center()
-          .child(div().text_size(11).font_semibold().text_color(t.muted).child("Fabric"))
+          .child(div().text_size(FONT.xs).font_semibold().text_color(t.muted).child("Fabric"))
           .child(
             div()
-              .min_w(18)
-              .h(16)
-              .px(5)
-              .rounded(8)
+              .min_w(SIZE.badge)
+              .h(SIZE.badge)
+              .px(SPACE.xs)
+              .rounded(SIZE.badge / 2)
               .bg(t.raised)
-              .text_size(10)
+              .text_size(FONT.xs)
               .text_color(t.dim)
               .flex()
               .items_center()
@@ -500,37 +502,48 @@ export default class FabricSidebar extends View {
         v_flex()
           .flex_none()
           .w_full()
-          .px(8)
-          .pb(4)
-          .gap(4)
+          .px(SPACE.s)
+          .pb(SPACE.xs)
+          .gap(SPACE.xs)
           .children(alarms.map((alarm) => alarmBanner(t, alarm, (entry, action, eventCx) => {
             eventCx.spawn(async () => { await this.activate(entry, action, eventCx); });
           }))),
       ))
       .when(Boolean(this.loadError), (el) => el.child(
-        div()
+        h_flex()
           .flex_none()
-          .px(10)
-          .pb(4)
-          .text_size(10.5)
-          .text_color(t.blocked)
-          .tooltip(this.loadError)
-          .child("Ticketdaten nicht lesbar"),
+          .w_full()
+          .px(SPACE.l)
+          .py(SPACE.s)
+          .gap(SPACE.s)
+          .items_start()
+          .bg(t.blocked + ALPHA.soft)
+          .border_b(1)
+          .border_color(t.border)
+          .child(div().flex_none().mt(1).size(6).rounded(3).bg(t.blocked))
+          .child(div()
+            .flex_1()
+            .min_w(0)
+            .whitespace_normal()
+            .text_size(FONT.s)
+            .text_color(t.blocked)
+            .tooltip(this.loadError)
+            .child("Ticketdaten nicht lesbar")),
       ))
       .child(
         v_flex()
           .flex_1()
           .min_h(0)
           .w_full()
-          .py(2)
+          .py(SPACE.xs)
           .overflow_y_scrollbar()
           .when(rows.length === 0 && free.cards.length === 0, (el) => el.child(
             v_flex()
-              .px(12)
-              .py(8)
-              .gap(2)
-              .child(div().text_size(11.5).text_color(t.muted).child("Keine Fabric-Agenten"))
-              .child(div().text_size(10.5).text_color(t.dim)
+              .px(SPACE.m)
+              .py(SPACE.s)
+              .gap(SPACE.xs)
+              .child(div().text_size(FONT.xs).text_color(t.muted).child("Keine Fabric-Agenten"))
+              .child(div().text_size(FONT.xs).text_color(t.dim)
                 .child("fab dispatch startet einen.")),
           ))
           .children(sections),
