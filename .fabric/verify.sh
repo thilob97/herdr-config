@@ -1,12 +1,24 @@
 #!/bin/sh
-# Gemeinsamer Nachweis für dieses Repo: CLI-Tests, Mod-Tests, Mod-Ladecheck.
+# Gemeinsamer Nachweis für dieses Repo: führt die Schritte aus .fabric/pipeline.json
+# nacheinander per `sh -c` aus und bricht beim ersten Fehler ab.
 set -eu
-cd "$(dirname "$0")/.."
-python3 -m unittest discover -s fabric/tests -t .
-node --test mods/fabric/test/
-node --test mods/fabric-sidebar/test/
-node --test mods/agents-filtered/test/
-herdr-app check mods/fabric
-herdr-app check mods/fabric-toast
-herdr-app check mods/fabric-sidebar
-herdr-app check mods/agents-filtered
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$root"
+python3 - <<'PY'
+import json
+import subprocess
+import sys
+
+with open(".fabric/pipeline.json", encoding="utf-8") as fh:
+    steps = json.load(fh).get("steps", [])
+
+for step in steps:
+    name = step.get("name")
+    command = step.get("run")
+    if not isinstance(name, str) or not name.strip() or not isinstance(command, str) or not command.strip():
+        sys.exit("Ungültiger Schritt in .fabric/pipeline.json: %r" % (step,))
+    print("==> %s" % name, flush=True)
+    code = subprocess.run(["sh", "-c", command], cwd=".").returncode
+    if code != 0:
+        sys.exit(code)
+PY

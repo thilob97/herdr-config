@@ -19,6 +19,7 @@ from . import (
     git,
     hc,
     index,
+    pipeline,
     preview,
     prompts,
     render,
@@ -1033,21 +1034,27 @@ def cmd_verify(args):
             f"{ticket['id']}: Worktree fehlt ({worktree or 'kein Pfad'}); fab dispatch legt ihn an"
         )
     actor = _actor(args) or ticket.get("assignee") or ""
-    result = git.run_verify(worktree)
+    result = git.run_verify(
+        worktree,
+        trigger="verify",
+        ticket=args.id,
+        repo=ticket.get("repo") or "",
+    )
     with store.locked():
         fresh = store.load(args.id)
         fresh["checks"] = {
             "state": result["state"],
             "head": result["head"],
-            "at": result["at"],
+            "at": store.now_ms(),
             "tail": result["tail"],
+            "run_id": result["run_id"],
         }
         events.append("verify", fresh["id"], actor, "", result["state"])
         store.save(fresh)
         index.rebuild()
     print(
         f"{fresh['id']}: checks {result['state']} auf HEAD {_short(result['head'])} "
-        f"(Exit {result['code']})"
+        f"(Exit {result['code']}) · Lauf #{result['run_id']}"
     )
     if result["tail"]:
         print(result["tail"])
@@ -2907,6 +2914,8 @@ def cmd_repo(args):
             print(json.dumps(result, ensure_ascii=False, indent=2))
             return 0
         print(f"Prüfskript: Exit {result['exit']}")
+        if result.get("run_id"):
+            print(f"Lauf #{result['run_id']}")
         if result["tail"]:
             print(result["tail"])
         return 0
@@ -2914,6 +2923,76 @@ def cmd_repo(args):
     with store.locked():
         target = repos.set_file(args.path, args.kind, args.text, actor)
     print(f"{target} gespeichert")
+    return 0
+
+
+def _run_number(raw):
+    text = str(raw).strip()
+    if text.startswith("#"):
+        text = text[1:]
+    if not text.isdigit():
+        raise FabError(f"Ungültige Laufnummer {raw!r}; Beispiel: 12 oder #12")
+    return int(text)
+
+
+def _run_line(row):
+    return (
+        f"Lauf #{row['id']} · {row['trigger']} · {row['state']} · "
+        f"{row['ticket'] or '—'} · {(row['head'] or '—')[:8]} · "
+        f"{row['duration_ms']} ms"
+    )
+
+
+def cmd_runs(args):
+    rows = store.pipeline_run_list(args.ticket)
+    if args.json:
+        print(json.dumps(rows, ensure_ascii=False, indent=2))
+        return 0
+    if not rows:
+        print("Keine Läufe.")
+        return 0
+    for row in rows:
+        print(
+            f"#{row['id']} · {row['trigger']} · {row['state']} · "
+            f"{row['ticket'] or '—'} · {(row['head'] or '—')[:8]} · "
+            f"{row['duration_ms']} ms"
+        )
+    return 0
+
+
+def cmd_run(args):
+    if args.action == "rerun":
+        old = _run_number(args.run)
+        result = pipeline.rerun(old)
+        print(
+            f"Lauf #{old} → #{result['run_id']}: {result['state']} "
+            f"(Exit {result['code']})"
+        )
+        return 0 if result["state"] == "pass" else 1
+    run_id = _run_number(args.run)
+    run = store.pipeline_run_load(run_id)
+    if run is None:
+        raise FabError(f"Pipeline-Lauf {run_id} existiert nicht")
+    steps = store.pipeline_steps(run_id)
+    if args.step:
+        filtered = [step for step in steps if step["name"] == args.step]
+        if not filtered:
+            names = ", ".join(step["name"] for step in steps) or "—"
+            raise FabError(f"Unbekannter Schritt {args.step!r}; vorhanden: {names}")
+        steps = filtered
+    if args.json:
+        print(json.dumps({"run": run, "steps": steps}, ensure_ascii=False, indent=2))
+        return 0
+    print(_run_line(run))
+    for step in steps:
+        print(
+            f"[{step['position'] + 1}] {step['name']} · {step['state']} · "
+            f"Exit {step['exit_code']} · {step['duration_ms']} ms"
+        )
+        if (step["stdout"] or "").strip():
+            print(step["stdout"].rstrip())
+        if (step["stderr"] or "").strip():
+            print(step["stderr"].rstrip())
     return 0
 
 
@@ -3435,6 +3514,22 @@ def build_parser():
                                     description="Prüfskript ausführen")
     test_repo.add_argument("path", metavar="PFAD")
     test_repo.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe")
+
+    item = command("runs", "Pipeline-Läufe auflisten", cmd_runs)
+    item.add_argument("--ticket", metavar="ID", help="nur Läufe dieses Tickets")
+    item.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe")
+
+    item = command("run", "Gespeicherte Pipeline-Läufe zeigen und wiederholen",
+                   cmd_run)
+    run_sub = item.add_subparsers(dest="action", metavar="AKTION", required=True)
+    show_run = run_sub.add_parser("show", help="Lauf mit Schritten zeigen",
+                                  description="Lauf mit Schritten zeigen")
+    show_run.add_argument("run", metavar="LAUF", help="Laufnummer, z. B. 12 oder #12")
+    show_run.add_argument("--step", metavar="NAME", help="nur diesen Schritt zeigen")
+    show_run.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe")
+    rerun_run = run_sub.add_parser("rerun", help="Lauf wiederholen",
+                                   description="Lauf wiederholen")
+    rerun_run.add_argument("run", metavar="LAUF", help="Laufnummer, z. B. 12 oder #12")
 
     item = command("context", "Prompt-Kontext aus Steckbrief und Team-Brief zeigen",
                    cmd_context)

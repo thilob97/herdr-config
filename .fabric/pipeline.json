@@ -1,0 +1,12 @@
+{
+  "steps": [
+    {"name": "unittest", "run": "python3 -m unittest discover -s fabric/tests -t ."},
+    {"name": "mod-fabric", "run": "node --test mods/fabric/test/"},
+    {"name": "mod-fabric-sidebar", "run": "node --test mods/fabric-sidebar/test/"},
+    {"name": "mod-agents-filtered", "run": "node --test mods/agents-filtered/test/"},
+    {"name": "check-fabric", "run": "herdr-app check mods/fabric"},
+    {"name": "check-fabric-toast", "run": "herdr-app check mods/fabric-toast"},
+    {"name": "check-fabric-sidebar", "run": "herdr-app check mods/fabric-sidebar"},
+    {"name": "check-agents-filtered", "run": "herdr-app check mods/agents-filtered"}
+  ]
+}

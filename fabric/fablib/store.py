@@ -41,7 +41,7 @@ class PersistError(FabError):
 
 DEFAULT_HOME = "~/.config/herdr-app/data/fabric"
 LOCK_TIMEOUT_DEFAULT = 30.0
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 STATUSES = ("draft", "todo", "doing", "review", "done", "dropped")
 MAX_CHILDREN = 3
 _ID_RE = re.compile(r"^[Tt]-(\d+)$")
@@ -77,6 +77,36 @@ _FLOW_SCHEMA = (
         status TEXT,
         data TEXT,
         at INTEGER,
+        PRIMARY KEY (run, position)
+    )""",
+)
+
+_PIPELINE_SCHEMA = (
+    """CREATE TABLE IF NOT EXISTS pipeline_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ticket TEXT,
+        repo TEXT,
+        worktree TEXT,
+        branch TEXT,
+        head TEXT,
+        trigger TEXT NOT NULL,
+        state TEXT NOT NULL,
+        started_at INTEGER,
+        duration_ms INTEGER
+    )""",
+    "CREATE INDEX IF NOT EXISTS pipeline_runs_ticket ON pipeline_runs(ticket)",
+    "CREATE INDEX IF NOT EXISTS pipeline_runs_trigger ON pipeline_runs(trigger)",
+    "CREATE INDEX IF NOT EXISTS pipeline_runs_state ON pipeline_runs(state)",
+    """CREATE TABLE IF NOT EXISTS pipeline_steps (
+        run INTEGER NOT NULL,
+        position INTEGER NOT NULL,
+        name TEXT,
+        command TEXT,
+        state TEXT,
+        duration_ms INTEGER,
+        exit_code INTEGER,
+        stdout TEXT,
+        stderr TEXT,
         PRIMARY KEY (run, position)
     )""",
 )
@@ -147,6 +177,7 @@ _SCHEMA = (
     )""",
     "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)",
     *_FLOW_SCHEMA,
+    *_PIPELINE_SCHEMA,
 )
 
 
@@ -286,6 +317,8 @@ def _connect():
     version = conn.execute("PRAGMA user_version").fetchone()[0]
     if version < _SCHEMA_VERSION:
         for statement in _FLOW_SCHEMA:
+            conn.execute(statement)
+        for statement in _PIPELINE_SCHEMA:
             conn.execute(statement)
         conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
     _conn = conn
@@ -1614,6 +1647,155 @@ def flow_approvals():
             }
         )
     return rows
+
+
+# ---------------------------------------------------------------- Pipelines
+
+
+_RUN_COLUMNS_PIPELINE = (
+    "id,ticket,repo,worktree,branch,head,trigger,state,started_at,duration_ms"
+)
+
+_STEP_COLUMNS_PIPELINE = (
+    "run,position,name,command,state,duration_ms,exit_code,stdout,stderr"
+)
+
+
+def _pipeline_run_dict(row):
+    return {
+        "id": row["id"],
+        "ticket": row["ticket"],
+        "repo": row["repo"],
+        "worktree": row["worktree"],
+        "branch": row["branch"],
+        "head": row["head"],
+        "trigger": row["trigger"],
+        "state": row["state"],
+        "started_at": row["started_at"],
+        "duration_ms": row["duration_ms"],
+    }
+
+
+def _pipeline_step_dict(row):
+    return {
+        "run": row["run"],
+        "position": row["position"],
+        "name": row["name"],
+        "command": row["command"],
+        "state": row["state"],
+        "duration_ms": row["duration_ms"],
+        "exit_code": row["exit_code"],
+        "stdout": row["stdout"],
+        "stderr": row["stderr"],
+    }
+
+
+def pipeline_run_new(*, trigger, ticket=None, repo="", worktree="", branch="", head=""):
+    ensure()
+    at = now_ms()
+    with _auto_tx():
+        cursor = _connect().execute(
+            "INSERT INTO pipeline_runs("
+            "ticket,repo,worktree,branch,head,trigger,state,started_at,duration_ms) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (ticket, repo, worktree, branch, head, trigger, "running", at, 0),
+        )
+        return int(cursor.lastrowid)
+
+
+def pipeline_run_finish(run_id, state, duration_ms):
+    ensure()
+    with _auto_tx():
+        _connect().execute(
+            "UPDATE pipeline_runs SET state=?, duration_ms=? WHERE id=?",
+            (state, duration_ms, run_id),
+        )
+
+
+def pipeline_run_load(run_id):
+    ensure()
+    row = _connect().execute(
+        f"SELECT {_RUN_COLUMNS_PIPELINE} FROM pipeline_runs WHERE id=?", (run_id,)
+    ).fetchone()
+    return _pipeline_run_dict(row) if row is not None else None
+
+
+def pipeline_run_list(ticket=None):
+    ensure()
+    conn = _connect()
+    if ticket is None:
+        rows = conn.execute(
+            f"SELECT {_RUN_COLUMNS_PIPELINE} FROM pipeline_runs ORDER BY id"
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            f"SELECT {_RUN_COLUMNS_PIPELINE} FROM pipeline_runs "
+            "WHERE ticket=? ORDER BY id",
+            (ticket,),
+        ).fetchall()
+    return [_pipeline_run_dict(row) for row in rows]
+
+
+def pipeline_step_add(
+    run_id,
+    position,
+    name,
+    command,
+    state,
+    duration_ms=None,
+    exit_code=None,
+    stdout="",
+    stderr="",
+):
+    ensure()
+    with _auto_tx():
+        _connect().execute(
+            "INSERT INTO pipeline_steps("
+            "run,position,name,command,state,duration_ms,exit_code,stdout,stderr) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                run_id,
+                position,
+                name,
+                command,
+                state,
+                duration_ms,
+                exit_code,
+                stdout,
+                stderr,
+            ),
+        )
+
+
+_PIPELINE_STEP_FIELDS = ("state", "duration_ms", "exit_code", "stdout", "stderr")
+
+
+def pipeline_step_update(run_id, position, **fields):
+    unknown = set(fields) - set(_PIPELINE_STEP_FIELDS)
+    if unknown:
+        raise ValueError(
+            "Unbekannte Schrittfelder: " + ", ".join(sorted(unknown))
+        )
+    ensure()
+    if not fields:
+        return
+    assignments = ", ".join(f"{name}=?" for name in fields)
+    values = [fields[name] for name in fields]
+    with _auto_tx():
+        _connect().execute(
+            f"UPDATE pipeline_steps SET {assignments} WHERE run=? AND position=?",
+            (*values, run_id, position),
+        )
+
+
+def pipeline_steps(run_id):
+    ensure()
+    rows = _connect().execute(
+        f"SELECT {_STEP_COLUMNS_PIPELINE} FROM pipeline_steps "
+        "WHERE run=? ORDER BY position",
+        (run_id,),
+    ).fetchall()
+    return [_pipeline_step_dict(row) for row in rows]
 
 
 # ---------------------------------------------------------------- Anhänge
