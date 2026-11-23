@@ -19,6 +19,7 @@ STUB_HC = '''#!/usr/bin/env python3
 import json
 import os
 import sys
+import time
 
 args = sys.argv[1:]
 log = os.environ.get("HC_LOG")
@@ -75,6 +76,13 @@ if command == "run":
                 handle.write(str(left - 1))
         print("Start fehlgeschlagen", file=sys.stderr)
         sys.exit(1)
+    started = os.environ.get("HC_RUN_STARTED")
+    release = os.environ.get("HC_RUN_RELEASE")
+    if started:
+        with open(started, "w", encoding="utf-8"):
+            pass
+    while release and not os.path.exists(release):
+        time.sleep(0.05)
     print(json.dumps({"address": "t900", "name": "stub", "state": "live"}))
     sys.exit(0)
 if command == "send":
@@ -88,6 +96,13 @@ if command == "kill":
     if os.environ.get("HC_KILL_FAIL"):
         print("hc kill: Terminal beendet nicht", file=sys.stderr)
         sys.exit(1)
+    started = os.environ.get("HC_KILL_STARTED")
+    release = os.environ.get("HC_KILL_RELEASE")
+    if started:
+        with open(started, "w", encoding="utf-8"):
+            pass
+    while release and not os.path.exists(release):
+        time.sleep(0.05)
     sys.exit(0)
 sys.exit(0)
 '''

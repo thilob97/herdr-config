@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import time
+from unittest import mock
 
 from fabric.fablib import store
 from fabric.tests.support import FAB, FABRIC, FabricCase
@@ -218,6 +219,72 @@ class LockTests(FabricCase):
             "Merge-Prüfung des Handovers hat nicht begonnen",
         )
         return repo, tid, worktree, proc
+
+    def blocked_handover_roter_merge(self, started, release):
+        """Handover, dessen Merge-Prüfung blockiert und danach rot endet."""
+        repo, tid, worktree = self.ready_ticket()
+        self.commit_in(worktree, "aenderung.txt", "wert\n")
+        path = os.path.join(worktree, ".fabric", "verify.sh")
+        self.write_file(
+            path,
+            "#!/bin/sh\n"
+            'if [ -n "$FAB_TEST_STARTED" ]; then\n'
+            '  : > "$FAB_TEST_STARTED"\n'
+            '  while [ ! -e "$FAB_TEST_RELEASE" ]; do sleep 0.05; done\n'
+            "fi\n"
+            "test ! -f main-rot.txt\n",
+        )
+        self.git_out(worktree, "add", ".fabric/verify.sh")
+        self.git_out(worktree, "commit", "-qm", "Prüfskript")
+        self.ok("verify", tid)
+        self.ok("verdict", tid, "pass", "--from", "ada", "Sieht gut aus")
+        self.write_file(os.path.join(repo, "main-rot.txt"), "rot\n")
+        self.git_out(repo, "add", "main-rot.txt")
+        self.git_out(repo, "commit", "-qm", "main macht den Merge rot")
+        proc = self.cli_popen(
+            "handover", tid, "--from", "zap", "Fertig",
+            marker_env={
+                "FAB_TEST_STARTED": started,
+                "FAB_TEST_RELEASE": release,
+            },
+        )
+        self.assertTrue(
+            self.wait_for(lambda: os.path.exists(started), timeout=20),
+            "Merge-Prüfung des Handovers hat nicht begonnen",
+        )
+        return repo, tid, worktree, proc
+
+    def follow_ticket(self, repo, blocker, title="Danach"):
+        """Startbereites Folgeticket, das der Accept nach der Abnahme startet."""
+        tid = self.new(title, repo=repo)
+        self.ok("assign", tid, "zap", "--from", "mensch")
+        self.ok(
+            "edit", tid, "--body",
+            "## Ziel\nEtwas tun.\n\n## Abnahmekriterien\n- [ ] es läuft\n",
+            "--from", "mensch",
+        )
+        self.ok("status", tid, "todo", "--from", "mensch")
+        self.ok("link", tid, "--blocked-by", blocker, "--from", "mensch")
+        return tid
+
+    def blockierendes_git(self):
+        """PATH-Ordner mit `git`, das `worktree add` erst nach Freigabe ausführt."""
+        real = shutil.which("git", path=self.env["PATH"])
+        self.assertTrue(real, "git nicht gefunden")
+        folder = os.path.join(self.tmp, "blockierendes-git")
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, "git")
+        self.write_file(
+            path,
+            "#!/bin/sh\n"
+            'if [ "$1" = "worktree" ] && [ "$2" = "add" ]; then\n'
+            '  : > "$GIT_WORKTREE_STARTED"\n'
+            '  while [ ! -e "$GIT_WORKTREE_RELEASE" ]; do sleep 0.05; done\n'
+            "fi\n"
+            'exec "$GIT_REAL" "$@"\n',
+        )
+        os.chmod(path, 0o755)
+        return folder, real
 
     def assert_lock_free(self):
         """Beweist, dass die Sperre frei ist: in-process sofort erwerbbar."""
@@ -427,6 +494,9 @@ class LockTests(FabricCase):
         self.git_out(repo, "add", "fremd.txt")
         self.git_out(repo, "commit", "-qm", "main läuft weiter")
         mark = self.mark()
+        # Die Prüferin ist erreichbar: ein Wecken vor dem Commit wäre ein `hc send`.
+        self.set_live({"fab-herdr-app-ada-t-1": "t8"})
+        self.clear_log()
 
         proc = self.cli_popen(
             "accept", tid,
@@ -454,6 +524,7 @@ class LockTests(FabricCase):
         self.assertEqual(after.get("verdict"), before.get("verdict"))
         self.assertEqual(after.get("merge"), before.get("merge"))
         self.assertEqual(self.events_since(mark, "accept"), [])
+        self.assertEqual(self.hc_calls("send"), [])
 
     # 7 -- Accept per PR erkennt eine Änderung während des PR-Anlegens
 
@@ -569,6 +640,162 @@ class LockTests(FabricCase):
         self.assertEqual(ticket.get("verdict"), before.get("verdict"))
         self.assertEqual(ticket.get("merge"), before.get("merge"))
         self.assertEqual(self.events_since(mark, "accept"), [])
+
+    # 9 -- Autostart nach accept: Sperre frei während `hc run`
+
+    def test_accept_autostart_haelt_sperre_waehrend_hc_run_nicht(self):
+        repo, blocker, _worktree = self.review_ticket()
+        follow = self.follow_ticket(repo, blocker)
+        started = os.path.join(self.tmp, "run-started")
+        release = os.path.join(self.tmp, "run-release")
+        self.set_live({})
+        self.clear_log()
+
+        proc = self.cli_popen(
+            "accept", blocker,
+            marker_env={
+                "HC_RUN_STARTED": started,
+                "HC_RUN_RELEASE": release,
+            },
+        )
+        self.assertTrue(
+            self.wait_for(lambda: os.path.exists(started), timeout=20),
+            "hc run des Autostarts hat nicht begonnen",
+        )
+        self.assert_lock_free()
+
+        self.write_file(release, "")
+        _out, err = proc.communicate(timeout=60)
+
+        self.assertEqual(proc.returncode, 0, err)
+        ticket = self.ticket(follow)
+        self.assertEqual(ticket["status"], "doing")
+        self.assertEqual(len(ticket["sessions"]), 1)
+
+    # 10 -- CAS-Konflikt in der Dispatch nach `git worktree add`
+
+    def test_dispatch_cas_konflikt_nach_worktree_add_startet_keine_session(self):
+        repo, blocker, _worktree = self.review_ticket()
+        follow = self.follow_ticket(repo, blocker)
+        started = os.path.join(self.tmp, "worktree-started")
+        release = os.path.join(self.tmp, "worktree-release")
+        folder, real = self.blockierendes_git()
+        self.set_live({})
+        self.clear_log()
+
+        proc = self.cli_popen(
+            "accept", blocker,
+            marker_env={
+                "PATH": folder + os.pathsep + self.env["PATH"],
+                "GIT_REAL": real,
+                "GIT_WORKTREE_STARTED": started,
+                "GIT_WORKTREE_RELEASE": release,
+            },
+        )
+        self.assertTrue(
+            self.wait_for(lambda: os.path.exists(started), timeout=20),
+            "worktree add des Autostarts hat nicht begonnen",
+        )
+        comment = self.cli("comment", follow, "--from", "mensch", "dazwischen")
+        self.assertEqual(comment.returncode, 0, comment.stderr)
+
+        self.write_file(release, "")
+        _out, err = proc.communicate(timeout=60)
+
+        self.assertEqual(proc.returncode, 0, err)
+        ticket = self.ticket(follow)
+        self.assertEqual(ticket["status"], "todo")
+        self.assertIsNone(ticket.get("worktree"))
+        self.assertEqual(ticket.get("sessions") or [], [])
+        self.assertEqual(self.hc_calls("run"), [])
+        notes = [
+            row["text"] for row in self.events()
+            if row["kind"] == "dispatch" and row["ticket"] == follow
+        ]
+        self.assertTrue(
+            any("automatisch nicht gestartet" in text for text in notes), notes
+        )
+
+        # Der zweite Versuch nutzt den vorhandenen Worktree: eine Session.
+        self.ok("dispatch", follow, "--from", "mensch")
+        ticket = self.ticket(follow)
+        self.assertEqual(ticket["status"], "doing")
+        self.assertEqual(len(ticket["sessions"]), 1)
+
+    # 11 -- Migration wartet mit Zeitlimit und Halterinfo
+
+    def test_migrationssperre_meldet_halter_nach_timeout(self):
+        _repo, _tid, _worktree = self.ready_ticket()
+        holder = self.start_holder()
+
+        with self.store_env(), mock.patch.dict(
+            os.environ, {"FAB_LOCK_TIMEOUT": "0.4"}
+        ):
+            began = time.monotonic()
+            with self.assertRaises(store.FabError) as ctx:
+                with store._flock():
+                    pass
+            elapsed = time.monotonic() - began
+
+        self.assertLess(elapsed, 3.0, elapsed)
+        self.assertIn("gesperrt von", str(ctx.exception))
+        self.assertIn(f"PID {holder.pid}", str(ctx.exception))
+
+    # 12 -- Handover weckt bei einem CAS-Konflikt nicht
+
+    def test_handover_weckt_nicht_bei_cas_konflikt(self):
+        started = os.path.join(self.tmp, "handover-rot-started")
+        release = os.path.join(self.tmp, "handover-rot-release")
+        _repo, tid, _worktree, proc = self.blocked_handover_roter_merge(
+            started, release
+        )
+        # Zuständiger erreichbar: ein Wecken vor dem Commit wäre ein `hc send`.
+        self.set_live({"fab-herdr-app-zap-t-1": "t7"})
+        self.clear_log()
+
+        comment = self.cli("comment", tid, "--from", "mensch", "dazwischen")
+        self.assertEqual(comment.returncode, 0, comment.stderr)
+
+        self.write_file(release, "")
+        _out, err = proc.communicate(timeout=60)
+
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("geändert", err)
+        self.assertEqual(self.hc_calls("send"), [])
+        self.assertEqual(self.hc_calls("run"), [])
+
+    # 13 -- Accept weckt Prüfer-Hinweise bei einem CAS-Konflikt nicht
+
+    def test_accept_weckt_pruefer_hinweise_nicht_bei_cas_konflikt(self):
+        _repo, tid, _worktree = self.review_ticket()
+        self.ok("comment", tid, "--from", "ada", "Hinweis: Bitte Doku nachziehen")
+        started = os.path.join(self.tmp, "kill-started")
+        release = os.path.join(self.tmp, "kill-release")
+        # Orchestrator erreichbar: ein Wecken vor dem Commit wäre ein `hc send`.
+        self.set_live({"fab-herdr-app-orchestrator": "t11"})
+        self.clear_log()
+
+        proc = self.cli_popen(
+            "accept", tid,
+            marker_env={
+                "HC_KILL_STARTED": started,
+                "HC_KILL_RELEASE": release,
+            },
+        )
+        self.assertTrue(
+            self.wait_for(lambda: os.path.exists(started), timeout=20),
+            "Session-Abbau des Accepts hat nicht begonnen",
+        )
+
+        comment = self.cli("comment", tid, "--from", "mensch", "dazwischen")
+        self.assertEqual(comment.returncode, 0, comment.stderr)
+
+        self.write_file(release, "")
+        _out, err = proc.communicate(timeout=60)
+
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("geändert", err)
+        self.assertEqual(self.hc_calls("send"), [])
 
 
 if __name__ == "__main__":

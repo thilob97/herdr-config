@@ -383,12 +383,15 @@ def _acquire(handle, timeout=None):
 
 @contextlib.contextmanager
 def _flock():
-    """Bootstrap-/Migrations-Lock; nicht reentrant, nie innerhalb von `locked()`."""
+    """Bootstrap-/Migrations-Lock; nicht reentrant, nie innerhalb von `locked()`.
+
+    Wie `locked()` wartet auch die Migration nur `FAB_LOCK_TIMEOUT` und meldet
+    danach den Halter aus `lock.holder`, statt unbegrenzt zu blockieren.
+    """
     os.makedirs(home(), exist_ok=True)
     handle = open(lock_path(), "a+", encoding="utf-8")
     try:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        _write_holder()
+        _acquire(handle)
         try:
             yield
         finally:
