@@ -154,6 +154,19 @@ class PreviewTests(FabricCase):
 
         self.assertTrue(preview_mod._pid_alive(proc.pid))
 
+    def test_stop_prueft_marker_des_prozesses(self):
+        self.preview_area()
+        tid = "T-1"
+        proc = self.spawn("import time; time.sleep(60)", marker="fremder-marker")
+        state = self.identity_state(tid, proc, marker="eigener-marker")
+
+        with mock.patch.object(
+            preview_mod, "_process_marker", return_value=(True, "fremder-marker")
+        ):
+            preview_mod._terminate(state)
+
+        self.assertTrue(preview_mod._pid_alive(proc.pid))
+
     def test_stop_beendet_eigenen_prozess_mit_kind(self):
         self.preview_area()
         tid = "T-1"
