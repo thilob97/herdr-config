@@ -2227,7 +2227,9 @@ test("Pipeline-Zustände werden abgeleitet, benannt und gezählt", () => {
   assert.equal(pipelineState({ state: "PASS" }), "pass");
   assert.equal(pipelineState({ state: " fail " }), "fail");
   assert.equal(pipelineState({ state: "running" }), "running");
-  assert.equal(pipelineState({ state: "skipped" }), "skipped");
+  assert.equal(pipelineState({ state: "queued" }), "queued");
+  assert.equal(pipelineState({ state: "QUEUED" }), "queued");
+  assert.equal(pipelineState({ state: " skipped " }), "skipped");
   assert.equal(pipelineState({ state: "pending" }), "pending");
   assert.equal(pipelineState({ state: null }), "pending");
   assert.equal(pipelineState({ state: "kaputt" }), "pending");
@@ -2236,6 +2238,7 @@ test("Pipeline-Zustände werden abgeleitet, benannt und gezählt", () => {
   assert.equal(pipelineStateWord("pass"), "grün");
   assert.equal(pipelineStateWord("fail"), "rot");
   assert.equal(pipelineStateWord("running"), "läuft");
+  assert.equal(pipelineStateWord("queued"), "Warteschlange");
   assert.equal(pipelineStateWord("skipped"), "übersprungen");
   assert.equal(pipelineStateWord("pending"), "wartet");
   assert.equal(pipelineStateWord("kaputt"), "wartet");

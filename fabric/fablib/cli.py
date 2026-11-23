@@ -3076,9 +3076,14 @@ def _run_number(raw):
     return int(text)
 
 
+def _run_state_word(state):
+    """`queued` erscheint in der Textausgabe als „Warteschlange“."""
+    return "Warteschlange" if state == "queued" else state
+
+
 def _run_line(row):
     return (
-        f"Lauf #{row['id']} · {row['trigger']} · {row['state']} · "
+        f"Lauf #{row['id']} · {row['trigger']} · {_run_state_word(row['state'])} · "
         f"{row['ticket'] or '—'} · {(row['head'] or '—')[:8]} · "
         f"{row['duration_ms']} ms"
     )
@@ -3094,7 +3099,7 @@ def cmd_runs(args):
         return 0
     for row in rows:
         print(
-            f"#{row['id']} · {row['trigger']} · {row['state']} · "
+            f"#{row['id']} · {row['trigger']} · {_run_state_word(row['state'])} · "
             f"{row['ticket'] or '—'} · {(row['head'] or '—')[:8]} · "
             f"{row['duration_ms']} ms"
         )

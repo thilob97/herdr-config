@@ -16,6 +16,7 @@ import time
 from unittest import mock
 
 from fabric.fablib import store
+from fabric.fablib.errors import FabError
 from fabric.tests.support import FAB, FABRIC, FabricCase
 
 REPO_ROOT = os.path.dirname(FABRIC)
@@ -286,14 +287,21 @@ class LockTests(FabricCase):
         os.chmod(path, 0o755)
         return folder, real
 
+    def lock_is_free(self):
+        """Beweist ohne Wanduhrbudget, ob die Sperre frei ist (`FAB_LOCK_TIMEOUT=0`)."""
+        with self.store_env(), mock.patch.dict(
+            os.environ, {"FAB_LOCK_TIMEOUT": "0"}
+        ):
+            try:
+                with store.locked():
+                    pass
+            except FabError:
+                return False
+        return True
+
     def assert_lock_free(self):
         """Beweist, dass die Sperre frei ist: in-process sofort erwerbbar."""
-        began = time.monotonic()
-        with self.store_env():
-            with store.locked():
-                pass
-        elapsed = time.monotonic() - began
-        self.assertLess(elapsed, 1.0, elapsed)
+        self.assertTrue(self.lock_is_free(), "Sperre ist belegt")
 
     def noshell_path(self):
         """PATH ohne `sh`, aber mit git und den Stubs; `sh` fehlt beim Prüfen."""
@@ -396,7 +404,7 @@ class LockTests(FabricCase):
 
     def test_lesebefehle_ohne_sperre(self):
         _repo, tid, _worktree = self.ready_ticket()
-        self.start_holder()
+        holder = self.start_holder()
 
         commands = [
             ("list",),
@@ -409,13 +417,19 @@ class LockTests(FabricCase):
             ("autopilot", "status"),
         ]
         for args in commands:
-            began = time.monotonic()
-            result = self.cli(*args)
-            elapsed = time.monotonic() - began
+            # Kein Wanduhrbudget: Ein Leser, der die Sperre nimmt, wartet
+            # FAB_LOCK_TIMEOUT und endet rot. `timeout` ist nur ein
+            # Deadlock-Melder, keine Leistungsgrenze.
+            try:
+                result = self.cli(*args, timeout=120)
+            except subprocess.TimeoutExpired:
+                self.fail(f"{args} hing; der Befehl nimmt vermutlich die Sperre")
             self.assertEqual(result.returncode, 0, (args, result.stderr))
-            # Ein blockierter Leser wartet bis zum Sperr-Zeitlimit (30 s); unter Last dauern
-            # ungesperrte Befehle 1–2 s. 10 s trennt beides sicher, ohne bei Last rot zu werden.
-            self.assertLess(elapsed, 10.0, (args, elapsed))
+            self.assertIsNone(holder.poll(), f"Halter endete vor {args}")
+            self.assertFalse(
+                self.lock_is_free(),
+                f"Lesebefehl {args} hat die Sperre genommen oder freigegeben",
+            )
 
     # 3 -- Langes Handover hält die Sperre nicht
 

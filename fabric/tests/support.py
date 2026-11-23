@@ -336,7 +336,7 @@ class FabricCase(unittest.TestCase):
             self.init_repo(path)
         return path
 
-    def cli(self, *args, env=None, cwd=None, input_text=None):
+    def cli(self, *args, env=None, cwd=None, input_text=None, timeout=None):
         merged = dict(self.env)
         merged.update(env or {})
         return subprocess.run(
@@ -346,6 +346,7 @@ class FabricCase(unittest.TestCase):
             input=input_text,
             capture_output=True,
             text=True,
+            timeout=timeout,
         )
 
     def ok(self, *args, **kwargs):
