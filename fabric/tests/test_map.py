@@ -64,3 +64,13 @@ class MapTest(FabricCase):
         self.ok("map", repo)
         text = self._read(os.path.join(repo, ".fabric", "map.md"))
         self.assertIn("sh .fabric/verify.sh", text)
+
+    def test_fabric_symlink_wird_abgelehnt(self):
+        repo = self.make_repo("symlink")
+        outside = os.path.join(self.tmp, "aussen")
+        os.makedirs(outside)
+        os.symlink(outside, os.path.join(repo, ".fabric"))
+        result = self.cli("map", repo)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(".fabric", result.stderr)
+        self.assertFalse(os.path.exists(os.path.join(outside, "map.md")))

@@ -197,7 +197,7 @@ def render(top):
 def build(raw, actor="fab"):
     """Karte erzeugen, nur bei Änderung atomar schreiben und committen."""
     top = repos._root(raw)
-    target = os.path.join(top, ".fabric", MAP)
+    target = os.path.join(repos._fabric_folder(top), MAP)
     text = render(top)
     try:
         with open(target, encoding="utf-8") as handle:

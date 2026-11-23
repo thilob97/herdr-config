@@ -263,7 +263,7 @@ Jeder Nachweis läuft als Pipeline. Die Schritte stehen in `.fabric/pipeline.jso
 
 `fab map PFAD [--from NAME]` schreibt die Projektkarte `.fabric/map.md` im Haupt-Checkout und committet genau diese Datei, aber nur wenn sich ihr Inhalt ändert; sonst lautet die Ausgabe „… unverändert“. Quellen sind `git ls-files` für die getrackte Struktur, Ordner mit `mod.json`, `package.json`, `pyproject.toml` oder `__init__.py` für die Module, ausführbare Dateien und `bin`/`main` aus getrackten `package.json` für die Einstiegspunkte sowie `steps[].run` aus `.fabric/pipeline.json` bzw. `sh .fabric/verify.sh` für die Testbefehle. Der Inhalt ist deterministisch, ohne Zeitstempel und ohne absoluten Repo-Pfad.
 
-Der Workflow `fabric/flows/projektkarte.json` erneuert die Karte stündlich (`cron`, `every_minutes: 60`) und führt `fab map .` nur im Shell-Nachtfenster 02:00–02:59 aus, damit die Erneuerung nicht in den Tag fällt. Der Workflow wird nicht automatisch angelegt; einspielen mit `fab flow add fabric/flows/projektkarte.json`.
+Der Workflow `fabric/flows/projektkarte.json` erneuert die Karte stündlich (`cron`, `every_minutes: 60`) und führt `fab map .` nur im Shell-Nachtfenster 02:00–02:59 aus, damit die Erneuerung nicht in den Tag fällt. Das `.` bezieht sich auf das Repo des Laufs (`repo` der Workflow-Definition, sonst das Startverzeichnis des Laufs); der 60-Minuten-Takt lässt höchstens einen Lauf je Nacht zu, dafür muss ein `fab tick` im Fenster liegen. Wie die übrigen `.fabric`-Schreiber lehnt `fab map` ein symlinktes `.fabric` ab. Der Workflow wird nicht automatisch angelegt; einspielen mit `fab flow add fabric/flows/projektkarte.json`.
 
 ## 3b. Konfiguration und Pflege (für das UI)
 
