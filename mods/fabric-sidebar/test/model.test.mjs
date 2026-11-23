@@ -534,10 +534,45 @@ test("agents.sort 'grouped' hält Angeheftete vorn und sortiert nach Maschine", 
 
   const { cards } = freeAgentCards([remote, local, pinnedRemote], [], [], "grouped");
   // Reihenfolge hängt am Maschinen-Schlüssel, nicht am übersetzten Label:
-  // lokale Maschine (`null`) zuletzt, auch wenn ihr Label „Dieser Rechner“ lautet.
+  // die lokale Maschine sortiert unter „THIS MACHINE“ zwischen „remote“ und „vps“.
   assert.deepEqual(cards.map((card) => card.address), ["remote/p1", "remote/r1", "l1"]);
   assert.deepEqual(cards.map((card) => card.name), ["pin", "zeta", "alpha"]);
   assert.deepEqual(cards.map((card) => card.group), ["remote", "remote", "Dieser Rechner"]);
+});
+
+test("agents.sort 'grouped' sortiert die lokale Maschine wie vor T-117 ein", () => {
+  const remote = term("remote/a", "a-remote", {}, { status: "idle" });
+  const vps = term("vps/b", "b-vps", {}, { status: "idle" });
+  const workstation = term("workstation/c", "c-workstation", {}, { status: "idle" });
+  const local = term("l1", "d-lokal", {}, { status: "idle" });
+
+  // Absichtlich unsortiert hinein; „THIS MACHINE“ steht zwischen „remote“ und „vps“.
+  const { cards } = freeAgentCards([workstation, local, vps, remote], [], [], "grouped");
+  assert.deepEqual(
+    cards.map((card) => card.address),
+    ["remote/a", "l1", "vps/b", "workstation/c"],
+  );
+});
+
+test("agents.sort 'grouped' bleibt bei zwei injizierten Anzeige-Labels gleich", () => {
+  const remote = term("remote/a", "a-remote", {}, { status: "idle" });
+  const vps = term("vps/b", "b-vps", {}, { status: "idle" });
+  const workstation = term("workstation/c", "c-workstation", {}, { status: "idle" });
+  const local = term("l1", "d-lokal", {}, { status: "idle" });
+  const terms = [workstation, local, vps, remote];
+
+  // Beide Labels widersprechen der Soll-Reihenfolge: einmal steht „ZZZ“ für die
+  // lokale Maschine, einmal für alle entfernten. Die Karten bleiben gleich.
+  const order = (localText, remoteText) => freeAgentCards(
+    terms, [], [], "grouped", (machine) => (machine == null ? localText : remoteText),
+  ).cards.map((card) => card.address);
+  const expected = ["remote/a", "l1", "vps/b", "workstation/c"];
+  assert.deepEqual(order("Dieser Rechner", "remote"), expected);
+  assert.deepEqual(order("ZZZ", "AAA"), expected);
+
+  // Die Injektion wirkt wirklich aufs Anzeige-Label, wird also nicht ignoriert.
+  const { groups } = freeAgentCards(terms, [], [], "grouped", (machine) => machine ?? "ZZZ");
+  assert.equal(groups.find((group) => group.machine === null).name, "ZZZ");
 });
 
 // --- Alarme (Banner in der Seitenleiste) -----------------------------------
