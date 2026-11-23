@@ -31,6 +31,17 @@
         "opus",
         "--dangerously-skip-permissions"
       ]
+    },
+    {
+      "name": "xen",
+      "role": "UI / UX Designer",
+      "color": "c5",
+      "prompt": "prompts/xen.md",
+      "argv": [
+        "omp",
+        "--model=opencode-go/gemini-4-argon",
+        "--approval-mode=yolo"
+      ]
     }
   ],
   "blueprints": [
@@ -88,10 +99,14 @@
         },
         {
           "blueprint": "ada"
+        },
+        {
+          "blueprint": "xen"
         }
       ],
       "reviewer": "ada",
-      "max_sessions": 10
+      "max_sessions": 10,
+      "brief": ""
     }
   ],
   "max_sessions_total": 10
