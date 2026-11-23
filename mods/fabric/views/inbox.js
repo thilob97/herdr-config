@@ -76,7 +76,7 @@ function inboxRow(app, cx, t, entry, index) {
 export function renderInboxPanel(app, cx, t) {
   const inbox = model.sortInbox(app.index?.inbox);
   const rows = [
-    ui.header(t, "Posteingang", [
+    ui.header(t, model.pageWord("inbox"), [
       ui.badge(t, inbox.length, inbox.length ? t.accent : t.dim),
       ui.iconButton(t, {
         id: "fabric-inbox-open",

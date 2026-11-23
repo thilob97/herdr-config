@@ -221,7 +221,7 @@ export function renderBoard(app, cx, t) {
   return v_flex()
     .size_full()
     .min_h(0)
-    .child(ui.header(t, "Board", [
+    .child(ui.header(t, model.pageWord("board"), [
       div().text_size(T.xs).text_color(t.dim).child(`${total} Ticket${total === 1 ? "" : "s"}`),
     ], { iconName: "board", subtitle: "Entwurf bis Fertig, Prüfung im Blick", compact: app.compact }))
     .child(filterBar(app, cx, t))

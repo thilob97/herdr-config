@@ -36,6 +36,7 @@ export const PAGE_WORDS = {
   repos: "Repos",
   settings: "Einstellungen",
   timeline: "Zeitverlauf",
+  inbox: "Posteingang",
 };
 
 export const pageWord = (page) => PAGE_WORDS[page] ?? page ?? "";

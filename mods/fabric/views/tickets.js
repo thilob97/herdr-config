@@ -261,7 +261,7 @@ function detail(app, cx, t) {
 
 export function renderTicketsPanel(app, cx, t) {
   const rows = [
-    ui.header(t, "Tickets", [
+    ui.header(t, model.pageWord("tickets"), [
       ui.badge(t, app.tickets.length, t.muted),
       ui.iconButton(t, {
         id: "fabric-panel-new",

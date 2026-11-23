@@ -97,7 +97,7 @@ export function renderTemplates(app, cx, t) {
   return v_flex()
     .size_full()
     .min_h(0)
-    .child(ui.header(t, "Vorlagen", [
+    .child(ui.header(t, model.pageWord("templates"), [
       div().text_size(T.xs).text_color(t.dim).child(`${(app.templateList ?? []).length} Dateien`),
       ui.iconButton(t, {
         id: "fabric-templates-refresh",

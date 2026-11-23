@@ -163,9 +163,9 @@ function leftPane(app, cx, t, flows, runs) {
       ], selected?.name ?? null)))
     .child(
       !selected
-        ? div().px(S.m).pb(S.s).text_size(T.xs).text_color(t.dim).child("Kein Workflow gewählt")
+        ? ui.emptyState(t, { title: "Kein Workflow gewählt", compact: true })
         : runs.length === 0
-          ? div().px(S.m).pb(S.s).text_size(T.xs).text_color(t.dim).child("Noch kein Lauf")
+          ? ui.emptyState(t, { title: "Noch kein Lauf", compact: true })
           : v_flex().flex_1().min_h(0).overflow_y_scrollbar().p(S.xs).gap(S.xs)
             .children(runs.map((run) => runRow(app, cx, t, run, flows))),
     );
@@ -1078,7 +1078,7 @@ export function renderWorkflowsPage(app, cx, t) {
   return v_flex()
     .size_full()
     .min_h(0)
-    .child(ui.header(t, "Workflows", [
+    .child(ui.header(t, model.pageWord("workflows"), [
       ...(app.compact ? [] : [
         div().text_size(T.xs).text_color(t.dim)
           .child(`${flows.length} Workflows · ${active} aktiv`),

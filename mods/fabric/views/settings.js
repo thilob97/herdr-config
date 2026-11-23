@@ -158,7 +158,7 @@ export function renderSettings(app, cx, t) {
   return v_flex()
     .size_full()
     .min_h(0)
-    .child(ui.header(t, "Einstellungen", [
+    .child(ui.header(t, model.pageWord("settings"), [
       ui.iconButton(t, {
         id: "fabric-settings-refresh",
         icon: "restart",

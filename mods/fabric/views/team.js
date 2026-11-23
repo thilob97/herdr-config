@@ -525,7 +525,7 @@ export function renderTeam(app, cx, t) {
   return v_flex()
     .size_full()
     .min_h(0)
-    .child(ui.header(t, "Team", [
+    .child(ui.header(t, model.pageWord("team"), [
       ...(narrow ? [] : [
         div().text_size(T.xs).text_color(t.dim).child(
           `${blueprints.length} Blaupause${blueprints.length === 1 ? "" : "n"} · ${teams.length} Team${teams.length === 1 ? "" : "s"}`,

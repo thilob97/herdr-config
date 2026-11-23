@@ -95,7 +95,7 @@ export function renderTimelinePanel(app, cx, t) {
   const all = app.timelineAll || !selected;
   const feed = model.timelineFeed(app.events, { ticket: all ? null : selected });
   const rows = [
-    ui.header(t, "Zeitverlauf", [
+    ui.header(t, model.pageWord("timeline"), [
       div().text_size(T.xs).text_color(t.dim)
         .child(`${feed.total} Ereignis${feed.total === 1 ? "" : "se"}`),
       ui.iconButton(t, {

@@ -235,6 +235,7 @@ test("Zielbegriffe: Seiten und Ticket-Stufen tragen die Wörter der Begriffstabe
     ["Board", "Tickets", "Workflows", "Pipelines", "Team", "Prompts", "Vorlagen", "Repos", "Einstellungen"],
   );
   assert.equal(pageWord("timeline"), "Zeitverlauf");
+  assert.equal(pageWord("inbox"), "Posteingang");
   assert.deepEqual(STAGES.map((stage) => stage.label), ["Entwurf", "Geplant", "In Arbeit", "Prüfung", "Fertig"]);
   assert.equal(STATUS_WORDS.dropped, "Verworfen");
   assert.equal(roleLabel("umsetzer"), "Umsetzer");

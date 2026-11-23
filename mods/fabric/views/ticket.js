@@ -69,7 +69,7 @@ function ticketHeader(app, cx, t, ticket) {
       tooltip: "Zurück zur Liste (Esc)",
       onClick: (cx) => app.navigate("tickets", {}, cx),
     }));
-  return ui.header(t, "Ticket", right, {
+  return ui.header(t, model.pageWord("ticket"), right, {
     iconName: "tickets",
     subtitle: ticket.id,
     compact: app.compact,
@@ -1025,7 +1025,7 @@ export function renderTicket(app, cx, t) {
     return v_flex()
       .size_full()
       .min_h(0)
-      .child(ui.header(t, "Ticket", [
+      .child(ui.header(t, model.pageWord("ticket"), [
         ui.button(t, {
           id: "fabric-ticket-back-empty",
           label: "Zurück",

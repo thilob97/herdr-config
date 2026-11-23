@@ -59,7 +59,7 @@ export function renderTicketsPage(app, cx, t) {
   return v_flex()
     .size_full()
     .min_h(0)
-    .child(ui.header(t, "Tickets", [
+    .child(ui.header(t, model.pageWord("tickets"), [
       div().text_size(T.xs).text_color(t.dim).child(`${app.tickets.length} gesamt`),
     ], {
       iconName: "tickets",

@@ -128,7 +128,7 @@ export function renderPrompts(app, cx, t) {
   return v_flex()
     .size_full()
     .min_h(0)
-    .child(ui.header(t, "Prompts", [
+    .child(ui.header(t, model.pageWord("prompts"), [
       div().text_size(T.xs).text_color(t.dim).child(`${(app.promptList ?? []).length} Dateien`),
       ui.iconButton(t, {
         id: "fabric-prompts-refresh",

@@ -286,7 +286,7 @@ export function renderRepos(app, cx, t) {
   return v_flex()
     .size_full()
     .min_h(0)
-    .child(ui.header(t, "Repos", [
+    .child(ui.header(t, model.pageWord("repos"), [
       div().text_size(T.xs).text_color(t.dim).child(`${(app.repos ?? []).length} ${(app.repos ?? []).length === 1 ? "Repo" : "Repos"}`),
       ui.iconButton(t, {
         id: "fabric-repos-refresh",

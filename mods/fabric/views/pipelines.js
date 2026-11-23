@@ -315,7 +315,7 @@ export function renderPipelinesPage(app, cx, t) {
   return v_flex()
     .size_full()
     .min_h(0)
-    .child(ui.header(t, "Pipelines", [
+    .child(ui.header(t, model.pageWord("pipelines"), [
       ...(app.compact ? [] : [
         div().text_size(T.xs).text_color(t.dim)
           .child(`${all.length} Läufe${running ? ` · ${running} läuft` : ""}${queued ? ` · ${queued} in Warteschlange` : ""}`),
