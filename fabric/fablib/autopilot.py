@@ -538,7 +538,14 @@ def try_accept(ticket):
     tid = ticket["id"]
     checks = ticket.get("checks") or {}
     verdict = ticket.get("verdict") or {}
+    repo = _repo_root(ticket.get("repo") or os.getcwd())
     no_change = bool(ticket.get("no_change"))
+    if no_change and ticket.get("base") and ticket.get("branch"):
+        try:
+            no_change = git.commit_count(repo, ticket["base"], ticket["branch"]) == 0
+        except FabError as exc:
+            log(f"accept {tid}: Commit-Zahl nicht bestimmbar: {exc}")
+            no_change = False
     current = head(ticket.get("worktree") or "")
     if not no_change and not (
         checks.get("state") == "pass"
@@ -547,7 +554,6 @@ def try_accept(ticket):
         and same(verdict.get("head", ""), current)
     ):
         return False
-    repo = _repo_root(ticket.get("repo") or os.getcwd())
     if _paused or (not no_change and not ensure_clean_main(repo)):
         return False
     if _conflict_sent.get(tid) == current:
