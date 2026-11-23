@@ -258,6 +258,38 @@ class PipelineTest(PipelineCase):
             run = store.pipeline_run_list("T-12")[-1]
         self.assertEqual(run["state"], "fail")
 
+    def test_schritte_lesen_fehler_verdeckt_ursache_nicht(self):
+        repo = self.make_repo()
+        self.write_steps(
+            repo,
+            [
+                {"name": "eins", "run": "true"},
+                {"name": "zwei", "run": "true"},
+            ],
+        )
+        original = FabError("abgebrochen")
+        cleanup = FabError("Datenbank gesperrt")
+
+        stderr = io.StringIO()
+        with mock.patch.object(
+            pipeline, "_execute", side_effect=original
+        ), mock.patch.object(
+            store, "pipeline_steps", side_effect=cleanup
+        ), contextlib.redirect_stderr(stderr):
+            with self.assertRaises(FabError) as caught:
+                self.run_pipeline(repo, ticket="T-15")
+
+        self.assertIs(caught.exception, original)
+        self.assertIs(caught.exception.__cause__, cleanup)
+        self.assertIn(
+            "Aufräumen fehlgeschlagen (Schritte lesen)", stderr.getvalue()
+        )
+        self.assertIn("Datenbank gesperrt", stderr.getvalue())
+
+        with self.store_env():
+            run = store.pipeline_run_list("T-15")[-1]
+        self.assertEqual(run["state"], "fail")
+
     def test_finish_fehler_laesst_ursache_durch(self):
         repo = self.make_repo()
         self.write_steps(repo, [{"name": "eins", "run": "true"}])
