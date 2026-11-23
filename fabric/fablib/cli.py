@@ -382,7 +382,9 @@ def _commit(ticket, rev):
         store.save(ticket)
         store.flush_deferred_events()
         index.rebuild()
-    return store.revision(ticket)
+        # Der Schlüsselraum nach dem Laden (Defaults) ist maßgeblich: nur so
+        # passt die zurückgegebene Revision zu einem späteren Vergleich.
+        return store.revision(store.load(ticket["id"]))
 
 
 def _check_unchanged(ticket, rev):
@@ -390,6 +392,19 @@ def _check_unchanged(ticket, rev):
         fresh = store.load(ticket["id"])
         if store.revision(fresh) != rev:
             raise _conflict(ticket["id"], fresh)
+
+
+def _run_after_commit(ticket, rev, action):
+    """Wecken erst nach dem erfolgreichen Commit ausführen.
+
+    Ein CAS-Konflikt hat dann bereits abgebrochen; niemand wird geweckt,
+    obwohl nichts eingetragen wurde (Hinweis aus T-94). Kommentare und
+    Ereignisse aus dem Wecken werden in einem zweiten Commit nachgezogen.
+    """
+    if action is None:
+        return rev
+    action()
+    return _commit(ticket, rev)
 
 
 def _short(value):
@@ -1212,8 +1227,10 @@ def _ticket_reviewer(ticket, roster):
 def _accept_merge_changed(ticket, roster, repo, ref, head):
     """Merge-Stand neu prüfen, weil er vom abgelegten Tree abweicht.
 
-    Liefert (merge, text) nach Aktualisierung von `ticket`. Konflikte und rote
-    Checks wecken den Zuständigen, grüne Checks die Prüferin für ein neues Urteil.
+    Liefert (merge, text, wecken) nach Aktualisierung von `ticket`. Konflikte
+    und rote Checks wecken den Zuständigen, grüne Checks die Prüferin für ein
+    neues Urteil. `wecken` führt der Aufrufer erst nach dem erfolgreichen Commit
+    aus, damit ein CAS-Konflikt niemanden weckt.
     """
     base = ticket["base"]
     tree, files = git.merge_state(repo, ref, ticket["branch"])
@@ -1232,12 +1249,13 @@ def _accept_merge_changed(ticket, roster, repo, ref, head):
         text += "\nDas bisherige Urteil wird verworfen."
         wake.add_comment(ticket, "mensch", text, roster)
         assignee = ticket.get("assignee")
+        wecken = None
         if assignee:
-            wake.process(
+            wecken = lambda: wake.process(
                 ticket, [assignee], "mensch", text, roster,
                 message_for=lambda name: wake.conflict_wake_text(ticket, base, files),
             )
-        return None, text
+        return None, text, wecken
     report = _verify_merge_state(ticket, ref, tree, head)
     merge = _merge_record(ticket, ref, tree, head, report)
     ticket["merge"] = merge
@@ -1246,8 +1264,9 @@ def _accept_merge_changed(ticket, roster, repo, ref, head):
         text = _merge_red_text(ticket, base, ref, head, tree, report)
         text += "\nDas bisherige Urteil wird verworfen."
         wake.add_comment(ticket, "mensch", text, roster)
+        wecken = None
         if assignee:
-            wake.process(
+            wecken = lambda: wake.process(
                 ticket, [assignee], "mensch", text, roster,
                 message_for=lambda name: (
                     f"Ticket {ticket['id']} „{ticket['title']}“: Der Merge-Stand mit "
@@ -1256,7 +1275,7 @@ def _accept_merge_changed(ticket, roster, repo, ref, head):
                     f"erneut `fab handover {ticket['id']}`."
                 ),
             )
-        return merge, text
+        return merge, text, wecken
     reviewer = _ticket_reviewer(ticket, roster)
     text = (
         f"Merge-Stand mit {base} hat sich geändert: Tree {_short(tree)} "
@@ -1265,8 +1284,9 @@ def _accept_merge_changed(ticket, roster, repo, ref, head):
         + (f". @{reviewer} bitte auf diesem Stand neu bewerten." if reviewer else ".")
     )
     wake.add_comment(ticket, "mensch", text, roster)
+    wecken = None
     if reviewer:
-        wake.process(
+        wecken = lambda: wake.process(
             ticket, [reviewer], "mensch", text, roster,
             message_for=lambda name: (
                 f"Ticket {ticket['id']} „{ticket['title']}“: Der Merge-Stand mit {base} "
@@ -1276,7 +1296,7 @@ def _accept_merge_changed(ticket, roster, repo, ref, head):
                 f"`fab verdict {ticket['id']} pass --from {name}` ein neues Urteil ab."
             ),
         )
-    return merge, text
+    return merge, text, wecken
 
 
 def cmd_handover(args):
@@ -1385,6 +1405,8 @@ def cmd_handover(args):
                 text = wake.conflict_text(ticket, ticket["base"], files)
                 wake.add_comment(ticket, actor, text, roster)
                 assignee = ticket.get("assignee")
+                # Erst der Commit: bei einem CAS-Konflikt wird niemand geweckt.
+                rev = _commit(ticket, rev)
                 if assignee:
                     results = wake.process(
                         ticket, [assignee], actor, text, roster,
@@ -1392,11 +1414,13 @@ def cmd_handover(args):
                             ticket, ticket["base"], files
                         ),
                     )
-                rev = _commit(ticket, rev)
+                    rev = _commit(ticket, rev)
                 _print_wake_results(results)
             elif merge_note:
                 wake.add_comment(ticket, actor, merge_note, roster)
                 assignee = ticket.get("assignee")
+                # Erst der Commit: bei einem CAS-Konflikt wird niemand geweckt.
+                rev = _commit(ticket, rev)
                 if assignee:
                     results = wake.process(
                         ticket, [assignee], actor, merge_note, roster,
@@ -1408,7 +1432,7 @@ def cmd_handover(args):
                             f"`fab handover {ticket['id']}`."
                         ),
                     )
-                rev = _commit(ticket, rev)
+                    rev = _commit(ticket, rev)
                 _print_wake_results(results)
             else:
                 _check_unchanged(ticket, rev)
@@ -1545,8 +1569,22 @@ def _wake_review_hints(ticket, roster):
         )
 
     return wake.process(
-        ticket, ["orchestrator"], "fab", listed, roster, message_for=message_for
+        ticket, ["orchestrator"], "fab", listed, roster, message_for=message_for,
+        allow_closed=True,
     )
+
+
+def _wake_hints_after_commit(ticket, rev, roster):
+    """Prüfer-Hinweise erst nach dem erfolgreichen Commit wecken.
+
+    So unterbleibt das Wecken bei einem CAS-Konflikt, obwohl nichts eingetragen
+    wurde. Die Ereignisse und Kommentare des Weckens zieht ein zweiter Commit
+    nach.
+    """
+    if not _reviewer_hints(ticket, roster):
+        return [], rev
+    hint_wakes = _wake_review_hints(ticket, roster)
+    return hint_wakes, _commit(ticket, rev)
 
 
 def _mark_pr_merged(ticket, url, merged):
@@ -1555,13 +1593,12 @@ def _mark_pr_merged(ticket, url, merged):
     events.append("pr", ticket["id"], "mensch", "", f"PR gemergt: {url}")
 
 
-def _finish_pr_accept(ticket, roster, top, branch_name, base, merged, url):
+def _finish_pr_accept(ticket, top, branch_name, base, merged, url):
     git.push_delete(top, "origin", branch_name)
     ended = _end_sessions(ticket)
     git.remove_worktree(top, ticket.get("worktree"))
     if git.branch_exists(top, branch_name):
         git.delete_branch(top, branch_name)
-    hint_wakes = _wake_review_hints(ticket, roster)
     ticket["status"] = "done"
     ticket.pop("stall", None)
     ticket["waiting"] = []
@@ -1569,7 +1606,7 @@ def _finish_pr_accept(ticket, roster, top, branch_name, base, merged, url):
         "accept", ticket["id"], "mensch", "",
         f"{branch_name} → {base} via PR {url} @ {_short(merged)}",
     )
-    return hint_wakes, ended
+    return ended
 
 
 def cmd_accept(args):
@@ -1617,8 +1654,8 @@ def cmd_accept(args):
             merged = (ticket.get("pr") or {}).get("commit") or git.head(top)
             url = ticket["pr"]["url"]
             try:
-                hint_wakes, ended = _finish_pr_accept(
-                    ticket, roster, top, branch_name, ticket["base"], merged, url,
+                ended = _finish_pr_accept(
+                    ticket, top, branch_name, ticket["base"], merged, url,
                 )
             except store.PersistError:
                 raise
@@ -1628,6 +1665,7 @@ def cmd_accept(args):
                 failure = exc
             else:
                 rev = _commit(ticket, rev)
+                hint_wakes, rev = _wake_hints_after_commit(ticket, rev, roster)
                 print(
                     f"{ticket['id']}: angenommen, {branch_name} über PR {url} in "
                     f"{ticket['base']} gemergt ({_short(merged)}); Worktree und "
@@ -1664,10 +1702,11 @@ def cmd_accept(args):
                 base_ref = ticket["base"]
                 tree, conflict_files = git.merge_state(top, base_ref, branch_name)
                 if conflict_files or not expected or tree != expected:
-                    merge, text = _accept_merge_changed(
+                    merge, text, wecken = _accept_merge_changed(
                         ticket, roster, top, base_ref, review_head
                     )
                     rev = _commit(ticket, rev)
+                    _run_after_commit(ticket, rev, wecken)
                     raise store.PersistError(
                         f"{ticket['id']}: Merge-Stand mit {base_ref} weicht vom "
                         f"geprüften Tree {_short(expected)} ab (jetzt "
@@ -1695,7 +1734,6 @@ def cmd_accept(args):
                 ended = _end_sessions(ticket)
                 git.remove_worktree(top, worktree)
                 git.delete_branch(top, branch_name)
-                hint_wakes = _wake_review_hints(ticket, roster)
                 ticket["status"] = "done"
                 ticket.pop("stall", None)
                 ticket["waiting"] = []
@@ -1704,6 +1742,7 @@ def cmd_accept(args):
                     f"{branch_name} → {ticket['base']} @ {_short(merged)}",
                 )
                 rev = _commit(ticket, rev)
+                hint_wakes, rev = _wake_hints_after_commit(ticket, rev, roster)
                 print(
                     f"{ticket['id']}: angenommen, {branch_name} in {ticket.get('base')} gemergt "
                     f"({_short(merged)}); Worktree und Branch entfernt"
@@ -1732,10 +1771,11 @@ def cmd_accept(args):
                 ref = base
                 tree, conflict_files = git.merge_state(top, ref, branch_name)
                 if conflict_files or not expected or tree != expected:
-                    merge, text = _accept_merge_changed(
+                    merge, text, wecken = _accept_merge_changed(
                         ticket, roster, top, ref, review_head
                     )
                     rev = _commit(ticket, rev)
+                    _run_after_commit(ticket, rev, wecken)
                     raise store.PersistError(
                         f"{ticket['id']}: Merge-Stand mit {ref} weicht vom geprüften "
                         f"Tree {_short(expected)} ab (jetzt {_short(tree)}); nichts "
@@ -1774,10 +1814,11 @@ def cmd_accept(args):
                             f"{_short(merged)} als Revert nach origin/{base} gepusht"
                         )
                     _mark_pr_merged(ticket, url, merged)
-                    hint_wakes, ended = _finish_pr_accept(
-                        ticket, roster, top, branch_name, base, merged, url
+                    ended = _finish_pr_accept(
+                        ticket, top, branch_name, base, merged, url
                     )
                     rev = _commit(ticket, rev)
+                    hint_wakes, rev = _wake_hints_after_commit(ticket, rev, roster)
                     print(
                         f"{ticket['id']}: angenommen, {branch_name} über PR {url} in {base} "
                         f"gemergt ({_short(merged)}); Worktree und Branch entfernt"

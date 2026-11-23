@@ -223,7 +223,8 @@ def _pingpong_notice(ticket, name, author, roster):
     _notify_orchestrator(roster, text, _ticket_team(roster, ticket))
 
 
-def _one(ticket, name, author, text, roster, no_wake, message_for, send_text=None):
+def _one(ticket, name, author, text, roster, no_wake, message_for, send_text=None,
+         allow_closed=False):
     """Eine Erwähnung.
 
     Rückgabe: (wake-text oder None, Zeile fürs Terminal, Adresse, Grund).
@@ -239,6 +240,7 @@ def _one(ticket, name, author, text, roster, no_wake, message_for, send_text=Non
                 event_text, line, address, reason = _one(
                     ticket, assignee, author, comment, roster, no_wake,
                     lambda _name: conflict_wake_text(ticket, base, files),
+                    allow_closed=allow_closed,
                 )
                 if event_text is not None:
                     events.append(
@@ -255,7 +257,7 @@ def _one(ticket, name, author, text, roster, no_wake, message_for, send_text=Non
         if "mensch" not in ticket["waiting"]:
             ticket["waiting"].append("mensch")
         return "unterdrückt: mensch", "unterdrückt: mensch", None, ""
-    if ticket.get("status") in ("done", "dropped"):
+    if ticket.get("status") in ("done", "dropped") and not allow_closed:
         return "unterdrückt: abgeschlossen", "unterdrückt: abgeschlossen", None, ""
 
     now = store.now_ms()
@@ -391,7 +393,7 @@ def schedule_retry(ticket, name, send_text):
 
 
 def process(ticket, names, author, text, roster, no_wake=False, message_for=None,
-            attempt=1, direct=False):
+            attempt=1, direct=False, allow_closed=False):
     """Jede Erwähnung nach den Regeln behandeln und je Ergebnis ein wake-Ereignis.
 
     Ein fehlgeschlagener Start wird genau einmal nach `retry_delay()` wiederholt;
@@ -411,7 +413,7 @@ def process(ticket, names, author, text, roster, no_wake=False, message_for=None
         try:
             event_text, line, _address, reason = _one(
                 ticket, name, author, text, roster, no_wake, message_for,
-                send_text=send_text,
+                send_text=send_text, allow_closed=allow_closed,
             )
         except FabError as exc:
             event_text = START_FAILED
