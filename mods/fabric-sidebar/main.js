@@ -10,11 +10,12 @@ import {
 } from "herdr";
 import * as model from "./model.js";
 
-// Token wie mods/fabric/ui.js: gleiche Schriftgrößen, Abstände und Radien.
+// Spiegel von mods/fabric/ui.js: gleiche Schriftgrößen, Abstände, Radien und
+// Größen; Herdr erlaubt keine mod-übergreifenden Importe.
 const FONT = { xs: 11, s: 12, m: 13 };
 const SPACE = { xs: 4, s: 8, m: 12, l: 16, xl: 24 };
 const RADIUS = { s: 6, m: 8, l: 12 };
-const SIZE = { rowTall: 44, nav: 34, chip: 20, badge: 18, dot: 8 };
+const SIZE = { rowTall: 44, nav: 34, chip: 20, badge: 18, dot: 8, buttonSmall: 24, iconSmall: 13, bullet: 6, hairline: 1 };
 const ALPHA = { faint: "14", soft: "1c", tint: "24", border: "55" };
 
 const SPRITE_DIR = "mods/fabric-sidebar/sprites";
@@ -189,7 +190,7 @@ function pinButton(t, card) {
       run(pin.command, pin.args);
     })
     .child(svg(`mods/workspace-chrome/${card.pinned ? "pin-off" : "pin"}.svg`)
-      .size(13)
+      .size(SIZE.iconSmall)
       .flex_none());
 }
 
@@ -316,7 +317,7 @@ function alarmBanner(t, alarm, onAction) {
         .w_full()
         .gap(SPACE.s)
         .items_start()
-        .child(div().flex_none().mt(1).size(6).rounded(3).bg(t.blocked))
+        .child(div().flex_none().mt(SIZE.hairline).size(SIZE.bullet).rounded(SIZE.bullet / 2).bg(t.blocked))
         .child(div()
           .flex_1()
           .min_w(0)
@@ -333,7 +334,7 @@ function alarmBanner(t, alarm, onAction) {
         .children(buttons.map(({ action, label }) => h_flex()
           .id(`fabric-alarm-${alarm.id ?? "?"}-${action}`)
           .flex_none()
-          .h(24)
+          .h(SIZE.buttonSmall)
           .px(SPACE.s)
           .items_center()
           .justify_center()
@@ -526,7 +527,7 @@ export default class FabricSidebar extends View {
           .bg(t.blocked + ALPHA.soft)
           .border_b(1)
           .border_color(t.border)
-          .child(div().flex_none().mt(1).size(6).rounded(3).bg(t.blocked))
+          .child(div().flex_none().mt(SIZE.hairline).size(SIZE.bullet).rounded(SIZE.bullet / 2).bg(t.blocked))
           .child(div()
             .flex_1()
             .min_w(0)
