@@ -413,7 +413,9 @@ class LockTests(FabricCase):
             result = self.cli(*args)
             elapsed = time.monotonic() - began
             self.assertEqual(result.returncode, 0, (args, result.stderr))
-            self.assertLess(elapsed, 1.0, (args, elapsed))
+            # Ein blockierter Leser wartet bis zum Sperr-Zeitlimit (30 s); unter Last dauern
+            # ungesperrte Befehle 1–2 s. 10 s trennt beides sicher, ohne bei Last rot zu werden.
+            self.assertLess(elapsed, 10.0, (args, elapsed))
 
     # 3 -- Langes Handover hält die Sperre nicht
 
