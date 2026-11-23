@@ -11,6 +11,7 @@ import time
 from unittest import mock
 
 from fabric.fablib import agents, pipeline, store, verifyslots
+from fabric.fablib.errors import FabError
 from fabric.tests.support import FabricCase
 
 ROOT = os.path.dirname(
@@ -21,10 +22,15 @@ RUNNER = """
 import sys
 
 from fabric.fablib import pipeline
+from fabric.fablib.errors import FabError
 
 repo, ticket = sys.argv[1], sys.argv[2]
 timeout = float(sys.argv[3]) if len(sys.argv) > 3 else None
-result = pipeline.run(repo, ticket=ticket, repo=repo, timeout=timeout)
+try:
+    result = pipeline.run(repo, ticket=ticket, repo=repo, timeout=timeout)
+except FabError as exc:
+    print(f"Fehler: {exc}", file=sys.stderr)
+    sys.exit(2)
 print(result["state"])
 """
 
@@ -86,12 +92,15 @@ class VerifyQueueCase(FabricCase):
             text=True,
         )
 
-    def start_holder(self, count):
+    def start_holder(self, count, home=None):
         """Subprozess, der `count` Slots per flock hält, bis er getötet wird."""
         ready = os.path.join(self.tmp, f"holder-{count}-{time.time_ns()}.ready")
+        env = self.child_env()
+        if home is not None:
+            env["FAB_HOME"] = home
         proc = subprocess.Popen(
             [sys.executable, "-c", HOLDER, str(count), ready],
-            env=self.child_env(),
+            env=env,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -108,6 +117,18 @@ class VerifyQueueCase(FabricCase):
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.communicate()
+
+    def lock_is_free(self):
+        """Sperre in-process ohne Wartezeit prüfen (`FAB_LOCK_TIMEOUT=0`)."""
+        with self.store_env(), mock.patch.dict(
+            os.environ, {"FAB_LOCK_TIMEOUT": "0"}
+        ):
+            try:
+                with store.locked():
+                    pass
+            except FabError:
+                return False
+        return True
 
     def queued_run(self, ticket):
         with self.store_env():
@@ -422,15 +443,17 @@ class VerifyQueueTest(VerifyQueueCase):
                 self.wait_for(lambda: self.queued_run("T-4"), timeout=10)
             )
 
-            started = time.monotonic()
-            self.ok("list")
-            self.assertLess(time.monotonic() - started, 1.5)
-
-            started = time.monotonic()
-            with self.store_env():
-                with store.locked(timeout=1):
-                    pass
-            self.assertLess(time.monotonic() - started, 1.5)
+            # Der Runner schreibt Lauf und Schritte kurz vor dem Warten. Erst
+            # wenn diese kurzen Transaktionen durch sind, muss die Sperre
+            # dauerhaft frei sein – ohne Wanduhrbudget für die Sperre selbst.
+            self.assertTrue(
+                self.wait_for(self.lock_is_free, timeout=30),
+                "Store-Sperre blieb belegt, während der Lauf wartet",
+            )
+            result = self.cli("list", timeout=120)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(self.queued_run("T-4"), "Lauf wartet nicht mehr")
+            self.assertTrue(self.lock_is_free(), "Store-Sperre ist belegt")
         finally:
             self.stop(holder)
             self.stop(proc)
@@ -454,3 +477,48 @@ class VerifyQueueTest(VerifyQueueCase):
             self.assertNotEqual(bad.returncode, 0, value)
             self.assertIn("max_verify", bad.stderr, value)
             self.assertEqual(self._read(self.roster), before, value)
+
+    def test_wartezeit_limit_endet_mit_klarer_meldung(self):
+        repo = self.make_repo()
+        self.write_roster(max_verify=1)
+        self.write_steps(repo, [{"name": "kurz", "run": "true"}])
+        holder = self.start_holder(1)
+        proc = self.start_runner(repo, "T-2", env={"FAB_VERIFY_WAIT": "0.5"})
+        try:
+            out, err = proc.communicate(timeout=30)
+            self.assertEqual(proc.returncode, 2, err)
+            self.assertIn("Warteschlange", err)
+            self.assertIn("kein Prüfslot frei", err)
+            self.assertNotIn("pass", out)
+            with self.store_env():
+                rows = store.pipeline_run_list("T-2")
+            self.assertEqual([row["state"] for row in rows], ["fail"])
+        finally:
+            self.stop(holder)
+            self.stop(proc)
+
+    def test_belegter_echter_slot_blockiert_testlauf_nicht(self):
+        """Die echte, systemweite Warteschlange liegt in einem eigenen Home."""
+        real_home = os.path.join(self.tmp, "echtes-home")
+        os.makedirs(real_home, exist_ok=True)
+        holder = self.start_holder(2, home=real_home)
+        try:
+            repo = self.make_repo()
+            self.write_steps(repo, [{"name": "kurz", "run": "true"}])
+            proc = self.start_runner(repo, "T-8")
+            try:
+                out, err = proc.communicate(timeout=30)
+            finally:
+                self.stop(proc)
+            self.assertEqual(proc.returncode, 0, err)
+            self.assertIn("pass", out)
+
+            # Der Lauf nutzt Slotdateien im Test-Home, nicht im echten Home.
+            self.assertTrue(os.path.exists(self.slot_path(0)))
+            self.assertTrue(
+                os.path.exists(
+                    os.path.join(real_home, "verify-slots", "slot-0.lock")
+                )
+            )
+        finally:
+            self.stop(holder)

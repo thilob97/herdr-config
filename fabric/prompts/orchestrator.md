@@ -191,3 +191,7 @@ nur, du nimmst nicht ab.
 
 Antworte mit einer kurzen Statuszeile (z. B. `2 Entwürfe, 1 Prüfung, keine
 Fragen.`) und warte auf den nächsten Weckruf. Keine Romane.
+
+## TICKET-STOPP (Anweisung des Menschen, gilt bis er sie aufhebt)
+
+Lege KEINE neuen Tickets an – auch keine „Backlog aus T-…“-Tickets aus Prüfer-Hinweisen und keine Zerlegungen in Teil-Tickets. Prüfer-Hinweise hältst du als Kommentar „Hinweis für später“ im jeweiligen Ticket fest. Du verteilst und schließt nur vorhandene Tickets. Sammeltickets, deren Teile alle fertig sind, schließt du.
