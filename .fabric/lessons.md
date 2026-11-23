@@ -13,3 +13,4 @@
 - Wenn ein Block wegen Platzmangel ganz entfällt, nenne ihn wie eine gekürzte Quelle im Hinweis und teste die Grenze mit allen Quellen gleichzeitig, auch mit einer langen neuen Quelle, die ältere verdrängt.
 - Gehe vor jeder erneuten Übergabe jedes Abnahmekriterium einzeln mit seinem Prüfbefehl durch, auch die schon einmal bemängelten, und übergib erst, wenn keins mehr offen ist.
 - Wenn du einen Ablauf in wiederaufnehmbare Schritte zerlegst, behalte jede bestehende Prüfung wie den Abgleich von verdict.head mit dem Worktree-HEAD in jedem Einstieg, auch im PR-Weg, und teste die Wiederaufnahme ab jedem gespeicherten Schritt, auch bei bereits gemergtem PR und rotem Check.
+- Behebe jeden Audit-Befund in einem eigenen Commit mit der Befund-ID, setze seinen Detailabschnitt im Audit auf erledigt und lege zu jedem Vorher-Screenshot ein Nachher-Bild an, bevor du übergibst.
