@@ -454,6 +454,9 @@ class WakeTests(FabricCase):
     def attention(self):
         return [row for row in self.index()["inbox"] if row["kind"] == "attention"]
 
+    def attention_for(self, tid):
+        return [row for row in self.attention() if row["ticket"] == tid]
+
     def fab_comments(self, tid):
         return [row for row in self.ticket(tid)["comments"] if row["author"] == "fab"]
 
@@ -566,6 +569,7 @@ class WakeTests(FabricCase):
             and any(
                 "endgültig" in row["text"] for row in self.fab_comments(tid)
             )
+            and len(self.attention_for(tid)) == 1
         )
         failures = self.start_failures(tid)
         self.assertEqual(len(failures), 2)
@@ -600,6 +604,7 @@ class WakeTests(FabricCase):
             and any(
                 "endgültig" in row["text"] for row in self.fab_comments(tid)
             )
+            and len(self.attention_for(tid)) == 1
         )
         failures = self.start_failures(tid, "orchestrator")
         self.assertEqual(len(failures), 2)
