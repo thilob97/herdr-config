@@ -309,6 +309,10 @@ def build_paths(paths, brief="", maximum=DEFAULT_LIMIT, fallback_source="",
             )
             clipped = clipped or brief_clipped
     elif project_text and len(project_text) > room:
+        # Der Brief entfällt in diesem Zweig vollständig; sein Pfad gehört
+        # deshalb in den Hinweis des gekürzten Steckbriefs.
+        if brief_block and fallback_source:
+            project_source = ", ".join(list(found) + [fallback_source])
         project_text, project_clipped = _fit_block(
             project_text, room, project_source
         )

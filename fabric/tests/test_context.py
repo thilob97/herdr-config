@@ -665,3 +665,21 @@ class MapContextTests(FabricCase):
         self.assertFalse(
             [line for line in hints if "/r/roster.json" in line], hints
         )
+
+    def test_ohne_zeiger_nennt_gekuerzter_steckbrief_den_entfallenen_brief(self):
+        repo = self.make_repo()
+        project = os.path.join(repo, ".fabric", "project.md")
+        self.write_file(project, "# Steckbrief\n\n" + "S" * 8000)
+        # Kein Wissensordner, keine Karte: der Zweig kürzt den Steckbrief
+        # und lässt den Brief vollständig entfallen.
+        text = context.build_paths(
+            [repo], "B" * 500, 1000, "/r/roster.json"
+        )
+        self.assertLessEqual(len(text), 1000)
+        self.assertIn("## Projekt-Steckbrief", text)
+        self.assertNotIn("## Team-Brief", text)
+        hint = context.HINT.format(source="")
+        hints = [line for line in text.splitlines() if hint in line]
+        self.assertEqual(len(hints), 1, hints)
+        self.assertIn(os.path.realpath(project), hints[0])
+        self.assertIn("/r/roster.json", hints[0])
