@@ -19,6 +19,7 @@ import {
   flowParse, flowNodeTemplate, flowNodeId, flowAddNode, flowRemoveNode, flowPatchNode, flowConnect,
   flowRemoveEdge, flowPatchEdge, flowOutgoing, flowEdgeWhenOptions, flowPlaceholders, flowValidate,
   autopilotLamp, autopilotLogLines, autopilotPopover, autopilotActions, AUTOPILOT_STALE_MS,
+  alarmEntries, alarmActive,
   tickDue, TICK_INTERVAL_MS,
   PIPELINE_STATE_WORDS, PIPELINE_TRIGGER_WORDS, pipelineState, pipelineStateWord, pipelineTriggerWord,
   pipelineStepSummary, pipelineRunsNewest, pipelineLastRun, pipelineBadge, pipelineAutoStep,
@@ -2331,4 +2332,171 @@ test("Pipeline-Badge zeigt den jüngsten Lauf des Tickets", () => {
   assert.equal(pipelineLastRun(runs, "T-9"), null);
   assert.equal(pipelineBadge(runs, "T-9"), null);
   assert.equal(pipelineBadge([], "T-1"), null);
+});
+
+// ---------- Alarme ----------
+
+const alarmFixture = () => ({
+  active: true,
+  count: 3,
+  alarms: [
+    {
+      id: "main:42", kind: "main", at: 1764000000000, since: 1764000000000, ticket: "T-70", run: 42,
+      step: "node --test mods/fabric", reverted: true, paused: true, reason: "",
+      text: "main rot seit 12:51 – T-70 zurückgenommen – Schritt node --test mods/fabric fehlgeschlagen",
+      actions: ["run", "ticket", "resume", "ack"],
+    },
+    {
+      id: "pause:1764000000000", kind: "pause", at: 1764000000000, since: 1764000000000, ticket: "", run: null,
+      step: "", reverted: false, paused: true, reason: "main nach Merge rot – Abnahmen pausiert",
+      text: "Autopilot pausiert seit 12:51 – main nach Merge rot – Abnahmen pausiert",
+      actions: ["resume", "ack"],
+    },
+    {
+      id: "tick:1764000000000", kind: "tick", at: 1764000060000, since: 1764000000000, ticket: "", run: null,
+      step: "", reverted: false, paused: false, reason: "",
+      text: "fab tick seit 2 h nicht gelaufen – Stillstands-Wächter prüfen",
+      actions: ["ack"],
+    },
+  ],
+});
+
+const alarmButtonList = (entry) => entry.buttons.map((button) => `${button.key}:${button.label}`);
+
+test("Alarm-Einträge: Bannertext und Knöpfe je Art, kein Schließen", () => {
+  const index = { alarm: alarmFixture() };
+  const entries = alarmEntries(index);
+
+  assert.equal(entries.length, 3);
+  assert.equal(entries[0].kind, "main");
+  assert.match(entries[0].text, /main rot seit 12:51/);
+  assert.match(entries[0].text, /T-70/);
+  assert.match(entries[0].text, /zurückgenommen/);
+  assert.match(entries[0].text, /node --test mods\/fabric/);
+  assert.deepEqual(alarmButtonList(entries[0]), [
+    "run:Lauf ansehen",
+    "ticket:Ticket öffnen",
+    "resume:Pause aufheben",
+    "ack:Quittieren",
+  ]);
+
+  assert.equal(entries[1].kind, "pause");
+  assert.match(entries[1].text, /Autopilot pausiert/);
+  assert.deepEqual(alarmButtonList(entries[1]), ["resume:Pause aufheben", "ack:Quittieren"]);
+
+  assert.equal(entries[2].kind, "tick");
+  assert.match(entries[2].text, /fab tick/);
+  assert.deepEqual(alarmButtonList(entries[2]), ["ack:Quittieren"]);
+
+  for (const entry of entries) {
+    assert.equal(entry.buttons.some((button) => button.key === "close"), false);
+    assert.equal(entry.buttons.some((button) => /schließen/i.test(button.label)), false);
+  }
+});
+
+test("Alarm-Einträge: ungültige Einträge und Duplikate fallen weg, ack steht zuletzt", () => {
+  const raw = {
+    alarm: {
+      active: true,
+      alarms: [
+        { id: "", kind: "main", text: "ohne id", actions: ["ack"] },
+        { id: 7, kind: "main", text: "id keine Zeichenkette", actions: ["ack"] },
+        { id: "x", kind: "unbekannt", text: "unbekannte Art", actions: ["ack"] },
+        null,
+        "kaputt",
+        { id: "doppelt", kind: "main", text: "erster", actions: ["ack", "close", "run"] },
+        { id: "doppelt", kind: "tick", text: "zweiter", actions: ["ack"] },
+        { id: "reihe", kind: "tick", text: "Reihenfolge", actions: ["ack", "unbekannt", "resume", "run"] },
+      ],
+    },
+  };
+  const entries = alarmEntries(raw);
+
+  assert.deepEqual(entries.map((entry) => entry.id), ["doppelt", "reihe"]);
+  assert.equal(entries[0].text, "erster");
+  assert.deepEqual(entries[0].buttons, [
+    { key: "run", label: "Lauf ansehen" },
+    { key: "ack", label: "Quittieren" },
+  ]);
+  assert.deepEqual(alarmButtonList(entries[1]), [
+    "resume:Pause aufheben",
+    "run:Lauf ansehen",
+    "ack:Quittieren",
+  ]);
+
+  assert.deepEqual(alarmEntries(null), []);
+  assert.deepEqual(alarmEntries({}), []);
+  assert.deepEqual(alarmEntries(indexOnlyWithoutAlarms()), []);
+  assert.equal(alarmActive(raw), true);
+  assert.equal(alarmActive({ alarm: { active: false, alarms: [] } }), false);
+});
+
+function indexOnlyWithoutAlarms() {
+  return { tickets: [], alarm: null };
+}
+
+test("Alarm-Lampe: aktiver Alarm vor jedem Autopilot-Status", () => {
+  const alarm = alarmFixture();
+  const expected = { state: "alarm", color: "blocked", text: alarm.alarms[0].text, pulse: false };
+
+  assert.deepEqual(autopilotLamp(autopilotStatus(), autopilotNow, alarm), expected);
+  assert.deepEqual(autopilotLamp(autopilotStatus({ state: "stopped" }), autopilotNow, alarm), expected);
+  assert.deepEqual(autopilotLamp(null, autopilotNow, alarm), expected);
+  assert.deepEqual(autopilotLamp("{kaputt", autopilotNow, alarm), expected);
+
+  const fallback = { id: "main:1", kind: "main", text: "", actions: ["ack"] };
+  assert.deepEqual(
+    autopilotLamp(autopilotStatus(), autopilotNow, { alarms: [fallback] }),
+    { state: "alarm", color: "blocked", text: "Alarm", pulse: false },
+  );
+
+  const inactive = { active: false, alarms: [] };
+  assert.deepEqual(autopilotLamp(autopilotStatus(), autopilotNow, inactive), {
+    state: "running", color: "done", text: "Autopilot an · bis 08:00", pulse: true,
+  });
+  assert.deepEqual(autopilotLamp(null, autopilotNow, inactive), {
+    state: "stopped", color: "dim", text: "Autopilot aus", pulse: false,
+  });
+  assert.deepEqual(autopilotLamp(autopilotStatus(), autopilotNow, null), {
+    state: "running", color: "done", text: "Autopilot an · bis 08:00", pulse: true,
+  });
+});
+
+test("Alarm-Aktionen: Start gesperrt, Fortsetzen und Stoppen aus Pause", () => {
+  const alarm = alarmFixture();
+  const lamp = autopilotLamp(autopilotStatus(), autopilotNow, alarm);
+
+  assert.deepEqual(autopilotActions(lamp, alarm), { start: false, resume: true, stop: true });
+  assert.deepEqual(autopilotActions({ state: "alarm" }, alarm), { start: false, resume: true, stop: true });
+
+  const mainOnly = { alarms: [alarm.alarms[0]] };
+  assert.deepEqual(autopilotActions({ state: "alarm" }, mainOnly), { start: false, resume: true, stop: true });
+  assert.deepEqual(autopilotActions({ state: "stopped" }, { alarms: [alarm.alarms[2]] }), {
+    start: false, resume: false, stop: false,
+  });
+  assert.deepEqual(autopilotActions({ state: "running" }, { alarms: [alarm.alarms[2]] }), {
+    start: false, resume: false, stop: true,
+  });
+
+  assert.deepEqual(autopilotActions({ state: "running" }), { start: false, resume: false, stop: true });
+  assert.deepEqual(autopilotActions({ state: "stopped" }), { start: true, resume: false, stop: false });
+});
+
+test("Alarm-Toast: eine Alarm-Inbox-Zeile feuert genau einmal", () => {
+  const inbox = [{
+    id: "attention:main:42", kind: "attention", ticket: "", at: 1764000000000,
+    text: "main rot seit 12:51 – T-70 zurückgenommen – Schritt node --test mods/fabric fehlgeschlagen",
+  }];
+  const settings = { enabled: true, quiet_from: 22, quiet_to: 8 };
+  const local = new Date(2026, 10, 24, 12, 51, 0).getTime();
+
+  const first = inboxNotifications(inbox, {}, settings, local);
+  assert.equal(first.fresh.length, 1);
+  assert.equal(first.fresh[0].id, "attention:main:42");
+  assert.equal(inboxNotifyLevel(first.fresh[0].kind), "error");
+  assert.equal(inboxNotifySound(first.fresh[0].kind), "blocked");
+
+  const second = inboxNotifications(inbox, first.seen, settings, local + 60000);
+  assert.equal(second.fresh.length, 0);
+  assert.equal(second.changed, false);
 });

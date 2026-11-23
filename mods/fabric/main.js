@@ -64,6 +64,7 @@ function normalizeIndex(raw) {
     roster: Array.isArray(raw?.roster) ? raw.roster : [],
     teams: Array.isArray(raw?.teams) ? raw.teams : [],
     events: Array.isArray(raw?.events) ? raw.events : [],
+    alarm: raw?.alarm ?? null,
   };
 }
 
@@ -1052,13 +1053,13 @@ export default class Fabric extends View {
     // Vor dem Senden beanspruchen: sonst meldet jede Mod-Kopie dieselben Einträge.
     if (plan.changed) setShared(model.NOTIFY_SEEN_KEY, plan.seen);
     for (const entry of plan.fresh) {
-      if (!entry.ticket) continue;
       playSound(model.inboxNotifySound(entry.kind));
+      const line = model.oneLine(entry.text, 140);
       notify({
         title: `Fabric · ${model.INBOX_WORDS[entry.kind] ?? "Hinweis"}`,
-        body: `${entry.ticket} · ${model.oneLine(entry.text, 140)}`,
+        body: entry.ticket ? `${entry.ticket} · ${line}` : line,
         level: model.inboxNotifyLevel(entry.kind),
-        action: { name: "fabric.open", args: { ticket: entry.ticket } },
+        ...(entry.ticket ? { action: { name: "fabric.open", args: { ticket: entry.ticket } } } : {}),
         timeout: 12000,
       });
     }
@@ -4183,7 +4184,7 @@ export default class Fabric extends View {
                 : page === "repos" ? renderRepos(this, cx, t)
                   : renderSettings(this, cx, t);
 
-    const lamp = model.autopilotLamp(this.autopilotText, Date.now());
+    const lamp = model.autopilotLamp(this.autopilotText, Date.now(), this.index?.alarm);
     const state = this.orchestratorState();
     const statusWord = model.orchestratorWord(state);
     const statusColor = ui.orchestratorStatus(t, state).color;
@@ -4384,6 +4385,7 @@ export default class Fabric extends View {
       .on_key_down((event, cx) => this.keys(event, cx))
       .child(
         v_flex().size_full().min_h(0)
+          .when(Boolean(model.alarmActive(this.index?.alarm)), (el) => el.child(this.alarmBanner(t, cx)))
           .child(
             h_flex().flex_none().w_full().child(
               div().flex_1().min_w(0).child(
@@ -4397,6 +4399,60 @@ export default class Fabric extends View {
       )
       .children(overlay);
     return this.mentionActions(root);
+  }
+
+  // ---------- Alarme ----------
+
+  alarmBanner(t, cx) {
+    const entries = model.alarmEntries(this.index?.alarm);
+    if (entries.length === 0) return null;
+    return v_flex()
+      .id("fabric-alarm-banner")
+      .flex_none()
+      .w_full()
+      .gap(ui.SPACE.xs)
+      .px(ui.SPACE.l)
+      .py(ui.SPACE.s)
+      .bg(t.blocked + "14")
+      .border_b(1)
+      .border_color(t.blocked + "55")
+      .children(entries.map((item, index) => h_flex()
+        .id(`fabric-alarm-${index}`)
+        .w_full()
+        .gap(ui.SPACE.s)
+        .items_center()
+        .child(div().flex_none().size(6).rounded(3).bg(t.blocked))
+        .child(div()
+          .flex_1()
+          .min_w(0)
+          .whitespace_normal()
+          .text_size(ui.FONT.s)
+          .text_color(t.blocked)
+          .child(item.text || "Alarm"))
+        .child(h_flex().flex_none().gap(ui.SPACE.xs).items_center()
+          .children(item.buttons.map((button) => ui.button(t, {
+            id: `fabric-alarm-${index}-${button.key}`,
+            label: button.label,
+            small: true,
+            onClick: (clickCx) => clickCx.spawn(async (clickCx) => {
+              await this.alarmAction(item, button.key, clickCx);
+            }),
+          }))))));
+  }
+
+  alarmAction(item, key, cx) {
+    if (key === "run") return this.navigate("pipelines", { run: item.run }, cx);
+    if (key === "ticket") {
+      if (item.ticket) this.navigate("ticket", { id: item.ticket }, cx);
+      return undefined;
+    }
+    if (key === "resume") return this.resumeAutopilot(cx);
+    if (key === "ack") return this.ackAlarms(cx);
+    return undefined;
+  }
+
+  async ackAlarms() {
+    await this.action("alarm-ack", ["alarm", "ack"], { success: null });
   }
 
   // ---------- Autopilot ----------
@@ -4416,10 +4472,11 @@ export default class Fabric extends View {
   }
 
   autopilotTrigger(t, cx, { compact = false, anchor = "bottom_left", popupId = "fabric-autopilot-panel", lamp = null, labelWidth = null } = {}) {
-    const current = lamp ?? model.autopilotLamp(this.autopilotText, Date.now());
+    const current = lamp ?? model.autopilotLamp(this.autopilotText, Date.now(), this.index?.alarm);
     const short = current.state === "running" ? "an"
       : current.state === "paused" ? "pausiert"
-        : current.state === "stale" ? "keine Antwort"
+        : current.state === "alarm" ? "Alarm"
+          : current.state === "stale" ? "keine Antwort"
           : "aus";
     const trigger = h_flex()
       .id(`${popupId}-trigger`)
@@ -4461,8 +4518,8 @@ export default class Fabric extends View {
 
   autopilotPanel(t, popupId) {
     const info = model.autopilotPopover(this.autopilotText, this.autopilotLogText, Date.now());
-    const lamp = info.lamp;
-    const actions = model.autopilotActions(lamp);
+    const lamp = model.autopilotLamp(this.autopilotText, Date.now(), this.index?.alarm);
+    const actions = model.autopilotActions(lamp, this.index?.alarm);
     const logPath = info.logPath || `${this.dir}/autopilot.log`;
     const logError = this.errorFor("autopilot-log");
 

@@ -125,6 +125,13 @@ Bei `session_ended` nennt `reason` Exit-Code, Endzeit und hc-Grund (`Exit 129 ·
   "version": 1,
   "generated_at": 1790000000000,
   "tick": {"last_tick": 0, "age_ms": 360000, "limit_ms": 300000, "stale": true},
+  "alarm": {"active": true, "count": 1, "alarms": [
+    {"id": "main:42", "kind": "main", "at": 0, "since": 0, "ticket": "T-70",
+     "run": 42, "step": "node --test mods/fabric", "reverted": true, "paused": true,
+     "reason": "",
+     "text": "main rot seit 12:51 – T-70 zurückgenommen – Schritt node --test mods/fabric fehlgeschlagen",
+     "actions": ["run", "ticket", "resume", "ack"]}
+  ]},
   "tickets": [
     {"id": "T-1", "title": "…", "status": "doing", "assignee": "zap", "repo": "…", "branch": "…",
      "updated_at": 0, "comment_count": 3, "waiting": [], "blocked_by": [],
@@ -147,7 +154,7 @@ Bei `session_ended` nennt `reason` Exit-Code, Endzeit und hc-Grund (`Exit 129 ·
      "reason": "Regel 1 (doing): …", "since": 0},
     {"id": "attention:tick:1790000000000", "kind": "attention", "ticket": "", "at": 0,
      "from": "fab", "text": "fab tick seit 6 min nicht gelaufen – Stillstands-Wächter prüfen",
-     "reason": "letzter Tick vor 6 min", "since": 1790000000000}
+     "reason": "", "since": 1790000000000, "alarm": "tick:1790000000000", "run": null}
   ],
   "roster": [{"name": "zap", "role": "umsetzer", "color": "c1", "program": "omp",
               "model": "…", "teams": ["herdr-app"]}],
@@ -160,6 +167,7 @@ Bei `session_ended` nennt `reason` Exit-Code, Endzeit und hc-Grund (`Exit 129 ·
 - `inbox` wird **nur** in `fab` berechnet: `question` = Ticket nicht done, `mensch` in `waiting`; `review` = Status `review`; `attention` = Wecken unterdrückt durch Ping-Pong-Bremse oder Start fehlgeschlagen, solange danach nichts Neues im Ticket passiert ist. Hat ein `todo`/`doing`-Ticket `stall.attention`, gilt genau **ein** `attention`-Eintrag aus dem Stillstand (`stockt seit …`, Grund und `agent` für „Erneut versuchen“); der aus `wake` abgeleitete Eintrag entfällt dann.
 - Pro Ticket höchstens **ein** Eintrag aus `question` und `review`: Steht das Ticket auf `review`, gilt nur `review`, `question` entfällt (auch wenn `mensch` in `waiting` steht). `attention` darf daneben stehen.
 - Lebt `last_tick` länger als 5 min zurück, steht zusätzlich genau **ein** `attention`-Eintrag ohne Ticket in der Inbox (`attention:tick:<last_tick>`); der nächste Tick räumt ihn ab. Der Zustand steht zusätzlich als `tick` im Lesemodell.
+- `alarm` ist der aktive Alarmzustand aus `fabric/fablib/alarm.py` (Abschnitt 4e). Jeder Alarm erzeugt zentral genau einen Inbox-Eintrag `attention:<alarm.id>` mit `alarm`, `run` und bei `tick` zusätzlich `since`; quittierte Alarme fehlen in beiden Listen.
 - Der Mod zählt nichts selbst: Inbox-Zahl = `inbox.length`, Stufen = Tickets nach `status`.
 - Jeder Inbox-Eintrag trägt eine stabile `id`; sie bleibt über Neuberechnungen von `index.json` gleich, solange der Eintrag besteht.
 - `index.json` bleibt unter 1 MiB: Ticket-Einträge ohne `body` und ohne `comments`, höchstens 300 Ereignisse.
@@ -195,6 +203,7 @@ Alle schreibenden Befehle laufen in genau einer Transaktion, hängen Ereignisse 
 | `fab tick [--dry-run] [--install\|--uninstall]` | Stillstandswächter (Abschnitt 4b). Ohne Optionen ein Lauf: wecken/starten oder `attention`, sonst nichts; zusätzlich meldet und beendet er lebende Sessions zu `done`/`dropped`-Tickets (per Label `fab.ticket` oder Namen `fab-<team>-<agent>-t-<n>`). Beendete Sessions offener Tickets erkennt er an `hc ls --all`: `state == "finished"` schreibt genau einmal `session_ended` mit Exit-Code, Endzeit und letzten Zeilen; eine nie sichtbare Session meldet `Fehlstart`. Ein `doing`-Ticket ohne lebende Session bekommt dadurch sofort `attention`, ohne die Stillstandsfrist abzuwarten. Jeder echte Lauf schreibt `last_tick`; ist er älter als 5 min, erscheint ein `attention`-Eintrag in der Inbox. `--dry-run` zeigt nur die geplanten Aktionen und schreibt insbesondere kein `last_tick`. `--install` legt den launchd-Agent `~/Library/LaunchAgents/de.herdr.fabric.tick.plist` (Intervall 60 s) an, `--uninstall` entfernt ihn; ohne Auftrag legt der erste `fab`-Aufruf ihn unter macOS selbst an (Abschnitt 4b). Kein `--from`. |
 | `fab orchestrator start\|stop\|status [TEAM]` | Orchestrator-Terminal je Team verwalten (Abschnitt 5) |
 | `fab autopilot start [--until HH:MM\|done] \| stop \| resume \| status [--json]` | Autopilot-Terminal `autopilot` ohne Parent starten, beenden, eine Pause aufheben oder den Status zeigen; `--json` liefert genau den Inhalt von `$FAB_HOME/autopilot.json`. Ein zweiter Start bei laufendem Terminal bricht mit Meldung ab (Abschnitt 4d). |
+| `fab alarm status [--json]` / `fab alarm ack [--json]` | Aktive Alarme bei rotem `main`, pausiertem Autopilot und ausgefallenem `fab tick` zeigen bzw. alle aktuellen quittieren (Abschnitt 4e). `status --json` liefert `{active, count, alarms}`; `ack` gibt `{acked, active, count, alarms}` aus und schreibt `index.json` neu. |
 | `fab agents [--json]` | Mitglieder aller Teams mit Teamzuordnung (`teams`) und laufende Sessions. Beendete Sessions zeigen `beendet`; je Ticket und Terminalname erscheint nur der neueste Start. |
 | `fab inbox [--json]` | wie `index.json.inbox` |
 | `fab index` | `index.json` neu erzeugen |
@@ -353,7 +362,17 @@ Die Schleife läuft alle 120 s:
 - **Stillstand:** Ohne lebende Session und ohne Ereignis seit 20 min wird der Zuständige geweckt (höchstens dreimal, dann der Orchestrator); zwischen Weckungen liegen mindestens 30 min.
 - **Verteilen:** Offene `todo` ohne Blocker stoßen höchstens alle 30 min einen Orchestrator-Hinweis an.
 
-Statusdatei `$FAB_HOME/autopilot.json` (Standard `data/fabric/autopilot.json`): `state` (`running`/`paused`/`stopped`), `reason`, `end` (ISO `YYYY-MM-DDTHH:MM`, leer bei `done`), `updated_at` (ms), `last_action`, `log` und `pid`. Weitere Felder dürfen hinzukommen; Leser ignorieren Unbekanntes. Die Pausemarke liegt daneben in `autopilot-pause`, das Log in `autopilot.log`.
+Statusdatei `$FAB_HOME/autopilot.json` (Standard `data/fabric/autopilot.json`): `state` (`running`/`paused`/`stopped`), `reason`, `end` (ISO `YYYY-MM-DDTHH:MM`, leer bei `done`), `updated_at` (ms), `paused_since` (ms, Beginn der laufenden Pause; leer außerhalb von `paused`), `last_action`, `log` und `pid`. Weitere Felder dürfen hinzukommen; Leser ignorieren Unbekanntes. Die Pausemarke liegt daneben in `autopilot-pause`, das Log in `autopilot.log`.
+
+## 4e. Alarme
+
+`fab alarm status [--json]` und `fab alarm ack [--json]` lesen und quittieren den Alarmzustand in `index.json["alarm"]`. Abgeleitet wird aus drei Quellen:
+
+- **main rot:** Der jüngste Pipeline-Lauf mit `trigger == "main"` endet `fail`. Schritt ist der erste fehlgeschlagene Schritt, das Ticket kommt aus dem Lauf oder aus dem Betreff von `git log -1 --format=%s <head>` (`T-<n>`). „zurückgenommen“ wird nur gemeldet, wenn `git log -n 50 --format=%B` im Repo `This reverts commit <head>` enthält. Nach einem grünen main-Lauf ist der Alarm weg.
+- **Pause:** `autopilot.json` steht auf `paused`; `since` ist `paused_since`, sonst `updated_at`. Bei aktivem main-Alarm erscheint die Pause nicht als eigener Alarm, weil der main-Alarm `resume` anbietet.
+- **tick:** `store.tick_alarm()` ist `stale` (älter als 5 min); `since` ist `last_tick`, der Text nennt das Alter.
+
+Jeder Alarm trägt eine stabile `id` (`main:<run>`, `pause:<since>`, `tick:<last_tick>`), `at`, `since`, `ticket`, `run`, `step`, `reverted`, `paused`, `reason`, `text` und `actions`. Die Lampe/Banner lesen `active` und `count`; der Toast dedupliziert über dieselbe `id` wie der Inbox-Eintrag `attention:<id>`. `fab alarm ack` quittiert **alle** aktuell abgeleiteten Alarme, auch die bei main unterdrückte Pause, und speichert die IDs dedupliziert (höchstens 100) unter dem Meta-Schlüssel `alarm_ack`; ein neuer main-Lauf hat eine neue `id` und löst wieder aus.
 
 ## 5. Agenten starten
 

@@ -108,11 +108,21 @@ def _end_text_for(end):
 
 def write_state(state, reason="", end="", last_action=None):
     """Statusdatei atomar schreiben; unbekannte Leserfelder bleiben unberührt."""
+    previous = read_state()
+    updated_at = int(epoch() * 1000)
+    if state == "paused":
+        if previous.get("state") == "paused" and previous.get("paused_since"):
+            paused_since = previous["paused_since"]
+        else:
+            paused_since = updated_at
+    else:
+        paused_since = ""
     data = {
         "state": state,
         "reason": reason or "",
         "end": end or "",
-        "updated_at": int(epoch() * 1000),
+        "updated_at": updated_at,
+        "paused_since": paused_since,
         "last_action": _last_action if last_action is None else last_action,
         "log": log_path(),
         "pid": os.getpid(),
@@ -578,6 +588,7 @@ def try_accept(ticket):
     # Der Schutzschritt hängt nicht am Erfolg des Reverts.
     _paused = True
     _pause("main nach Merge rot")
+    write_state("paused", "main nach Merge rot – Abnahmen pausiert", end=_end_text)
     try:
         paths = _attach_output(tid, out, err)
     except (FabError, OSError) as exc:

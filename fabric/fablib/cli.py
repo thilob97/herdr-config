@@ -10,6 +10,7 @@ import unicodedata
 
 from . import (
     agents,
+    alarm,
     autopilot,
     config,
     context,
@@ -3137,14 +3138,20 @@ def cmd_autopilot(args):
     action = args.action
     if action == "start":
         result = autopilot.start(args.until)
+        with store.locked():
+            index.rebuild()
         print(f"Autopilot gestartet in {result['repo']} (bis {args.until})")
         return 0
     if action == "stop":
         autopilot.stop()
+        with store.locked():
+            index.rebuild()
         print("Autopilot gestoppt")
         return 0
     if action == "resume":
         outcome = autopilot.resume()
+        with store.locked():
+            index.rebuild()
         if outcome == "resumed":
             print("Autopilot fortgesetzt")
         elif outcome == "not-paused":
@@ -3169,6 +3176,31 @@ def cmd_autopilot(args):
     )
     if state.get("last_action"):
         print(f"Zuletzt: {state['last_action']}")
+    return 0
+
+
+def cmd_alarm(args):
+    if args.action == "ack":
+        with store.locked():
+            acked = alarm.ack()
+            index.rebuild()
+            state = alarm.status()
+        if args.json:
+            print(json.dumps({"acked": acked, **state}, ensure_ascii=False, indent=2))
+        elif acked:
+            print("Quittiert: " + ", ".join(acked))
+        else:
+            print("Kein Alarm.")
+        return 0
+    state = alarm.status()
+    if args.json:
+        print(json.dumps(state, ensure_ascii=False, indent=2))
+        return 0
+    if not state["active"]:
+        print("Kein Alarm.")
+        return 0
+    for item in state["alarms"]:
+        print(item["text"])
     return 0
 
 
@@ -3728,6 +3760,21 @@ def build_parser():
     auto_sub._choices_actions = [
         action for action in auto_sub._choices_actions if action.dest != "run"
     ]
+    item = command(
+        "alarm",
+        "Alarme bei rotem main, pausiertem Autopilot oder ausgefallenem Tick",
+        cmd_alarm,
+    )
+    alarm_sub = item.add_subparsers(dest="action", metavar="AKTION", required=True)
+    alarm_status = alarm_sub.add_parser(
+        "status", help="aktive Alarme zeigen", description="aktive Alarme zeigen",
+    )
+    alarm_status.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe")
+    alarm_ack = alarm_sub.add_parser(
+        "ack", help="alle aktuellen Alarme quittieren",
+        description="alle aktuellen Alarme quittieren",
+    )
+    alarm_ack.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe")
     command("version", "Version und Git-HEAD des Fabric-Codes", cmd_version)
     command("index", "index.json neu erzeugen", cmd_index)
     item = command("migrate", "Altdaten in die SQLite-Datenbank übernehmen", cmd_migrate)
@@ -3777,6 +3824,7 @@ def _normalize_argv(argv):
 
 
 TICK_ALARM_SHOWN = "tick_alarm_shown"
+ALARM_SHOWN = "alarm_shown"
 
 
 def _ensure_tick_agent():
@@ -3818,6 +3866,33 @@ def _publish_tick_alarm(args):
         pass
 
 
+def _publish_alarm(args):
+    """`index.json` neu schreiben, wenn sich der Alarmzustand ändert.
+
+    Der Vergleich läuft über die signierte JSON-Form der Alarmliste; nur der
+    Übergang kostet einen Schreibvorgang. `--dry-run` schreibt nichts, und
+    `fab migrate` entscheidet allein über die Migration.
+    """
+    if getattr(args, "dry_run", False):
+        return
+    if getattr(args, "func", None) is cmd_migrate:
+        return
+    try:
+        state = alarm.status()
+        want = json.dumps(state["alarms"], ensure_ascii=False, sort_keys=True)
+        if (store.meta_get(ALARM_SHOWN) or "") == want:
+            return
+        with store.locked(timeout=0.5):
+            state = alarm.status()
+            want = json.dumps(state["alarms"], ensure_ascii=False, sort_keys=True)
+            if (store.meta_get(ALARM_SHOWN) or "") == want:
+                return
+            store.meta_set(ALARM_SHOWN, want)
+            index.rebuild()
+    except Exception:
+        pass
+
+
 def main(argv=None):
     if argv is None:
         argv = sys.argv[1:]
@@ -3826,6 +3901,7 @@ def main(argv=None):
     if not (getattr(args, "install", False) or getattr(args, "uninstall", False)):
         _ensure_tick_agent()
     _publish_tick_alarm(args)
+    _publish_alarm(args)
     try:
         return args.func(args) or 0
     except (FabError, HcError) as exc:
