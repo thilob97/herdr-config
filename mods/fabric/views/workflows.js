@@ -162,11 +162,14 @@ function leftPane(app, cx, t, flows, runs) {
     .child(div().px(S.m).py(S.s).text_size(T.xs).text_color(t.dim)
       .child(`${flows.length} Workflow${flows.length === 1 ? "" : "s"}`))
     .child(
-      app.flows
-        ? v_flex().flex_none().max_h(320).min_h(0).overflow_y_scrollbar().p(S.xs).gap(S.xs)
-          .children(flows.map((flow) => workflowRow(app, cx, t, flow,
-            (app.flowRuns ?? []).filter((run) => run.workflow === flow.name).length)))
-        : div().px(S.m).pb(S.s).text_size(T.xs).text_color(t.dim).child("wird geladen …"),
+      !app.flows
+        ? div().px(S.m).pb(S.s).text_size(T.xs).text_color(t.dim).child("wird geladen …")
+        : flows.length === 0
+          // Eine leere Liste belegt keinen Platz, sonst rückt sie den
+          // Leerzustand darunter aus dem Sichtbereich.
+          ? div()
+          : paneList(flows.length, flows.map((flow) => workflowRow(app, cx, t, flow,
+            (app.flowRuns ?? []).filter((run) => run.workflow === flow.name).length))),
     )
     .child(div().w_full().border_t(1).border_color(t.border))
     .child(div().px(S.m).py(S.s)
