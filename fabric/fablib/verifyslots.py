@@ -15,8 +15,22 @@ import os
 import time
 
 from . import agents, store, teams
+from .errors import FabError
 
 DEFAULT_MAX_VERIFY = 2
+WAIT_TIMEOUT_DEFAULT = 1800.0
+
+
+def wait_timeout():
+    """Zeitlimit fürs Warten auf einen Slot aus `FAB_VERIFY_WAIT` (Sekunden)."""
+    raw = os.environ.get("FAB_VERIFY_WAIT")
+    if raw is None or not str(raw).strip():
+        return WAIT_TIMEOUT_DEFAULT
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return WAIT_TIMEOUT_DEFAULT
+    return value if value >= 0 else WAIT_TIMEOUT_DEFAULT
 
 
 def limit(roster=None):
@@ -92,19 +106,39 @@ def _try_acquire(directory, count):
     return None
 
 
-def acquire(limit, on_wait=None):
-    """Einen Slot belegen; `on_wait` läuft genau einmal, bevor gewartet wird."""
+def acquire(limit, on_wait=None, timeout=None):
+    """Einen Slot belegen; `on_wait` läuft genau einmal, bevor gewartet wird.
+
+    `timeout` ist das Warte-Zeitlimit in Sekunden (Standard: `wait_timeout()`).
+    Danach endet der Aufruf mit `FabError` statt endlos zu hängen; der Lauf
+    wird dadurch als `fail` gespeichert.
+    """
     try:
         count = int(limit)
     except (TypeError, ValueError):
         count = DEFAULT_MAX_VERIFY
     count = max(teams.MIN_VERIFY, count)
+    if timeout is None:
+        limit_seconds = wait_timeout()
+    else:
+        try:
+            limit_seconds = float(timeout)
+        except (TypeError, ValueError):
+            limit_seconds = wait_timeout()
     directory = slot_dir()
     announced = False
+    began = time.monotonic()
     while True:
         slot = _try_acquire(directory, count)
         if slot is not None:
             return slot
+        waited = time.monotonic() - began
+        if limit_seconds is not None and waited >= limit_seconds:
+            raise FabError(
+                f"Warteschlange: nach {waited:.0f} s kein Prüfslot frei "
+                f"(max. {count} gleichzeitig). Laufende Prüfläufe abwarten "
+                f"oder FAB_VERIFY_WAIT erhöhen."
+            )
         if not announced:
             announced = True
             if on_wait is not None:
