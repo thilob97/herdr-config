@@ -4,6 +4,7 @@ import glob
 import json
 import os
 import re
+import shutil
 import subprocess
 import unittest
 from unittest import mock
@@ -59,6 +60,95 @@ FAILED (failures=2)
 """
 
 
+STUB_GH = '''#!/usr/bin/env python3
+"""gh-Stub für die Autopilot-Abnahme: Zustand in GH_STATE, Aufrufe in GH_LOG."""
+import json
+import os
+import subprocess
+import sys
+
+URL = "https://github.com/test/repo/pull/7"
+args = sys.argv[1:]
+log = os.environ.get("GH_LOG")
+if log:
+    with open(log, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(args) + "\\n")
+
+state_file = os.environ.get("GH_STATE")
+
+
+def read_state():
+    if state_file and os.path.isfile(state_file):
+        with open(state_file, encoding="utf-8") as handle:
+            return handle.read().strip()
+    return ""
+
+
+def write_state(value):
+    if state_file:
+        with open(state_file, "w", encoding="utf-8") as handle:
+            handle.write(value)
+
+
+def fields():
+    if "--json" in args:
+        return args[args.index("--json") + 1].split(",")
+    return []
+
+
+if args[:2] == ["auth", "status"]:
+    sys.exit(1 if os.environ.get("GH_AUTH_FAIL") else 0)
+
+if args[:2] == ["pr", "view"]:
+    state = read_state()
+    if os.environ.get("GH_VIEW_FAIL") or not state:
+        print("kein PR gefunden", file=sys.stderr)
+        sys.exit(1)
+    wanted = fields()
+    if "mergeCommit" in wanted:
+        oid = ""
+        bare = os.environ.get("GH_BARE")
+        head = os.environ.get("GH_HEAD")
+        if bare and head:
+            sha = subprocess.run(
+                ["git", "--git-dir", bare, "rev-parse", f"refs/heads/{head}"],
+                capture_output=True, text=True,
+            )
+            if sha.returncode == 0:
+                oid = sha.stdout.strip()
+        print(json.dumps({
+            "state": state,
+            "number": 7,
+            "mergeCommit": {"oid": oid} if oid else None,
+        }))
+    elif "url" in wanted:
+        print(URL)
+    elif "state" in wanted:
+        print(state)
+    else:
+        print(json.dumps({"state": state, "number": 7, "mergeCommit": None}))
+    sys.exit(0)
+
+if args[:2] == ["pr", "create"]:
+    if os.environ.get("GH_CREATE_FAIL"):
+        print("create abgelehnt", file=sys.stderr)
+        sys.exit(1)
+    write_state("OPEN")
+    print(URL)
+    sys.exit(0)
+
+if args[:2] == ["pr", "merge"]:
+    if os.environ.get("GH_MERGE_FAIL"):
+        print("merge abgelehnt", file=sys.stderr)
+        sys.exit(1)
+    write_state("MERGED")
+    print("merged")
+    sys.exit(0)
+
+sys.exit(0)
+'''
+
+
 class AutopilotCase(FabricCase):
     def setUp(self):
         super().setUp()
@@ -103,6 +193,58 @@ class AutopilotCase(FabricCase):
     def set_now(self, moment):
         """Zentrale Uhr über `FAB_NOW` auf `moment` stellen."""
         os.environ["FAB_NOW"] = str(int(moment.timestamp() * 1000))
+
+    # -- Abnahme über GitHub
+
+    def stored(self, tid):
+        """Ticket direkt aus dem Store lesen (self.ticket ist die Fixture)."""
+        with open(
+            os.path.join(self.home, "tickets", f"{tid}.json"), encoding="utf-8"
+        ) as handle:
+            return json.load(handle)
+
+    def setup_origin(self, repo):
+        """Bare-Remote als origin; die GitHub-URL wird darauf umgebogen."""
+        bare = os.path.join(self.tmp, "origin.git")
+        subprocess.run(["git", "init", "--bare", "-q", bare], check=True)
+        self.git_out(repo, "remote", "add", "origin", "https://github.com/test/repo.git")
+        self.git_out(
+            repo, "config", f"url.{bare}.insteadOf", "https://github.com/test/repo.git"
+        )
+        self.git_out(repo, "push", "-q", "origin", "main")
+        return bare
+
+    def add_git_shim(self):
+        """`git branch -D` scheitert, solange GIT_FAIL_BRANCH_DELETE gesetzt ist."""
+        real_git = shutil.which("git")
+        self.assertTrue(real_git, "git nicht gefunden")
+        shim = os.path.join(self.bin, "git")
+        self._write(
+            shim,
+            "#!/bin/sh\n"
+            'if [ "$1" = "branch" ] && [ "$2" = "-D" ] '
+            '&& [ -n "${GIT_FAIL_BRANCH_DELETE:-}" ]; then\n'
+            '  echo "Branch kann nicht gelöscht werden" >&2\n'
+            "  exit 1\n"
+            "fi\n"
+            f'exec "{real_git}" "$@"\n',
+        )
+        os.chmod(shim, 0o755)
+        return shim
+
+    def gh_env(self, bare, branch):
+        return {
+            "GH_LOG": os.path.join(self.tmp, "gh.log"),
+            "GH_STATE": os.path.join(self.tmp, "gh.state"),
+            "GH_BARE": bare,
+            "GH_HEAD": branch,
+        }
+
+    def gh_calls(self):
+        with open(os.path.join(self.tmp, "gh.log"), encoding="utf-8") as handle:
+            return [
+                json.loads(line) for line in handle.read().splitlines() if line.strip()
+            ]
 
     # -- parse_until
 
@@ -280,6 +422,9 @@ class AutopilotCase(FabricCase):
         )
         with mock.patch.object(autopilot, "head", return_value=HEAD), \
                 mock.patch.object(
+                    autopilot.git, "branch_exists", return_value=True
+                ), \
+                mock.patch.object(
                     autopilot.git, "commit_count", return_value=1
                 ) as count, \
                 mock.patch.object(autopilot, "ensure_clean_main", return_value=True), \
@@ -292,6 +437,7 @@ class AutopilotCase(FabricCase):
         fake, calls = self.shell()
         ticket = self.ticket(no_change=True, base="main", branch="fab/T-1")
         with mock.patch.object(autopilot, "head", return_value=HEAD), \
+                mock.patch.object(autopilot.git, "branch_exists", return_value=True), \
                 mock.patch.object(autopilot.git, "commit_count", return_value=1), \
                 mock.patch.object(
                     autopilot, "ensure_clean_main", return_value=True
@@ -303,6 +449,69 @@ class AutopilotCase(FabricCase):
             self.assertTrue(autopilot.try_accept(ticket))
         clean.assert_called_once_with(os.path.realpath(self.repo))
         self.assertEqual(len(self.called(calls, "fab", "accept")), 1)
+
+    def test_accept_resumes_after_branch_delete_failure(self):
+        """Abbruch nach `pr_merged`; der zweite Lauf über den Autopilot schließt ab."""
+        # setUp hat bereits ein Repo unter self.tmp/repo angelegt; ready_ticket
+        # kopiert dorthin und scheitert an den schreibgeschützten git-Objekten.
+        shutil.rmtree(self.repo)
+        repo, tid, worktree = self.ready_ticket()
+        self.commit_in(worktree, "aenderung.txt", "wert\n")
+        self.passing_verify(worktree)
+        self.ok("verify", tid)
+        self.ok("verdict", tid, "pass", "--from", "ada", "Sieht gut aus")
+        self.ok("handover", tid, "--from", "zap", "Fertig")
+        branch = self.stored(tid)["branch"]
+
+        gh_log = os.path.join(self.tmp, "gh.log")
+        self._write(gh_log, "")
+        stub = os.path.join(self.bin, "gh")
+        self._write(stub, STUB_GH)
+        os.chmod(stub, 0o755)
+        bare = self.setup_origin(repo)
+        self.add_git_shim()
+        env = self.gh_env(bare, branch)
+        self.env.update(env)
+
+        first = self.cli("accept", tid, env=dict(env, GIT_FAIL_BRANCH_DELETE="1"))
+        self.assertNotEqual(first.returncode, 0, first.stdout)
+        ticket = self.stored(tid)
+        self.assertEqual(ticket["status"], "review")
+        self.assertIn("pr_merged", ticket["accept"]["steps"])
+        self.assertFalse(os.path.exists(worktree))
+
+        autopilot.reset()
+        calls = []
+
+        def sh(*args, **kwargs):
+            calls.append(args)
+            if args[:2] == ("fab", "accept"):
+                result = self.cli(*args[1:])
+                return result.returncode, result.stdout + result.stderr
+            return 0, ""
+
+        with mock.patch.object(
+                autopilot, "fab_json", return_value=self.stored(tid)
+            ), \
+                mock.patch.object(autopilot, "_sh", side_effect=sh), \
+                mock.patch.object(
+                    autopilot, "ensure_clean_main", return_value=True
+                ), \
+                mock.patch.object(
+                    autopilot, "check_main", return_value=(True, "", "", 0)
+                ), \
+                mock.patch.object(autopilot, "write_state"):
+            self.assertTrue(autopilot.try_accept(self.stored(tid)))
+
+        self.assertEqual(
+            [args for args in calls if args[:2] == ("fab", "accept")],
+            [("fab", "accept", tid)],
+        )
+        ticket = self.stored(tid)
+        self.assertEqual(ticket["status"], "done")
+        self.assertIn("done", ticket["accept"]["steps"])
+        merges = [call for call in self.gh_calls() if call[:2] == ["pr", "merge"]]
+        self.assertEqual(len(merges), 1)
 
     def test_accept_does_not_run_when_paused(self):
         autopilot.reset()

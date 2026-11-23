@@ -375,11 +375,32 @@ def _conflict(ticket_id, fresh=None):
     )
 
 
+def _comment_key(comment):
+    comment = comment or {}
+    return (comment.get("at"), comment.get("author"), comment.get("text"))
+
+
+def _take_fresh_comments(ticket, fresh):
+    """Inzwischen hinzugekommene Kommentare aus `fresh` übernehmen.
+
+    Schlüssel ist `(at, author, text)`, damit ein paralleler Schreiber seinen
+    Kommentar nicht verliert, ohne eigene Kommentare doppelt einzutragen.
+    """
+    own = [_comment_key(comment) for comment in ticket.get("comments") or []]
+    for comment in fresh.get("comments") or []:
+        key = _comment_key(comment)
+        if key in own:
+            continue
+        ticket.setdefault("comments", []).append(comment)
+        own.append(key)
+
+
 def _commit(ticket, rev):
     with store.locked():
         fresh = store.load(ticket["id"])
         if store.revision(fresh) != rev:
             raise _conflict(ticket["id"], fresh)
+        _take_fresh_comments(ticket, fresh)
         store.save(ticket)
         store.flush_deferred_events()
         index.rebuild()
@@ -1302,7 +1323,10 @@ def _accept_merge_changed(ticket, roster, repo, ref, head):
 
 def _no_change(ticket, repo):
     """Branch ohne Commits über der Basis; dieselbe Basisreferenz wie der Merge-Stand."""
-    return git.commit_count(repo, ticket["base"], ticket["branch"]) == 0
+    if not git.branch_exists(repo, ticket["branch"]):
+        return False
+    ref = git.base_ref(repo, ticket["base"])
+    return git.commit_count(repo, ref, ticket["branch"]) == 0
 
 
 def cmd_handover(args):
@@ -1397,7 +1421,7 @@ def cmd_handover(args):
             repo = ticket["repo"]
             base = ticket["base"]
             try:
-                ref = base
+                ref = git.base_ref(repo, base)
                 tree, files = git.merge_state(repo, ref, ticket["branch"])
             except FabError as exc:
                 reasons.append(str(exc))
@@ -1636,20 +1660,99 @@ def _mark_pr_merged(ticket, url, merged):
     events.append("pr", ticket["id"], "mensch", "", f"PR gemergt: {url}")
 
 
-def _finish_pr_accept(ticket, top, branch_name, base, merged, url):
-    git.push_delete(top, "origin", branch_name)
+def _accept_steps(ticket):
+    """Schrittprotokoll der Abnahme anlegen und liefern."""
+    accept = ticket.get("accept")
+    if not isinstance(accept, dict):
+        accept = {}
+        ticket["accept"] = accept
+    steps = accept.get("steps")
+    if not isinstance(steps, dict):
+        steps = {}
+        accept["steps"] = steps
+    return steps
+
+
+def _accept_step(steps, name, **values):
+    """Einen erfolgreich erledigten Schritt mit Zeitstempel eintragen."""
+    step = {"at": store.now_ms()}
+    step.update(values)
+    steps[name] = step
+    return step
+
+
+def _sync_base(top, base):
+    """Lokale Basis vor dem Push auf origin/<base> nachziehen.
+
+    Rückstände auf origin werden fast-forwarded; eigene Commits werden nur
+    rebased, wenn sie ausschließlich unter `.fabric/` liegen. Fremde lokale
+    Commits brechen mit FabError ab.
+    """
+    git.fetch(top)
+    remote = git.remote_ref(top, "origin", base)
+    if not remote:
+        return git.head(top)
+    local = git.head(top)
+    if remote == local:
+        return local
+    if git.is_ancestor(top, local, remote):
+        git.merge_ff_only(top, f"origin/{base}")
+        return git.head(top)
+    paths = git.diff_range_paths(top, remote, local)
+    fremd = [
+        path
+        for path in paths
+        if not (path == ".fabric" or path.startswith(".fabric/"))
+    ]
+    if fremd:
+        raise FabError(
+            f"{base}: fremde lokale Commits über origin/{base}; nichts gepusht. "
+            f"Nur Commits unter .fabric/ werden automatisch rebased:\n- "
+            + "\n- ".join(fremd)
+        )
+    git.rebase(top, f"origin/{base}")
+    return git.head(top)
+
+
+def _accept_clean(ticket, top, branch_name, remote="if-present"):
+    """Idempotent aufräumen: Remote-Branch, Sessions, Worktree, lokaler Branch.
+
+    `remote="always"` löscht den Remote-Branch auch ohne lokale Tracking-Referenz
+    (PR-Weg; `push_delete` toleriert einen bereits fehlenden Branch).
+    """
+    if remote == "always" or (
+        remote == "if-present" and git.remote_ref(top, "origin", branch_name)
+    ):
+        git.push_delete(top, "origin", branch_name)
     ended = _end_sessions(ticket)
     git.remove_worktree(top, ticket.get("worktree"))
     if git.branch_exists(top, branch_name):
         git.delete_branch(top, branch_name)
-    ticket["status"] = "done"
-    ticket.pop("stall", None)
-    ticket["waiting"] = []
-    events.append(
-        "accept", ticket["id"], "mensch", "",
-        f"{branch_name} → {base} via PR {url} @ {_short(merged)}",
-    )
     return ended
+
+
+
+def _accept_merge_gate(ticket, roster, top, ref, review_head, rev):
+    """Merge-Stand gegen den bei handover geprüften Tree prüfen.
+
+    Weicht er ab, wird der Stand neu geprüft (Urteil verworfen, Prüferin oder
+    Zuständiger geweckt) und der Aufrufer bricht ab. Liefert die Revision nach
+    dem Commit des neuen Stands; `review_head` darf leer sein.
+    """
+    expected = (ticket.get("merge") or {}).get("tree")
+    tree, conflict_files = git.merge_state(top, ref, ticket["branch"])
+    if conflict_files or not expected or tree != expected:
+        merge, text, wecken = _accept_merge_changed(
+            ticket, roster, top, ref, review_head
+        )
+        rev = _commit(ticket, rev)
+        _run_after_commit(ticket, rev, wecken)
+        raise store.PersistError(
+            f"{ticket['id']}: Merge-Stand mit {ref} weicht vom geprüften Tree "
+            f"{_short(expected)} ab (jetzt {_short(tree)}); nichts gepusht, nicht "
+            f"abgenommen. {text}"
+        )
+    return rev
 
 
 def cmd_accept(args):
@@ -1657,6 +1760,9 @@ def cmd_accept(args):
     ticket = store.load(args.id)
     rev = _new_rev(ticket)
     with store.deferred_events():
+        if ticket["status"] == "done":
+            print(f"{ticket['id']}: bereits angenommen")
+            return 0
         if ticket["status"] != "review":
             raise FabError(
                 f"{ticket['id']}: Abnahme nur im Status review (jetzt {ticket['status']}); "
@@ -1667,102 +1773,336 @@ def cmd_accept(args):
             raise FabError(
                 f"{ticket['id']}: Abnahme verweigert: {_children_reason(children)}"
             )
-        pr = ticket.get("pr") or {}
-        pr_merged = pr.get("state") == "merged"
         repo = ticket.get("repo")
+        base = ticket.get("base")
         branch_name = ticket.get("branch")
         worktree = ticket.get("worktree")
-        for field, value in (("repo", repo), ("branch", branch_name), ("worktree", worktree)):
+        for field, value in (
+            ("repo", repo), ("base", base), ("branch", branch_name),
+            ("worktree", worktree),
+        ):
             if not value:
                 raise FabError(f"{ticket['id']}: Feld {field} fehlt; Merge nicht möglich")
         top = git.toplevel(repo)
         if not top:
             raise FabError(f"{ticket['id']}: {repo} ist kein Git-Repository")
-        no_change = bool(not pr_merged and _no_change(ticket, top))
-        if not pr_merged and not no_change:
-            review_worktree = ticket.get("worktree")
-            review_head = git.head(review_worktree) if review_worktree else ""
-            verdict = ticket.get("verdict") or {}
+        steps = _accept_steps(ticket)
+        review_head = git.head(worktree) if worktree else ""
+        merge_gated = False
+        url = (ticket.get("pr") or {}).get("url") or ""
+        if not url:
+            for name in ("pushed", "pr_merged"):
+                url = (steps.get(name) or {}).get("url") or ""
+                if url:
+                    break
+        pr_state = (ticket.get("pr") or {}).get("state")
+        merged_proof = "pr_merged" in steps or pr_state == "merged"
+        branch_local = git.branch_exists(top, branch_name)
+        if not branch_local and not url and not merged_proof:
+            raise FabError(
+                f"{ticket['id']}: Branch {branch_name} existiert nicht und kein PR "
+                f"ist gemergt; nichts abgenommen"
+            )
+        base_ref = git.base_ref(top, base)
+        no_change = bool(
+            branch_local
+            and not url
+            and "pr_merged" not in steps
+            and pr_state != "merged"
+            and git.commit_count(top, base_ref, branch_name) == 0
+        )
+        github = bool(git.github_remote(top)) and git.gh_authenticated(top)
+        pr_path = bool(url) or github
+        if not pr_path and args.pr_only and not no_change:
+            raise FabError(
+                f"{ticket['id']}: --pr-only braucht einen GitHub-Remote (origin) und "
+                f"eine gh-Anmeldung (gh auth status)"
+            )
+
+        if no_change:
+            ended = _accept_clean(ticket, top, branch_name)
+            _accept_step(steps, "cleaned")
+            rev = _commit(ticket, rev)
+            ticket["status"] = "done"
+            ticket.pop("stall", None)
+            ticket["waiting"] = []
+            ticket["no_change"] = True
+            text = (
+                f"ohne Änderung abgeschlossen: {branch_name} hat keine Commits "
+                f"über {base}"
+            )
+            _add_comment(ticket, "mensch", text)
+            events.append("accept_noop", ticket["id"], "mensch", "", text)
+            _accept_step(steps, "done")
+            rev = _commit(ticket, rev)
+            print(
+                f"{ticket['id']}: ohne Änderung abgeschlossen; Worktree und Branch entfernt"
+                + (f"; {len(ended)} Session(s) beendet" if ended else "")
+            )
+            _autostart(_unblocked_by(ticket["id"]))
+            return 0
+
+        if pr_path:
+            view = None
+            already_merged = "pr_merged" in steps or pr_state == "merged"
+            if not already_merged and url:
+                # Vor jedem Push und vor dem Merge-Stand-Gate: GitHub kann den
+                # PR bereits gemergt haben (Altticket wie T-115). Dann ist der
+                # alte Tree nicht mehr maßgeblich und ein neues Urteil unnötig.
+                view = git.gh_pr_view(repo, url)
+                if view["state"] == "MERGED":
+                    already_merged = True
+                elif view["state"] != "OPEN":
+                    raise FabError(
+                        f"{ticket['id']}: PR {url} ist "
+                        f"{view['state'] or 'unbekannt'}, nicht gemergt"
+                    )
+            if not already_merged:
+                if not branch_local:
+                    raise FabError(
+                        f"{ticket['id']}: Branch {branch_name} existiert nicht und "
+                        f"der PR ist nicht gemergt; nichts abgenommen"
+                    )
+                if not review_head:
+                    raise FabError(
+                        f"{ticket['id']}: HEAD des Worktrees {worktree or '—'} ist "
+                        f"nicht lesbar; Urteil nicht prüfbar"
+                    )
+                verdict = ticket.get("verdict") or {}
+                if verdict.get("head") != review_head:
+                    raise FabError(
+                        f"{ticket['id']}: Urteil gilt für HEAD "
+                        f"{_short(verdict.get('head'))}, Worktree-HEAD ist "
+                        f"{_short(review_head)}; bitte erneut prüfen"
+                    )
+            pushed = steps.get("pushed")
+            pushed_valid = False
+            if not already_merged and isinstance(pushed, dict) and branch_local:
+                try:
+                    current_head = git.resolve_head(top, branch_name, worktree)
+                except FabError:
+                    current_head = ""
+                pushed_valid = bool(current_head) and current_head == pushed.get("head")
+            if not already_merged and not pushed_valid:
+                if not branch_local:
+                    raise FabError(
+                        f"{ticket['id']}: Branch {branch_name} existiert nicht lokal; "
+                        f"nichts gepusht"
+                    )
+                local_base = _sync_base(top, base)
+                rev = _accept_merge_gate(
+                    ticket, roster, top, base_ref, review_head, rev
+                )
+                merge_gated = True
+                remote_base = git.remote_ref(top, "origin", base)
+                if not remote_base or remote_base != local_base:
+                    git.push(top, "origin", base)
+                git.push(top, "origin", branch_name)
+                if not url:
+                    url = git.gh_pr_url(repo, branch_name) or git.gh_pr_create(
+                        repo,
+                        f"{ticket['id']}: {ticket['title']}",
+                        _pr_body(ticket, branch_name),
+                        base,
+                        branch_name,
+                    )
+                ticket["pr"] = {"url": url, "state": "open"}
+                _add_comment(ticket, "mensch", f"PR geöffnet: {url}")
+                events.append(
+                    "pr", ticket["id"], "mensch", "", f"PR geöffnet: {url}"
+                )
+                _accept_step(
+                    steps,
+                    "pushed",
+                    base=git.rev_parse(top, base_ref),
+                    head=git.resolve_head(top, branch_name, worktree),
+                    url=url,
+                )
+                rev = _commit(ticket, rev)
+            if args.pr_only:
+                if already_merged:
+                    print(f"{ticket['id']}: PR ist bereits gemergt: {url}")
+                else:
+                    print(f"{ticket['id']}: PR geöffnet: {url}")
+                return 0
+
+            if "pr_merged" not in steps:
+                if not url:
+                    raise FabError(
+                        f"{ticket['id']}: keine PR-URL für den Merge-Nachweis"
+                    )
+                if view is None:
+                    view = git.gh_pr_view(repo, url)
+                if view["state"] == "MERGED":
+                    commit = view["commit"] or (
+                        (ticket.get("pr") or {}).get("commit") or ""
+                    )
+                    _sync_base(top, base)
+                elif view["state"] == "OPEN":
+                    _sync_base(top, base)
+                    if not merge_gated:
+                        rev = _accept_merge_gate(
+                            ticket, roster, top, base_ref, review_head, rev
+                        )
+                        merge_gated = True
+                    try:
+                        git.gh_pr_merge(repo, url)
+                    except FabError as exc:
+                        _pr_failure(ticket, str(exc), url)
+                        rev = _commit(ticket, rev)
+                        raise
+                    view = git.gh_pr_view(repo, url)
+                    if view["state"] != "MERGED":
+                        raise FabError(
+                            f"{ticket['id']}: PR {url} ist {view['state']}, "
+                            f"nicht gemergt"
+                        )
+                    commit = view["commit"] or (
+                        (ticket.get("pr") or {}).get("commit") or ""
+                    )
+                    _sync_base(top, base)
+                else:
+                    raise FabError(
+                        f"{ticket['id']}: PR {url} ist {view['state']}, nicht gemergt"
+                    )
+                report = preview.check_mods(top)
+                if not report["ok"]:
+                    # Der Merge-Commit von GitHub ist das Ziel; nur wenn er
+                    # lokal (noch) nicht erreichbar ist, die Spitze der Basis.
+                    target = commit or ""
+                    if not target or not git.is_ancestor(top, target, "HEAD"):
+                        target = git.rev_parse(top, base)
+                    git.revert(top, target)
+                    git.push(top, "origin", base)
+                    _accept_check_failed(ticket, report)
+                    rev = _commit(ticket, rev)
+                    raise store.PersistError(
+                        f"{ticket['id']}: herdr-app check rot; Merge "
+                        f"{_short(target)} als Revert nach origin/{base} gepusht"
+                    )
+                _mark_pr_merged(ticket, url, commit)
+                _accept_step(steps, "pr_merged", url=url, commit=commit)
+                rev = _commit(ticket, rev)
+            else:
+                step = steps["pr_merged"]
+                commit = step.get("commit") or (
+                    (ticket.get("pr") or {}).get("commit") or ""
+                )
+                url = step.get("url") or url
+
+            ended = []
+            if "cleaned" not in steps:
+                try:
+                    ended = _accept_clean(
+                        ticket, top, branch_name, remote="always"
+                    )
+                except FabError as exc:
+                    _pr_cleanup_failure(ticket, str(exc), url)
+                    rev = _commit(ticket, rev)
+                    raise
+                _accept_step(steps, "cleaned")
+                rev = _commit(ticket, rev)
+
+            if "done" not in steps:
+                try:
+                    view = git.gh_pr_view(repo, url)
+                except FabError as exc:
+                    raise FabError(
+                        f"{ticket['id']}: Merge-Nachweis von GitHub für {url} "
+                        f"fehlt: {exc}"
+                    )
+                if view["state"] != "MERGED":
+                    raise FabError(
+                        f"{ticket['id']}: Merge-Nachweis von GitHub für {url} "
+                        f"fehlt (State {view['state']})"
+                    )
+                number = view["number"]
+                commit = commit or view["commit"] or (
+                    (ticket.get("pr") or {}).get("commit") or ""
+                )
+                ticket["status"] = "done"
+                ticket.pop("stall", None)
+                ticket.pop("no_change", None)
+                ticket["waiting"] = []
+                events.append(
+                    "accept", ticket["id"], "mensch", "",
+                    f"{branch_name} → {base} via PR {url} @ {_short(commit)}",
+                )
+                _accept_step(steps, "done")
+                rev = _commit(ticket, rev)
+                hint_wakes, rev = _wake_hints_after_commit(ticket, rev, roster)
+                target = f"PR #{number} ({url})" if number else f"PR {url}"
+                print(
+                    f"{ticket['id']}: angenommen, {branch_name} über {target} in "
+                    f"{base} gemergt ({_short(commit)}); Worktree und Branch entfernt"
+                    + (f"; {len(ended)} Session(s) beendet" if ended else "")
+                )
+                _print_wake_results(hint_wakes)
+            _autostart(_unblocked_by(ticket["id"]))
+            return 0
+
+        review_worktree = ticket.get("worktree")
+        merged = (steps.get("merged") or {}).get("commit") or ""
+        if "merged" not in steps:
             if not review_head:
                 raise FabError(
                     f"{ticket['id']}: HEAD des Worktrees {review_worktree or '—'} ist "
                     f"nicht lesbar; Urteil nicht prüfbar"
                 )
+            verdict = ticket.get("verdict") or {}
             if verdict.get("head") != review_head:
                 raise FabError(
                     f"{ticket['id']}: Urteil gilt für HEAD {_short(verdict.get('head'))}, "
                     f"Worktree-HEAD ist {_short(review_head)}; bitte erneut prüfen"
                 )
-        failure = None
-        if pr_merged and not no_change:
-            merged = (ticket.get("pr") or {}).get("commit") or git.head(top)
-            url = ticket["pr"]["url"]
-            try:
-                ended = _finish_pr_accept(
-                    ticket, top, branch_name, ticket["base"], merged, url,
-                )
-            except store.PersistError:
-                raise
-            except FabError as exc:
-                _pr_cleanup_failure(ticket, str(exc), url)
-                rev = _commit(ticket, rev)
-                failure = exc
-            else:
-                rev = _commit(ticket, rev)
-                hint_wakes, rev = _wake_hints_after_commit(ticket, rev, roster)
-                print(
-                    f"{ticket['id']}: angenommen, {branch_name} über PR {url} in "
-                    f"{ticket['base']} gemergt ({_short(merged)}); Worktree und "
-                    f"Branch entfernt"
-                    + (f"; {len(ended)} Session(s) beendet" if ended else "")
-                )
-                _print_wake_results(hint_wakes)
-        elif not no_change:
             here = git.branch(top)
-            if here != ticket["base"]:
+            if here != base:
                 raise FabError(
-                    f"Haupt-Checkout {top} steht auf {here}, nicht auf {ticket['base']}; "
-                    f"bitte auf {ticket['base']} wechseln"
+                    f"Haupt-Checkout {top} steht auf {here}, nicht auf {base}; "
+                    f"bitte auf {base} wechseln"
                 )
             if git.dirty(top):
                 overlap = sorted(
                     set(git.pending_paths(top))
-                    & set(git.diff_paths(top, ticket["base"], branch_name))
+                    & set(git.diff_paths(top, base, branch_name))
                 )
                 if overlap:
                     raise FabError(
                         f"Haupt-Checkout {top} ist nicht sauber: uncommittete Änderungen "
                         f"an Dateien, die {branch_name} ändert:\n- " + "\n- ".join(overlap)
                     )
-            pr_ready = bool(git.github_remote(top)) and git.gh_authenticated(top)
-            if args.pr_only and not pr_ready:
-                raise FabError(
-                    f"{ticket['id']}: --pr-only braucht einen GitHub-Remote (origin) und "
-                    f"eine gh-Anmeldung (gh auth status)"
-                )
-            if not pr_ready:
-                before = git.head(top)
-                expected = (ticket.get("merge") or {}).get("tree")
-                base_ref = ticket["base"]
-                tree, conflict_files = git.merge_state(top, base_ref, branch_name)
+            before = git.head(top)
+            expected = (ticket.get("merge") or {}).get("tree")
+            if (
+                expected
+                and git.branch_exists(top, branch_name)
+                and git.is_ancestor(top, branch_name, base)
+                and git.tree_sha(top, base) == expected
+            ):
+                merged = git.head(top)
+                _accept_step(steps, "merged", commit=merged)
+                rev = _commit(ticket, rev)
+            else:
+                ref = base_ref
+                tree, conflict_files = git.merge_state(top, ref, branch_name)
                 if conflict_files or not expected or tree != expected:
                     merge, text, wecken = _accept_merge_changed(
-                        ticket, roster, top, base_ref, review_head
+                        ticket, roster, top, ref, review_head
                     )
                     rev = _commit(ticket, rev)
                     _run_after_commit(ticket, rev, wecken)
                     raise store.PersistError(
-                        f"{ticket['id']}: Merge-Stand mit {base_ref} weicht vom "
-                        f"geprüften Tree {_short(expected)} ab (jetzt "
-                        f"{_short(tree)}); nicht abgenommen. {text}"
+                        f"{ticket['id']}: Merge-Stand mit {ref} weicht vom geprüften "
+                        f"Tree {_short(expected)} ab (jetzt {_short(tree)}); nicht "
+                        f"abgenommen. {text}"
                     )
                 merged = git.merge_no_ff(
                     top, branch_name, f"Merge {branch_name}: {ticket['title']}"
                 )
-                if git.tree_sha(top, ticket["base"]) != expected:
+                if git.tree_sha(top, base) != expected:
                     git.reset_keep(top, before)
                     raise store.PersistError(
-                        f"{ticket['id']}: der gemergte Tree auf {ticket['base']} "
+                        f"{ticket['id']}: der gemergte Tree auf {base} "
                         f"weicht vom geprüften merge_tree {_short(expected)} ab; "
                         f"Merge auf {_short(before)} zurückgesetzt"
                     )
@@ -1775,135 +2115,42 @@ def cmd_accept(args):
                         f"{ticket['id']}: herdr-app check rot; "
                         f"Merge auf {_short(before)} zurückgesetzt"
                     )
-                ended = _end_sessions(ticket)
-                git.remove_worktree(top, worktree)
-                git.delete_branch(top, branch_name)
-                ticket["status"] = "done"
-                ticket.pop("stall", None)
-                ticket["waiting"] = []
-                events.append(
-                    "accept", ticket["id"], "mensch", "",
-                    f"{branch_name} → {ticket['base']} @ {_short(merged)}",
-                )
+                _accept_step(steps, "merged", commit=merged)
                 rev = _commit(ticket, rev)
-                hint_wakes, rev = _wake_hints_after_commit(ticket, rev, roster)
-                print(
-                    f"{ticket['id']}: angenommen, {branch_name} in {ticket.get('base')} gemergt "
-                    f"({_short(merged)}); Worktree und Branch entfernt"
-                    + (f"; {len(ended)} Session(s) beendet" if ended else "")
-                )
-                _print_wake_results(hint_wakes)
-                issue = ticket.get("issue") or {}
-                if isinstance(issue, dict) and issue.get("number"):
-                    print(
-                        f"Issue #{issue['number']} bleibt offen: "
-                        f"kein PR-Merge ohne GitHub-Remote/gh"
-                    )
-            else:
-                base = ticket["base"]
-                local_base = git.head(top)
-                git.fetch(top)
-                remote_base = git.remote_ref(top, "origin", base)
-                if remote_base and not git.is_ancestor(top, remote_base, base):
-                    raise FabError(
-                        f"{ticket['id']}: {base} ist nicht fast-forward-fähig zu "
-                        f"origin/{base}; nichts gepusht."
-                    )
-                expected = (ticket.get("merge") or {}).get("tree")
-                # Geprüft wird wie bei handover gegen die lokale Basis. Sie wird
-                # gleich nach origin gepusht; origin darf nur hinter ihr liegen.
-                ref = base
-                tree, conflict_files = git.merge_state(top, ref, branch_name)
-                if conflict_files or not expected or tree != expected:
-                    merge, text, wecken = _accept_merge_changed(
-                        ticket, roster, top, ref, review_head
-                    )
-                    rev = _commit(ticket, rev)
-                    _run_after_commit(ticket, rev, wecken)
-                    raise store.PersistError(
-                        f"{ticket['id']}: Merge-Stand mit {ref} weicht vom geprüften "
-                        f"Tree {_short(expected)} ab (jetzt {_short(tree)}); nichts "
-                        f"gepusht, nicht abgenommen. {text}"
-                    )
-                if not remote_base or remote_base != local_base:
-                    git.push(top, "origin", base)
-                git.push(top, "origin", branch_name)
-                url = git.gh_pr_url(repo, branch_name) or git.gh_pr_create(
-                    repo,
-                    f"{ticket['id']}: {ticket['title']}",
-                    _pr_body(ticket, branch_name),
-                    base,
-                    branch_name,
-                )
-                ticket["pr"] = {"url": url, "state": "open"}
-                _add_comment(ticket, "mensch", f"PR geöffnet: {url}")
-                events.append("pr", ticket["id"], "mensch", "", f"PR geöffnet: {url}")
-                rev = _commit(ticket, rev)
-                if args.pr_only:
-                    print(f"{ticket['id']}: PR geöffnet: {url}")
-                    return 0
-                try:
-                    git.gh_pr_merge(repo, url)
-                    git.fetch(top)
-                    git.merge_ff_only(top, f"origin/{base}")
-                    merged = git.head(top)
-                    report = preview.check_mods(top)
-                    if not report["ok"]:
-                        git.revert(top, merged)
-                        git.push(top, "origin", base)
-                        _accept_check_failed(ticket, report)
-                        rev = _commit(ticket, rev)
-                        raise store.PersistError(
-                            f"{ticket['id']}: herdr-app check rot; Merge "
-                            f"{_short(merged)} als Revert nach origin/{base} gepusht"
-                        )
-                    _mark_pr_merged(ticket, url, merged)
-                    ended = _finish_pr_accept(
-                        ticket, top, branch_name, base, merged, url
-                    )
-                    rev = _commit(ticket, rev)
-                    hint_wakes, rev = _wake_hints_after_commit(ticket, rev, roster)
-                    print(
-                        f"{ticket['id']}: angenommen, {branch_name} über PR {url} in {base} "
-                        f"gemergt ({_short(merged)}); Worktree und Branch entfernt"
-                        + (f"; {len(ended)} Session(s) beendet" if ended else "")
-                    )
-                    _print_wake_results(hint_wakes)
-                except store.PersistError:
-                    raise
-                except FabError as exc:
-                    if (ticket.get("pr") or {}).get("state") == "merged":
-                        _pr_cleanup_failure(ticket, str(exc), url)
-                    else:
-                        _pr_failure(ticket, str(exc), url)
-                    rev = _commit(ticket, rev)
-                    failure = exc
-        else:
-            ended = _end_sessions(ticket)
-            git.remove_worktree(top, worktree)
-            if git.branch_exists(top, branch_name):
-                git.delete_branch(top, branch_name)
-            if git.remote_ref(top, "origin", branch_name):
-                git.push_delete(top, "origin", branch_name)
+
+        ended = []
+        if "cleaned" not in steps:
+            ended = _accept_clean(ticket, top, branch_name)
+            _accept_step(steps, "cleaned")
+            rev = _commit(ticket, rev)
+
+        if "done" not in steps:
             ticket["status"] = "done"
             ticket.pop("stall", None)
+            ticket.pop("no_change", None)
             ticket["waiting"] = []
-            ticket["no_change"] = True
-            text = (
-                f"ohne Änderung abgeschlossen: {branch_name} hat keine Commits "
-                f"über {ticket['base']}"
+            events.append(
+                "accept", ticket["id"], "mensch", "",
+                f"{branch_name} → {base} @ {_short(merged)}",
             )
-            _add_comment(ticket, "mensch", text)
-            events.append("accept_noop", ticket["id"], "mensch", "", text)
+            _accept_step(steps, "done")
             rev = _commit(ticket, rev)
+            hint_wakes, rev = _wake_hints_after_commit(ticket, rev, roster)
             print(
-                f"{ticket['id']}: ohne Änderung abgeschlossen; Worktree und Branch entfernt"
+                f"{ticket['id']}: angenommen, {branch_name} in {base} gemergt "
+                f"({_short(merged)}); Worktree und Branch entfernt"
                 + (f"; {len(ended)} Session(s) beendet" if ended else "")
             )
-        if failure is not None:
-            raise failure
-    _autostart(_unblocked_by(ticket["id"]))
-    return 0
+            _print_wake_results(hint_wakes)
+            issue = ticket.get("issue") or {}
+            if isinstance(issue, dict) and issue.get("number"):
+                print(
+                    f"Issue #{issue['number']} bleibt offen: "
+                    f"kein PR-Merge ohne GitHub-Remote/gh"
+                )
+        _autostart(_unblocked_by(ticket["id"]))
+        return 0
+
 
 
 def cmd_reject(args):

@@ -73,6 +73,37 @@ def _wait_section(waits):
     return lines
 
 
+_ACCEPT_LABELS = {
+    "pushed": "gepusht",
+    "pr_merged": "PR gemergt",
+    "merged": "gemergt",
+    "cleaned": "aufgeräumt",
+    "done": "fertig",
+}
+
+
+def _accept_line(ticket):
+    """Fortschritt der Abnahme als eine Zeile; None ohne Schrittprotokoll."""
+    steps = ((ticket.get("accept") or {}).get("steps") or {})
+    if not steps:
+        return None
+    if (
+        "pushed" in steps
+        or "pr_merged" in steps
+        or (ticket.get("pr") or {}).get("url")
+    ):
+        order = ("pushed", "pr_merged", "cleaned", "done")
+    elif "merged" in steps:
+        order = ("merged", "cleaned", "done")
+    else:
+        order = ("cleaned", "done")
+    parts = [
+        f"{_ACCEPT_LABELS[name]} {'✓' if name in steps else '…'}"
+        for name in order
+    ]
+    return "Abnahme: " + " · ".join(parts)
+
+
 def ticket_text(ticket, children=None, cost=None, waits=None, events=None):
     lines = [f"# {ticket['id']} {ticket['title']}", ""]
     meta = [
@@ -94,6 +125,9 @@ def ticket_text(ticket, children=None, cost=None, waits=None, events=None):
             f"Schritt {flow['step']}"
         )
     lines.extend(meta)
+    accept_line = _accept_line(ticket)
+    if accept_line:
+        lines.append(accept_line)
     if ticket.get("waiting"):
         lines.append("Wartet auf: " + ", ".join(ticket["waiting"]))
     if ticket.get("blocked_by"):

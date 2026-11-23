@@ -51,6 +51,8 @@ def main_toplevel(path):
 
 
 def head(path):
+    if not path or not os.path.isdir(path):
+        return ""
     result = git(["rev-parse", "HEAD"], path)
     return result.stdout.strip() if result.returncode == 0 else ""
 
@@ -132,6 +134,15 @@ def diff_paths(repo, base, branch_name):
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip() or "unbekannter Fehler"
         raise FabError(f"Dateien von {branch_name} sind nicht lesbar: {detail}")
+    return [name for name in result.stdout.split("\0") if name]
+
+
+def diff_range_paths(repo, older, newer):
+    """Dateien zwischen zwei Commits (`older` nach `newer`); FabError bei Fehler."""
+    result = git(["diff", "--name-only", "-z", older, newer], repo)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip() or "unbekannter Fehler"
+        raise FabError(f"git diff {older} {newer} ist fehlgeschlagen: {detail}")
     return [name for name in result.stdout.split("\0") if name]
 
 
@@ -537,6 +548,19 @@ def fetch(repo, remote="origin"):
         raise FabError(f"git fetch {remote} ist fehlgeschlagen: {detail}")
 
 
+def base_ref(repo, base):
+    """Die eine Basisreferenz für handover und accept: lokal, sonst origin/<base>."""
+    result = git(["rev-parse", "--verify", f"{base}^{{commit}}"], repo)
+    if result.returncode == 0 and result.stdout.strip():
+        return base
+    remote = remote_ref(repo, "origin", base)
+    if remote:
+        return f"origin/{base}"
+    raise FabError(
+        f"Basis {base} ist weder lokal noch als origin/{base} vorhanden"
+    )
+
+
 def remote_ref(repo, remote, branch_name):
     result = git(
         ["rev-parse", "--verify", f"refs/remotes/{remote}/{branch_name}"], repo
@@ -566,6 +590,16 @@ def push_delete(repo, remote, branch_name):
         )
 
 
+def rebase(repo, upstream):
+    """`git rebase upstream`; bei Fehler abbrechen und FabError."""
+    result = git(["rebase", upstream], repo, timeout=PUSH_TIMEOUT)
+    if result.returncode == 0:
+        return
+    git(["rebase", "--abort"], repo, timeout=PUSH_TIMEOUT)
+    detail = (result.stderr or result.stdout).strip() or "unbekannter Fehler"
+    raise FabError(f"git rebase {upstream} ist fehlgeschlagen: {detail}")
+
+
 def merge_ff_only(repo, ref):
     result = git(["merge", "--ff-only", ref], repo, timeout=PUSH_TIMEOUT)
     if result.returncode != 0:
@@ -585,6 +619,38 @@ def gh_pr_state(repo, url):
     if result is None or result.returncode != 0:
         return ""
     return result.stdout.strip()
+
+
+def gh_pr_view(repo, url):
+    """PR-Ansicht von GitHub: state, number und Merge-Commit.
+
+    Liefert `{"state": "MERGED"|"OPEN"|"CLOSED"|..., "number": int|None,
+    "commit": oid|""}`. Ohne gh, bei gh-Fehler oder ohne gültiges JSON FabError.
+    """
+    result = _gh(repo, ["pr", "view", url, "--json", "state,number,mergeCommit"])
+    if result is None:
+        raise FabError("gh ist nicht installiert; PR-Zustand nicht lesbar")
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip() or "unbekannter Fehler"
+        raise FabError(f"PR {url} ist nicht lesbar: {detail}")
+    try:
+        payload = json.loads(result.stdout or "null")
+    except ValueError:
+        raise FabError(f"PR {url}: gh lieferte kein gültiges JSON")
+    if not isinstance(payload, dict):
+        raise FabError(f"PR {url}: gh lieferte kein gültiges JSON")
+    number = payload.get("number")
+    if not isinstance(number, int) or isinstance(number, bool):
+        number = None
+    merge = payload.get("mergeCommit")
+    commit = ""
+    if isinstance(merge, dict):
+        commit = str(merge.get("oid") or "")
+    return {
+        "state": str(payload.get("state") or ""),
+        "number": number,
+        "commit": commit,
+    }
 
 
 def gh_pr_create(repo, title, body, base, head):
