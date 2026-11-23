@@ -18,9 +18,9 @@ export function renderSwitcher(app, cx, t) {
   const current = state();
   return h_flex()
     .size_full()
-    .pl(6)
-    .pr(4)
-    .gap(2)
+    .pl(S.s)
+    .pr(S.xs)
+    .gap(S.xs)
     .items_center()
     .justify_end()
     .bg(t.chrome)

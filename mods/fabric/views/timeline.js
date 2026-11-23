@@ -22,25 +22,24 @@ function legend(t, rows) {
 
 function scopeBar(app, cx, t, selected) {
   const all = app.timelineAll || !selected;
-  const pick = (value) => (pickCx) => {
-    app.timelineAll = value;
-    pickCx.notify();
-  };
-  return h_flex().flex_none().w_full().items_center().gap(S.xs).px(S.m).pt(S.s).flex_wrap()
-    .child(ui.chip(t, "Alle", all ? t.accent : null, "fabric-timeline-all", {
-      tooltip: "Ereignisse aller Tickets",
-      onClick: pick(true),
+  const items = [{ value: "all", label: "Alle" }];
+  if (selected) items.push({ value: selected, label: selected });
+  return h_flex().flex_none().w_full().items_center().gap(S.s).px(S.m).pt(S.s).flex_wrap()
+    .child(ui.tabs(t, {
+      id: "fabric-timeline-scope",
+      items,
+      value: all ? "all" : selected,
+      onPick: (value) => {
+        app.timelineAll = value === "all";
+        cx.notify();
+      },
     }))
-    .when(Boolean(selected), (el) => el.child(ui.chip(t, selected, all ? null : t.accent, "fabric-timeline-scope", {
-      tooltip: "Nur dieses Ticket",
-      onClick: pick(false),
-    })))
     .child(div().flex_1())
     .child(div().flex_none().text_size(T.xs).text_color(t.dim).child("neueste oben"));
 }
 
 function dayHead(t, day) {
-  return h_flex().w_full().items_center().gap(S.s).px(S.m).pt(S.m).pb(2)
+  return h_flex().w_full().items_center().gap(S.s).px(S.m).pt(S.m).pb(S.xs)
     .child(div().flex_none().text_size(T.xs).font_semibold().text_color(t.dim).child(day.label))
     .child(div().flex_1().h(1).bg(t.border));
 }
@@ -56,7 +55,7 @@ function eventRow(app, cx, t, row, key) {
     .items_stretch()
     .gap(S.s)
     .px(S.m)
-    .py(5)
+    .py(S.s)
     .when(open, (el) => el
       .cursor_pointer()
       .hover((style) => style.bg(t.hover))
@@ -76,7 +75,7 @@ function eventRow(app, cx, t, row, key) {
         .child(div().absolute().right(-3).bottom(-3).size(9).rounded(5)
           .bg(kind).border_2().border_color(t.surface)))
       .child(div().w(1).flex_1().bg(t.border)))
-    .child(v_flex().flex_1().min_w(0).gap(2)
+    .child(v_flex().flex_1().min_w(0).gap(S.xs)
       .child(h_flex().w_full().min_w(0).gap(S.xs).items_center()
         .child(div().flex_none().max_w(96).truncate().text_size(T.s).font_semibold()
           .text_color(t.foreground).child(row.actor || "—"))
@@ -96,7 +95,7 @@ export function renderTimelinePanel(app, cx, t) {
   const all = app.timelineAll || !selected;
   const feed = model.timelineFeed(app.events, { ticket: all ? null : selected });
   const rows = [
-    ui.header(t, "Zeitverlauf", [
+    ui.header(t, model.pageWord("timeline"), [
       div().text_size(T.xs).text_color(t.dim)
         .child(`${feed.total} Ereignis${feed.total === 1 ? "" : "se"}`),
       ui.iconButton(t, {
@@ -109,8 +108,10 @@ export function renderTimelinePanel(app, cx, t) {
   ];
   const note = ui.notice(t, app.flash?.text, app.flash?.level);
   if (note) rows.push(note);
+  const loadNote = ui.notice(t, app.loadError);
+  if (loadNote) rows.push(loadNote);
   if (!app.index) {
-    rows.push(ui.emptyState(t, { title: "Zeitverlauf", text: app.loadError ?? model.EMPTY_HINT }));
+    if (!app.loadError) rows.push(ui.emptyState(t, { title: "Zeitverlauf", text: model.EMPTY_HINT }));
     return ui.page(t, rows);
   }
 
@@ -118,7 +119,9 @@ export function renderTimelinePanel(app, cx, t) {
   if (!feed.total) {
     const action = all
       ? null
-      : ui.chip(t, "Alle Ereignisse", t.accent, "fabric-timeline-all", {
+      : ui.button(t, {
+        id: "fabric-timeline-all",
+        label: "Alle Ereignisse",
         onClick: (clickCx) => { app.timelineAll = true; clickCx.notify(); },
       });
     rows.push(scope);

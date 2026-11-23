@@ -26,6 +26,21 @@ export const SIZE = {
   avatar: 24,
   nav: 34,
   sidebar: 208,
+  listPane: 260,
+  inspector: 320,
+  modal: 520,
+  modalWide: 580,
+  drawer: 420,
+};
+
+/** Einzige Alpha-Stufen für Theme-Farben; Views tönen ausschließlich hiermit. */
+export const ALPHA = {
+  clear: "00",
+  faint: "14",
+  soft: "1c",
+  tint: "24",
+  border: "55",
+  veil: "b8",
 };
 
 export const ICON = (name) => `mods/fabric/icons/${name}.svg`;
@@ -156,6 +171,27 @@ export function header(t, title, right = [], { iconName = null, subtitle = null,
     .children(right);
 }
 
+/** Kopf einer rechten Detailspalte in Master-Detail-Seiten. */
+export function detailHeader(t, title, right = [], { subtitle = null } = {}) {
+  return h_flex()
+    .flex_none()
+    .w_full()
+    .px(SPACE.l)
+    .py(SPACE.m)
+    .gap(SPACE.s)
+    .items_center()
+    .border_b(1)
+    .border_color(t.border)
+    .child(v_flex()
+      .flex_none()
+      .min_w(0)
+      .gap(0)
+      .child(div().text_size(FONT.m).font_semibold().truncate().child(title))
+      .when(Boolean(subtitle), (el) => el.child(div().text_size(FONT.xs).text_color(t.dim).truncate().child(subtitle))))
+    .child(div().flex_1())
+    .children(right);
+}
+
 export function sectionTitle(t, title, right = [], hint = null) {
   return h_flex()
     .w_full()
@@ -176,7 +212,7 @@ export function badge(t, count, color = null) {
     .flex()
     .items_center()
     .rounded(9)
-    .bg(tint + "26")
+    .bg(tint + ALPHA.tint)
     .text_size(FONT.xs)
     .font_semibold()
     .text_color(tint)
@@ -197,7 +233,7 @@ export function autopilotColor(t, key) {
 
 export function autopilotDot(t, { color = "dim", pulse = false, size = SIZE.dot } = {}) {
   let el = div().flex_none().size(size).rounded(size / 2).bg(autopilotColor(t, color));
-  if (pulse) el = el.loop("opacity", { from: 0.35, to: 1, period: 900 });
+  if (pulse) el = el.loop("opacity", { from: 0.75, to: 1, period: 2400 });
   return el;
 }
 
@@ -209,7 +245,7 @@ export function pill(t, { label, color, tooltip = null, onClick = null, id = nul
     .gap(5)
     .items_center()
     .rounded(11)
-    .bg((color ?? t.muted) + "1f")
+    .bg((color ?? t.muted) + ALPHA.tint)
     .text_size(FONT.xs)
     .text_color(color ?? t.muted)
     .whitespace_nowrap()
@@ -231,7 +267,7 @@ export function chip(t, text, color = null, id = null, { tooltip = null, onClick
     .gap(4)
     .items_center()
     .rounded(RADIUS.s)
-    .bg((color ?? t.muted) + "1e")
+    .bg((color ?? t.muted) + ALPHA.tint)
     .text_size(FONT.xs)
     .text_color(color ?? t.muted)
     .whitespace_nowrap()
@@ -252,9 +288,9 @@ export function avatar(t, name, colorKey = "c1", size = SIZE.avatar) {
     .rounded(size / 2)
     .items_center()
     .justify_center()
-    .bg(color + "2b")
+    .bg(color + ALPHA.tint)
     .text_color(color)
-    .text_size(Math.max(9, Math.round(size * 0.4)))
+    .text_size(size >= 28 ? FONT.s : FONT.xs)
     .font_semibold()
     .child(model.initials(name))
     .tooltip(String(name || "unbekannt"));
@@ -281,17 +317,17 @@ export function keyHint(t, key) {
     .child(key);
 }
 
-export function emptyState(t, { title = "Nichts da", text = "", action = null } = {}) {
-  return v_flex()
-    .size_full()
+export function emptyState(t, { title = "Nichts da", text = "", action = null, compact = false } = {}) {
+  const body = v_flex()
     .min_h(0)
     .items_center()
     .justify_center()
-    .p(SPACE.xl)
-    .gap(SPACE.s)
-    .child(div().text_size(FONT.l).text_color(t.muted).child(title))
-    .when(Boolean(text), (el) => el.child(div().text_size(FONT.s).text_color(t.dim).text_center().whitespace_normal().child(text)))
-    .when(Boolean(action), (el) => el.child(div().pt(SPACE.s).child(action)));
+    .p(compact ? SPACE.m : SPACE.xl)
+    .gap(compact ? SPACE.xs : SPACE.s)
+    .child(div().text_size(compact ? FONT.m : FONT.l).text_color(t.muted).text_center().child(title))
+    .when(Boolean(text), (el) => el.child(div().text_size(compact ? FONT.xs : FONT.s).text_color(t.dim).text_center().whitespace_normal().child(text)))
+    .when(Boolean(action), (el) => el.child(div().pt(compact ? SPACE.xs : SPACE.s).child(action)));
+  return compact ? body.w_full().py(SPACE.xl) : body.size_full();
 }
 
 export function loading(t, text = "Lade …") {
@@ -304,21 +340,26 @@ export function loading(t, text = "Lade …") {
     .child(div().text_size(FONT.s).text_color(t.dim).child(text));
 }
 
-export function notice(t, message, level = "error") {
+export function notice(t, message, level = "error", { actions = [], id = null } = {}) {
   if (!message) return null;
   const color = levelColor(t, level);
-  return h_flex()
+  const el = h_flex()
+    .when(Boolean(id), (node) => node.id(id))
     .flex_none()
     .w_full()
     .px(SPACE.l)
     .py(SPACE.s)
     .gap(SPACE.s)
     .items_start()
-    .bg(color + "1c")
+    .bg(color + ALPHA.soft)
     .border_b(1)
     .border_color(t.border)
     .child(div().flex_none().mt(1).size(6).rounded(3).bg(color))
-    .child(div().flex_1().min_w(0).whitespace_normal().text_size(FONT.s).text_color(color).child(message));
+    .child(div().flex_1().min_w(0).whitespace_normal().text_size(FONT.s).text_color(color).child(message))
+    .when(actions.length > 0, (node) => node.child(
+      h_flex().flex_none().gap(SPACE.xs).items_center().children(actions),
+    ));
+  return el;
 }
 
 export function button(t, {
@@ -336,8 +377,8 @@ export function button(t, {
     .justify_center()
     .rounded(RADIUS.m)
     .border_1()
-    .border_color(primary ? t.solid : danger ? t.blocked + "66" : t.input)
-    .bg(primary ? t.solid : danger ? t.blocked + "18" : t.raised)
+    .border_color(primary ? t.solid : danger ? t.blocked + ALPHA.border : t.input)
+    .bg(primary ? t.solid : danger ? t.blocked + ALPHA.soft : t.raised)
     .text_color(primary ? t.solid_foreground : danger ? t.blocked : t.foreground)
     .text_size(FONT.s)
     .font_medium()
@@ -365,7 +406,7 @@ export function iconButton(t, {
     .items_center()
     .justify_center()
     .rounded(RADIUS.m)
-    .bg(active ? t.selected : t.surface + "00")
+    .bg(active ? t.selected : t.surface + ALPHA.clear)
     .text_color(active ? t.foreground : t.muted)
     .when(disabled, (node) => node.opacity(0.4))
     .when(!disabled, (node) => node.cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground)))
@@ -692,7 +733,7 @@ export function dropdown(t, {
     .gap(SPACE.s)
     .items_center()
     .rounded(RADIUS.s)
-    .bg(option.selected ? t.selected : t.surface + "00")
+    .bg(option.selected ? t.selected : t.surface + ALPHA.clear)
     .text_size(FONT.s)
     .text_color(option.warn ? t.blocked : option.disabled ? t.dim : t.foreground)
     .when(!option.disabled, (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)))
@@ -798,7 +839,7 @@ export function mentionList(t, field, suggestions, index, onPick) {
 // ---------- Flächen ----------
 
 export function backdrop(t, { onClick = null, dim = true } = {}) {
-  let el = div().absolute().inset_0().when(dim, (node) => node.bg(t.background + "b8"));
+  let el = div().absolute().inset_0().when(dim, (node) => node.bg(t.background + ALPHA.veil));
   if (onClick) el = still(el).on_click((_event, cx) => { cx.stop_propagation(); onClick(cx); });
   return el;
 }
@@ -963,7 +1004,7 @@ export function table(t, { id, columns, rows, sort, onSort, renderCell, onRow })
         .when(column.width, (el) => el.w(column.width))
         .when(!column.width, (el) => el.flex_1().min_w(0))
         .flex()
-        .flex_none()
+        .when(Boolean(column.width), (el) => el.flex_none())
         .h_full()
         .gap(3)
         .items_center()
@@ -992,7 +1033,7 @@ export function table(t, { id, columns, rows, sort, onSort, renderCell, onRow })
       .when(column.width, (el) => el.w(column.width))
       .when(!column.width, (el) => el.flex_1().min_w(0))
       .flex()
-      .flex_none()
+      .when(Boolean(column.width), (el) => el.flex_none())
       .items_center()
       .text_size(FONT.s)
       .child(renderCell(row, column, index === columns.length - 1)))));
@@ -1019,7 +1060,7 @@ export function navItem(t, { id, icon: iconName, label, active, onClick, badge =
     .items_center()
     .when(compact, (el) => el.justify_center().tooltip(label))
     .rounded(RADIUS.m)
-    .bg(active ? t.selected : t.surface + "00")
+    .bg(active ? t.selected : t.surface + ALPHA.clear)
     .text_color(active ? t.foreground : t.muted)
     .text_size(FONT.s)
     .font_medium()
@@ -1045,7 +1086,7 @@ export function tabs(t, { id, items, value, onPick }) {
       .px(9)
       .items_center()
       .rounded(RADIUS.s)
-      .bg(item.value === value ? t.raised : t.surface + "00")
+      .bg(item.value === value ? t.raised : t.surface + ALPHA.clear)
       .text_color(item.value === value ? t.foreground : t.dim)
       .text_size(FONT.s)
       .cursor_pointer()

@@ -21,7 +21,7 @@ import { renderWorkflowsPage } from "./views/workflows.js";
 import { renderPipelinesPage } from "./views/pipelines.js";
 import { renderSettings } from "./views/settings.js";
 import { renderTicketsPanel } from "./views/tickets.js";
-import { renderInboxPanel } from "./views/inbox.js";
+import { renderInboxPanel as renderPosteingangPanel } from "./views/inbox.js";
 import { renderTimelinePanel } from "./views/timeline.js";
 import { renderSwitcher } from "./views/switcher.js";
 import { renderDialogs, renderBlueprintDrawer } from "./views/dialogs.js";
@@ -29,15 +29,15 @@ import { renderContextPreview } from "./views/context.js";
 
 const VIEWS = ["board", "tickets", "ticket", "team", "workflows", "pipelines", "prompts", "templates", "repos", "settings"];
 const NAV = [
-  { page: "board", icon: "board", label: "Board" },
-  { page: "tickets", icon: "tickets", label: "Tickets" },
-  { page: "workflows", icon: "play", label: "Workflows" },
-  { page: "pipelines", icon: "terminal", label: "Pipelines" },
-  { page: "team", icon: "team", label: "Team" },
-  { page: "prompts", icon: "prompt", label: "Prompts" },
-  { page: "templates", icon: "prompt", label: "Vorlagen" },
-  { page: "repos", icon: "repo", label: "Repos" },
-  { page: "settings", icon: "settings", label: "Einstellungen" },
+  { page: "board", icon: "board" },
+  { page: "tickets", icon: "tickets" },
+  { page: "workflows", icon: "play" },
+  { page: "pipelines", icon: "terminal" },
+  { page: "team", icon: "team" },
+  { page: "prompts", icon: "prompt" },
+  { page: "templates", icon: "prompt" },
+  { page: "repos", icon: "repo" },
+  { page: "settings", icon: "settings" },
 ];
 
 // Die Tasten der Erwähnungsliste gehören der Anwendung, nicht dem Fenster:
@@ -110,7 +110,6 @@ export default class Fabric extends View {
     this.assigneeFilter = "all";
     this.repoFilter = "all";
     this.showDropped = false;
-    this.includeDroppedTable = false;
     this.tableSort = { key: "updated_at", dir: "desc" };
     this.bodyEditing = false;
     this.bodyFor = null;
@@ -327,7 +326,7 @@ export default class Fabric extends View {
     });
     cx.timer.every(5000, (cx) => { if (!this.closed) this.refresh(cx); });
     if (this.isApp || this.view === "inbox") {
-      // Der Inbox-Block lebt in der Seitenleiste auch bei geschlossenem
+      // Der Posteingang-Block lebt in der Seitenleiste auch bei geschlossenem
       // Fabric-Fenster; dort läuft der Tick-Takt. Beide Instanzen teilen sich
       // den letzten Versuch, damit jede Minute genau ein Lauf startet.
       cx.timer.every(10000, (cx) => {
@@ -730,7 +729,7 @@ export default class Fabric extends View {
       }
     }
     this.index = next;
-    this.notifyInbox();
+    this.notifyPosteingang();
 
     const selected = this.selectedId();
     const wanted = model.ticketIdFor(this.isApp, this.currentRoute(), selected);
@@ -1047,7 +1046,7 @@ export default class Fabric extends View {
     return model.normalizeNotifySettings(shared(model.NOTIFY_SETTINGS_KEY));
   }
 
-  notifyInbox() {
+  notifyPosteingang() {
     if (checking() || !this.index) return;
     const plan = model.inboxNotifications(
       this.inbox, shared(model.NOTIFY_SEEN_KEY), this.notifySettings(), Date.now());
@@ -1416,9 +1415,8 @@ export default class Fabric extends View {
       return model.boardColumns(this.tickets, filters).flatMap((column) => column.tickets.map((ticket) => ticket.id));
     }
     if (route.page === "tickets") {
-      return model.sortTickets(model.filterTickets(this.tickets, {
-        ...filters, includeDropped: this.includeDroppedTable,
-      }), this.tableSort).map((ticket) => ticket.id);
+      return model.sortTickets(model.filterTickets(this.tickets, filters), this.tableSort)
+        .map((ticket) => ticket.id);
     }
     return [];
   }
@@ -4269,7 +4267,7 @@ export default class Fabric extends View {
     if (!this.ready) {
       return ui.page(t, [ui.header(t, "Fabric"), ui.loading(t)]);
     }
-    if (this.view === "inbox") return renderInboxPanel(this, cx, t);
+    if (this.view === "inbox") return renderPosteingangPanel(this, cx, t);
     if (this.view === "timeline") return renderTimelinePanel(this, cx, t);
     if (this.view === "switcher") return renderSwitcher(this, cx, t);
     if (this.view === "app") return this.renderWindow(cx, t);
@@ -4300,7 +4298,7 @@ export default class Fabric extends View {
       .w(ui.SIZE.sidebar)
       .min_h(0)
       .p(ui.SPACE.s)
-      .gap(2)
+      .gap(ui.SPACE.xs)
       .border_r(1)
       .border_color(t.border)
       .bg(t.chrome)
@@ -4308,28 +4306,22 @@ export default class Fabric extends View {
         v_flex()
           .w_full()
           .flex_none()
-          .gap(2)
+          .gap(ui.SPACE.xs)
           .child(
             h_flex()
               .w_full()
               .h(40)
-              .px(8)
-              .gap(8)
+              .px(ui.SPACE.s)
+              .gap(ui.SPACE.s)
               .items_center()
               .child(div().flex_none().text_color(t.accent).child(ui.icon("fabric", 17)))
               .child(div().text_size(ui.FONT.m).font_semibold().child("Fabric")),
-          )
-          .child(this.autopilotTrigger(t, cx, {
-            anchor: "bottom_left",
-            popupId: "fabric-autopilot-side-panel",
-            lamp,
-            labelWidth: 148,
-          })),
+          ),
       )
       .children(NAV.map((item) => ui.navItem(t, {
         id: `fabric-nav-${item.page}`,
         icon: item.icon,
-        label: item.label,
+        label: model.pageWord(item.page),
         active: page === item.page || (page === "ticket" && item.page === "tickets"),
         onClick: (cx) => this.navigate(item.page, {}, cx),
         badge: null,
@@ -4355,7 +4347,7 @@ export default class Fabric extends View {
       .w_full()
       .h(ui.SIZE.nav)
       .px(ui.SPACE.s)
-      .gap(2)
+      .gap(ui.SPACE.xs)
       .items_center()
       .border_b(1)
       .border_color(t.border)
@@ -4363,7 +4355,7 @@ export default class Fabric extends View {
       .children(NAV.map((item) => div().flex_1().min_w(0).child(ui.navItem(t, {
         id: `fabric-nav-${item.page}`,
         icon: item.icon,
-        label: item.label,
+        label: model.pageWord(item.page),
         active: page === item.page || (page === "ticket" && item.page === "tickets"),
         onClick: (cx) => this.navigate(item.page, {}, cx),
         badge: null,
@@ -4377,7 +4369,7 @@ export default class Fabric extends View {
           .items_center()
           .justify_center()
           .rounded(12)
-          .bg(statusColor + "1f")
+          .bg(statusColor + ui.ALPHA.soft)
           .cursor_pointer()
           .tooltip(statusTip)
           .on_click((_event, cx) => {
@@ -4391,7 +4383,7 @@ export default class Fabric extends View {
       .flex_1()
       .min_w(0)
       .max_w(440)
-      .gap(6)
+      .gap(ui.SPACE.s)
       .items_center()
       .child(div().flex_none().text_color(t.dim).child(ui.icon("search", 13)))
       .child(div().flex_1().min_w(0).child(ui.input(t, this.search, { focused: this.searchFocused })))
@@ -4438,21 +4430,29 @@ export default class Fabric extends View {
       }));
 
     const contentPane = v_flex().flex_1().min_w(0).h_full().min_h(0).overflow_hidden().child(content);
+    const drawerLayer = (node) => div().absolute().right_0().top_0().bottom_0().bg(t.surface).overflow_hidden().child(node);
     const body = v_flex()
       .flex_1()
       .min_h(0)
       .items_stretch()
       .when(this.compact, (el) => el.child(compactNav))
       .child(
-        h_flex()
+        div()
+          .relative()
           .flex_1()
+          .min_w(0)
           .min_h(0)
-          .items_stretch()
-          .when(!this.compact, (el) => el.child(nav))
-          .child(contentPane)
-          .when(Boolean(this.blueprintDrawer), (el) => el.child(renderBlueprintDrawer(this, cx, t)))
-          .when(Boolean(this.teamPrompt), (el) => el.child(renderTeamPromptDrawer(this, cx, t)))
-          .when(Boolean(this.contextPreview), (el) => el.child(renderContextPreview(this, cx, t))),
+          .child(
+            h_flex()
+              .flex_1()
+              .min_h(0)
+              .items_stretch()
+              .when(!this.compact, (el) => el.child(nav))
+              .child(contentPane),
+          )
+          .when(Boolean(this.blueprintDrawer), (el) => el.child(drawerLayer(renderBlueprintDrawer(this, cx, t))))
+          .when(Boolean(this.teamPrompt), (el) => el.child(drawerLayer(renderTeamPromptDrawer(this, cx, t))))
+          .when(Boolean(this.contextPreview), (el) => el.child(drawerLayer(renderContextPreview(this, cx, t)))),
       );
 
     const overlay = [];
@@ -4491,7 +4491,7 @@ export default class Fabric extends View {
       .on_key_down((event, cx) => this.keys(event, cx))
       .child(
         v_flex().size_full().min_h(0)
-          .when(Boolean(model.alarmActive(this.index?.alarm)), (el) => el.child(this.alarmBanner(t, cx)))
+          .when(Boolean(model.alarmActive(this.index?.alarm)), (el) => el.child(this.alarmBanner(t)))
           .child(
             h_flex().flex_none().w_full().child(
               div().flex_1().min_w(0).child(
@@ -4509,41 +4509,24 @@ export default class Fabric extends View {
 
   // ---------- Alarme ----------
 
-  alarmBanner(t, cx) {
+  alarmBanner(t) {
     const entries = model.alarmEntries(this.index?.alarm);
     if (entries.length === 0) return null;
     return v_flex()
       .id("fabric-alarm-banner")
       .flex_none()
       .w_full()
-      .gap(ui.SPACE.xs)
-      .px(ui.SPACE.l)
-      .py(ui.SPACE.s)
-      .bg(t.blocked + "14")
-      .border_b(1)
-      .border_color(t.blocked + "55")
-      .children(entries.map((item, index) => h_flex()
-        .id(`fabric-alarm-${index}`)
-        .w_full()
-        .gap(ui.SPACE.s)
-        .items_center()
-        .child(div().flex_none().size(6).rounded(3).bg(t.blocked))
-        .child(div()
-          .flex_1()
-          .min_w(0)
-          .whitespace_normal()
-          .text_size(ui.FONT.s)
-          .text_color(t.blocked)
-          .child(item.text || "Alarm"))
-        .child(h_flex().flex_none().gap(ui.SPACE.xs).items_center()
-          .children(item.buttons.map((button) => ui.button(t, {
-            id: `fabric-alarm-${index}-${button.key}`,
-            label: button.label,
-            small: true,
-            onClick: (clickCx) => clickCx.spawn(async (clickCx) => {
-              await this.alarmAction(item, button.key, clickCx);
-            }),
-          }))))));
+      .children(entries.map((item, index) => ui.notice(t, item.text || "Alarm", "error", {
+        id: `fabric-alarm-${index}`,
+        actions: item.buttons.map((button) => ui.button(t, {
+          id: `fabric-alarm-${index}-${button.key}`,
+          label: button.label,
+          small: true,
+          onClick: (clickCx) => clickCx.spawn(async (clickCx) => {
+            await this.alarmAction(item, button.key, clickCx);
+          }),
+        })),
+      })));
   }
 
   alarmAction(item, key, cx) {
@@ -4577,7 +4560,7 @@ export default class Fabric extends View {
     this.notifyNow();
   }
 
-  autopilotTrigger(t, cx, { compact = false, anchor = "bottom_left", popupId = "fabric-autopilot-panel", lamp = null, labelWidth = null } = {}) {
+  autopilotTrigger(t, cx, { compact = false, anchor = "bottom_left", popupId = "fabric-autopilot-panel", lamp = null } = {}) {
     const current = lamp ?? model.autopilotLamp(this.autopilotText, Date.now(), this.index?.alarm);
     const short = current.state === "running" ? "an"
       : current.state === "paused" ? "pausiert"
@@ -4588,8 +4571,8 @@ export default class Fabric extends View {
       .id(`${popupId}-trigger`)
       .flex_none()
       .h(ui.SIZE.button)
-      .px(compact ? 6 : 9)
-      .gap(6)
+      .px(compact ? ui.SPACE.s : ui.SPACE.m)
+      .gap(ui.SPACE.s)
       .items_center()
       .rounded(ui.RADIUS.m)
       .border_1()
@@ -4613,9 +4596,9 @@ export default class Fabric extends View {
       .child(div()
         .text_size(compact ? ui.FONT.xs : ui.FONT.s)
         .text_color(t.muted)
-        .max_w(labelWidth ?? (compact ? 110 : 220))
+        .max_w(compact ? 110 : 220)
         .truncate()
-        .child(compact ? short : current.text));
+        .child(compact || current.state === "alarm" ? short : current.text));
 
     const panel = this.autopilotPanel(t, popupId);
     const open = this.autopilotOpen && this.autopilotSource === popupId;
@@ -4729,7 +4712,7 @@ export default class Fabric extends View {
           .text_size(ui.FONT.xs)
           .text_color(t.dim)
           .child("Noch kein Log."))),
-    ], 380, 600);
+    ], 380, 420);
   }
 
   async startAutopilot(until, cx) {
@@ -4803,8 +4786,8 @@ export default class Fabric extends View {
       .id("fabric-inbox-button")
       .flex_none()
       .h(ui.SIZE.button)
-      .px(9)
-      .gap(6)
+      .px(ui.SPACE.m)
+      .gap(ui.SPACE.s)
       .items_center()
       .rounded(ui.RADIUS.m)
       .border_1()
@@ -4821,85 +4804,76 @@ export default class Fabric extends View {
         this.notifyNow();
       })
       .child(div().flex_none().text_color(t.muted).child(ui.icon("inbox", 14)))
-      .when(!compact, (el) => el.child(div().text_size(ui.FONT.s).text_color(t.muted).child("Inbox")))
+      .when(!compact, (el) => el.child(div().text_size(ui.FONT.s).text_color(t.muted).child("Posteingang")))
       .child(ui.badge(t, this.inbox.length, this.inbox.length ? t.accent : t.dim))
       .tooltip("Posteingang");
 
-    const panel = v_flex()
-      .w(360)
-      .max_h(420)
-      .rounded(ui.RADIUS.l)
-      .border_1()
-      .border_color(t.border)
-      .bg(t.popover)
-      .child(
-        h_flex().w_full().px(ui.SPACE.m).h(38).items_center().border_b(1).border_color(t.border)
-          .child(div().flex_1().text_size(ui.FONT.s).font_semibold().child("Posteingang"))
-          .child(ui.badge(t, this.inbox.length, t.accent)),
-      )
-      .child(
-        this.inbox.length
-          ? v_flex().max_h(360).overflow_y_scrollbar().children(model.sortInbox(this.inbox).map((entry, index) => {
-            const retry = model.inboxRetry(entry);
-            const lesson = model.inboxLesson(entry);
-            return h_flex()
-              .id(`fabric-inbox-pop-${entry.ticket}-${index}`)
-              .w_full()
-              .px(ui.SPACE.m)
-              .py(7)
-              .gap(ui.SPACE.s)
-              .items_start()
-              .border_b(1)
-              .border_color(t.border)
-              .cursor_pointer()
-              .hover((s) => s.bg(t.hover))
-              .on_click((_event, cx) => {
-                cx.stop_propagation();
-                this.inboxOpen = false;
-                this.openInWindow({ page: "ticket", id: entry.ticket }, cx);
-              })
-              .child(ui.chip(t, model.INBOX_WORDS[entry.kind] ?? entry.kind, ui.inboxColor(t, entry.kind)))
-              .child(v_flex().flex_1().min_w(0).gap(1)
-                .child(h_flex().gap(6).text_size(ui.FONT.xs).text_color(t.dim)
-                  .child(entry.ticket ?? "")
-                  .child(`· ${entry.from ?? "fab"}`)
-                  .child(`· ${model.relativeTime(entry.at)}`))
-                .child(div().text_size(ui.FONT.s).text_color(t.foreground).truncate()
-                  .child(TextView.markdown(
-                    `fabric-inbox-pop-text-${entry.ticket}-${index}`,
-                    model.plainMentionMarkdown(model.oneLine(entry.text, 120)),
-                  ).text_size(ui.FONT.s).text_color(t.foreground).whitespace_nowrap()))
-                .when(Boolean(retry), (el) => el.child(
-                  div().text_size(ui.FONT.xs).text_color(t.dim)
-                    .child(`${entry.agent} · ${model.oneLine(entry.reason || "Grund unbekannt", 120)}`),
-                ))
-                .when(Boolean(retry), (el) => el.child(h_flex().w_full().child(ui.button(t, {
-                  id: `fabric-inbox-pop-retry-${entry.ticket}-${index}`,
-                  label: "Erneut starten",
+    const panel = ui.popoverPanel(t, [
+      h_flex().flex_none().w_full().px(ui.SPACE.m).h(38).items_center().border_b(1).border_color(t.border)
+        .child(div().flex_1().text_size(ui.FONT.s).font_semibold().child("Posteingang"))
+        .child(ui.badge(t, this.inbox.length, t.accent)),
+      this.inbox.length
+        ? v_flex().w_full().children(model.sortInbox(this.inbox).map((entry, index) => {
+          const retry = model.inboxRetry(entry);
+          const lesson = model.inboxLesson(entry);
+          return h_flex()
+            .id(`fabric-inbox-pop-${entry.ticket}-${index}`)
+            .w_full()
+            .px(ui.SPACE.m)
+            .py(ui.SPACE.s)
+            .gap(ui.SPACE.s)
+            .items_start()
+            .border_b(1)
+            .border_color(t.border)
+            .cursor_pointer()
+            .hover((s) => s.bg(t.hover))
+            .on_click((_event, cx) => {
+              cx.stop_propagation();
+              this.inboxOpen = false;
+              this.openInWindow({ page: "ticket", id: entry.ticket }, cx);
+            })
+            .child(ui.chip(t, model.INBOX_WORDS[entry.kind] ?? entry.kind, ui.inboxColor(t, entry.kind)))
+            .child(v_flex().flex_1().min_w(0).gap(ui.SPACE.xs)
+              .child(h_flex().gap(ui.SPACE.s).text_size(ui.FONT.xs).text_color(t.dim)
+                .child(entry.ticket ?? "")
+                .child(`· ${entry.from ?? "fab"}`)
+                .child(`· ${model.relativeTime(entry.at)}`))
+              .child(div().text_size(ui.FONT.s).text_color(t.foreground).truncate()
+                .child(TextView.markdown(
+                  `fabric-inbox-pop-text-${entry.ticket}-${index}`,
+                  model.plainMentionMarkdown(model.oneLine(entry.text, 120)),
+                ).text_size(ui.FONT.s).text_color(t.foreground).whitespace_nowrap()))
+              .when(Boolean(retry), (el) => el.child(
+                div().text_size(ui.FONT.xs).text_color(t.dim)
+                  .child(`${entry.agent} · ${model.oneLine(entry.reason || "Grund unbekannt", 120)}`),
+              ))
+              .when(Boolean(retry), (el) => el.child(h_flex().w_full().child(ui.button(t, {
+                id: `fabric-inbox-pop-retry-${entry.ticket}-${index}`,
+                label: "Erneut starten",
+                small: true,
+                tooltip: "Den Agenten erneut starten und den Hinweis bei Erfolg entfernen",
+                onClick: (cx) => this.retryAgent(entry, cx),
+              }))))
+              .when(Boolean(lesson), (el) => el.child(h_flex().w_full().gap(ui.SPACE.xs)
+                .child(ui.button(t, {
+                  id: `fabric-inbox-pop-lesson-confirm-${entry.ticket}-${index}`,
+                  label: "Bestätigen",
+                  icon: "check",
                   small: true,
-                  tooltip: "Den Agenten erneut starten und den Hinweis bei Erfolg entfernen",
-                  onClick: (cx) => this.retryAgent(entry, cx),
+                  tooltip: "Diesen Lehren-Vorschlag bestätigen",
+                  onClick: (cx) => this.confirmLesson(entry, cx),
+                }))
+                .child(ui.button(t, {
+                  id: `fabric-inbox-pop-lesson-discard-${entry.ticket}-${index}`,
+                  label: "Verwerfen",
+                  icon: "close",
+                  small: true,
+                  tooltip: "Diesen Lehren-Vorschlag verwerfen",
+                  onClick: (cx) => this.discardLesson(entry, cx),
                 })))))
-                .when(Boolean(lesson), (el) => el.child(h_flex().w_full().gap(4)
-                  .child(ui.button(t, {
-                    id: `fabric-inbox-pop-lesson-confirm-${entry.ticket}-${index}`,
-                    label: "Bestätigen",
-                    icon: "check",
-                    small: true,
-                    tooltip: "Diesen Lehren-Vorschlag bestätigen",
-                    onClick: (cx) => this.confirmLesson(entry, cx),
-                  }))
-                  .child(ui.button(t, {
-                    id: `fabric-inbox-pop-lesson-discard-${entry.ticket}-${index}`,
-                    label: "Verwerfen",
-                    icon: "close",
-                    small: true,
-                    tooltip: "Diesen Lehren-Vorschlag verwerfen",
-                    onClick: (cx) => this.discardLesson(entry, cx),
-                  }))));
-          }))
-          : ui.emptyState(t, { title: "Nichts zu tun", text: "Der Posteingang ist leer." }),
-      );
+        }))
+        : ui.emptyState(t, { title: "Nichts zu tun", text: "Der Posteingang ist leer." }),
+    ], 360, 360);
 
     return PopupWrapper(t, "fabric-inbox-panel", trigger, this.inboxOpen, panel);
   }

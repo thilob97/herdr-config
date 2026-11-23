@@ -18,7 +18,7 @@ function inboxRow(app, cx, t, entry, index) {
     .w_full()
     .px(S.m)
     .py(S.s)
-    .gap(3)
+    .gap(S.xs)
     .cursor_pointer()
     .hover((style) => style.bg(t.hover))
     .on_click((_event, cx) => {
@@ -50,7 +50,7 @@ function inboxRow(app, cx, t, entry, index) {
           onClick: (cx) => app.retryAgent(entry, cx),
         }))),
     )
-    .when(Boolean(lesson), (el) => el.child(h_flex().gap(4)
+    .when(Boolean(lesson), (el) => el.child(h_flex().gap(S.xs)
       .child(ui.button(t, {
         id: `fabric-inbox-lesson-confirm-${entry.ticket}-${index}`,
         label: "Bestätigen",
@@ -76,7 +76,7 @@ function inboxRow(app, cx, t, entry, index) {
 export function renderInboxPanel(app, cx, t) {
   const inbox = model.sortInbox(app.index?.inbox);
   const rows = [
-    ui.header(t, "Posteingang", [
+    ui.header(t, model.pageWord("inbox"), [
       ui.badge(t, inbox.length, inbox.length ? t.accent : t.dim),
       ui.iconButton(t, {
         id: "fabric-inbox-open",
@@ -94,9 +94,17 @@ export function renderInboxPanel(app, cx, t) {
   ];
   const note = ui.notice(t, app.flash?.text, app.flash?.level);
   if (note) rows.push(note);
+  const loadNote = ui.notice(t, app.loadError);
+  if (loadNote) rows.push(loadNote);
 
   if (!app.index) {
-    rows.push(ui.emptyState(t, { title: "Posteingang", text: app.loadError ?? model.EMPTY_HINT }));
+    if (!app.loadError) {
+      rows.push(ui.emptyState(t, {
+        title: "Posteingang",
+        text: model.EMPTY_HINT,
+        compact: true,
+      }));
+    }
   } else if (!inbox.length) {
     rows.push(ui.emptyState(t, {
       title: "Nichts zu tun",
@@ -107,6 +115,7 @@ export function renderInboxPanel(app, cx, t) {
         icon: "board",
         onClick: (cx) => app.openInWindow({ page: "board" }, cx),
       }),
+      compact: true,
     }));
   } else {
     rows.push(
