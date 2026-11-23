@@ -3,6 +3,9 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync, readdirSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   groupByStage, mentionSegments, sortInbox, inboxRetry, inboxLesson, lessonArgs, timelineFeed, eventSummary, relativeTime,
@@ -249,6 +252,28 @@ test("Zielbegriffe: Seiten und Ticket-Stufen tragen die Wörter der Begriffstabe
   assert.equal(EVENT_WORDS.flow, "Workflow");
   assert.equal(actorLabel("flow"), "Workflow");
   assert.equal(actorLabel("fab"), "Fabric");
+});
+
+test("Seitenköpfe: jede in den Views genutzte Seite hat einen PAGE_WORDS-Eintrag", () => {
+  const views = join(dirname(fileURLToPath(import.meta.url)), "..", "views");
+  const files = readdirSync(views).filter((name) => name.endsWith(".js"));
+  const used = new Map();
+  for (const file of files) {
+    const source = readFileSync(join(views, file), "utf8");
+    for (const match of source.matchAll(/model\.pageWord\("([^"]+)"\)/g)) {
+      used.set(match[1], file);
+    }
+    assert.doesNotMatch(
+      source,
+      /ui\.header\(\s*t,\s*["`]/,
+      `${file}: Seitenkopf als Literal statt model.pageWord()`,
+    );
+  }
+  assert.ok(used.size > 0, "keine pageWord-Nutzung in den Views gefunden");
+  const missing = [...used]
+    .filter(([page]) => !(page in PAGE_WORDS))
+    .map(([page, file]) => `${page} (${file})`);
+  assert.deepEqual(missing, [], `Seiten ohne PAGE_WORDS-Eintrag: ${missing.join(", ")}`);
 });
 
 test("Sitzungen finden ihr Terminal über Adresse, sonst über fab-<agent>-<id>", () => {
