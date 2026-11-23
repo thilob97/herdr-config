@@ -211,7 +211,13 @@ class VerifyQueueTest(VerifyQueueCase):
     def test_slot_eines_getoeteten_prozesses_wird_frei(self):
         repo = self.make_repo()
         self.write_roster(max_verify=1)
-        self.write_steps(repo, [{"name": "lang", "run": "sleep 60"}])
+        self.write_steps(
+            repo,
+            [
+                {"name": "lang", "run": "sleep 60"},
+                {"name": "danach", "run": "true"},
+            ],
+        )
         killed = self.start_runner(repo, "T-5")
         second = None
         try:
@@ -234,10 +240,89 @@ class VerifyQueueTest(VerifyQueueCase):
             # fällt mit dem Prozess weg, der Slot ist also sofort frei.
             with self.store_env():
                 killed_row = store.pipeline_run_load(run["id"])
-            # Der getötete Lauf bleibt in der DB auf `running`; das ist
-            # bestehendes Absturzverhalten und nicht Teil dieses Tickets.
-            self.assertEqual(killed_row["state"], "running")
+                killed_steps = {
+                    row["position"]: row["state"]
+                    for row in store.pipeline_steps(run["id"])
+                }
+            # Der getötete Lauf kann seinen Endstatus nicht selbst schreiben;
+            # der nächste Laufstart setzt ihn auf `fail` und räumt seine
+            # Schritte auf.
+            self.assertEqual(killed_row["state"], "fail")
+            self.assertEqual(killed_steps, {0: "fail", 1: "skipped"})
         finally:
+            self.stop(killed)
+            if second is not None:
+                self.stop(second)
+
+    def test_laufender_lauf_wird_nicht_aufgeraeumt(self):
+        repo = self.make_repo()
+        self.write_roster(max_verify=2)
+        self.write_steps(repo, [{"name": "lang", "run": "sleep 60"}])
+        live = self.start_runner(repo, "T-7")
+        second = None
+        try:
+            state = self.wait_for(lambda: self.running_run("T-7"), timeout=10)
+            self.assertTrue(state, "Lauf startete nicht")
+            run, _steps = state
+
+            # Der zweite Start räumt verwaiste Läufe ab; dieser lebt noch.
+            self.write_steps(repo, [{"name": "kurz", "run": "true"}])
+            second = self.start_runner(repo, "T-8")
+            out, err = second.communicate(timeout=15)
+            self.assertEqual(second.returncode, 0, err)
+            self.assertIn("pass", out)
+
+            with self.store_env():
+                live_row = store.pipeline_run_load(run["id"])
+                live_steps = [
+                    row["state"] for row in store.pipeline_steps(run["id"])
+                ]
+            self.assertEqual(live_row["state"], "running")
+            self.assertEqual(live_steps, ["running"])
+        finally:
+            self.stop(live)
+            if second is not None:
+                self.stop(second)
+
+    def test_wartender_getoeteter_lauf_endet_als_fail(self):
+        repo = self.make_repo()
+        self.write_roster(max_verify=1)
+        self.write_steps(repo, [{"name": "lang", "run": "sleep 60"}])
+        holder = self.start_holder(1)
+        killed = self.start_runner(repo, "T-11")
+        second = None
+        try:
+            def waiting():
+                with self.store_env():
+                    row = self.queued_run("T-11")
+                    if not row:
+                        return None
+                    steps = store.pipeline_steps(row["id"])
+                return row if steps else None
+
+            queued = self.wait_for(waiting, timeout=10)
+            self.assertTrue(queued, "Lauf wartete nicht")
+
+            killed.kill()
+            killed.wait(timeout=10)
+            self.stop(holder)
+
+            # Der nächste Start findet den verwaisten Wartenden und räumt ihn ab.
+            self.write_steps(repo, [{"name": "kurz", "run": "true"}])
+            second = self.start_runner(repo, "T-12")
+            out, err = second.communicate(timeout=10)
+            self.assertEqual(second.returncode, 0, err)
+            self.assertIn("pass", out)
+
+            with self.store_env():
+                killed_row = store.pipeline_run_load(queued["id"])
+                killed_steps = [
+                    row["state"] for row in store.pipeline_steps(queued["id"])
+                ]
+            self.assertEqual(killed_row["state"], "fail")
+            self.assertEqual(killed_steps, ["skipped"])
+        finally:
+            self.stop(holder)
             self.stop(killed)
             if second is not None:
                 self.stop(second)

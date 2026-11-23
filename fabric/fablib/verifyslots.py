@@ -8,6 +8,11 @@ können Deskriptoren auf dieselbe Datei offen halten, und ein Unlink mit
 Neuanlegen würde ein zweites Lock auf einer neuen Datei erlauben – das Limit
 wäre gebrochen. Die PID im Inhalt dient nur der Diagnose; PID-Wiederverwendung
 ist damit unkritisch.
+
+Ein Lauf belegt zusätzlich eine Besitzdatei
+`<FAB_HOME>/verify-runs/run-<id>.lock` (Ticket T-113). Auch sie hält der
+Kernel: Ein später startender Lauf erkennt daran, dass der Besitzer eines
+`queued`/`running`-Laufs nicht mehr lebt, und kann den Lauf aufräumen.
 """
 import errno
 import fcntl
@@ -35,11 +40,20 @@ def slot_dir():
     return path
 
 
-class Slot:
-    """Ein belegter Slot; `release()` ist idempotent und gibt das flock frei."""
+def run_dir():
+    path = os.path.join(store.home(), "verify-runs")
+    os.makedirs(path, exist_ok=True)
+    return path
 
-    def __init__(self, index, path, fd=None):
-        self.index = index
+
+def run_path(run_id):
+    return os.path.join(run_dir(), f"run-{int(run_id)}.lock")
+
+
+class _LockFile:
+    """Eine gehaltene `flock`-Datei; `release()` ist idempotent."""
+
+    def __init__(self, path, fd=None):
         self.path = path
         self._fd = fd
         self._released = False
@@ -68,8 +82,67 @@ class Slot:
         self.release()
         return False
 
+
+class Slot(_LockFile):
+    """Ein belegter Slot."""
+
+    def __init__(self, index, path, fd=None):
+        super().__init__(path, fd)
+        self.index = index
+
     def __repr__(self):
         return f"Slot({self.index}, {self.path!r})"
+
+
+class RunLock(_LockFile):
+    """Besitz eines Laufs; existiert genau so lange wie sein Prozess."""
+
+    def __init__(self, run_id, path, fd=None):
+        super().__init__(path, fd)
+        self.run_id = run_id
+
+    def __repr__(self):
+        return f"RunLock({self.run_id}, {self.path!r})"
+
+
+def claim_run(run_id):
+    """Besitzdatei eines Laufs belegen; der Prozess hält sie bis zum Ende.
+
+    Die Lauf-Id ist prozessweit eindeutig, es gibt also keinen Wettbewerb um
+    dieselbe Datei – `flock` blockiert hier nie.
+    """
+    path = run_path(run_id)
+    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o644)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    try:
+        os.ftruncate(fd, 0)
+        os.write(fd, str(os.getpid()).encode("ascii"))
+    except OSError:
+        pass
+    return RunLock(run_id, path, fd)
+
+
+def abandoned(run_id):
+    """True, wenn kein lebender Prozess den Lauf mehr besitzt.
+
+    Belegen wir das `flock`, ist der Besitzer tot – auch nach `SIGKILL` gibt
+    der Kernel es frei. Ein lebender Besitzer hält es, dann bleibt es bei
+    False. Die Datei wird dabei höchstens angelegt, nie gelöscht.
+    """
+    fd = os.open(run_path(run_id), os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        os.close(fd)
+        if exc.errno in (errno.EACCES, errno.EAGAIN):
+            return False
+        raise
+    try:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    except OSError:
+        pass
+    os.close(fd)
+    return True
 
 
 def _try_acquire(directory, count):

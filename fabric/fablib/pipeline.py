@@ -7,7 +7,9 @@ alle Schritte als `pending`; nach dem ersten Fehler werden die restlichen als
 gleichzeitig: Der Lauf steht zuerst als `queued` in der Ablage, belegt dann
 einen Slot (Abschnitt `verifyslots`) und wird erst danach `running`. Die
 Wartezeit zählt nicht ins Schritt-Timeout. Bricht die Ausführung ab, endet der
-Lauf als `fail`.
+Lauf als `fail`. Kann ein getöteter Prozess das nicht mehr selbst schreiben,
+setzt der nächste Laufstart den verwaisten Lauf beim Aufräumen auf `fail`. Die
+Besitzdatei des Laufs zeigt dabei, ob sein Prozess noch lebt.
 """
 import json
 import os
@@ -99,6 +101,42 @@ def _tail(parts, limit=TAIL_LINES):
     return "\n".join(text.splitlines()[-limit:])
 
 
+def _reap_abandoned():
+    """Läufe ohne lebenden Besitzer auf einen Endstatus setzen (T-113).
+
+    Ein per `SIGKILL` beendeter Lauf kann seine Schritte und seinen Endstatus
+    nicht mehr selbst schreiben. Der Kernel hat seine Besitzdatei aus
+    `verifyslots` freigegeben; bekommt der nächste Laufstart sie, ist der Lauf
+    verwaist. Er endet wie im Ausnahme-Aufräumen von `run()`: `running`-Schritte
+    `fail`, `pending`-Schritte `skipped`, Lauf `fail`. Lebende Läufe behalten
+    ihre Sperre und bleiben unberührt.
+    """
+    for row in store.pipeline_run_list():
+        if row.get("state") not in ("queued", "running"):
+            continue
+        try:
+            if not verifyslots.abandoned(row["id"]):
+                continue
+            for step in store.pipeline_steps(row["id"]):
+                wanted = {"running": "fail", "pending": "skipped"}.get(
+                    step["state"]
+                )
+                if wanted is not None:
+                    store.pipeline_step_update(
+                        row["id"], step["position"], state=wanted
+                    )
+            started = row.get("started_at") or store.now_ms()
+            store.pipeline_run_finish(
+                row["id"], "fail", max(0, store.now_ms() - started)
+            )
+        except Exception as error:  # noqa: BLE001 - Aufräumen darf nichts klemmen
+            print(
+                f"Pipeline {row.get('id')}: Aufräumen eines verwaisten Laufs "
+                f"fehlgeschlagen: {type(error).__name__}: {error}",
+                file=sys.stderr,
+            )
+
+
 def run(
     worktree,
     trigger="verify",
@@ -121,20 +159,8 @@ def run(
     branch = branch or git.branch(worktree)
     head_before = head or git.head(worktree)
 
+    _reap_abandoned()
     start = store.now_ms()
-    run_id = store.pipeline_run_new(
-        trigger=trigger,
-        ticket=ticket,
-        repo=repo,
-        worktree=worktree,
-        branch=branch,
-        head=head_before,
-        state="queued",
-    )
-    for position, step in enumerate(steps):
-        store.pipeline_step_add(
-            run_id, position, step["name"], step["run"], "pending"
-        )
 
     executed = []
     out_parts = []
@@ -143,8 +169,29 @@ def run(
     first_code = None
     failed = False
     slot = None
+    owner = None
+    run_id = None
 
     try:
+        run_id = store.pipeline_run_new(
+            trigger=trigger,
+            ticket=ticket,
+            repo=repo,
+            worktree=worktree,
+            branch=branch,
+            head=head_before,
+            state="queued",
+        )
+        # Besitz sofort nach dem Einreihen: Auch ein wartender Lauf lebt, und
+        # der nächste Start darf ihn nicht für verwaist halten. Zwischen
+        # Einreihen und Belegen liegt nur ein Statement; räumt ein anderer
+        # Start genau dieses Fenster ab, schreibt dieser Lauf seinen Zustand
+        # danach ohnehin selbst.
+        owner = verifyslots.claim_run(run_id)
+        for position, step in enumerate(steps):
+            store.pipeline_step_add(
+                run_id, position, step["name"], step["run"], "pending"
+            )
         capacity = verifyslots.limit()
         slot = verifyslots.acquire(
             capacity,
@@ -212,6 +259,8 @@ def run(
         # Jeder Aufräumschritt zählt einzeln: Ein Fehler beim Speichern darf
         # weder den Lauf auf `running` lassen noch die ursprüngliche Ausnahme
         # verdecken. Aufräumfehler gehen an stderr und als `__cause__` mit.
+        if run_id is None:
+            raise
         cleanup_errors = []
 
         def attempt(label, action):
@@ -257,6 +306,8 @@ def run(
     finally:
         if slot is not None:
             slot.release()
+        if owner is not None:
+            owner.release()
 
     store.pipeline_run_finish(
         run_id, "fail" if failed else "pass", store.now_ms() - start
