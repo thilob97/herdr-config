@@ -179,3 +179,39 @@ class PipelineTest(PipelineCase):
         with self.store_env():
             run = store.pipeline_run_list("T-10")[-1]
         self.assertEqual(run["state"], "fail")
+
+    def test_abbruch_mitten_im_schritt_markiert_rest(self):
+        repo = self.make_repo()
+        self.write_steps(
+            repo,
+            [
+                {"name": "eins", "run": "true"},
+                {"name": "zwei", "run": "true"},
+                {"name": "drei", "run": "true"},
+            ],
+        )
+        calls = []
+
+        def abort(command, cwd, timeout):
+            calls.append(command)
+            if len(calls) == 2:
+                raise FabError("abgebrochen")
+            return 0, "ok", ""
+
+        with mock.patch.object(pipeline, "_execute", side_effect=abort):
+            with self.assertRaises(FabError):
+                self.run_pipeline(repo, ticket="T-11")
+
+        with self.store_env():
+            run = store.pipeline_run_list("T-11")[-1]
+            steps = store.pipeline_steps(run["id"])
+        self.assertEqual(run["state"], "fail")
+        self.assertEqual(
+            [step["state"] for step in steps], ["pass", "fail", "skipped"]
+        )
+        self.assertNotIn(
+            "running", [step["state"] for step in steps]
+        )
+        self.assertNotIn(
+            "pending", [step["state"] for step in steps]
+        )
