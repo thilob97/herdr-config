@@ -1,22 +1,22 @@
 """Systemweite Slots für gleichzeitige Prüfläufe (Ticket T-105).
 
-Ein Slot ist eine exklusiv angelegte PID-Datei unter
-`<FAB_HOME>/verify-slots/slot-<i>.lock`. PID-Dateien statt eines Zählers,
-weil ein mit `kill -9` beendeter Prozess keinen Zähler dekrementiert: Der
-nächste Wartende liest die PID und prüft mit `os.kill(pid, 0)`, ob sie noch
-lebt; tote Slots werden freigegeben. Ein `flock` wäre ebenfalls möglich; die
-PID-Prüfung ist hier bewusst gewählt, weil die Datei zugleich den Halter
-benennt. Restrisiko: Eine wiederverwendete PID eines fremden Prozesses hält
-den Slot scheinbar am Leben.
+Ein Slot ist eine dauerhafte Datei unter `<FAB_HOME>/verify-slots/slot-<i>.lock`,
+die exklusiv per `flock` belegt wird. Die Sperre hält der Kernel und gibt sie
+beim Prozessende frei – auch nach `SIGKILL`. Ein getöteter Lauf kann den Slot
+damit nicht blockieren. Die Dateien werden bewusst nie gelöscht: Wartende
+können Deskriptoren auf dieselbe Datei offen halten, und ein Unlink mit
+Neuanlegen würde ein zweites Lock auf einer neuen Datei erlauben – das Limit
+wäre gebrochen. Die PID im Inhalt dient nur der Diagnose; PID-Wiederverwendung
+ist damit unkritisch.
 """
 import errno
+import fcntl
 import os
 import time
 
 from . import agents, store, teams
 
 DEFAULT_MAX_VERIFY = 2
-STALE_SECONDS = 5
 
 
 def limit(roster=None):
@@ -36,7 +36,7 @@ def slot_dir():
 
 
 class Slot:
-    """Ein belegter Slot; `release()` ist idempotent und räumt die PID-Datei ab."""
+    """Ein belegter Slot; `release()` ist idempotent und gibt das flock frei."""
 
     def __init__(self, index, path, fd=None):
         self.index = index
@@ -48,14 +48,16 @@ class Slot:
         if self._released:
             return
         self._released = True
-        if self._fd is not None:
-            try:
-                os.close(self._fd)
-            except OSError:
-                pass
-            self._fd = None
+        fd = self._fd
+        self._fd = None
+        if fd is None:
+            return
         try:
-            os.unlink(self.path)
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        try:
+            os.close(fd)
         except OSError:
             pass
 
@@ -70,74 +72,23 @@ class Slot:
         return f"Slot({self.index}, {self.path!r})"
 
 
-def _pid_alive(pid):
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError as exc:
-        return exc.errno != errno.ESRCH
-    return True
-
-
-def _reap(path):
-    """Toten oder kaputten Slot entfernen; True bedeutet: Datei ist weg."""
-    try:
-        with open(path, encoding="utf-8") as handle:
-            raw = handle.read().strip()
-    except FileNotFoundError:
-        return True
-    except OSError:
-        return False
-    try:
-        pid = int(raw)
-    except ValueError:
-        # Gerade im Anlegen: leere/kaputte Dateien erst nach kurzer Frist räumen.
-        try:
-            age = time.time() - os.path.getmtime(path)
-        except OSError:
-            return False
-        if age <= STALE_SECONDS:
-            return False
-        try:
-            os.unlink(path)
-        except OSError:
-            return False
-        return True
-    if _pid_alive(pid):
-        return False
-    try:
-        os.unlink(path)
-    except FileNotFoundError:
-        pass
-    except OSError:
-        return False
-    return True
-
-
 def _try_acquire(directory, count):
     for index in range(count):
         path = os.path.join(directory, f"slot-{index}.lock")
+        fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o644)
         try:
-            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-        except FileExistsError:
-            continue
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            os.close(fd)
+            if exc.errno in (errno.EACCES, errno.EAGAIN):
+                continue
+            raise
         try:
+            os.ftruncate(fd, 0)
             os.write(fd, str(os.getpid()).encode("ascii"))
         except OSError:
-            try:
-                os.close(fd)
-                os.unlink(path)
-            except OSError:
-                pass
-            continue
-        try:
-            os.close(fd)
-        except OSError:
             pass
-        return Slot(index, path)
+        return Slot(index, path, fd)
     return None
 
 
@@ -151,11 +102,6 @@ def acquire(limit, on_wait=None):
     directory = slot_dir()
     announced = False
     while True:
-        slot = _try_acquire(directory, count)
-        if slot is not None:
-            return slot
-        for index in range(count):
-            _reap(os.path.join(directory, f"slot-{index}.lock"))
         slot = _try_acquire(directory, count)
         if slot is not None:
             return slot

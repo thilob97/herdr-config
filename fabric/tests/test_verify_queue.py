@@ -1,7 +1,7 @@
 """Warteschlange für Prüfläufe: höchstens `max_verify` gleichzeitig (T-105).
 
-Die Tests starten echte Subprozesse, weil Slots prozessübergreifend wirken.
-Zeitvergleiche nutzen ausschließlich `time.monotonic()`.
+Die Tests starten echte Subprozesse, weil Slots per `flock` prozessübergreifend
+wirken. Zeitvergleiche nutzen ausschließlich `time.monotonic()`.
 """
 import json
 import os
@@ -28,6 +28,19 @@ result = pipeline.run(repo, ticket=ticket, repo=repo, timeout=timeout)
 print(result["state"])
 """
 
+HOLDER = """
+import sys
+import time
+
+from fabric.fablib import verifyslots
+
+count = int(sys.argv[1])
+ready = sys.argv[2]
+slots = [verifyslots.acquire(count) for _ in range(count)]
+open(ready, "w").close()
+time.sleep(120)
+"""
+
 HELPER = """
 import os
 import time
@@ -50,27 +63,17 @@ class VerifyQueueCase(FabricCase):
     def slot_path(self, index):
         return os.path.join(self.home, "verify-slots", f"slot-{index}.lock")
 
-    def write_slot(self, index, pid):
-        path = self.slot_path(index)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as handle:
-            handle.write(str(pid))
-        return path
-
-    def remove_slots(self, *indexes):
-        for index in indexes:
-            try:
-                os.unlink(self.slot_path(index))
-            except FileNotFoundError:
-                pass
-
-    def start_runner(self, repo, ticket, timeout=None, env=None):
+    def child_env(self):
         merged = dict(self.env)
-        merged.update(env or {})
         parts = [ROOT]
         if merged.get("PYTHONPATH"):
             parts.append(merged["PYTHONPATH"])
         merged["PYTHONPATH"] = os.pathsep.join(parts)
+        return merged
+
+    def start_runner(self, repo, ticket, timeout=None, env=None):
+        merged = self.child_env()
+        merged.update(env or {})
         args = [sys.executable, "-c", RUNNER, repo, ticket]
         if timeout is not None:
             args.append(str(timeout))
@@ -82,6 +85,20 @@ class VerifyQueueCase(FabricCase):
             stderr=subprocess.PIPE,
             text=True,
         )
+
+    def start_holder(self, count):
+        """Subprozess, der `count` Slots per flock hält, bis er getötet wird."""
+        ready = os.path.join(self.tmp, f"holder-{count}-{time.time_ns()}.ready")
+        proc = subprocess.Popen(
+            [sys.executable, "-c", HOLDER, str(count), ready],
+            env=self.child_env(),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if not self.wait_for(lambda: os.path.exists(ready), timeout=10):
+            self.stop(proc)
+            self.fail("Slot-Halter wurde nicht bereit")
+        return proc
 
     def stop(self, proc):
         if proc.poll() is None:
@@ -96,6 +113,20 @@ class VerifyQueueCase(FabricCase):
         with self.store_env():
             rows = store.pipeline_run_list(ticket)
         return next((row for row in rows if row["state"] == "queued"), None)
+
+    def running_run(self, ticket):
+        """(Lauf, Schritte), sobald der Lauf samt einem Schritt `running` ist."""
+        with self.store_env():
+            rows = store.pipeline_run_list(ticket)
+            if not rows:
+                return None
+            run = rows[-1]
+            steps = store.pipeline_steps(run["id"])
+        if run["state"] != "running":
+            return None
+        if not any(step["state"] == "running" for step in steps):
+            return None
+        return run, steps
 
 
 class VerifyQueueTest(VerifyQueueCase):
@@ -147,8 +178,7 @@ class VerifyQueueTest(VerifyQueueCase):
     def test_wartender_lauf_ist_queued_und_in_fab_runs(self):
         repo = self.make_repo()
         self.write_steps(repo, [{"name": "kurz", "run": "sleep 0.3"}])
-        self.write_slot(0, os.getpid())
-        self.write_slot(1, os.getpid())
+        holder = self.start_holder(2)
         proc = self.start_runner(repo, "T-9")
         try:
             self.assertTrue(
@@ -164,41 +194,59 @@ class VerifyQueueTest(VerifyQueueCase):
             self.assertIn("Warteschlange", text)
             self.assertNotIn("queued", text)
 
-            self.remove_slots(0, 1)
+            self.stop(holder)
             out, err = proc.communicate(timeout=30)
             self.assertEqual(proc.returncode, 0, err)
             self.assertIn("pass", out)
             self.assertIn("Warteschlange", err)
             self.assertEqual(err.count("Warteschlange"), 1)
+
+            # Slots werden nie gelöscht; nur das flock fällt weg.
+            self.assertTrue(os.path.exists(self.slot_path(0)))
+            self.assertTrue(os.path.exists(self.slot_path(1)))
         finally:
+            self.stop(holder)
             self.stop(proc)
-            self.remove_slots(0, 1)
 
     def test_slot_eines_getoeteten_prozesses_wird_frei(self):
         repo = self.make_repo()
         self.write_roster(max_verify=1)
-        self.write_steps(repo, [{"name": "ok", "run": "true"}])
+        self.write_steps(repo, [{"name": "lang", "run": "sleep 60"}])
+        killed = self.start_runner(repo, "T-5")
+        second = None
+        try:
+            state = self.wait_for(lambda: self.running_run("T-5"), timeout=10)
+            self.assertTrue(state, "Lauf startete nicht")
+            run, _steps = state
 
-        victim = subprocess.Popen(["sleep", "60"])
-        pid = victim.pid
-        victim.kill()
-        victim.wait(timeout=10)
+            killed.kill()
+            killed.wait(timeout=10)
 
-        # Gegenprobe: Eine reine Zähler-Lösung bliebe hier hängen, weil ein mit
-        # SIGKILL beendeter Prozess seinen Zähler nicht mehr dekrementiert.
-        # Die PID-Prüfung gibt den Slot beim nächsten Versuch frei.
-        self.write_slot(0, pid)
+            # Der zweite Runner startet erst nach dem Umschreiben der Pipeline.
+            self.write_steps(repo, [{"name": "kurz", "run": "true"}])
+            second = self.start_runner(repo, "T-6")
+            out, err = second.communicate(timeout=10)
+            self.assertEqual(second.returncode, 0, err)
+            self.assertIn("pass", out)
 
-        with mock.patch.dict(os.environ, self.env):
-            result = pipeline.run(repo, ticket="T-2", repo=repo)
-        self.assertEqual(result["state"], "pass")
-        self.assertFalse(os.path.exists(self.slot_path(0)))
+            # Gegenprobe: Eine reine Zähler-Lösung bliebe hier hängen, weil der
+            # per SIGKILL beendete Lauf seinen Zähler nicht freigibt. Das flock
+            # fällt mit dem Prozess weg, der Slot ist also sofort frei.
+            with self.store_env():
+                killed_row = store.pipeline_run_load(run["id"])
+            # Der getötete Lauf bleibt in der DB auf `running`; das ist
+            # bestehendes Absturzverhalten und nicht Teil dieses Tickets.
+            self.assertEqual(killed_row["state"], "running")
+        finally:
+            self.stop(killed)
+            if second is not None:
+                self.stop(second)
 
     def test_wartezeit_zaehlt_nicht_ins_timeout(self):
         repo = self.make_repo()
         self.write_roster(max_verify=1)
         self.write_steps(repo, [{"name": "kurz", "run": "sleep 0.2"}])
-        self.write_slot(0, os.getpid())
+        holder = self.start_holder(1)
         proc = self.start_runner(repo, "T-3", timeout=1)
         try:
             self.assertTrue(
@@ -206,19 +254,19 @@ class VerifyQueueTest(VerifyQueueCase):
             )
             # Deutlich länger als das Schritt-Timeout von 1 s.
             time.sleep(1.2)
-            self.remove_slots(0)
+            self.stop(holder)
             out, err = proc.communicate(timeout=10)
             self.assertEqual(proc.returncode, 0, err)
             self.assertIn("pass", out)
         finally:
-            self.remove_slots(0)
+            self.stop(holder)
             self.stop(proc)
 
     def test_store_sperre_bleibt_waehrend_des_wartens_frei(self):
         repo = self.make_repo()
         self.write_roster(max_verify=1)
         self.write_steps(repo, [{"name": "langsam", "run": "sleep 0.3"}])
-        self.write_slot(0, os.getpid())
+        holder = self.start_holder(1)
         proc = self.start_runner(repo, "T-4")
         try:
             self.assertTrue(
@@ -235,7 +283,7 @@ class VerifyQueueTest(VerifyQueueCase):
                     pass
             self.assertLess(time.monotonic() - started, 1.5)
         finally:
-            self.remove_slots(0)
+            self.stop(holder)
             self.stop(proc)
 
     def test_roster_max_verify_einstellbar(self):
