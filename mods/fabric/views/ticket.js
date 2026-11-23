@@ -444,12 +444,7 @@ function decisionsSection(app, cx, t, cards) {
   const decided = cards.length - open;
   const busy = app.busy === "proposal";
   return v_flex()
-    .id("fabric-proposals-scroll")
-    .flex_none()
     .w_full()
-    .max_h(320)
-    .overflow_y_scrollbar()
-    .track_scroll(app.proposalScroll)
     .px(S.l)
     .py(S.m)
     .gap(S.s)
@@ -1024,7 +1019,6 @@ export function renderTicket(app, cx, t) {
       .overflow_hidden()
       .child(headBlock)
       .child(titleBar)
-      .when(Boolean(decisions), (el) => el.child(decisions))
       .child(
         v_flex()
           .id("fabric-ticket-scroll")
@@ -1033,6 +1027,7 @@ export function renderTicket(app, cx, t) {
           .w_full()
           .overflow_y_scrollbar()
           .track_scroll(app.historyScroll)
+          .when(Boolean(decisions), (el) => el.child(decisions))
           .child(body(app, cx, t, ticket))
           .when(ticket.status === "review" && Boolean(ticket.branch), (el) =>
             el.child(changesSection(app, cx, t, ticket)))
@@ -1048,7 +1043,6 @@ export function renderTicket(app, cx, t) {
     .overflow_hidden()
     .child(headBlock)
     .child(titleBar)
-    .when(Boolean(decisions), (el) => el.child(decisions))
     .child(
       h_flex()
         .w_full()
@@ -1066,6 +1060,7 @@ export function renderTicket(app, cx, t) {
                 .w_full()
                 .overflow_y_scrollbar()
                 .track_scroll(app.historyScroll)
+                .when(Boolean(decisions), (el) => el.child(decisions))
                 .child(body(app, cx, t, ticket))
                 .when(ticket.status === "review" && Boolean(ticket.branch), (el) =>
                   el.child(changesSection(app, cx, t, ticket)))

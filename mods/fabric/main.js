@@ -138,7 +138,6 @@ export default class Fabric extends View {
     this.changesLoadingFile = false;
     this.historyScroll = ScrollHandle.new();
     this.historyLastIndex = 1;
-    this.proposalScroll = ScrollHandle.new();
     this.propsScroll = ScrollHandle.new();
     this.propsEndIndex = 0;
     // Ein Dropdown ist zugleich offen; ein gemeinsamer Handle reicht.
@@ -785,8 +784,11 @@ export default class Fabric extends View {
         this.bodyEditor = this.newEditor("markdown", this.bodySaved);
         this.bodyEditor.on("paste_other", (_event, cx) => { this.pasteImage("body", cx); });
         this.bodyEditing = false;
-        this.needsHistoryScroll = true;
-        this.historyLastIndex = model.historyEndIndex(this.ticket, this.events);
+        const cards = model.ticketCards(this.ticket, this.events);
+        // Mit offenen Karten beginnt das Ticket oben bei „Zu entscheiden“,
+        // nicht am Ende des Verlaufs.
+        this.needsHistoryScroll = !cards.some((card) => card.status === "open");
+        this.historyLastIndex = model.historyEndIndex(this.ticket, this.events) + (cards.length ? 1 : 0);
       } else if (this.bodyEditor && !model.isDirty(this.bodyEditor.value(), this.bodySaved)) {
         this.bodySaved = this.ticket.body ?? "";
         this.bodyEditor.set_value(this.bodySaved);
