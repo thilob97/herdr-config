@@ -56,6 +56,16 @@
         "opus",
         "--dangerously-skip-permissions"
       ]
+    },
+    {
+      "name": "xen",
+      "role": "UI / UX Designer",
+      "color": "c5",
+      "prompt": "prompts/xen.md",
+      "argv": [
+        "omp",
+        "--model=opencode-go/gemini-4-argon"
+      ]
     }
   ],
   "teams": [
