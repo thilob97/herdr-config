@@ -231,8 +231,6 @@ def build_paths(paths, brief="", maximum=DEFAULT_LIMIT, fallback_source="",
     map_source = ", ".join(map_found)
     brief_source = fallback_source if brief_block else ""
     project_source = ", ".join(found)
-    if brief_block and fallback_source:
-        project_source = ", ".join(list(found) + [fallback_source])
 
     if not maximum:
         return {"text": "", "clipped": False} if report else ""

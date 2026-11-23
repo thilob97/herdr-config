@@ -634,3 +634,34 @@ class MapContextTests(FabricCase):
         self.assertFalse(
             [line for line in hints if real_map in line], hints
         )
+
+    def test_gekuerzter_steckbrief_nennt_nicht_den_vollen_brief(self):
+        repo = self.make_repo()
+        project = os.path.join(repo, ".fabric", "project.md")
+        decisions = os.path.join(repo, ".fabric", "decisions.md")
+        self.write_file(project, "# Steckbrief\n\n" + "S" * 8000)
+        self.write_file(decisions, "- Kurz.\n")
+        folder = os.path.join(repo, ".fabric", "knowledge")
+        os.makedirs(folder, exist_ok=True)
+        for name in ("handbuch.md", "skizze.pdf"):
+            self.write_file(os.path.join(folder, name), "INHALT\n")
+        target = self.project_map(repo)
+        brief = "Kurzer Brief.\n"
+        text = context.build_paths([repo], brief, 2000, "/r/roster.json")
+        self.assertLessEqual(len(text), 2000)
+        self.assertIn("## Team-Brief", text)
+        self.assertIn(brief.strip(), text)
+        self.assertIn(os.path.realpath(target), text)
+        # Der Steckbrief ist zu lang, der Brief passt vollständig hinein:
+        # Der Hinweis nennt nur den Steckbrief, nicht die Roster-Quelle.
+        hint = context.HINT.format(source="")
+        hints = [line for line in text.splitlines() if hint in line]
+        self.assertTrue(hints, text)
+        self.assertEqual(
+            len([line for line in hints if os.path.realpath(project) in line]),
+            1,
+            hints,
+        )
+        self.assertFalse(
+            [line for line in hints if "/r/roster.json" in line], hints
+        )
