@@ -125,10 +125,12 @@ def _children_reason(children):
     )
 
 
-def _dispatch_locked(ticket, agent_name, actor, roster):
-    """Startet oder weckt ein Ticket; der Aufrufer hält `store.locked()`.
+def _dispatch(ticket, rev, agent_name, actor, roster):
+    """Startet oder weckt ein Ticket ohne langen Store-Lock.
 
-    Gibt ein Ergebnis-Dict zurück und schreibt Ticket sowie Ereignis selbst.
+    Gibt ein Ergebnis-Dict zurück und schreibt Ticket sowie Ereignis über
+    `_commit`. Der Aufrufer hält keine Sperre und sammelt Ereignisse in
+    `store.deferred_events()`.
     """
     if not ticket.get("repo"):
         raise FabError(
@@ -176,8 +178,7 @@ def _dispatch_locked(ticket, agent_name, actor, roster):
         ticket.pop("stall", None)
         events.append("dispatch", ticket["id"], actor, agent_name,
                       f"lief schon: {running_name}")
-        store.save(ticket)
-        index.rebuild()
+        rev = _commit(ticket, rev)
         return {
             "agent": agent_name,
             "terminal": running_name,
@@ -202,13 +203,12 @@ def _dispatch_locked(ticket, agent_name, actor, roster):
         worktree=folder,
         assignee=agent_name,
     )
-    store.save(ticket)
+    rev = _commit(ticket, rev)
     started = agents.start_agent(roster, ticket, agent_name)
     if started["result"] != "gestartet":
         events.append("dispatch", ticket["id"], actor, agent_name,
                       f"Start fehlgeschlagen: {started['result']}")
-        store.save(ticket)
-        index.rebuild()
+        rev = _commit(ticket, rev)
         detail = started.get("error") or started["result"]
         raise store.PersistError(
             f"{ticket['id']}: Agent {agent_name} nicht gestartet ({detail}); "
@@ -224,8 +224,7 @@ def _dispatch_locked(ticket, agent_name, actor, roster):
     if warning:
         detail += f" · {warning}"
     events.append("dispatch", ticket["id"], actor, agent_name, detail)
-    store.save(ticket)
-    index.rebuild()
+    rev = _commit(ticket, rev)
     return {
         "agent": agent_name,
         "terminal": started["terminal"],
@@ -240,7 +239,6 @@ def _autostart_note(ticket, reason):
     """Grund festhalten, warum ein startbereites Ticket nicht startet."""
     text = f"automatisch nicht gestartet: {reason}"
     events.append("dispatch", ticket["id"], "fab", ticket.get("assignee") or "", text)
-    index.rebuild()
     print(f"{ticket['id']}: {text}", file=sys.stderr)
 
 
@@ -250,56 +248,63 @@ def _autostart(candidate_ids):
     Ein Fehler beim Start bleibt beim Ticket; der Aufrufer (accept, link) gilt
     trotzdem als erfolgreich.
     """
+    roster = agents.load()
     for candidate_id in dict.fromkeys(candidate_ids):
-        with store.locked():
-            try:
-                ticket = store.load(candidate_id)
-            except FabError:
-                continue
-            status = ticket.get("status")
-            if status != "todo":
-                if status == "draft":
-                    _autostart_note(ticket, "Status draft")
-                continue
-            if not ticket.get("assignee"):
-                _autostart_note(ticket, "kein Zuständiger")
-                continue
-            if not ticket.get("repo"):
-                _autostart_note(ticket, "kein Repo")
-                continue
-            if not _has_criteria(ticket.get("body")):
-                _autostart_note(ticket, "keine Abnahmekriterien")
-                continue
-            try:
-                roster = agents.load()
-                result = _dispatch_locked(
-                    ticket, ticket["assignee"], "fab", roster
+        try:
+            ticket = store.load(candidate_id)
+        except FabError:
+            continue
+        rev = _new_rev(ticket)
+        try:
+            with store.deferred_events():
+                status = ticket.get("status")
+                if status != "todo":
+                    if status == "draft":
+                        _autostart_note(ticket, "Status draft")
+                        rev = _commit(ticket, rev)
+                    continue
+                if not ticket.get("assignee"):
+                    _autostart_note(ticket, "kein Zuständiger")
+                    rev = _commit(ticket, rev)
+                    continue
+                if not ticket.get("repo"):
+                    _autostart_note(ticket, "kein Repo")
+                    rev = _commit(ticket, rev)
+                    continue
+                if not _has_criteria(ticket.get("body")):
+                    _autostart_note(ticket, "keine Abnahmekriterien")
+                    rev = _commit(ticket, rev)
+                    continue
+                result = _dispatch(
+                    ticket, rev, ticket["assignee"], "fab", roster
                 )
-            except Exception as exc:
+        except Exception as exc:
+            with store.locked():
+                fresh = store.load(candidate_id)
                 events.append(
-                    "dispatch", ticket["id"], "fab",
-                    ticket.get("assignee") or "",
+                    "dispatch", fresh["id"], "fab",
+                    fresh.get("assignee") or "",
                     f"automatisch nicht gestartet: {exc}",
                 )
-                store.save(ticket)
+                store.save(fresh)
                 index.rebuild()
-                print(f"{ticket['id']}: automatisch nicht gestartet: {exc}",
-                      file=sys.stderr)
-                continue
-            _print_wake_results(result.get("wake") or [])
-            if result["already"]:
-                print(
-                    f"{ticket['id']}: {result['agent']} läuft schon "
-                    f"({result['terminal']}); geweckt statt gestartet"
-                )
-            else:
-                print(
-                    f"{ticket['id']}: automatisch an {result['agent']} verteilt: "
-                    f"{result['branch']} in {result['folder']} "
-                    f"(Terminal {result['terminal']})"
-                )
-                if result.get("warning"):
-                    print(f"{ticket['id']}: {result['warning']}")
+            print(f"{ticket['id']}: automatisch nicht gestartet: {exc}",
+                  file=sys.stderr)
+            continue
+        _print_wake_results(result.get("wake") or [])
+        if result["already"]:
+            print(
+                f"{ticket['id']}: {result['agent']} läuft schon "
+                f"({result['terminal']}); geweckt statt gestartet"
+            )
+        else:
+            print(
+                f"{ticket['id']}: automatisch an {result['agent']} verteilt: "
+                f"{result['branch']} in {result['folder']} "
+                f"(Terminal {result['terminal']})"
+            )
+            if result.get("warning"):
+                print(f"{ticket['id']}: {result['warning']}")
 
 
 def _unblocked_by(trigger_id):
@@ -995,14 +1000,15 @@ def cmd_preview(args):
 def cmd_dispatch(args):
     actor = _require_actor(args)
     roster = agents.load()
-    with store.locked():
-        ticket = store.load(args.id)
-        agent_name = args.agent or ticket.get("assignee")
-        if not agent_name:
-            raise FabError(
-                f"{ticket['id']}: kein Agent; nutze --agent NAME oder fab assign {ticket['id']} NAME"
-            )
-        result = _dispatch_locked(ticket, agent_name, actor, roster)
+    ticket = store.load(args.id)
+    rev = _new_rev(ticket)
+    agent_name = args.agent or ticket.get("assignee")
+    if not agent_name:
+        raise FabError(
+            f"{ticket['id']}: kein Agent; nutze --agent NAME oder fab assign {ticket['id']} NAME"
+        )
+    with store.deferred_events():
+        result = _dispatch(ticket, rev, agent_name, actor, roster)
     _print_wake_results(result.get("wake") or [])
     if result["already"]:
         print(
