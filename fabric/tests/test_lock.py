@@ -220,7 +220,7 @@ class LockTests(FabricCase):
         )
         return repo, tid, worktree, proc
 
-    def blocked_handover_roter_merge(self, started, release):
+    def blocked_handover_roter_merge(self, started, release, actor="zap"):
         """Handover, dessen Merge-Prüfung blockiert und danach rot endet."""
         repo, tid, worktree = self.ready_ticket()
         self.commit_in(worktree, "aenderung.txt", "wert\n")
@@ -242,7 +242,7 @@ class LockTests(FabricCase):
         self.git_out(repo, "add", "main-rot.txt")
         self.git_out(repo, "commit", "-qm", "main macht den Merge rot")
         proc = self.cli_popen(
-            "handover", tid, "--from", "zap", "Fertig",
+            "handover", tid, "--from", actor, "Fertig",
             marker_env={
                 "FAB_TEST_STARTED": started,
                 "FAB_TEST_RELEASE": release,
@@ -746,8 +746,9 @@ class LockTests(FabricCase):
     def test_handover_weckt_nicht_bei_cas_konflikt(self):
         started = os.path.join(self.tmp, "handover-rot-started")
         release = os.path.join(self.tmp, "handover-rot-release")
+        # Fremder Autor: der Zuständige zap wäre sonst als Autor unterdrückt.
         _repo, tid, _worktree, proc = self.blocked_handover_roter_merge(
-            started, release
+            started, release, actor="ada"
         )
         # Zuständiger erreichbar: ein Wecken vor dem Commit wäre ein `hc send`.
         self.set_live({"fab-herdr-app-zap-t-1": "t7"})
@@ -763,6 +764,26 @@ class LockTests(FabricCase):
         self.assertIn("geändert", err)
         self.assertEqual(self.hc_calls("send"), [])
         self.assertEqual(self.hc_calls("run"), [])
+
+    # 12b -- Gegenprobe: ohne CAS weckt der rote Merge den Zuständigen
+
+    def test_handover_weckt_zustaendigen_bei_rotem_merge(self):
+        started = os.path.join(self.tmp, "handover-rot-started")
+        release = os.path.join(self.tmp, "handover-rot-release")
+        _repo, _tid, _worktree, proc = self.blocked_handover_roter_merge(
+            started, release, actor="ada"
+        )
+        self.set_live({"fab-herdr-app-zap-t-1": "t7"})
+        self.clear_log()
+
+        self.write_file(release, "")
+        _out, err = proc.communicate(timeout=60)
+
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("Übergabe verweigert", err)
+        sends = self.hc_calls("send")
+        self.assertEqual(len(sends), 1, sends)
+        self.assertEqual(sends[0][1], "t7")
 
     # 13 -- Accept weckt Prüfer-Hinweise bei einem CAS-Konflikt nicht
 
