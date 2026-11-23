@@ -300,7 +300,9 @@ export function renderRepos(app, cx, t) {
     .when(Boolean(problem), (el) => el.child(ui.notice(t, problem.text, problem.level)))
     .child(
       !app.repos
-        ? ui.loading(t, "Repos werden geladen …")
+        ? (app.reposError
+          ? ui.emptyState(t, { title: "Repos nicht lesbar", text: "Details stehen oben." })
+          : ui.loading(t, "Repos werden geladen …"))
         : h_flex().flex_1().min_h(0).items_stretch()
           .child(list(app, cx, t))
           .child(detail(app, cx, t)),

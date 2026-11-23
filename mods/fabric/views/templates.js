@@ -112,7 +112,9 @@ export function renderTemplates(app, cx, t) {
     .when(Boolean(app.loadError), (el) => el.child(ui.notice(t, app.loadError)))
     .child(
       !app.templateList
-        ? ui.loading(t, "Vorlagen werden geladen …")
+        ? (app.templateError
+          ? ui.emptyState(t, { title: "Vorlagen nicht lesbar", text: "Details stehen oben." })
+          : ui.loading(t, "Vorlagen werden geladen …"))
         : h_flex().flex_1().min_h(0).items_stretch()
           .child(templateList(app, cx, t))
           .child(editorPane(app, cx, t)),

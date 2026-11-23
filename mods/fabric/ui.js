@@ -318,10 +318,8 @@ export function keyHint(t, key) {
 }
 
 export function emptyState(t, { title = "Nichts da", text = "", action = null, compact = false } = {}) {
-  return v_flex()
-    .size_full()
+  const body = v_flex()
     .min_h(0)
-    .overflow_y_scrollbar()
     .items_center()
     .justify_center()
     .p(compact ? SPACE.m : SPACE.xl)
@@ -329,6 +327,7 @@ export function emptyState(t, { title = "Nichts da", text = "", action = null, c
     .child(div().text_size(compact ? FONT.m : FONT.l).text_color(t.muted).text_center().child(title))
     .when(Boolean(text), (el) => el.child(div().text_size(compact ? FONT.xs : FONT.s).text_color(t.dim).text_center().whitespace_normal().child(text)))
     .when(Boolean(action), (el) => el.child(div().pt(compact ? SPACE.xs : SPACE.s).child(action)));
+  return compact ? body.w_full().py(SPACE.xl) : body.size_full();
 }
 
 export function loading(t, text = "Lade …") {

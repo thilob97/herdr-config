@@ -538,23 +538,44 @@ export function renderTeam(app, cx, t) {
     .when(Boolean(app.flash?.text), (el) => el.child(ui.notice(t, app.flash.text, app.flash.level)))
     .child(
       app.roster
-        ? v_flex().flex_1().min_h(0).overflow_y_scrollbar().p(S.l).gap(S.m)
-          .child(blueprintCard(app, cx, t))
-          .when(teams.length === 0, (el) => el.child(ui.emptyState(t, {
-            title: "Noch keine Teams",
-            text: "Ein Team verbindet Repos, Blaupausen, einen Prüfer und einen Orchestrator.",
-            compact: true,
-            action: ui.button(t, {
-              id: "fabric-team-empty-new",
-              label: "Neues Team",
-              icon: "plus",
-              small: true,
-              tooltip: "Team anlegen (fab team add)",
-              onClick: (cx) => app.openNewTeam(cx),
-            }),
-          })))
-          .children(teams.map((team) => teamCard(app, cx, t, team)).filter(Boolean))
-        : ui.loading(t, "Roster wird geladen …"),
+        ? (blueprints.length === 0 && teams.length === 0
+          ? ui.emptyState(t, {
+            title: "Noch keine Blaupausen und Teams",
+            text: "Eine Blaupause beschreibt Rolle, Farbe, Programm und Prompt einer Sitzung. Ein Team verbindet Repos, Blaupausen, einen Prüfer und einen Orchestrator.",
+            action: h_flex().gap(S.s).items_center()
+              .child(ui.button(t, {
+                id: "fabric-blueprint-empty-new",
+                label: "Neue Blaupause",
+                icon: "plus",
+                onClick: (cx) => app.openBlueprintDrawer("new", null, cx),
+              }))
+              .child(ui.button(t, {
+                id: "fabric-team-empty-new",
+                label: "Neues Team",
+                icon: "plus",
+                primary: true,
+                onClick: (cx) => app.openNewTeam(cx),
+              })),
+          })
+          : v_flex().flex_1().min_h(0).overflow_y_scrollbar().p(S.l).gap(S.m)
+            .child(blueprintCard(app, cx, t))
+            .when(teams.length === 0, (el) => el.child(ui.emptyState(t, {
+              title: "Noch keine Teams",
+              text: "Ein Team verbindet Repos, Blaupausen, einen Prüfer und einen Orchestrator.",
+              compact: true,
+              action: ui.button(t, {
+                id: "fabric-team-empty-new",
+                label: "Neues Team",
+                icon: "plus",
+                small: true,
+                tooltip: "Team anlegen (fab team add)",
+                onClick: (cx) => app.openNewTeam(cx),
+              }),
+            })))
+            .children(teams.map((team) => teamCard(app, cx, t, team)).filter(Boolean)))
+        : (app.rosterError
+          ? ui.emptyState(t, { title: "Roster nicht lesbar", text: app.rosterError })
+          : ui.loading(t, "Roster wird geladen …")),
     );
 }
 

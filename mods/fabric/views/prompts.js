@@ -143,7 +143,9 @@ export function renderPrompts(app, cx, t) {
     .when(Boolean(app.loadError), (el) => el.child(ui.notice(t, app.loadError)))
     .child(
       !app.promptList
-        ? ui.loading(t, "Prompts werden geladen …")
+        ? (app.promptError
+          ? ui.emptyState(t, { title: "Prompts nicht lesbar", text: "Details stehen oben." })
+          : ui.loading(t, "Prompts werden geladen …"))
         : h_flex().flex_1().min_h(0).items_stretch()
           .child(promptList(app, cx, t))
           .child(editorPane(app, cx, t)),
