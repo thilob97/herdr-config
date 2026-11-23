@@ -7,3 +7,4 @@
 - Teste jeden Fehlerzweig eines neuen Ablaufs (rot, Konflikt, Abbruch) in jedem Einstiegspunkt, der ihn nutzt, also handover, accept und PR-Weg, statt nur den grünen Weg und einen Einstieg.
 - Wenn du einen Revert zurücknimmst und dabei Konflikte löst, prüfe den Ergebnis-Diff gegen das Inverse des Reverts und übernimm jede Zeile des Originals, auch in der Doku, außer den bewusst begründeten Abweichungen.
 - Übergib ein Eltern-Ticket erst, wenn alle Kinder auf main angekommen sind und der Nachweis dort gemessen wurde, und spiele die Arbeit eines Kindes nie zusätzlich im Branch des Eltern-Tickets ein.
+- Lies den Status eines Laufs unter der Sperre neu, bevor du ihn als verwaist auf fail setzt, und teste das Aufräumen gegen einen Lauf, der zwischen Snapshot und Schreiben mit pass endet, wenn der Besitzer seine Sperre vor pipeline_run_finish freigibt.
