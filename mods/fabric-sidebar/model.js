@@ -545,3 +545,35 @@ export function freeAgentCards(terminals = [], listed = [], spaces = [], sort = 
   const busy = cards.filter((card) => card.status === "working").length;
   return { cards, groups, busy };
 }
+
+// --- Alarme aus index.json (`alarm`) ---------------------------------------
+// Der Index veröffentlicht die Alarme bereits fertig beschriftet; hier bleibt
+// nur, welche gezeigt werden und in welcher Reihenfolge ihre Knöpfe stehen.
+
+const ALARM_LABELS = {
+  run: "Lauf ansehen",
+  ticket: "Ticket öffnen",
+  resume: "Pause aufheben",
+  ack: "Quittieren",
+};
+
+/** Alarme für den Banner: ohne `active` oder mit leerer Liste nichts. */
+export function activeAlarms(alarm) {
+  if (!alarm || alarm.active === false) return [];
+  const list = Array.isArray(alarm.alarms) ? alarm.alarms : [];
+  return list.filter((entry) => entry && typeof entry === "object");
+}
+
+/** Knöpfe eines Alarms: bekannte Aktionen in der Reihenfolge des Alarms,
+    Unbekanntes entfällt, `Quittieren` steht immer zuletzt. */
+export function alarmButtons(alarm) {
+  const actions = Array.isArray(alarm?.actions) ? alarm.actions : [];
+  const known = [];
+  for (const action of actions) {
+    if (!Object.hasOwn(ALARM_LABELS, action) || known.includes(action)) continue;
+    known.push(action);
+  }
+  const ordered = known.filter((action) => action !== "ack");
+  if (known.includes("ack")) ordered.push("ack");
+  return ordered.map((action) => ({ action, label: ALARM_LABELS[action] }));
+}

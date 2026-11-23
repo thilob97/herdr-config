@@ -5,6 +5,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  activeAlarms, alarmButtons,
   busyLabel, costOf, costText, fabricAddresses, fabricEntry, fabricRows, freeAgentCards,
   freeCornerIcon, freeSpriteKey, freeStatusWord, hiddenAgentAddresses, pinCommand, runtimeText,
   statusWord, ticketFromName, truncateTask,
@@ -512,4 +513,38 @@ test("agents.sort 'grouped' hält Angeheftete vorn und sortiert nach Maschine", 
   const { cards } = freeAgentCards([remote, local, pinnedRemote], [], [], "grouped");
   assert.deepEqual(cards.map((card) => card.address), ["remote/p1", "remote/r1", "l1"]);
   assert.deepEqual(cards.map((card) => card.group), ["REMOTE", "REMOTE", "THIS MACHINE"]);
+});
+
+// --- Alarme (Banner in der Seitenleiste) -----------------------------------
+
+test("Alarme: nur aktive Einträge, leere oder fehlende Liste zeigt nichts", () => {
+  const alarm = {
+    active: true,
+    count: 2,
+    alarms: [
+      { id: "main:42", kind: "main", text: "main rot", actions: ["run", "ack"] },
+      { id: "main:43", kind: "main", text: "zweiter", actions: ["ack"] },
+    ],
+  };
+  assert.deepEqual(activeAlarms(alarm).map((entry) => entry.id), ["main:42", "main:43"]);
+  assert.deepEqual(activeAlarms({ ...alarm, active: false }), []);
+  assert.deepEqual(activeAlarms({ active: true, alarms: [] }), []);
+  assert.deepEqual(activeAlarms({ active: true }), []);
+  assert.deepEqual(activeAlarms(null), []);
+  // Müll in der Liste wird übersprungen, nicht der ganze Banner.
+  assert.deepEqual(activeAlarms({ active: true, alarms: [null, "x"] }), []);
+});
+
+test("Alarm-Knöpfe: Reihenfolge des Alarms, ack zuletzt, Unbekanntes fällt weg", () => {
+  assert.deepEqual(alarmButtons({ actions: ["run", "ticket", "resume", "ack"] }), [
+    { action: "run", label: "Lauf ansehen" },
+    { action: "ticket", label: "Ticket öffnen" },
+    { action: "resume", label: "Pause aufheben" },
+    { action: "ack", label: "Quittieren" },
+  ]);
+  // `ack` rückt ans Ende, auch wenn der Index es vorne nennt.
+  assert.deepEqual(alarmButtons({ actions: ["ack", "ticket"] }).map((b) => b.action), ["ticket", "ack"]);
+  assert.deepEqual(alarmButtons({ actions: ["close", "run", "run", "open"] }).map((b) => b.action), ["run"]);
+  assert.deepEqual(alarmButtons({ actions: ["close"] }), []);
+  assert.deepEqual(alarmButtons(null), []);
 });

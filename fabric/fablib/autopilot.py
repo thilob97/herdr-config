@@ -108,11 +108,21 @@ def _end_text_for(end):
 
 def write_state(state, reason="", end="", last_action=None):
     """Statusdatei atomar schreiben; unbekannte Leserfelder bleiben unberührt."""
+    previous = read_state()
+    updated_at = int(epoch() * 1000)
+    if state == "paused":
+        if previous.get("state") == "paused" and previous.get("paused_since"):
+            paused_since = previous["paused_since"]
+        else:
+            paused_since = updated_at
+    else:
+        paused_since = ""
     data = {
         "state": state,
         "reason": reason or "",
         "end": end or "",
-        "updated_at": int(epoch() * 1000),
+        "updated_at": updated_at,
+        "paused_since": paused_since,
         "last_action": _last_action if last_action is None else last_action,
         "log": log_path(),
         "pid": os.getpid(),
@@ -423,6 +433,17 @@ def _attach_output(tid, stdout, stderr):
     return paths
 
 
+def _rebuild_index():
+    """Lesemodell nach einer main-Prüfung neu schreiben; Fehler bleiben im Log."""
+    try:
+        from . import index
+
+        with store.locked():
+            index.rebuild()
+    except Exception as exc:  # noqa: BLE001 - Anzeige darf die Abnahme nicht kippen
+        log(f"Index nach main-Prüfung fehlgeschlagen: {exc}")
+
+
 def check_main(repo=None):
     """main nach einem Merge prüfen, bei zweimal Rot den Merge zurücknehmen.
 
@@ -579,11 +600,14 @@ def try_accept(ticket):
         return True
     ok, out, err, run_id = check_main(repo)
     if ok:
+        _rebuild_index()
         log(f"main nach {tid} grün")
         return True
     # Der Schutzschritt hängt nicht am Erfolg des Reverts.
     _paused = True
     _pause("main nach Merge rot")
+    write_state("paused", "main nach Merge rot – Abnahmen pausiert", end=_end_text)
+    _rebuild_index()
     try:
         paths = _attach_output(tid, out, err)
     except (FabError, OSError) as exc:

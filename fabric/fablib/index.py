@@ -119,30 +119,7 @@ def _waiting_entries(questions, reviews):
             )
 
 
-def _tick_entry(now):
-    """Inbox-Alarm, solange der letzte `fab tick` zu alt ist; sonst nichts.
-
-    Die `id` hängt am beobachteten `last_tick`: derselbe Ausfall erzeugt genau
-    einen Eintrag, ein späterer neuer Tick löst ihn auf.
-    """
-    state = store.tick_alarm(now)
-    if not state["stale"]:
-        return None
-    last = state["last_tick"]
-    age = _stall_age(last, now)
-    return {
-        "id": f"attention:tick:{last}",
-        "kind": "attention",
-        "ticket": "",
-        "at": last + state["limit_ms"],
-        "from": "fab",
-        "text": f"fab tick seit {age} nicht gelaufen – Stillstands-Wächter prüfen",
-        "reason": f"letzter Tick vor {age}",
-        "since": last,
-    }
-
-
-def _inbox(stalled, questions, reviews, rows, tickets=(), approvals=()):
+def _inbox(stalled, questions, reviews, rows, tickets=(), approvals=(), alarms=()):
     entries = []
     stalled_ids = set()
     now = store.now_ms()
@@ -169,9 +146,21 @@ def _inbox(stalled, questions, reviews, rows, tickets=(), approvals=()):
             }
         )
         stalled_ids.add(ticket_id)
-    tick = _tick_entry(now)
-    if tick is not None:
-        entries.append(tick)
+    for item in alarms:
+        entry = {
+            "id": f"attention:{item['id']}",
+            "kind": "attention",
+            "ticket": item.get("ticket") or "",
+            "at": item.get("at"),
+            "from": "fab",
+            "text": item.get("text") or "",
+            "reason": item.get("reason") or "",
+            "alarm": item.get("id"),
+            "run": item.get("run"),
+        }
+        if item.get("kind") == "tick":
+            entry["since"] = item.get("since")
+        entries.append(entry)
     for kind, ticket, last, at in _waiting_entries(questions, reviews):
         entries.append(
             {
@@ -293,6 +282,10 @@ def _teams(roster):
 
 
 def build():
+    # Lazy: `alarm` zieht `autopilot` und `git`; der Import soll nur den
+    # Index-Lauf kosten, nicht jeden `fab`-Aufruf.
+    from . import alarm
+
     tickets = store.all_tickets()
     rows = events.read_all()
     roster = agents.load(required=False)
@@ -318,6 +311,7 @@ def build():
                 team=str((team_entry or {}).get("name") or ""),
             )
         )
+    alarm_state = alarm.status()
     inbox = _inbox(
         store.stalled_tickets(),
         store.question_tickets(),
@@ -325,11 +319,13 @@ def build():
         store.attention_event_rows(events.ATTENTION_TEXTS),
         tickets,
         approvals=store.flow_approvals(),
+        alarms=alarm_state["alarms"],
     )
     payload = {
         "version": 1,
         "generated_at": store.now_ms(),
         "tick": store.tick_alarm(),
+        "alarm": alarm_state,
         "tickets": entries,
         "inbox": inbox,
         "roster": agents.roster_rows(roster) if roster else [],

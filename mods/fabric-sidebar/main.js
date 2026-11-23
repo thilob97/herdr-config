@@ -5,8 +5,8 @@
 import { View, div, image, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import {
-  agents, appHome, checking, fonts, openOverlay, readTextFile, run, setAgentOrder, setShared,
-  settings, shared, spaces, terminals, theme,
+  agents, appHome, checking, exec, fonts, openOverlay, readTextFile, run, setAgentOrder,
+  setShared, settings, shared, spaces, terminals, theme,
 } from "herdr";
 import * as model from "./model.js";
 
@@ -31,6 +31,7 @@ function normalizeIndex(raw) {
     tickets: Array.isArray(raw?.tickets) ? raw.tickets : [],
     roster: Array.isArray(raw?.roster) ? raw.roster : [],
     teams: Array.isArray(raw?.teams) ? raw.teams : [],
+    alarm: raw?.alarm ?? null,
   };
 }
 
@@ -39,10 +40,10 @@ function statusColor(t, status) {
 }
 
 // Derselbe Weg wie fabric/main.js openInWindow: erst die Route teilen, dann
-// das Fenster öffnen; ist es schon offen, reicht der openRequest.
-function openTicket(ticket) {
-  const route = { page: "ticket", id: ticket };
-  setShared("fabric.selected", ticket);
+// das Fenster öffnen; ist es schon offen, reicht der openRequest. Das Ticket
+// trägt zusätzlich `fabric.selected`, damit die Inbox es markiert.
+function openRoute(route) {
+  if (route.page === "ticket" && route.id) setShared("fabric.selected", route.id);
   setShared("fabric.route", route);
   if (shared("fabric.window")?.id) {
     setShared("fabric.openRequest", { at: Date.now(), route });
@@ -59,6 +60,10 @@ function openTicket(ticket) {
     props: { view: "app" },
   });
   setShared("fabric.window", { id });
+}
+
+function openTicket(ticket) {
+  openRoute({ page: "ticket", id: ticket });
 }
 
 function ticketChip(t, ticket) {
@@ -283,6 +288,61 @@ function publishHiddenAgents(terms, listed) {
   }
 }
 
+// Roter Alarm-Banner: ein Block je Alarm, Text bricht um, je Aktion ein
+// kleiner Knopf. Ein Schließen gibt es bewusst nicht; nur `fab alarm ack`
+// räumt den Alarm auf. Unbekannte Aktionen fallen in `model.alarmButtons` weg.
+function alarmBanner(t, alarm, onAction) {
+  const buttons = model.alarmButtons(alarm);
+  return v_flex()
+    .flex_none()
+    .w_full()
+    .rounded(6)
+    .bg(t.blocked + "1f")
+    .border_1()
+    .border_color(t.blocked + "66")
+    .px(8)
+    .py(6)
+    .gap(5)
+    .child(
+      h_flex()
+        .w_full()
+        .gap(6)
+        .items_start()
+        .child(div().flex_none().text_size(11).font_bold().text_color(t.blocked).child("!"))
+        .child(div()
+          .flex_1()
+          .min_w(0)
+          .text_size(10.5)
+          .text_color(t.foreground)
+          .whitespace_normal()
+          .child(String(alarm.text ?? ""))),
+    )
+    .when(buttons.length > 0, (el) => el.child(
+      h_flex()
+        .w_full()
+        .gap(4)
+        .flex_wrap()
+        .children(buttons.map(({ action, label }) => div()
+          .id(`fabric-alarm-${alarm.id ?? "?"}-${action}`)
+          .flex_none()
+          .h(18)
+          .px(7)
+          .rounded(4)
+          .border_1()
+          .border_color(t.blocked + "66")
+          .bg(t.blocked + "18")
+          .text_size(10)
+          .font_semibold()
+          .text_color(t.blocked)
+          .flex()
+          .items_center()
+          .cursor_pointer()
+          .hover((style) => style.bg(t.blocked + "33"))
+          .on_click((_event, cx) => onAction(alarm, action, cx))
+          .child(label))),
+    ));
+}
+
 export default class FabricSidebar extends View {
   init(_props, cx) {
     this.index = null;
@@ -339,6 +399,36 @@ export default class FabricSidebar extends View {
     }
   }
 
+  // `run` und `ticket` springen nur in die Fabric-Oberfläche; `resume` und
+  // `ack` räumen serverseitig auf und laden den Index neu, damit der Banner
+  // ohne den 5-s-Takt verschwindet. Fehler landen still im loadError.
+  async activate(alarm, action, cx) {
+    if (action === "run") {
+      openRoute({ page: "pipelines", run: alarm.run });
+      return;
+    }
+    if (action === "ticket") {
+      if (alarm.ticket) openTicket(String(alarm.ticket));
+      return;
+    }
+    const command = action === "ack" ? ["alarm", "ack"] : ["autopilot", "resume"];
+    let failure = null;
+    try {
+      const result = await exec(`${appHome()}/fabric/fab`, command, {
+        cwd: appHome(), timeout: 30000,
+      });
+      if (result?.code !== 0) {
+        failure = (result?.stderr || "").trim() || (result?.stdout || "").trim()
+          || `fab endete mit Code ${result?.code}.`;
+      }
+    } catch (error) {
+      failure = message(error);
+    }
+    await this.load();
+    if (failure) this.loadError = failure;
+    if (!this.closed) cx.notify();
+  }
+
   render(cx) {
     const t = theme();
     const terms = terminals();
@@ -353,6 +443,7 @@ export default class FabricSidebar extends View {
       this.index?.teams ?? [],
     );
     const free = model.freeAgentCards(terms, listed, spaces(), shared("agents.sort"));
+    const alarms = model.activeAlarms(this.index?.alarm);
     // `agent.next`/`agent.prev` folgen der Reihenfolge, die hier steht: freie
     // Karten (angepinnt, wartend, arbeitend, untätig) und dann die Teams.
     // Ohne diesen Aufruf liefe die Tastaturbelegung ins Leere, weil der
@@ -405,6 +496,17 @@ export default class FabricSidebar extends View {
               .child(String(rows.length)),
           ),
       )
+      .when(alarms.length > 0, (el) => el.child(
+        v_flex()
+          .flex_none()
+          .w_full()
+          .px(8)
+          .pb(4)
+          .gap(4)
+          .children(alarms.map((alarm) => alarmBanner(t, alarm, (entry, action, eventCx) => {
+            eventCx.spawn(async () => { await this.activate(entry, action, eventCx); });
+          }))),
+      ))
       .when(Boolean(this.loadError), (el) => el.child(
         div()
           .flex_none()

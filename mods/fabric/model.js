@@ -2650,6 +2650,64 @@ export function flowValidate(definition) {
   return { ok: errors.length === 0, errors };
 }
 
+// ---------- Alarme ----------
+
+const ALARM_KINDS = ["main", "pause", "tick"];
+
+const ALARM_BUTTON_LABELS = {
+  run: "Lauf ansehen",
+  ticket: "Ticket öffnen",
+  resume: "Pause aufheben",
+  ack: "Quittieren",
+};
+
+/** Alarmliste aus `index.alarm.alarms` oder direkt aus dem Alarmobjekt. */
+function alarmList(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
+  if (Array.isArray(raw.alarms)) return raw.alarms;
+  const alarm = raw.alarm;
+  if (alarm && typeof alarm === "object" && !Array.isArray(alarm) && Array.isArray(alarm.alarms)) {
+    return alarm.alarms;
+  }
+  return [];
+}
+
+/** Gültige Alarm-Einträge in Reihenfolge: `id` nicht leer, bekannte Art;
+ *  je `id` zählt der erste Eintrag. Jeder Eintrag trägt seine Knöpfe in
+ *  Vertragsreihenfolge, unbekannte Aktionen fallen weg, „Quittieren“ steht zuletzt. */
+export function alarmEntries(raw) {
+  const seen = new Set();
+  const entries = [];
+  for (const item of alarmList(raw)) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    if (typeof item.id !== "string" || item.id === "") continue;
+    if (!ALARM_KINDS.includes(item.kind)) continue;
+    if (seen.has(item.id)) continue;
+    seen.add(item.id);
+
+    const actions = Array.isArray(item.actions) ? item.actions : [];
+    const keys = [];
+    for (const key of actions) {
+      if (!Object.prototype.hasOwnProperty.call(ALARM_BUTTON_LABELS, key)) continue;
+      if (keys.includes(key)) continue;
+      keys.push(key);
+    }
+    const ordered = keys.filter((key) => key !== "ack");
+    if (keys.includes("ack")) ordered.push("ack");
+
+    entries.push({
+      ...item,
+      buttons: ordered.map((key) => ({ key, label: ALARM_BUTTON_LABELS[key] })),
+    });
+  }
+  return entries;
+}
+
+/** Steht ein gültiger Alarm an? */
+export function alarmActive(raw) {
+  return alarmEntries(raw).length > 0;
+}
+
 // ---------- Autopilot ----------
 
 // Nach sechs Minuten ohne Lebenszeichen gilt ein laufender oder pausierter
@@ -2684,8 +2742,14 @@ function autopilotEndLabel(status) {
 }
 
 /** Lampe des Autopiloten: Zustand, Farbe, Text und Puls aus der Statusdatei.
- *  Veraltet hat Vorrang vor running und paused. */
-export function autopilotLamp(raw, now = Date.now()) {
+ *  Ein anstehender Alarm hat Vorrang vor jedem Status. Veraltet hat Vorrang
+ *  vor running und paused. */
+export function autopilotLamp(raw, now = Date.now(), alarm = null) {
+  const alarms = alarmEntries(alarm);
+  if (alarms.length > 0) {
+    const text = typeof alarms[0].text === "string" && alarms[0].text ? alarms[0].text : "Alarm";
+    return { state: "alarm", color: "blocked", text, pulse: false };
+  }
   const status = autopilotStatus(raw);
   const state = typeof status?.state === "string" ? status.state : "";
   if (!AUTOPILOT_STATES.includes(state)) {
@@ -2750,9 +2814,19 @@ export function autopilotPopover(raw, logText, now = Date.now()) {
 
 /** Welche Popover-Knöpfe der Zustand anbietet. „Log öffnen“ gibt es immer;
  *  Starten nur aus dem Stand, Pause aufheben nur pausiert, Stoppen nur für
- *  einen laufenden oder pausierten Autopiloten. */
-export function autopilotActions(lamp) {
+ *  einen laufenden oder pausierten Autopiloten. Ein anstehender Alarm sperrt
+ *  den Start und bietet Fortsetzen und Stoppen an. */
+export function autopilotActions(lamp, alarm = null) {
+  const alarms = alarmEntries(alarm);
   const state = lamp?.state ?? "stopped";
+  if (alarms.length > 0) {
+    const paused = alarms.some((item) => item.paused === true || item.kind === "pause");
+    return {
+      start: false,
+      resume: paused,
+      stop: state === "running" || state === "paused" || paused,
+    };
+  }
   return {
     start: state === "stopped" || state === "stale",
     resume: state === "paused",

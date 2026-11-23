@@ -182,6 +182,9 @@ def _seed_window(state, page="board"):
         "fabric.route": route,
         "fabric.selected": "T-1",
         "fabric.previewWindow": True,
+        # Toasts sollen auch außerhalb der Ruhezeit (22–8) im Screenshot
+        # erscheinen; die Vorschau zeigt Demo-Daten, keine echten Meldungen.
+        "fabric.notify": {"enabled": True, "quiet_from": 0, "quiet_to": 0},
     }
     if page == "repos":
         payload["fabric.repoTab"] = "project"
@@ -362,6 +365,62 @@ def _seed_pipelines(state):
                 os.environ[key] = value
 
 
+def _seed_alarm(state):
+    """Roten main-Lauf und pausierten Autopilot für die Alarm-Ansicht anlegen."""
+    from . import index, store
+
+    keys = {
+        "HOME": state["userhome"],
+        "FAB_HOME": state["fab_home"],
+        "FAB_ROSTER": os.path.join(state["home"], "fabric", "roster.json"),
+    }
+    previous = {key: os.environ.get(key) for key in keys}
+    os.environ.update(keys)
+    try:
+        with store.locked():
+            now = store.now_ms()
+            run = store.pipeline_run_new(
+                trigger="main",
+                ticket="T-1",
+                repo=state["home"],
+                worktree=state["home"],
+                branch="main",
+                head="a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+            )
+            store.pipeline_step_add(
+                run, 0, "mod-fabric", "node --test mods/fabric", "fail",
+                duration_ms=2100, exit_code=1,
+                stderr="not ok 7 - Alarm-Banner",
+            )
+            store.pipeline_step_add(
+                run, 1, "check-fabric", "fab check mods", "skipped",
+            )
+            store.pipeline_run_finish(run, "fail", 3200)
+            payload = {
+                "state": "paused",
+                "reason": "main nach Merge rot – Abnahmen pausiert",
+                "end": "",
+                "updated_at": now,
+                "paused_since": now - 60000,
+                "last_action": "ROT nach T-1: Revert, Abnahmen pausiert",
+                "log": os.path.join(state["fab_home"], "autopilot.log"),
+                "pid": 0,
+            }
+            store.atomic_write(
+                os.path.join(state["fab_home"], "autopilot.json"),
+                json.dumps(payload, ensure_ascii=False),
+            )
+            # Die UI liest den Alarm aus index.json; ohne diesen Lauf sähe die
+            # Vorschau bis zum nächsten `fab`-Aufruf keinen Banner.
+            index.rebuild()
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 def _seed(state, ticket, worktree):
     env = environment(state)
     env["FAB_ROSTER"] = os.path.join(root(ticket["id"]), "keine-roster.json")
@@ -455,6 +514,7 @@ def start(ticket, page="board"):
     _seed(state, ticket, worktree)
     _seed_metrics(state)
     _seed_pipelines(state)
+    _seed_alarm(state)
     with open(state["log"], "a", encoding="utf-8") as log:
         try:
             process = subprocess.Popen(
