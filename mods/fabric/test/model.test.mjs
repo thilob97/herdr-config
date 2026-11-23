@@ -24,6 +24,8 @@ import {
   PIPELINE_STATE_WORDS, PIPELINE_TRIGGER_WORDS, pipelineState, pipelineStateWord, pipelineTriggerWord,
   pipelineStepSummary, pipelineRunsNewest, pipelineLastRun, pipelineBadge, pipelineAutoStep,
   pipelineOpenSteps, pipelineLogLines, pipelineLogSearch, pipelineDuration, pipelineRunTarget,
+  knowledgeAddArgs, knowledgeNoteArgs, knowledgeRemoveArgs, knowledgeNoteFile,
+  knowledgeNameProblem, knowledgeSize,
 } from "../model.js";
 
 test("Tickets werden nach Stufe gruppiert, in Stufenreihenfolge", () => {
@@ -2499,4 +2501,69 @@ test("Alarm-Toast: eine Alarm-Inbox-Zeile feuert genau einmal", () => {
   const second = inboxNotifications(inbox, first.seen, settings, local + 60000);
   assert.equal(second.fresh.length, 0);
   assert.equal(second.changed, false);
+});
+
+test("Wissensordner: Argumente für add, note und rm", () => {
+  assert.deepEqual(
+    knowledgeAddArgs("/repo", "/tmp/plan.pdf"),
+    ["knowledge", "add", "/repo", "/tmp/plan.pdf", "--from=mensch"],
+  );
+  assert.deepEqual(
+    knowledgeAddArgs("/repo", "/tmp/plan.pdf", { name: "plan.pdf", force: true }),
+    ["knowledge", "add", "/repo", "/tmp/plan.pdf", "--name=plan.pdf", "--force", "--from=mensch"],
+  );
+  assert.deepEqual(
+    knowledgeAddArgs("/repo", "/tmp/a.png", { name: "bild", from: "agent" }),
+    ["knowledge", "add", "/repo", "/tmp/a.png", "--name=bild", "--from=agent"],
+  );
+
+  const text = "- erster Punkt\nzweiter Punkt";
+  assert.deepEqual(
+    knowledgeNoteArgs("/repo", "ideen", text),
+    ["knowledge", "note", "/repo", "ideen", `--text=${text}`, "--from=mensch"],
+  );
+  assert.deepEqual(
+    knowledgeNoteArgs("/repo", "ideen", text, "agent"),
+    ["knowledge", "note", "/repo", "ideen", `--text=${text}`, "--from=agent"],
+  );
+
+  assert.deepEqual(
+    knowledgeRemoveArgs("/repo", "ideen"),
+    ["knowledge", "rm", "/repo", "ideen", "--from=mensch"],
+  );
+  assert.deepEqual(
+    knowledgeRemoveArgs("/repo", "ideen", "agent"),
+    ["knowledge", "rm", "/repo", "ideen", "--from=agent"],
+  );
+});
+
+test("Wissensordner: Notizname bekommt genau eine .md-Endung", () => {
+  assert.equal(knowledgeNoteFile("ideen"), "ideen.md");
+  assert.equal(knowledgeNoteFile("ideen.md"), "ideen.md");
+  assert.equal(knowledgeNoteFile("plan.markdown"), "plan.markdown.md");
+});
+
+test("Wissensordner: Namensprüfung meldet den ersten Fehler", () => {
+  assert.equal(knowledgeNameProblem("ideen"), "");
+  assert.equal(knowledgeNameProblem("ideen-notiz_2"), "");
+  assert.equal(knowledgeNameProblem(""), "Name fehlt.");
+  assert.equal(knowledgeNameProblem("a/b"), "Der Name darf keinen Pfadtrenner enthalten.");
+  assert.equal(knowledgeNameProblem("a\\b"), "Der Name darf keinen Pfadtrenner enthalten.");
+  assert.equal(knowledgeNameProblem("a..b"), "Der Name darf kein „..“ enthalten.");
+  assert.equal(knowledgeNameProblem(".plan"), "Der Name darf nicht mit einem Punkt beginnen.");
+  // Reihenfolge: Punkt vor Trenner, Trenner vor „..“.
+  assert.equal(knowledgeNameProblem("../plan"), "Der Name darf nicht mit einem Punkt beginnen.");
+  assert.equal(knowledgeNameProblem("a/b..c"), "Der Name darf keinen Pfadtrenner enthalten.");
+});
+
+test("Wissensordner: Größen lesbar formatieren", () => {
+  assert.equal(knowledgeSize(0), "0 B");
+  assert.equal(knowledgeSize(512), "512 B");
+  assert.equal(knowledgeSize(1536), "1.5 KB");
+  assert.equal(knowledgeSize(2097152), "2.0 MB");
+  assert.equal(knowledgeSize(-1), "—");
+  assert.equal(knowledgeSize(null), "—");
+  assert.equal(knowledgeSize(undefined), "—");
+  assert.equal(knowledgeSize("abc"), "—");
+  assert.equal(knowledgeSize(Number.NaN), "—");
 });

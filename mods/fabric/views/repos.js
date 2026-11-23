@@ -84,6 +84,71 @@ function testOutput(app, cx, t) {
         .bg(t.surface).text_size(T.xs).text_color(t.muted).whitespace_normal().child(app.repoTest.tail)));
 }
 
+function knowledgeRow(app, cx, t, file, index) {
+  return h_flex()
+    .id(`fabric-knowledge-${index}`)
+    .w_full()
+    .gap(S.s)
+    .items_center()
+    .p(S.xs)
+    .rounded(ui.RADIUS.s)
+    .hover((style) => style.bg(t.hover))
+    .child(div().flex_none().text_color(t.muted).child(ui.icon("markdown", 13)))
+    .child(div().flex_1().min_w(0).truncate().text_size(T.s).child(file.name).tooltip(file.name))
+    .child(div().flex_none().text_size(T.xs).text_color(t.dim).child(model.knowledgeSize(file.size)))
+    .child(ui.chip(t, file.kind, t.muted))
+    .child(ui.iconButton(t, {
+      id: `fabric-knowledge-rm-${index}`,
+      icon: "trash",
+      tooltip: `Eintrag ${file.name} entfernen`,
+      onClick: (cx) => app.confirmKnowledgeRemove(file.name, cx),
+    }));
+}
+
+function knowledgeSection(app, cx, t) {
+  const files = app.repoDetail?.knowledge?.files ?? [];
+  return v_flex()
+    .w_full()
+    .flex_1()
+    .min_h(0)
+    .gap(S.s)
+    .on_drop((event, cx) => app.dropKnowledgeFiles(event.paths, cx))
+    .child(
+      h_flex().w_full().gap(S.s).items_center()
+        .child(div().text_size(T.s).font_semibold().child("Wissen"))
+        .child(ui.chip(t, `${files.length} ${files.length === 1 ? "Datei" : "Dateien"}`, t.muted))
+        .child(div().flex_1())
+        .child(ui.button(t, {
+          id: "fabric-knowledge-add",
+          label: "Datei hinzufügen",
+          icon: "plus",
+          small: true,
+          busy: app.busy === "knowledge-add",
+          disabled: Boolean(app.busy),
+          tooltip: "Datei in den Wissensordner legen",
+          onClick: (cx) => app.pickKnowledgeFile(cx),
+        }))
+        .child(ui.button(t, {
+          id: "fabric-knowledge-note",
+          label: "Notiz",
+          icon: "edit",
+          small: true,
+          disabled: Boolean(app.busy),
+          tooltip: "Notiz als Markdown anlegen",
+          onClick: (cx) => app.openKnowledgeNoteModal(cx),
+        })),
+    )
+    .child(
+      files.length
+        ? v_flex().w_full().flex_1().min_h(0).overflow_y_scrollbar().gap(2)
+          .children(files.map((file, index) => knowledgeRow(app, cx, t, file, index)))
+        : v_flex().w_full().flex_1().items_center().justify_center().p(S.l).gap(S.s)
+          .child(div().text_size(T.s).text_color(t.muted).child("Noch keine Dateien im Wissensordner."))
+          .child(ui.hint(t,
+            "Dateien hierher ziehen oder „Datei hinzufügen“. Höchstens 20 MB je Datei. Notiznamen ohne Pfadtrenner, nicht mit Punkt beginnend und ohne „..“.")),
+    );
+}
+
 function detail(app, cx, t) {
   if (app.repoError) {
     return v_flex().flex_1().min_w(0).child(ui.notice(t, app.repoError));
@@ -95,10 +160,12 @@ function detail(app, cx, t) {
   const tab = app.repoTab;
   const editor = tab === "verify" ? app.verifyEditor
     : tab === "project" ? app.projectEditor
-      : app.lessonsEditor;
+      : tab === "lessons" ? app.lessonsEditor
+        : null;
   const saved = tab === "verify" ? app.verifySaved
     : tab === "project" ? app.projectSaved
-      : app.lessonsSaved;
+      : tab === "lessons" ? app.lessonsSaved
+        : "";
   const dirty = editor ? model.isDirty(editor.value(), saved) : false;
   const missingVerify = !repo.verify?.exists;
   const missingProject = !repo.project?.exists;
@@ -138,6 +205,7 @@ function detail(app, cx, t) {
             { value: "verify", label: "Prüfskript" },
             { value: "lessons", label: "Lernnotizen" },
             { value: "project", label: "Steckbrief" },
+            { value: "wissen", label: "Wissen" },
           ],
           onPick: (value) => { app.repoTab = value; cx.notify(); },
         }))
@@ -154,29 +222,34 @@ function detail(app, cx, t) {
           tooltip: "Prüfskript im Haupt-Checkout ausführen (bis 10 min)",
           onClick: (cx) => app.testRepo(cx),
         })))
-        .child(ui.button(t, {
-          id: "fabric-repo-save",
-          label: "Speichern",
-          icon: "save",
-          primary: true,
-          small: true,
-          busy: app.busy === "repo-set",
-          disabled: Boolean(app.busy) || !editor || !dirty,
-          tooltip: "Speichern (⌘S)",
-          onClick: (cx) => app.saveRepo(cx),
-        }))
-        .child(ui.button(t, {
-          id: "fabric-repo-discard",
-          label: "Verwerfen",
-          icon: "undo",
-          small: true,
-          disabled: Boolean(app.busy) || !dirty,
-          tooltip: "Änderungen verwerfen",
-          onClick: (cx) => app.discardRepo(cx),
-        })),
+        .when(tab !== "wissen", (el) => el
+          .child(ui.button(t, {
+            id: "fabric-repo-save",
+            label: "Speichern",
+            icon: "save",
+            primary: true,
+            small: true,
+            busy: app.busy === "repo-set",
+            disabled: Boolean(app.busy) || !editor || !dirty,
+            tooltip: "Speichern (⌘S)",
+            onClick: (cx) => app.saveRepo(cx),
+          }))
+          .child(ui.button(t, {
+            id: "fabric-repo-discard",
+            label: "Verwerfen",
+            icon: "undo",
+            small: true,
+            disabled: Boolean(app.busy) || !dirty,
+            tooltip: "Änderungen verwerfen",
+            onClick: (cx) => app.discardRepo(cx),
+          }))),
     )
-    .when(Boolean(app.errorFor("repo-set") || app.errorFor("repo") || app.errorFor("verify") || app.errorFor("lessons")), (el) => {
-      const problem = app.errorFor("repo-set") || app.errorFor("repo") || app.errorFor("verify") || app.errorFor("lessons");
+    .when(Boolean(
+      app.errorFor("repo-set") || app.errorFor("repo") || app.errorFor("verify") || app.errorFor("lessons")
+      || app.errorFor("knowledge-add") || app.errorFor("knowledge-note") || app.errorFor("knowledge-rm")
+    ), (el) => {
+      const problem = app.errorFor("repo-set") || app.errorFor("repo") || app.errorFor("verify") || app.errorFor("lessons")
+        || app.errorFor("knowledge-add") || app.errorFor("knowledge-note") || app.errorFor("knowledge-rm");
       return el.child(ui.notice(t, problem.text, problem.level));
     })
     .when(tab === "verify", (el) => el.child(ui.hint(t, "Ausführbares sh-Skript im Haupt-Checkout. Exit 0 heißt grün.")))
@@ -201,7 +274,8 @@ function detail(app, cx, t) {
             onClick: (cx) => (tab === "project" ? app.createProject(cx) : app.createVerify(cx)),
           })))),
     )
-    .when(!activeMissing, (el) => el
+    .when(tab === "wissen", (el) => el.child(knowledgeSection(app, cx, t)))
+    .when(tab !== "wissen" && !activeMissing, (el) => el
       .child(editor ? ui.editor(t, editor, { fill: true }) : ui.loading(t, "Datei wird geladen …")))
     .when(Boolean(output), (el) => el.child(output));
 }

@@ -141,3 +141,31 @@ class PreviewTests(FabricCase):
         text = self._text(os.path.join(FABRIC, "prompts", "preamble.md"))
         self.assertIn("fab preview", text)
         self.assertIn("fab preview shot", text)
+
+    def test_page_knowledge_seedet_wissensordner_im_demorepo(self):
+        repo, tid, worktree = self.preview_ticket()
+        home = os.path.join(self.preview_root(tid), "home")
+        self.ok(
+            "preview", "start", tid, "--page", "knowledge",
+            env={"HERDR_APP_SLEEP": "1"},
+        )
+        seeded = json.loads(
+            self._text(os.path.join(home, "shared.json"))
+        )
+        self.assertEqual(seeded["fabric.route"], {"page": "repos"})
+        self.assertEqual(seeded["fabric.repoTab"], "wissen")
+
+        tickets_dir = os.path.join(home, "data", "fabric", "tickets")
+        tickets = [
+            json.loads(self._text(os.path.join(tickets_dir, name)))
+            for name in sorted(os.listdir(tickets_dir))
+        ]
+        demo = next(row for row in tickets if "Vorschau" in row["title"])
+        self.assertEqual(
+            os.path.realpath(demo["repo"]), os.path.realpath(home)
+        )
+        folder = os.path.join(home, ".fabric", "knowledge")
+        files = sorted(
+            name for name in os.listdir(folder) if not name.startswith(".")
+        )
+        self.assertGreaterEqual(len(files), 2)

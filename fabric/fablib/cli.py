@@ -3032,6 +3032,40 @@ def cmd_repo(args):
     return 0
 
 
+def cmd_knowledge(args):
+    if args.action == "list":
+        top, _folder = repos.knowledge_path(args.path)
+        if not top:
+            path = os.path.abspath(os.path.expanduser(args.path))
+            raise FabError(f"„{path}“ ist keine Git-Wurzel")
+        rows = repos.knowledge_files(args.path)
+        if args.json:
+            print(json.dumps(rows, ensure_ascii=False, indent=2))
+            return 0
+        if not rows:
+            print("Keine Wissensdateien")
+            return 0
+        for row in rows:
+            print(f"{row['name']} · {row['size']} · {row['kind']}")
+        return 0
+    actor = _require_actor(args)
+    if args.action == "add":
+        target = repos.knowledge_add(
+            args.path, args.datei, name=args.name, force=args.force, actor=actor
+        )
+        print(f"{target} hinzugefügt")
+        return 0
+    if args.action == "note":
+        target = repos.knowledge_note(
+            args.path, args.name, args.text, actor=actor
+        )
+        print(f"{target} angelegt")
+        return 0
+    target = repos.knowledge_remove(args.path, args.name, actor=actor)
+    print(f"{target} entfernt")
+    return 0
+
+
 def _run_number(raw):
     text = str(raw).strip()
     if text.startswith("#"):
@@ -3353,7 +3387,8 @@ def build_parser():
     start.add_argument("id", metavar="ID")
     start.add_argument("--page",
                        choices=("board", "ticket", "settings", "workflows",
-                                "repos", "team", "context", "pipelines"),
+                                "repos", "team", "context", "pipelines",
+                                "knowledge"),
                        default="board", help="Startseite im Fenster")
     shot = preview_sub.add_parser("shot", help="Screenshot der Vorschau anhängen",
                                   description="Screenshot der Vorschau anhängen")
@@ -3655,6 +3690,44 @@ def build_parser():
                                     description="Prüfskript ausführen")
     test_repo.add_argument("path", metavar="PFAD")
     test_repo.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe")
+
+    item = command(
+        "knowledge",
+        "Wissensordner je Repo: Dateien zeigen, hinzufügen, notieren, entfernen",
+        cmd_knowledge,
+    )
+    knowledge_sub = item.add_subparsers(dest="action", metavar="AKTION", required=True)
+    list_knowledge = knowledge_sub.add_parser(
+        "list", help="Wissensdateien zeigen", description="Wissensdateien zeigen"
+    )
+    list_knowledge.add_argument("path", metavar="PFAD")
+    list_knowledge.add_argument("--json", action="store_true",
+                                help="maschinenlesbare Ausgabe")
+    add_knowledge = knowledge_sub.add_parser(
+        "add", help="Datei in den Wissensordner kopieren",
+        description="Datei in den Wissensordner kopieren",
+    )
+    add_knowledge.add_argument("path", metavar="PFAD")
+    add_knowledge.add_argument("datei", metavar="DATEI")
+    add_knowledge.add_argument("--name", metavar="NAME",
+                               help="Zielname, Standard: Name der Quelldatei")
+    add_knowledge.add_argument("--force", action="store_true",
+                               help="vorhandene Datei überschreiben")
+    add_knowledge.add_argument("--from", dest="from_", metavar="NAME", required=True)
+    note_knowledge = knowledge_sub.add_parser(
+        "note", help="Wissensnotiz als .md anlegen",
+        description="Wissensnotiz als .md anlegen",
+    )
+    note_knowledge.add_argument("path", metavar="PFAD")
+    note_knowledge.add_argument("name", metavar="NAME")
+    note_knowledge.add_argument("--text", metavar="T", required=True)
+    note_knowledge.add_argument("--from", dest="from_", metavar="NAME", required=True)
+    remove_knowledge = knowledge_sub.add_parser(
+        "rm", help="Wissensdatei entfernen", description="Wissensdatei entfernen"
+    )
+    remove_knowledge.add_argument("path", metavar="PFAD")
+    remove_knowledge.add_argument("name", metavar="NAME")
+    remove_knowledge.add_argument("--from", dest="from_", metavar="NAME", required=True)
 
     item = command("runs", "Pipeline-Läufe auflisten", cmd_runs)
     item.add_argument("--ticket", metavar="ID", help="nur Läufe dieses Tickets")

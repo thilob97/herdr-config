@@ -1815,6 +1815,59 @@ export function repoSetArgs(path, key, text, from = "mensch") {
   return ["repo", "set", path, key, `--text=${text}`, `--from=${from}`];
 }
 
+// ---------- Wissensordner ----------
+
+/** `fab knowledge add`-Argumente; `--name` und `--force` nur wenn gesetzt. */
+export function knowledgeAddArgs(path, file, { name = "", force = false, from = "mensch" } = {}) {
+  return [
+    "knowledge", "add", path, file,
+    ...(name ? [`--name=${name}`] : []),
+    ...(force ? ["--force"] : []),
+    `--from=${from}`,
+  ];
+}
+
+/** `fab knowledge note`-Argumente. */
+export function knowledgeNoteArgs(path, name, text, from = "mensch") {
+  return ["knowledge", "note", path, name, `--text=${text}`, `--from=${from}`];
+}
+
+/** `fab knowledge rm`-Argumente. */
+export function knowledgeRemoveArgs(path, name, from = "mensch") {
+  return ["knowledge", "rm", path, name, `--from=${from}`];
+}
+
+/** Notizname mit `.md`-Endung; vorhandene Endungen bleiben. */
+export function knowledgeNoteFile(name) {
+  const value = String(name ?? "");
+  return value.endsWith(".md") ? value : `${value}.md`;
+}
+
+/** Deutscher Hinweis zum Notiznamen oder leer, wenn er taugt. */
+export function knowledgeNameProblem(name) {
+  const value = String(name ?? "");
+  if (!value) return "Name fehlt.";
+  if (value.startsWith(".")) return "Der Name darf nicht mit einem Punkt beginnen.";
+  if (value.includes("/") || value.includes("\\")) return "Der Name darf keinen Pfadtrenner enthalten.";
+  if (value.includes("..")) return "Der Name darf kein „..“ enthalten.";
+  return "";
+}
+
+/** Dateigröße in B/KB/MB mit einer Nachkommastelle ab KB. */
+export function knowledgeSize(size) {
+  const value = typeof size === "number" ? size : Number(size);
+  if (size == null || size === "" || !Number.isFinite(value) || value < 0) return "—";
+  if (value < 1024) return `${Math.round(value)} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let amount = value / 1024;
+  let unit = 0;
+  while (amount >= 1024 && unit < units.length - 1) {
+    amount /= 1024;
+    unit += 1;
+  }
+  return `${amount.toFixed(1)} ${units[unit]}`;
+}
+
 // ---------- Layout-Helfer ----------
 
 export const COMPACT_WIDTH = 760;

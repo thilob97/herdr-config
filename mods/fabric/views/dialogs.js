@@ -494,6 +494,77 @@ function deleteTeamDialog(app, cx, t) {
   }, error ? [ui.notice(t, error.text, error.level)] : []);
 }
 
+function knowledgeNoteDialog(app, cx, t) {
+  const note = app.knowledgeNote;
+  if (!note) return null;
+  const name = note.name.value().trim();
+  const text = note.text.value();
+  const problem = model.knowledgeNameProblem(name);
+  const fileName = name ? model.knowledgeNoteFile(name) : "";
+  const error = app.errorFor("knowledge-note");
+  return ui.modal(t, {
+    title: "Notiz anlegen",
+    detail: fileName ? `Wird als ${fileName} im Wissensordner gespeichert.` : "Name und Text der Notiz.",
+    width: 560,
+    actions: [
+      ui.button(t, {
+        id: "fabric-knowledge-note-cancel",
+        label: "Abbrechen",
+        tooltip: "Ohne Anlegen schließen",
+        onClick: (cx) => { app.modal = null; app.knowledgeNote = null; cx.notify(); },
+      }),
+      ui.button(t, {
+        id: "fabric-knowledge-note-create",
+        label: "Anlegen",
+        icon: "plus",
+        primary: true,
+        busy: app.busy === "knowledge-note",
+        disabled: Boolean(app.busy) || Boolean(problem) || !text.trim(),
+        reason: problem || (text.trim() ? "" : "Text fehlt."),
+        tooltip: "Notiz im Wissensordner anlegen",
+        onClick: (cx) => app.createKnowledgeNote(cx),
+      }),
+    ],
+  }, [
+    v_flex().w_full().gap(S.s)
+      .child(sectionLabel(t, "Name"))
+      .child(ui.input(t, note.name, { focused: true }))
+      .when(Boolean(fileName), (el) => el.child(div().text_size(T.xs).text_color(t.dim).child(`Datei: ${fileName}`)))
+      .child(sectionLabel(t, "Text"))
+      .child(ui.textarea(t, note.text, { height: 140 }))
+      .when(Boolean(problem), (el) => el.child(ui.notice(t, problem)))
+      .when(Boolean(error), (el) => el.child(ui.notice(t, error.text, error.level))),
+  ]);
+}
+
+function knowledgeRemoveDialog(app, cx, t) {
+  const name = app.modal.name ?? "";
+  const error = app.errorFor("knowledge-rm");
+  return ui.modal(t, {
+    title: `Eintrag ${name} entfernen?`,
+    detail: "Die Datei wird aus dem Wissensordner gelöscht und die Löschung committet.",
+    width: 480,
+    actions: [
+      ui.button(t, {
+        id: "fabric-knowledge-rm-cancel",
+        label: "Abbrechen",
+        tooltip: "Nicht entfernen",
+        onClick: (cx) => { app.modal = null; cx.notify(); },
+      }),
+      ui.button(t, {
+        id: "fabric-knowledge-rm-confirm",
+        label: "Entfernen",
+        icon: "trash",
+        danger: true,
+        busy: app.busy === "knowledge-rm",
+        disabled: Boolean(app.busy),
+        tooltip: "Eintrag entfernen (fab knowledge rm)",
+        onClick: (cx) => app.removeKnowledge(cx),
+      }),
+    ],
+  }, error ? [ui.notice(t, error.text, error.level)] : []);
+}
+
 export function renderDialogs(app, cx, t) {
   if (app.newOpen) return newTicketDialog(app, cx, t);
   if (app.newTeamOpen) return newTeamDialog(app, cx, t);
@@ -502,6 +573,8 @@ export function renderDialogs(app, cx, t) {
   if (app.modal.kind === "drop") return dropDialog(app, cx, t);
   if (app.modal.kind === "delete-blueprint") return deleteBlueprintDialog(app, cx, t);
   if (app.modal.kind === "team-delete") return deleteTeamDialog(app, cx, t);
+  if (app.modal.kind === "knowledge-note") return knowledgeNoteDialog(app, cx, t);
+  if (app.modal.kind === "knowledge-remove") return knowledgeRemoveDialog(app, cx, t);
   if (app.modal.kind === "unsaved" || app.modal.kind === "unsaved-close") return unsavedDialog(app, cx, t);
   return null;
 }

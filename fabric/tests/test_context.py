@@ -407,3 +407,75 @@ class ContextCommandTests(ContextCase):
         plain = json.loads(self.ok("context", tid, "--json").stdout)
         self.assertFalse(plain["clipped"])
         self.assertIn("Budget wurde gekürzt.", plain["text"])
+
+
+class KnowledgeContextTests(FabricCase):
+    def knowledge(self, repo, names=("handbuch.md", "skizze.pdf")):
+        folder = os.path.join(repo, ".fabric", "knowledge")
+        os.makedirs(folder, exist_ok=True)
+        for name in names:
+            self.write_file(os.path.join(folder, name), "GEHEIMER INHALT\n")
+        return folder
+
+    def test_wissensabschnitt_nennt_pfad_und_dateinamen_ohne_inhalt(self):
+        repo = self.make_repo()
+        folder = self.knowledge(repo)
+        text = context.build_paths([repo], "", 6000)
+        self.assertIn("## Wissensordner", text)
+        self.assertIn(folder, text)
+        self.assertIn("- handbuch.md", text)
+        self.assertIn("- skizze.pdf", text)
+        self.assertNotIn("GEHEIMER INHALT", text)
+
+    def test_ohne_und_mit_leerem_ordner_kein_abschnitt(self):
+        repo = self.make_repo()
+        self.assertNotIn("Wissensordner", context.build_paths([repo], "", 6000))
+        os.makedirs(os.path.join(repo, ".fabric", "knowledge"))
+        self.assertNotIn("Wissensordner", context.build_paths([repo], "", 6000))
+        self.assertEqual(context.build_paths([repo], "", 6000), "")
+
+    def test_vier_quellen_kuerzen_nur_den_brief(self):
+        repo = self.make_repo()
+        os.makedirs(os.path.join(repo, ".fabric"), exist_ok=True)
+        self.write_file(
+            os.path.join(repo, ".fabric", "project.md"),
+            "# Steckbrief\n\n" + "S" * 100 + "\n",
+        )
+        self.write_file(
+            os.path.join(repo, ".fabric", "decisions.md"), "- Kurz.\n"
+        )
+        folder = self.knowledge(repo)
+        text = context.build_paths([repo], "B" * 5000, 1000, "/r/roster.json")
+        self.assertLessEqual(len(text), 1000)
+        for part in (
+            "## Projekt-Steckbrief",
+            "## Entscheidungen",
+            "## Wissensordner",
+            "## Team-Brief",
+        ):
+            self.assertIn(part, text)
+        self.assertIn(folder, text)
+        lines = [
+            line
+            for line in text.splitlines()
+            if "[…] gekürzt, vollständig in" in line
+        ]
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("/r/roster.json", lines[0])
+
+    def test_gekuerzter_wissensblock_behaelt_den_ordnerpfad(self):
+        repo = self.make_repo()
+        names = tuple(f"notiz-{number:02d}.md" for number in range(40))
+        folder = self.knowledge(repo, names)
+        real = os.path.realpath(folder)
+        full = context.build_paths([repo], "", 100000)
+        self.assertIn("notiz-39.md", full)
+
+        prefix = f"## {context.WISSEN_TITLE}\n\n{real}"
+        marker = "\n\n" + context.HINT.format(source=real)
+        maximum = len(marker) + len(prefix) + 20
+        text = context.build_paths([repo], "", maximum)
+        self.assertLessEqual(len(text), maximum)
+        self.assertIn(prefix, text)
+        self.assertIn("[…] gekürzt", text)
+        self.assertNotIn("notiz-39.md", text)

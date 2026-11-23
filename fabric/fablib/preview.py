@@ -174,6 +174,8 @@ def _seed_window(state, page="board"):
         return
     if page == "context":
         route = {"page": "ticket"}
+    elif page == "knowledge":
+        route = {"page": "repos"}
     else:
         route = {"page": page or "board"}
     payload = {
@@ -188,6 +190,8 @@ def _seed_window(state, page="board"):
     }
     if page == "repos":
         payload["fabric.repoTab"] = "project"
+    if page == "knowledge":
+        payload["fabric.repoTab"] = "wissen"
     if page == "context":
         payload["fabric.contextPreview"] = {
             "kind": "ticket",
@@ -421,7 +425,37 @@ def _seed_alarm(state):
                 os.environ[key] = value
 
 
-def _seed(state, ticket, worktree):
+def _seed_knowledge_repo(state):
+    """Demorepo im Vorschau-Home mit gefülltem Wissensordner anlegen.
+
+    Nur die Vorschau-Kopie wird angefasst; das echte Repo und echte
+    Ticketdaten bleiben unberührt.
+    """
+    home = state["home"]
+    try:
+        result = subprocess.run(
+            ["git", "init", "-b", "main"],
+            cwd=home,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except FileNotFoundError:
+        raise FabError("git ist nicht im PATH")
+    except subprocess.TimeoutExpired:
+        raise FabError("Demo-Repo für die Wissensansicht: git init zu langsam")
+    if result.returncode != 0:
+        raise FabError(f"Demo-Repo nicht angelegt: {_detail(result)}")
+    folder = os.path.join(home, ".fabric", "knowledge")
+    os.makedirs(folder, exist_ok=True)
+    with open(os.path.join(folder, "handbuch.md"), "w", encoding="utf-8") as handle:
+        handle.write("# Handbuch\n\nKurze Anleitung für die Vorschau.\n")
+    with open(os.path.join(folder, "skizze.pdf"), "wb") as handle:
+        handle.write(b"%PDF-1.4\n% Vorschau-Skizze\n%%EOF\n")
+    return home
+
+
+def _seed(state, ticket, worktree, repo=None):
     env = environment(state)
     env["FAB_ROSTER"] = os.path.join(root(ticket["id"]), "keine-roster.json")
     title = ticket.get("title") or ""
@@ -432,6 +466,8 @@ def _seed(state, ticket, worktree):
         f"Vorschau {ticket['id']}: {title}",
         "--no-wake",
     ]
+    if repo:
+        command += ["--repo", repo]
     try:
         result = subprocess.run(
             command,
@@ -511,7 +547,8 @@ def start(ticket, page="board"):
         os.makedirs(folder, exist_ok=True)
     _copy_worktree(worktree, state["home"])
     _seed_window(state, page)
-    _seed(state, ticket, worktree)
+    demo_repo = _seed_knowledge_repo(state) if page == "knowledge" else None
+    _seed(state, ticket, worktree, repo=demo_repo)
     _seed_metrics(state)
     _seed_pipelines(state)
     _seed_alarm(state)
