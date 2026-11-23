@@ -1,8 +1,9 @@
 """Prüf-Pipelines: Schritte aus `.fabric/pipeline.json` einzeln ausführen.
 
 Ein Lauf gehört zu genau einem Ticket/Repo/Worktree und speichert jeden Schritt
-mit Zustand, Dauer, Exit-Code und getrennter Ausgabe. Nach dem ersten Fehler
-werden die restlichen Schritte als `skipped` festgehalten.
+mit Zustand, Dauer, Exit-Code und getrennter Ausgabe. Beim Laufstart entstehen
+alle Schritte als `pending`; nach dem ersten Fehler werden die restlichen als
+`skipped` festgehalten. Bricht die Ausführung ab, endet der Lauf als `fail`.
 """
 import json
 import os
@@ -124,6 +125,10 @@ def run(
         branch=branch,
         head=head_before,
     )
+    for position, step in enumerate(steps):
+        store.pipeline_step_add(
+            run_id, position, step["name"], step["run"], "pending"
+        )
 
     executed = []
     out_parts = []
@@ -132,60 +137,62 @@ def run(
     first_code = None
     failed = False
 
-    for position, step in enumerate(steps):
-        name = step["name"]
-        command = step["run"]
-        if failed:
-            store.pipeline_step_add(
-                run_id, position, name, command, "skipped"
+    try:
+        for position, step in enumerate(steps):
+            name = step["name"]
+            command = step["run"]
+            if failed:
+                store.pipeline_step_update(run_id, position, state="skipped")
+                executed.append(
+                    {
+                        "position": position,
+                        "name": name,
+                        "command": command,
+                        "state": "skipped",
+                        "duration_ms": None,
+                        "exit_code": None,
+                        "stdout": "",
+                        "stderr": "",
+                    }
+                )
+                continue
+
+            store.pipeline_step_update(run_id, position, state="running")
+            step_start = store.now_ms()
+            code, out, err = _execute(command, worktree, limit)
+            duration = store.now_ms() - step_start
+            state = "pass" if code == 0 else "fail"
+            store.pipeline_step_update(
+                run_id,
+                position,
+                state=state,
+                duration_ms=duration,
+                exit_code=code,
+                stdout=out,
+                stderr=err,
             )
+            out_parts.append(out)
+            err_parts.append(err)
+            combined.append(out)
+            combined.append(err)
             executed.append(
                 {
                     "position": position,
                     "name": name,
                     "command": command,
-                    "state": "skipped",
-                    "duration_ms": None,
-                    "exit_code": None,
-                    "stdout": "",
-                    "stderr": "",
+                    "state": state,
+                    "duration_ms": duration,
+                    "exit_code": code,
+                    "stdout": out,
+                    "stderr": err,
                 }
             )
-            continue
-
-        store.pipeline_step_add(run_id, position, name, command, "running")
-        step_start = store.now_ms()
-        code, out, err = _execute(command, worktree, limit)
-        duration = store.now_ms() - step_start
-        state = "pass" if code == 0 else "fail"
-        store.pipeline_step_update(
-            run_id,
-            position,
-            state=state,
-            duration_ms=duration,
-            exit_code=code,
-            stdout=out,
-            stderr=err,
-        )
-        out_parts.append(out)
-        err_parts.append(err)
-        combined.append(out)
-        combined.append(err)
-        executed.append(
-            {
-                "position": position,
-                "name": name,
-                "command": command,
-                "state": state,
-                "duration_ms": duration,
-                "exit_code": code,
-                "stdout": out,
-                "stderr": err,
-            }
-        )
-        if code != 0:
-            failed = True
-            first_code = code
+            if code != 0:
+                failed = True
+                first_code = code
+    except BaseException:
+        store.pipeline_run_finish(run_id, "fail", store.now_ms() - start)
+        raise
 
     store.pipeline_run_finish(
         run_id, "fail" if failed else "pass", store.now_ms() - start
