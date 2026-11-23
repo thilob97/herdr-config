@@ -1187,7 +1187,7 @@ def _verify_merge_state(ticket, ref, tree, head):
     )
     try:
         git.create_detached_worktree(repo, folder, commit)
-        return git.run_verify(folder)
+        return git.run_verify(folder, ticket=ticket["id"], repo=repo)
     finally:
         git.remove_worktree(repo, folder)
 
