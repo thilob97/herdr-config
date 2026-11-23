@@ -43,7 +43,7 @@ function ticketRow(app, cx, t, ticket) {
     .id(`fabric-panel-ticket-${ticket.id}`)
     .w_full()
     .px(S.m)
-    .py(6)
+    .py(S.s)
     .gap(S.s)
     .items_center()
     .cursor_pointer()
@@ -53,10 +53,10 @@ function ticketRow(app, cx, t, ticket) {
     .child(ui.dot(t, ui.statusColor(t, ticket.status)))
     .child(div().w(34).flex_none().text_size(T.xs).text_color(t.dim).child(ticket.id))
     .child(
-      v_flex().flex_1().min_w(0).gap(1)
+      v_flex().flex_1().min_w(0).gap(S.xs)
         .child(div().truncate().text_size(T.s).font_medium()
           .text_color(t.foreground).child(ticket.title || "Ohne Titel"))
-        .child(h_flex().gap(5).text_size(T.xs).text_color(t.dim)
+        .child(h_flex().gap(S.s).text_size(T.xs).text_color(t.dim)
           .when(Boolean(ticket.assignee), (el) => el.child(div().child(ticket.assignee)).child(div().child("·")))
           .when(comments > 0, (el) => el.child(div().child(`${comments}`)).child(div().child("·")))
           .child(div().child(model.relativeTime(ticket.updated_at)))
@@ -69,7 +69,11 @@ function ticketRow(app, cx, t, ticket) {
 }
 
 function ticketList(app, cx, t) {
-  if (!app.index) return ui.emptyState(t, { title: "Tickets", text: app.loadError ?? model.EMPTY_HINT });
+  if (!app.index) {
+    return v_flex().size_full().min_h(0)
+      .when(Boolean(app.loadError), (el) => el.child(ui.notice(t, app.loadError)))
+      .child(ui.emptyState(t, { title: "Tickets", text: model.EMPTY_HINT }));
+  }
   if (!app.tickets.length) return ui.emptyState(t, { title: "Noch keine Tickets", text: model.EMPTY_HINT });
   const rows = [];
   for (const stage of model.groupByStage(app.tickets)) {
@@ -114,7 +118,13 @@ function headChips(app, t, ticket) {
       tooltip: model.stallReason(ticket.stall),
     }));
   }
-  return h_flex().gap(4).flex_wrap().items_center().children(chips);
+  const meta = [];
+  if (ticket.checks?.state) meta.push(`Checks ${model.CHECK_WORDS[ticket.checks.state] ?? ticket.checks.state}`);
+  if (ticket.verdict?.state) meta.push(`Urteil ${model.VERDICT_WORDS[ticket.verdict.state] ?? ticket.verdict.state}`);
+  return h_flex().gap(S.xs).flex_wrap().items_center()
+    .children(chips)
+    .when(meta.length > 0, (el) => el.child(div().text_size(T.xs).text_color(t.dim).whitespace_nowrap()
+      .child(meta.join(" · "))));
 }
 
 function detail(app, cx, t) {
@@ -131,10 +141,15 @@ function detail(app, cx, t) {
             onClick: (cx) => app.back(cx),
           })),
       )
-      .child(ui.emptyState(t, { title: app.ticketError ? "Nicht lesbar" : "Ticket", text: app.ticketError ?? "Das Ticket wird geladen …" }));
+      .when(Boolean(app.ticketError), (el) => el.child(ui.notice(t, app.ticketError)))
+      .child(ui.emptyState(t, {
+        title: app.ticketError ? "Nicht lesbar" : "Ticket",
+        text: app.ticketError ? "Das Ticket konnte nicht geladen werden." : "Das Ticket wird geladen …",
+      }));
   }
   const ticket = app.ticket;
   const review = ticket.status === "review";
+  const gate = model.changesGate(app.changes, app.changesSeenHead);
   const text = app.commentInput.value();
   const pending = app.mentionOpen("comment") ? app.mentions : null;
   return v_flex()
@@ -161,7 +176,7 @@ function detail(app, cx, t) {
     .child(
       v_flex().flex_1().min_h(0).overflow_y_scrollbar()
         .child(
-          v_flex().w_full().p(S.m).gap(6).border_b(1).border_color(t.border)
+          v_flex().w_full().p(S.m).gap(S.s).border_b(1).border_color(t.border)
             .child(h_flex().gap(S.s).items_center()
               .child(div().text_size(T.xs).text_color(t.dim).child(ticket.id))
               .child(div().flex_1().min_w(0).truncate().text_size(T.m).font_semibold().child(ticket.title || "Ohne Titel")))
@@ -174,20 +189,20 @@ function detail(app, cx, t) {
               .w_full().text_size(T.s).text_color(t.foreground).whitespace_normal().selectable(true)),
         ))
         .child(
-          v_flex().w_full().py(S.s).gap(2)
+          v_flex().w_full().py(S.s).gap(S.xs)
             .child(div().px(S.m).text_size(T.xs).text_color(t.dim).child("Verlauf"))
             .children(model.history(ticket, app.events).slice(-6).map((row, index) => {
               if (row.kind === "wake") {
-                return div().px(S.m).py(1).text_size(T.xs).text_color(t.dim).child(model.wakeLine(row.event));
+                return div().px(S.m).py(S.xs).text_size(T.xs).text_color(t.dim).child(model.wakeLine(row.event));
               }
               const comment = row.comment;
-              return v_flex().w_full().px(S.m).py(4).gap(2)
+              return v_flex().w_full().px(S.m).py(S.xs).gap(S.xs)
                 .child(h_flex().gap(S.s).items_center()
                   .child(ui.avatar(t, comment.author, app.agentColor(comment.author), 18))
                   .child(div().text_size(T.xs).font_semibold().text_color(t.muted).child(comment.author))
                   .child(div().text_size(T.xs).text_color(t.dim).child(model.relativeTime(comment.at))
                     .tooltip(model.absoluteTime(comment.at))))
-                .child(div().pl(26).child(TextView.markdown(
+                .child(div().pl(S.xl).child(TextView.markdown(
                   `fabric-panel-comment-${comment.n ?? index}`,
                   ui.mentionMarkdown(comment.text),
                 ).w_full().text_size(T.s).text_color(t.foreground).whitespace_normal().selectable(true)));
@@ -225,13 +240,14 @@ function detail(app, cx, t) {
                 small: true,
                 primary: true,
                 busy: app.busy === "accept",
-                disabled: Boolean(app.busy),
-                tooltip: "Abnehmen – fragt vor dem Merge nach",
+                disabled: Boolean(app.busy) || !gate.enabled,
+                reason: gate.reason,
+                tooltip: gate.enabled ? "Abnehmen – fragt vor dem Merge nach" : gate.reason,
                 onClick: (cx) => app.openAcceptModal(cx),
               }))
               .child(ui.button(t, {
                 id: "fabric-panel-reject",
-                label: "Zurück",
+                label: "Zurück mit Feedback",
                 icon: "undo",
                 small: true,
                 busy: app.busy === "reject",

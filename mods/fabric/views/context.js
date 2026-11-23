@@ -19,7 +19,7 @@ export function renderContextPreview(app, cx, t) {
     subtitle,
     onClose: close,
     tooltip: "Drawer schließen (Esc)",
-    width: 560,
+    width: ui.SIZE.drawer,
     footer: [
       ui.button(t, {
         id: "fabric-context-close",

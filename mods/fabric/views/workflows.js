@@ -1,5 +1,5 @@
 // Workflows: Definitionen und Läufe links, rechts der Graph mit Knotenstatus,
-// Ausgabe des gewählten Knotens und Pause/Abbruch für den Lauf. Der Builder
+// Ausgabe des gewählten Knotens und Pause/Abbrechen für den Lauf. Der Builder
 // zeigt denselben Graphen bearbeitbar: Palette, Plan und Eigenschaften-Prüfung.
 
 import { div } from "gpui-kit";
@@ -9,36 +9,20 @@ import * as ui from "../ui.js";
 
 const T = ui.FONT;
 const S = ui.SPACE;
-const LIST = 260;
 const RUN_ENDED = new Set(["done", "failed", "cancelled", "dry"]);
 
-// Beschriftungen des visuellen Builders; die Modelltypen bleiben englisch.
-const NODE_TYPE_WORDS = {
-  trigger: "Auslöser",
-  agent: "Agent-Schritt",
-  action: "Aktion",
-  condition: "Bedingung",
-  approval: "Freigabe",
-  end: "Ende",
-};
-const TRIGGER_WORDS = {
-  manual: "manuell",
-  cron: "cron",
-  ticket_done: "Ticket fertig",
-  github_issue: "GitHub-Issue",
-  main_red: "main rot",
-};
-const ACTION_WORDS = { shell: "Shell", fab: "fab", notify: "Benachrichtigung" };
+// Beschriftungen des visuellen Builders kommen aus den Modellwörtern; die
+// Modelltypen bleiben englisch.
 const BUILDER = {
   nodeWidth: 160,
-  nodeHeight: 72,
-  gapX: 12,
-  gapY: 12,
-  padding: 16,
+  nodeHeight: 88,
+  gapX: S.m,
+  gapY: S.xl + S.xs,
+  padding: S.l,
 };
 
 /** Typlisten des Modells (Strings oder Objekte) in Wert/Beschriftung übersetzen. */
-function builderTypes(raw, fallback, words) {
+function builderTypes(raw, fallback, word) {
   let list = raw;
   if (list && !Array.isArray(list) && typeof list === "object") {
     list = Object.entries(list).map(([value, label]) => ({ value, label }));
@@ -46,26 +30,27 @@ function builderTypes(raw, fallback, words) {
   if (!Array.isArray(list) || list.length === 0) list = fallback;
   return list.map((row) => {
     if (typeof row === "string" || typeof row === "number") {
-      return { value: String(row), label: words[String(row)] ?? String(row) };
+      const value = String(row);
+      return { value, label: word(value) };
     }
     const value = String(row?.type ?? row?.value ?? row?.id ?? "");
-    return { value, label: row?.label ?? words[value] ?? value };
+    return { value, label: row?.label ?? word(value) ?? value };
   }).filter((row) => row.value);
 }
 
 function builderNodeTypes() {
   return builderTypes(model.FLOW_NODE_TYPES,
-    ["trigger", "agent", "action", "condition", "approval", "end"], NODE_TYPE_WORDS);
+    ["trigger", "agent", "action", "condition", "approval", "end"], model.flowKindWord);
 }
 
 function builderTriggerTypes() {
   return builderTypes(model.FLOW_TRIGGER_TYPES,
-    ["manual", "cron", "ticket_done", "github_issue", "main_red"], TRIGGER_WORDS);
+    ["manual", "cron", "ticket_done", "github_issue", "main_red"], model.flowTriggerWord);
 }
 
 function builderActionTypes() {
   return builderTypes(model.FLOW_ACTION_TYPES,
-    ["shell", "fab", "notify"], ACTION_WORDS);
+    ["shell", "fab", "notify"], model.flowActionWord);
 }
 
 
@@ -100,21 +85,21 @@ function workflowRow(app, cx, t, flow, runCount) {
     .id(`fabric-flow-${flow.name}`)
     .w_full()
     .p(S.s)
-    .gap(2)
+    .gap(S.xs)
     .rounded(ui.RADIUS.s)
-    .bg(active ? t.selected : t.surface + "00")
+    .bg(active ? t.selected : t.surface + ui.ALPHA.clear)
     .cursor_pointer()
     .hover((style) => style.bg(active ? t.selected : t.hover))
     .on_click((_event, cx) => { cx.stop_propagation(); app.selectFlow(flow.name, cx); })
     .child(
-      h_flex().w_full().min_w(0).gap(5).items_center()
+      h_flex().w_full().min_w(0).gap(S.s).items_center()
         .child(div().flex_none().text_color(active ? t.accent : t.dim).child(ui.icon("play", 12)))
         .child(div().flex_1().min_w(0).truncate().text_size(T.s)
           .text_color(active ? t.foreground : t.muted).child(flow.name))
         .when(active, (el) => el.child(ui.dot(t, t.accent))),
     )
-    .child(div().pl(17).text_size(T.xs).text_color(t.dim)
-      .child(`${nodes} Knoten · ${edges} Kanten · ${runCount} Lauf${runCount === 1 ? "" : "e"}`));
+    .child(div().pl(S.xl).text_size(T.xs).text_color(t.dim)
+      .child(`${nodes} Knoten · ${edges} Kanten · ${runCount} ${runCount === 1 ? "Lauf" : "Läufe"}`));
 }
 
 function runRow(app, cx, t, run, flows) {
@@ -127,14 +112,14 @@ function runRow(app, cx, t, run, flows) {
     .id(`fabric-flow-run-${run.id}`)
     .w_full()
     .p(S.s)
-    .gap(2)
+    .gap(S.xs)
     .rounded(ui.RADIUS.s)
-    .bg(active ? t.selected : t.surface + "00")
+    .bg(active ? t.selected : t.surface + ui.ALPHA.clear)
     .cursor_pointer()
     .hover((style) => style.bg(active ? t.selected : t.hover))
     .on_click((_event, cx) => { cx.stop_propagation(); app.selectFlowRun(run.id, cx); })
     .child(
-      h_flex().w_full().min_w(0).gap(6).items_center()
+      h_flex().w_full().min_w(0).gap(S.s).items_center()
         .child(div().flex_none().text_size(T.xs).text_color(t.dim).child(`#${run.id}`))
         .child(ui.chip(t, model.flowRunWord(run.status), color))
         .child(div().flex_1())
@@ -143,7 +128,7 @@ function runRow(app, cx, t, run, flows) {
           .tooltip(model.absoluteTime(run.updated_at ?? run.started_at))),
     )
     .child(
-      h_flex().w_full().min_w(0).gap(4).items_center().pl(2)
+      h_flex().w_full().min_w(0).gap(S.xs).items_center().pl(S.xs)
         .child(div().flex_none().text_size(T.xs).text_color(t.dim).child("Knoten"))
         .child(div().flex_1().min_w(0).truncate().text_size(T.xs)
           .text_color(active ? t.muted : t.dim).child(current)
@@ -156,8 +141,8 @@ function runRow(app, cx, t, run, flows) {
 function leftPane(app, cx, t, flows, runs) {
   const selected = flows.find((flow) => flow.name === app.flowName) ?? null;
   return v_flex()
-    .w(LIST)
-    .min_w(LIST)
+    .w(ui.SIZE.listPane)
+    .min_w(ui.SIZE.listPane)
     .h_full()
     .min_h(0)
     .border_r(1)
@@ -166,13 +151,13 @@ function leftPane(app, cx, t, flows, runs) {
       .child(`${flows.length} Workflow${flows.length === 1 ? "" : "s"}`))
     .child(
       app.flows
-        ? v_flex().flex_none().max_h(320).min_h(0).overflow_y_scrollbar().p(S.xs).gap(2)
+        ? v_flex().flex_none().max_h(320).min_h(0).overflow_y_scrollbar().p(S.xs).gap(S.xs)
           .children(flows.map((flow) => workflowRow(app, cx, t, flow,
             (app.flowRuns ?? []).filter((run) => run.workflow === flow.name).length)))
         : div().px(S.m).pb(S.s).text_size(T.xs).text_color(t.dim).child("wird geladen …"),
     )
     .child(div().w_full().border_t(1).border_color(t.border))
-    .child(div().px(S.m).py(6)
+    .child(div().px(S.m).py(S.s)
       .child(ui.sectionTitle(t, "Läufe", [
         ui.badge(t, runs.length, selected ? t.accent : t.muted),
       ], selected?.name ?? null)))
@@ -181,7 +166,7 @@ function leftPane(app, cx, t, flows, runs) {
         ? div().px(S.m).pb(S.s).text_size(T.xs).text_color(t.dim).child("Kein Workflow gewählt")
         : runs.length === 0
           ? div().px(S.m).pb(S.s).text_size(T.xs).text_color(t.dim).child("Noch kein Lauf")
-          : v_flex().flex_1().min_h(0).overflow_y_scrollbar().p(S.xs).gap(2)
+          : v_flex().flex_1().min_h(0).overflow_y_scrollbar().p(S.xs).gap(S.xs)
             .children(runs.map((run) => runRow(app, cx, t, run, flows))),
     );
 }
@@ -194,52 +179,57 @@ function head(app, cx, t, definition, run) {
     : (definition?.name ?? builder?.draft?.name ?? "Workflows");
   const ended = !run || RUN_ENDED.has(run.status);
   const busy = Boolean(app.busy);
-  return v_flex()
-    .flex_none()
-    .w_full()
-    .gap(4)
-    .px(S.m)
-    .py(S.s)
-    .border_b(1)
-    .border_color(t.border)
-    .bg(t.surface)
-    .child(
-      h_flex().w_full().min_w(0).gap(S.s).items_center()
-        .child(div().flex_1().min_w(0).truncate().text_size(T.l).font_semibold()
-          .text_color(t.foreground).child(title).tooltip(title))
-        .when(Boolean(run) && mode === "run", (el) => el.child(
-          ui.chip(t, model.flowRunWord(run.status), runColor(t, run.status)),
-        ))
-        .when(mode === "builder" && builder?.dirty, (el) => el.child(
-          ui.chip(t, "ungespeichert", t.working),
-        ))
-        .child(ui.button(t, {
-          id: "fabric-flow-mode-run",
-          label: "Lauf",
-          icon: "play",
-          small: true,
-          primary: mode === "run",
-          tooltip: "Laufansicht mit Knotenstatus",
-          onClick: (cx) => app.setFlowMode("run", cx),
-        }))
-        .child(ui.button(t, {
-          id: "fabric-flow-mode-builder",
-          label: "Builder",
-          icon: "lines",
-          small: true,
-          primary: mode === "builder",
-          tooltip: "Visueller Builder",
-          onClick: (cx) => app.setFlowMode("builder", cx),
-        }))
-        .child(ui.button(t, {
-          id: "fabric-flow-new",
-          label: "Neu",
-          icon: "plus",
-          small: true,
-          tooltip: "Neuen Workflow bauen",
-          onClick: (cx) => app.newFlowBuilder(cx),
-        }))
-        .when(mode === "run" && Boolean(run), (el) => el.child(ui.button(t, {
+  const runLine = run
+    ? `Lauf ${run.id} · ${model.flowRunWord(run.status)} · ${model.relativeTime(run.updated_at ?? run.started_at)}`
+    : "";
+  const subtitle = mode === "builder"
+    ? (builder?.connectFrom
+      ? `Verbindung von „${builder.connectFrom}“: Zielknoten anklicken.`
+      : "Palette: Baustein anklicken, um ihn zu platzieren. Knoten anklicken zum Bearbeiten.")
+    : run
+      ? (run.reason ? `${runLine} · ${run.reason}` : runLine)
+      : "Kein Lauf für diesen Workflow";
+  return ui.detailHeader(t, title, [
+    ...(mode === "run" && run
+      ? [ui.chip(t, model.flowRunWord(run.status), runColor(t, run.status))]
+      : []),
+    ...(mode === "builder" && builder?.dirty
+      ? [ui.chip(t, "ungespeichert", t.working)]
+      : []),
+    ui.tabs(t, {
+      id: "fabric-flow-mode",
+      value: mode,
+      items: [{ value: "run", label: "Lauf" }, { value: "builder", label: "Builder" }],
+      onPick: (value) => app.setFlowMode(value, cx),
+    }),
+    ui.button(t, {
+      id: "fabric-flow-new",
+      label: "Neu",
+      icon: "plus",
+      small: true,
+      tooltip: "Neuen Workflow bauen",
+      onClick: (cx) => app.newFlowBuilder(cx),
+    }),
+    ...(mode === "builder" && builder?.connectFrom
+      ? [ui.button(t, {
+        id: "fabric-flow-builder-connect-cancel",
+        label: "Verbindung abbrechen",
+        small: true,
+        onClick: (cx) => app.flowBuilderStartConnect(builder.connectFrom, cx),
+      })]
+      : []),
+    ...(mode === "builder"
+      ? [ui.button(t, {
+        id: "fabric-flow-builder-select-none",
+        label: "Workflow",
+        small: true,
+        tooltip: "Workflow-Eigenschaften und Prüfung anzeigen",
+        onClick: (cx) => app.flowBuilderSelectClear(cx),
+      })]
+      : []),
+    ...(mode === "run" && run
+      ? [
+        ui.button(t, {
           id: "fabric-flow-pause",
           label: "Pause",
           icon: "clock",
@@ -249,10 +239,10 @@ function head(app, cx, t, definition, run) {
           reason: run.status !== "running" ? "Nur laufende Läufe lassen sich pausieren" : "",
           tooltip: "Lauf pausieren",
           onClick: (cx) => app.pauseFlowRun(cx),
-        })))
-        .when(mode === "run" && Boolean(run), (el) => el.child(ui.button(t, {
+        }),
+        ui.button(t, {
           id: "fabric-flow-cancel",
-          label: "Abbruch",
+          label: "Abbrechen",
           icon: "stop",
           small: true,
           danger: true,
@@ -261,39 +251,10 @@ function head(app, cx, t, definition, run) {
           reason: ended ? "Der Lauf ist bereits beendet" : "",
           tooltip: "Lauf abbrechen",
           onClick: (cx) => app.cancelFlowRun(cx),
-        }))),
-    )
-    .when(mode === "builder", (el) => el.child(
-      h_flex().w_full().min_w(0).gap(S.s).items_center()
-        .child(div().flex_1().min_w(0).truncate().text_size(T.xs).text_color(t.dim)
-          .child(builder?.connectFrom
-            ? `Verbindung von „${builder.connectFrom}“: Zielknoten anklicken.`
-            : "Palette: Baustein anklicken, um ihn zu platzieren. Knoten anklicken zum Bearbeiten."))
-        .when(Boolean(builder?.connectFrom), (row) => row.child(ui.button(t, {
-          id: "fabric-flow-builder-connect-cancel",
-          label: "Verbindung abbrechen",
-          small: true,
-          onClick: (cx) => app.flowBuilderStartConnect(builder.connectFrom, cx),
-        })))
-        .child(ui.button(t, {
-          id: "fabric-flow-builder-select-none",
-          label: "Workflow",
-          small: true,
-          tooltip: "Workflow-Eigenschaften und Prüfung anzeigen",
-          onClick: (cx) => app.flowBuilderSelectClear(cx),
-        })),
-    ))
-    .when(mode === "run", (el) => el.child(
-      h_flex().w_full().min_w(0).gap(S.s).items_center()
-        .when(Boolean(run), (row) => row.child(div().flex_none().text_size(T.xs).text_color(t.dim)
-          .child(`Lauf ${run.id} · ${model.flowRunWord(run.status)} · ${model.relativeTime(run.updated_at ?? run.started_at)}`)
-          .tooltip(model.absoluteTime(run.updated_at ?? run.started_at))))
-        .when(Boolean(run?.reason), (row) => row.child(div().flex_1().min_w(0).truncate()
-          .text_size(T.xs).text_color(run.status === "failed" ? t.blocked : t.muted)
-          .child(run.reason).tooltip(run.reason)))
-        .when(!run, (row) => row.child(div().flex_1().min_w(0).text_size(T.xs).text_color(t.dim)
-          .child("Kein Lauf für diesen Workflow"))),
-    ));
+        }),
+      ]
+      : []),
+  ], { subtitle });
 }
 
 /** Zwei waagerechte und ein senkrechtes Segment; `mid` ist die x-Koordinate des Knies. */
@@ -347,8 +308,9 @@ function edgeLines(t, definition, edge, states, steps) {
     .id(`fabric-flow-edge-label-${edge.from}-${edge.to}`)
     .absolute()
     .left(vertical ? (x1 + x2) / 2 - 8 : mid - 14)
-    .top(vertical ? mid - 16 : (y1 + y2) / 2 - 8)
-    .px(4)
+    .top(vertical ? mid - 9 : (y1 + y2) / 2 - 9)
+    .h(18)
+    .px(S.xs)
     .max_w(120)
     .truncate()
     .text_size(T.xs)
@@ -382,21 +344,21 @@ function nodeCard(app, cx, t, node, status, run) {
     .top(node.y)
     .w(node.w)
     .h(node.h)
-    .gap(1)
-    .p(5)
+    .gap(S.xs)
+    .p(S.s)
     .rounded(ui.RADIUS.m)
     .border_1()
     .border_color(selected ? t.accent : color)
-    .bg(selected ? t.selected : color + "14")
+    .bg(selected ? t.selected : color + ui.ALPHA.faint)
     .cursor_pointer()
     .hover((style) => style.opacity(0.9))
     .on_click((_event, cx) => { cx.stop_propagation(); clickNode(app, run, node, cx); })
     .child(
-      h_flex().w_full().min_w(0).gap(4).items_center()
+      h_flex().w_full().min_w(0).gap(S.xs).items_center()
         .child(div().flex_none().text_size(T.xs).font_semibold().text_color(color)
           .child(model.flowKindWord(node.type)))
         .child(div().flex_1())
-        .child(div().flex_none().text_size(10).text_color(color)
+        .child(div().flex_none().text_size(T.xs).text_color(color)
           .child(model.flowStatusWord(status))),
     )
     .child(div().w_full().min_w(0).truncate().text_size(T.s).font_semibold()
@@ -408,14 +370,14 @@ function nodeCard(app, cx, t, node, status, run) {
 function graph(app, cx, t, definition, run) {
   // Von oben nach unten: ein Lauf bleibt auch im schmalen Fenster ohne
   // waagerechtes Scrollen vollständig sichtbar; Zweige stehen nebeneinander.
-  // 160 px je Karte, damit zwei Zweige neben dem 340-px-Ausgabefenster passen.
+  // Die Schichtlücke trägt ein 18-px-Kantenlabel ohne Überlappung.
   const layout = model.flowLayout(definition, {
     vertical: true,
     nodeWidth: 160,
     nodeHeight: 72,
-    gapX: 12,
-    gapY: 12,
-    padding: 16,
+    gapX: S.m,
+    gapY: S.xl + S.xs,
+    padding: S.l,
   });
   const states = model.flowNodeStates(definition, run);
   const steps = model.flowNodeSteps(run);
@@ -498,7 +460,7 @@ function builderPalette(app, cx, t) {
   return v_flex()
     .flex_none()
     .w_full()
-    .gap(6)
+    .gap(S.s)
     .px(S.m)
     .py(S.s)
     .border_b(1)
@@ -511,13 +473,13 @@ function builderPalette(app, cx, t) {
         .child(div().text_size(T.xs).text_color(t.dim).child("anklicken, um zu platzieren")),
     )
     .child(
-      h_flex().w_full().gap(6).items_center().flex_wrap()
+      h_flex().w_full().gap(S.s).items_center().flex_wrap()
         .children(builderNodeTypes().map((type) => h_flex()
           .id(`fabric-flow-palette-${type.value}`)
           .flex_none()
           .h(26)
-          .px(8)
-          .gap(4)
+          .px(S.s)
+          .gap(S.xs)
           .items_center()
           .rounded(ui.RADIUS.m)
           .border_1()
@@ -578,7 +540,7 @@ function builderEdge(app, cx, t, edge, index, selected) {
     .left((x1 + x2) / 2 - 18)
     .top(mid - 9)
     .h(18)
-    .px(5)
+    .px(S.s)
     .items_center()
     .rounded(ui.RADIUS.s)
     .border_1()
@@ -590,7 +552,7 @@ function builderEdge(app, cx, t, edge, index, selected) {
       cx.stop_propagation();
       app.flowBuilderSelectEdge(index, cx);
     })
-    .child(div().text_size(10).text_color(selected ? t.accent : t.muted)
+    .child(div().text_size(T.xs).text_color(selected ? t.accent : t.muted)
       .whitespace_nowrap().child(label))
     .tooltip(`${edge.from} → ${edge.to}`));
   return lines;
@@ -607,8 +569,8 @@ function builderNodeCard(app, cx, t, node, selected) {
     .top(node.y)
     .w(node.w)
     .h(node.h)
-    .gap(1)
-    .p(5)
+    .gap(S.xs)
+    .p(S.s)
     .rounded(ui.RADIUS.m)
     .border_1()
     .border_color(color)
@@ -620,10 +582,10 @@ function builderNodeCard(app, cx, t, node, selected) {
       app.flowBuilderClickNode(node.id, cx);
     })
     .child(
-      h_flex().w_full().min_w(0).gap(3).items_center()
-        .child(div().flex_none().text_size(10).font_semibold()
+      h_flex().w_full().min_w(0).gap(S.xs).items_center()
+        .child(div().flex_none().text_size(T.xs).font_semibold()
           .text_color(selected ? t.accent : t.muted)
-          .child(NODE_TYPE_WORDS[node.type] ?? String(node.type ?? "")))
+          .child(model.flowKindWord(node.type)))
         .child(div().flex_1())
         .child(ui.iconButton(t, {
           id: `fabric-flow-builder-link-${node.id}`,
@@ -638,10 +600,10 @@ function builderNodeCard(app, cx, t, node, selected) {
     .child(div().w_full().min_w(0).truncate().text_size(T.s).font_semibold()
       .text_color(t.foreground).child(node.label || node.id).tooltip(node.label || node.id))
     .child(
-      h_flex().w_full().min_w(0).gap(4).items_center()
+      h_flex().w_full().min_w(0).gap(S.xs).items_center()
         .child(ui.chip(t, node.id, t.dim, `fabric-flow-builder-id-${node.id}`, { tooltip: node.id }))
         .when(Boolean(node.detail), (el) => el.child(div().flex_1().min_w(0).truncate()
-          .text_size(10).text_color(t.dim).child(String(node.detail))
+          .text_size(T.xs).text_color(t.dim).child(String(node.detail))
           .tooltip(String(node.detail)))),
     );
 }
@@ -687,13 +649,13 @@ function builderPlaceholders(app, cx, t, node) {
   const placeholders = model.flowPlaceholders(builder.draft, node.id) ?? [];
   return v_flex()
     .w_full()
-    .gap(4)
+    .gap(S.xs)
     .child(div().text_size(T.xs).text_color(t.dim).child("Platzhalter"))
     .when(placeholders.length === 0, (el) => el.child(
       ui.hint(t, "Keine Platzhalter aus vorherigen Schritten."),
     ))
     .when(placeholders.length > 0, (el) => el.child(
-      h_flex().w_full().gap(4).items_center().flex_wrap()
+      h_flex().w_full().gap(S.xs).items_center().flex_wrap()
         .children(placeholders.map((entry, position) => ui.chip(
           t, entry.text, t.accent,
           `fabric-flow-builder-placeholder-${node.id}-${position}`,
@@ -713,7 +675,7 @@ function builderOutgoing(app, cx, t, node) {
   const outgoing = model.flowOutgoing(builder.draft, node.id) ?? [];
   return v_flex()
     .w_full()
-    .gap(4)
+    .gap(S.xs)
     .child(div().text_size(T.xs).text_color(t.dim)
       .child(`Ausgänge (${outgoing.length})`))
     .when(outgoing.length === 0, (el) => el.child(
@@ -725,11 +687,11 @@ function builderOutgoing(app, cx, t, node) {
       return h_flex()
         .id(`fabric-flow-builder-outgoing-${node.id}-${entry.index}`)
         .w_full()
-        .p(5)
-        .gap(5)
+        .p(S.s)
+        .gap(S.s)
         .items_center()
         .rounded(ui.RADIUS.s)
-        .bg(selected ? t.selected : t.surface + "00")
+        .bg(selected ? t.selected : t.surface + ui.ALPHA.clear)
         .cursor_pointer()
         .hover((style) => style.bg(t.hover))
         .on_click((_event, cx) => {
@@ -758,8 +720,8 @@ function builderNodeInspector(app, cx, t, node) {
   const builder = app.flowBuilder;
   const fields = builder.form?.fields ?? {};
   const parts = [
-    h_flex().w_full().min_w(0).gap(5).items_center()
-      .child(ui.chip(t, NODE_TYPE_WORDS[node.type] ?? node.type, t.accent))
+    h_flex().w_full().min_w(0).gap(S.s).items_center()
+      .child(ui.chip(t, model.flowKindWord(node.type) || node.type || "Knoten", t.accent))
       .child(ui.chip(t, node.id, t.dim, null, { tooltip: node.id }))
       .child(div().flex_1()),
   ];
@@ -829,7 +791,7 @@ function builderEdgeInspector(app, cx, t) {
   ];
   return v_flex().w_full().gap(S.s)
     .child(
-      h_flex().w_full().min_w(0).gap(5).items_center()
+      h_flex().w_full().min_w(0).gap(S.s).items_center()
         .child(ui.chip(t, "Kante", t.accent))
         .child(ui.chip(t, edge.from, t.dim, null, { tooltip: edge.from }))
         .child(div().flex_none().text_size(T.xs).text_color(t.accent).child("→"))
@@ -861,7 +823,7 @@ function builderFlowInspector(app, cx, t) {
     .when(builder.fresh, (el) => el.child(ui.field(t, "Name",
       builderInput(app, t, "name", { placeholder: "Workflow-Name" }))))
     .when(!builder.fresh, (el) => el.child(ui.field(t, "Name",
-      div().w_full().h(ui.SIZE.input).px(9).flex().items_center().rounded(ui.RADIUS.m)
+      div().w_full().h(ui.SIZE.input).px(S.m).flex().items_center().rounded(ui.RADIUS.m)
         .border_1().border_color(t.input).bg(t.raised)
         .text_size(T.s).text_color(t.foreground)
         .child(div().min_w(0).truncate().child(String(builder.draft.name ?? ""))))))
@@ -883,7 +845,7 @@ function builderCheck(app, cx, t) {
   const busy = saving || Boolean(app.busy);
   return v_flex()
     .w_full()
-    .gap(5)
+    .gap(S.s)
     .pt(S.s)
     .border_t(1)
     .border_color(t.border)
@@ -893,7 +855,7 @@ function builderCheck(app, cx, t) {
     .when(!blocked, (el) => el.child(
       div().text_size(T.xs).text_color(t.done).child("Grün: bereit zum Speichern."),
     ))
-    .when(blocked, (el) => el.child(v_flex().w_full().gap(3).children(errors.map((text, index) =>
+    .when(blocked, (el) => el.child(v_flex().w_full().gap(S.xs).children(errors.map((text, index) =>
       div().id(`fabric-flow-builder-error-${index}`).w_full().whitespace_normal()
         .text_size(T.xs).text_color(t.blocked).child(`• ${text}`)))))
     .when(blocked, (el) => el.child(
@@ -933,8 +895,8 @@ function builderInspector(app, cx, t) {
     ? (builder.draft.nodes ?? []).find((row) => row.id === selected.id) ?? null
     : null;
   return v_flex()
-    .w(320)
-    .min_w(320)
+    .w(ui.SIZE.inspector)
+    .min_w(ui.SIZE.inspector)
     .h_full()
     .min_h(0)
     .border_l(1)
@@ -943,7 +905,7 @@ function builderInspector(app, cx, t) {
     .overflow_y_scrollbar()
     .p(S.m)
     .gap(S.s)
-    .child(ui.sectionTitle(t, node ? (NODE_TYPE_WORDS[node.type] ?? "Knoten") : "Eigenschaften", [],
+    .child(ui.sectionTitle(t, node ? (model.flowKindWord(node.type) || "Knoten") : "Eigenschaften", [],
       selected?.kind === "edge" ? "Kante" : null))
     .when(selected?.kind === "node" && Boolean(node), (el) => el.child(
       builderNodeInspector(app, cx, t, node),
@@ -957,26 +919,17 @@ function builderInspector(app, cx, t) {
 
 function pendingNotice(app, cx, t) {
   if (!app.flowPendingName) return null;
-  return h_flex()
-    .flex_none()
-    .w_full()
-    .gap(S.s)
-    .items_center()
-    .px(S.l)
-    .py(S.s)
-    .bg(t.working + "1c")
-    .border_b(1)
-    .border_color(t.border)
-    .child(div().flex_1().min_w(0).whitespace_normal().text_size(T.xs)
-      .text_color(t.working)
-      .child(`Builder hat ungespeicherte Änderungen… „${app.flowPendingName}“ wurde noch nicht geöffnet.`))
-    .child(ui.button(t, {
-      id: "fabric-flow-builder-pending-discard",
-      label: "Verwerfen",
-      icon: "undo",
-      small: true,
-      onClick: (cx) => app.flowBuilderDiscardPending(cx),
-    }));
+  return ui.notice(t,
+    `Builder hat ungespeicherte Änderungen… „${app.flowPendingName}“ wurde noch nicht geöffnet.`,
+    "warning", {
+      actions: [ui.button(t, {
+        id: "fabric-flow-builder-pending-discard",
+        label: "Verwerfen",
+        icon: "undo",
+        small: true,
+        onClick: (cx) => app.flowBuilderDiscardPending(cx),
+      })],
+    });
 }
 
 function builderDetail(app, cx, t, definition, run) {
@@ -1041,14 +994,14 @@ function outputPanel(app, cx, t, definition, run) {
 
   return v_flex()
     .flex_none()
-    .w(340)
+    .w(ui.SIZE.inspector)
     .h_full()
     .min_h(0)
     .border_l(1)
     .border_color(t.border)
     .bg(t.surface)
     .child(
-      h_flex().w_full().min_w(0).gap(6).items_center().px(S.m).py(6)
+      h_flex().w_full().min_w(0).gap(S.s).items_center().px(S.m).py(S.s)
         .child(div().flex_none().text_size(T.s).font_semibold().child("Ausgabe"))
         .child(ui.chip(t, node.id, t.dim, null, { tooltip: node.id }))
         .child(ui.chip(t, model.flowKindWord(node.type), t.muted))
@@ -1065,7 +1018,7 @@ function outputPanel(app, cx, t, definition, run) {
           onClick: (cx) => { app.flowNode = null; cx.notify(); },
         })),
     )
-    .when(Boolean(reason), (el) => el.child(div().w_full().px(S.m).pb(4)
+    .when(Boolean(reason), (el) => el.child(div().w_full().px(S.m).pb(S.xs)
       .text_size(T.xs).text_color(t.dim).whitespace_normal().child(reason)))
     .child(
       div()

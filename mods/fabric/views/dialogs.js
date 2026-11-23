@@ -93,7 +93,7 @@ function newTicketDialog(app, cx, t) {
           if (value) app.newIssue = null;
           cx.notify();
         },
-      }))
+      })))
       .child(div().pt(S.xs).text_size(T.xs).text_color(t.dim).child("Repo"))
       .child(ui.dropdown(t, {
         id: "fabric-new-repo",
@@ -115,7 +115,7 @@ function newTicketDialog(app, cx, t) {
             cx.spawn((cx) => app.loadNewIssues(cx));
           }
         },
-      }))
+      })))
       .when(Boolean(app.newRepo), (el) => el.child(ui.hint(t, app.newRepo)))
       .child(div().pt(S.xs).text_size(T.xs).text_color(t.dim).child("Issue"))
       .when(Boolean(app.newRepo), (el) => el.child(ui.dropdown(t, {

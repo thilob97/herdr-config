@@ -8,7 +8,6 @@ import * as ui from "../ui.js";
 
 const T = ui.FONT;
 const S = ui.SPACE;
-const LIST = 300;
 
 function stateGlyph(t, state) {
   const color = ui.pipelineColor(t, state);
@@ -42,14 +41,14 @@ function runRow(app, cx, t, run) {
     .id(`fabric-pipeline-run-${run.id}`)
     .w_full()
     .p(S.s)
-    .gap(3)
+    .gap(S.xs)
     .rounded(ui.RADIUS.s)
-    .bg(active ? t.selected : t.surface + "00")
+    .bg(active ? t.selected : t.surface + ui.ALPHA.clear)
     .cursor_pointer()
     .hover((style) => style.bg(active ? t.selected : t.hover))
     .on_click((_event, cx) => { cx.stop_propagation(); app.selectPipelineRun(run.id, cx); })
     .child(
-      h_flex().w_full().min_w(0).gap(6).items_center()
+      h_flex().w_full().min_w(0).gap(S.s).items_center()
         .child(stateGlyph(t, state))
         .child(div().flex_none().text_size(T.xs).text_color(t.dim).child(`#${run.id}`))
         .child(stateChip(t, state))
@@ -59,7 +58,7 @@ function runRow(app, cx, t, run) {
           .tooltip(model.absoluteTime(run.started_at) || "Unbekannter Start")),
     )
     .child(
-      h_flex().w_full().min_w(0).gap(5).items_center().pl(19)
+      h_flex().w_full().min_w(0).gap(S.s).items_center().pl(S.xl)
         .child(div().flex_1().min_w(0).truncate().text_size(T.xs).text_color(t.muted)
           .child(model.pipelineRunTarget(run)).tooltip(model.pipelineRunTarget(run)))
         .child(ui.chip(t, model.pipelineTriggerWord(run.trigger), t.dim))
@@ -72,30 +71,19 @@ function leftPane(app, cx, t, rows) {
   const all = app.pipelineRuns;
   let body;
   if (!all) {
-    body = v_flex().px(S.m).pb(S.s).gap(2)
-      .child(div().text_size(T.xs).text_color(t.dim)
-        .child(app.pipelineRunsLoading ? "Läufe werden geladen …" : "Noch kein Lauf"))
-      .when(!app.pipelineRunsLoading, (el) => el.child(div().text_size(T.xs)
-        .text_color(t.dim).whitespace_normal().child("`fab verify` legt einen Lauf an.")));
+    body = div().px(S.m).pb(S.s).text_size(T.xs).text_color(t.dim)
+      .child(app.pipelineRunsLoading ? "Läufe werden geladen …" : "Keine Läufe");
   } else if (rows.length === 0) {
     body = div().px(S.m).pb(S.s).text_size(T.xs).text_color(t.dim).whitespace_normal()
-      .child(app.pipelineFilter
-        ? `Noch kein Lauf für ${app.pipelineFilter}`
-        : "Noch kein Lauf");
-    if (!app.pipelineFilter) {
-      body = v_flex().px(S.m).pb(S.s).gap(2)
-        .child(div().text_size(T.xs).text_color(t.dim).child("Noch kein Lauf"))
-        .child(div().text_size(T.xs).text_color(t.dim).whitespace_normal()
-          .child("`fab verify` legt einen Lauf an."));
-    }
+      .child(app.pipelineFilter ? `Keine Läufe für ${app.pipelineFilter}` : "Keine Läufe");
   } else {
-    body = v_flex().flex_1().min_h(0).overflow_y_scrollbar().p(S.xs).gap(2)
+    body = v_flex().flex_1().min_h(0).overflow_y_scrollbar().p(S.xs).gap(S.xs)
       .children(rows.map((run) => runRow(app, cx, t, run)));
   }
 
   return v_flex()
-    .w(LIST)
-    .min_w(LIST)
+    .w(ui.SIZE.listPane)
+    .min_w(ui.SIZE.listPane)
     .h_full()
     .min_h(0)
     .border_r(1)
@@ -124,53 +112,28 @@ function detailHead(app, cx, t, run) {
   const ticket = run.ticket ? String(run.ticket) : "";
   const head = typeof run.head === "string" ? run.head : "";
   const branch = typeof run.branch === "string" ? run.branch : "";
-  return v_flex()
-    .flex_none()
-    .w_full()
-    .gap(4)
-    .px(S.m)
-    .py(S.s)
-    .border_b(1)
-    .border_color(t.border)
-    .bg(t.surface)
-    .child(
-      h_flex().w_full().min_w(0).gap(S.s).items_center()
-        .child(div().flex_none().text_size(T.m).font_semibold().text_color(t.foreground)
-          .child(`Lauf #${run.id}`))
-        .child(stateChip(t, state))
-        .child(ui.chip(t, model.pipelineTriggerWord(run.trigger), t.muted))
-        .when(Boolean(ticket), (el) => el.child(ui.chip(t, ticket, t.accent, null, {
-          tooltip: `Ticket ${ticket} öffnen`,
-          onClick: (cx) => app.navigate("ticket", { id: ticket }, cx),
-        })))
-        .when(!ticket && Boolean(head), (el) => el.child(ui.chip(t, head.slice(0, 8), t.dim, null,
-          { tooltip: head })))
-        .child(div().flex_1())
-        .child(ui.button(t, {
-          id: "fabric-pipeline-rerun",
-          label: "Erneut ausführen",
-          icon: "restart",
-          small: true,
-          busy: app.busy === "pipeline-rerun",
-          disabled: Boolean(app.busy),
-          tooltip: "Diesen Lauf auf dem aktuellen HEAD wiederholen",
-          onClick: (cx) => app.rerunPipeline(run.id, cx),
-        })),
-    )
-    .child(
-      h_flex().w_full().min_w(0).gap(S.m).items_center()
-        .child(div().flex_none().text_size(T.xs).text_color(t.dim).child("Branch"))
-        .child(div().flex_none().max_w(220).truncate().font_family("monospace")
-          .text_size(T.xs).text_color(t.muted)
-          .child(branch || "—").tooltip(branch || "Kein Branch"))
-        .child(div().flex_none().text_size(T.xs).text_color(t.dim).child("Dauer"))
-        .child(div().flex_none().text_size(T.xs).text_color(t.muted)
-          .child(model.pipelineDuration(run.duration_ms)))
-        .child(div().flex_1())
-        .child(div().flex_none().text_size(T.xs).text_color(t.dim)
-          .child(startedText(run))
-          .tooltip(model.absoluteTime(run.started_at) || "Unbekannter Start")),
-    );
+  const subtitle = `Branch ${branch || "—"} · ${model.pipelineDuration(run.duration_ms)} · ${startedText(run)}`;
+  return ui.detailHeader(t, `Lauf #${run.id}`, [
+    stateChip(t, state),
+    ui.chip(t, model.pipelineTriggerWord(run.trigger), t.muted),
+    ...(ticket
+      ? [ui.chip(t, ticket, t.accent, null, {
+        tooltip: `Ticket ${ticket} öffnen`,
+        onClick: (cx) => app.navigate("ticket", { id: ticket }, cx),
+      })]
+      : []),
+    ...(!ticket && head ? [ui.chip(t, head.slice(0, 8), t.dim, null, { tooltip: head })] : []),
+    ui.button(t, {
+      id: "fabric-pipeline-rerun",
+      label: "Erneut ausführen",
+      icon: "restart",
+      small: true,
+      busy: app.busy === "pipeline-rerun",
+      disabled: Boolean(app.busy),
+      tooltip: "Diesen Lauf auf dem aktuellen HEAD wiederholen",
+      onClick: (cx) => app.rerunPipeline(run.id, cx),
+    }),
+  ], { subtitle });
 }
 
 function logLine(t, line, index) {
@@ -180,7 +143,7 @@ function logLine(t, line, index) {
     .w_full()
     .gap(S.s)
     .items_start()
-    .child(div().flex_none().w(22).text_size(9).text_color(t.dim).font_family("monospace")
+    .child(div().flex_none().w(22).text_size(T.xs).text_color(t.dim).font_family("monospace")
       .child(line.stream === "stderr" ? "err" : "out"))
     .child(div().flex_1().min_w(0).whitespace_nowrap().font_family("monospace")
       .text_size(T.xs).text_color(line.stream === "stderr" ? t.blocked : t.muted)
@@ -230,7 +193,7 @@ function logPanel(app, cx, t, step) {
         .child(empty
           ? div().text_size(T.xs).text_color(t.dim)
             .child(search.total === 0 ? "Keine Ausgabe." : "Keine Treffer.")
-          : v_flex().gap(1).children(search.lines.map((line, index) => logLine(t, line, index)))),
+          : v_flex().gap(S.xs).children(search.lines.map((line, index) => logLine(t, line, index)))),
     );
 }
 
@@ -254,7 +217,7 @@ function stepCard(app, cx, t, step) {
         .gap(S.s)
         .items_center()
         .px(S.s)
-        .py(6)
+        .py(S.s)
         .cursor_pointer()
         .hover((style) => style.bg(t.hover))
         .on_click((_event, cx) => {
@@ -313,11 +276,21 @@ function detail(app, cx, t) {
     : null;
   if (!loaded) {
     if (app.pipelineDetailLoading != null) return ui.loading(t, "Lauf wird geladen …");
+    if (app.pipelineRuns?.length) {
+      return ui.emptyState(t, {
+        title: "Kein Lauf gewählt",
+        text: "Wähle links einen Lauf für Schritte und Ausgabe.",
+      });
+    }
     return ui.emptyState(t, {
-      title: app.pipelineRuns?.length ? "Kein Lauf gewählt" : "Noch kein Lauf",
-      text: app.pipelineRuns?.length
-        ? "Wähle links einen Lauf für Schritte und Ausgabe."
-        : "`fab verify` legt einen Lauf an.",
+      title: "Noch kein Lauf",
+      text: "Sobald `fab verify` einen Lauf anlegt, stehen hier Schritte, Log und Ausgabe.",
+      action: ui.button(t, {
+        id: "fabric-pipelines-empty-reload",
+        label: "Läufe laden",
+        icon: "restart",
+        onClick: (cx) => app.reloadPipelines(cx),
+      }),
     });
   }
   return v_flex()

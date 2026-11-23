@@ -8,7 +8,6 @@ import * as ui from "../ui.js";
 
 const T = ui.FONT;
 const S = ui.SPACE;
-const PROPS = 320;
 
 function segmented(app, cx, t, value, onPick) {
   return ui.tabs(t, {
@@ -202,13 +201,13 @@ function appImagePath(path) {
 function changesFiles(app, cx, t, data) {
   const files = data.files ?? [];
   if (!files.length) return ui.hint(t, "Keine Dateien gegenüber der Basis.");
-  return v_flex().w_full().gap(1).children(files.map((file, index) => {
+  return v_flex().w_full().gap(S.xs).children(files.map((file, index) => {
     const selected = app.changesFile === file.path;
     return h_flex()
       .id(`fabric-changes-file-${index}`)
       .w_full()
       .h(24)
-      .px(6)
+      .px(S.s)
       .gap(S.s)
       .items_center()
       .rounded(ui.RADIUS.s)
@@ -265,7 +264,7 @@ function changesDiff(app, cx, t) {
         .border_color(t.border)
         .bg(t.background)
         .p(S.s)
-        .child(v_flex().gap(1).children(shown.map((line, index) => diffLine(t, line, index)))),
+        .child(v_flex().gap(S.xs).children(shown.map((line, index) => diffLine(t, line, index)))),
     )
     .when(lines.length > shown.length, (el) =>
       el.child(ui.hint(t, `… ${lines.length - shown.length} weitere Zeilen`)))
@@ -276,7 +275,7 @@ function changesDiff(app, cx, t) {
 function changesCommits(t, data) {
   const commits = data.commits ?? [];
   if (!commits.length) return ui.hint(t, "Keine Commits.");
-  return v_flex().w_full().gap(2).children(commits.map((commit, index) => h_flex()
+  return v_flex().w_full().gap(S.xs).children(commits.map((commit, index) => h_flex()
     .id(`fabric-changes-commit-${index}`)
     .w_full()
     .gap(S.s)
@@ -381,8 +380,8 @@ function historyRow(app, cx, t, row, index) {
       .id(`fabric-wake-${index}`)
       .w_full()
       .px(S.l)
-      .py(2)
-      .gap(5)
+      .py(S.xs)
+      .gap(S.s)
       .items_center()
       .child(div().flex_none().text_color(ui.kindColor(t, "wake")).child(ui.icon("bell", 11)))
       .child(div().text_size(T.xs).text_color(t.dim).child(model.wakeLine(row.event)));
@@ -394,8 +393,8 @@ function historyRow(app, cx, t, row, index) {
     .id(`fabric-entry-${comment.n ?? index}`)
     .w_full()
     .px(S.l)
-    .py(6)
-    .gap(4)
+    .py(S.s)
+    .gap(S.xs)
     .child(
       h_flex().w_full().gap(S.s).items_center()
         .child(ui.avatar(t, comment.author || "—", app.agentColor(comment.author), 22))
@@ -404,26 +403,25 @@ function historyRow(app, cx, t, row, index) {
           .child(model.relativeTime(comment.at))
           .tooltip(model.absoluteTime(comment.at)))
         .child(div().flex_1())
-        .child(ui.button(t, {
+        .child(ui.iconButton(t, {
           id: `fabric-comment-decide-${comment.n ?? index}`,
-          label: "Als Entscheidung",
           icon: "check",
-          small: true,
+          tooltip: decision.disabled
+            ? `Als Entscheidung festhalten – ${decision.sentence ? "Ticket fehlt" : "nur ein nichtleerer Kommentar"}`
+            : "Als Entscheidung festhalten",
+          size: 22,
+          iconSize: 12,
           disabled: Boolean(app.busy) || decision.disabled,
-          reason: decision.disabled ? (decision.sentence ? "Ticket fehlt" : "Nur ein nichtleerer Kommentar") : "",
-          tooltip: `Kommentar als Entscheidung festhalten (fab decide ${app.ticket?.id ?? "T-x"} --from mensch). Zeilenumbrüche werden zu Leerzeichen.`,
           onClick: (cx) => app.markDecision(comment, cx),
-        }))
-        .when(!app.compact && Boolean(comment.mentions?.length), (el) => el.child(
-          ui.chip(t, `${comment.mentions.length} Erwähnung${comment.mentions.length === 1 ? "" : "en"}`, t.muted))),
+        })),
     )
     .child(
-      div().pl(30).w_full()
+      div().pl(S.xl).w_full()
         .child(TextView.markdown(`fabric-comment-${comment.n ?? index}`, ui.mentionMarkdown(comment.text))
           .w_full().text_size(T.s).text_color(t.foreground).whitespace_normal().selectable(true)),
     )
     .when(images.length > 0, (el) => el.child(
-      div().pl(30).w_full()
+      div().pl(S.xl).w_full()
         .child(ui.imageGallery(t, images, (image) => app.openImage(image),
           `fabric-comment-image-${comment.n ?? index}`)),
     ));
@@ -450,7 +448,7 @@ function decisionsBlock(app, cx, t, ticket) {
     )
     .children(proposals.map((proposal) => v_flex()
       .w_full()
-      .gap(4)
+      .gap(S.xs)
       .p(S.s)
       .rounded(ui.RADIUS.s)
       .border_1()
@@ -506,7 +504,11 @@ function history(app, cx, t, ticket) {
   if (rows.length === 0) {
     return [
       header,
-      div().px(S.l).py(S.m).text_size(T.s).text_color(t.dim).child("Noch kein Verlauf."),
+      div().w_full().h(160).child(ui.emptyState(t, {
+        title: "Noch kein Verlauf",
+        text: "Kommentare, Wecken und Statuswechsel erscheinen hier.",
+        compact: true,
+      })),
     ];
   }
   return [header, ...rows.map((row, index) => historyRow(app, cx, t, row, index))];
@@ -519,7 +521,7 @@ function commentBox(app, cx, t, ticket) {
 
   const inputBox = v_flex()
     .w_full()
-    .gap(4)
+    .gap(S.xs)
     .child(
       div().w_full().on_drop((event, cx) => app.dropImages(event.paths, "comment", cx))
         .child(ui.textarea(t, app.commentInput, { focused: app.fieldFocused, height: 84 })),
@@ -564,7 +566,7 @@ function commentBox(app, cx, t, ticket) {
         .when(!app.compact, (el) => el
           .child(ui.keyHint(t, "⌘⏎"))
           .child(div().flex_1())
-          .child(ui.hint(t, "„@name“ weckt. „@mensch“ landet in der Inbox.")))
+          .child(ui.hint(t, "„@name“ weckt. „@mensch“ landet im Posteingang.")))
         .when(app.compact, (el) => el.child(div().flex_1())),
     );
 }
@@ -606,7 +608,7 @@ function assigneeField(app, cx, t, ticket) {
   const options = app.ticketAgents(ticket).map((agent) => ({
     value: agent.name,
     label: agent.name,
-    detail: agent.role,
+    detail: model.roleLabel(agent.role),
     selected: agent.name === ticket.assignee,
   }));
   return ui.field(t, "Zuständig", ui.dropdown(t, {
@@ -657,17 +659,17 @@ function blockerField(app, cx, t, ticket) {
   const blocked = ticket.blocked_by ?? [];
   const candidates = app.tickets.filter((row) => row.id !== ticket.id
     && row.status !== "done" && row.status !== "dropped" && !blocked.includes(row.id));
-  return ui.field(t, "Blockiert durch", v_flex().w_full().gap(5)
+  return ui.field(t, "Blockiert durch", v_flex().w_full().gap(S.s)
     .when(blocked.length === 0, (el) => el.child(div().text_size(T.xs).text_color(t.dim).child("Keine Blockaden")))
     .children(blocked.map((id) => h_flex()
       .id(`fabric-blocker-${id}`)
       .w_full()
       .h(24)
-      .px(6)
-      .gap(5)
+      .px(S.s)
+      .gap(S.s)
       .items_center()
       .rounded(ui.RADIUS.s)
-      .bg(t.blocked + "18")
+      .bg(t.blocked + ui.ALPHA.faint)
       .child(ui.chip(t, id, t.blocked))
       .child(div().flex_1())
       .child(ui.iconButton(t, {
@@ -708,7 +710,7 @@ function parentField(app, cx, t, ticket) {
 function childrenField(app, cx, t, ticket) {
   const children = model.childrenOf(app.tickets, ticket.id);
   const progress = model.childProgress(children);
-  return ui.field(t, "Unter-Tickets", v_flex().w_full().gap(5)
+  return ui.field(t, "Unter-Tickets", v_flex().w_full().gap(S.s)
     .child(h_flex().w_full().gap(S.s).items_center()
       .child(div().text_size(T.xs).text_color(t.dim).child(`${progress.closed}/${progress.total} erledigt`))
       .child(div().flex_1())
@@ -717,8 +719,8 @@ function childrenField(app, cx, t, ticket) {
       .id(`fabric-child-${child.id}`)
       .w_full()
       .h(24)
-      .px(6)
-      .gap(5)
+      .px(S.s)
+      .gap(S.s)
       .items_center()
       .rounded(ui.RADIUS.s)
       .cursor_pointer()
@@ -754,7 +756,7 @@ function checksField(app, cx, t, ticket) {
         onClick: (cx) => app.verify(cx),
       })))
     .when(Boolean(state), (el) => el
-      .child(h_flex().w_full().gap(6).items_center()
+      .child(h_flex().w_full().gap(S.s).items_center()
         .child(div().text_size(T.xs).text_color(t.dim).child(`HEAD ${String(checks.head ?? "").slice(0, 7)}`))
         .child(div().text_size(T.xs).text_color(t.dim).child(model.relativeTime(checks.at)).tooltip(model.absoluteTime(checks.at)))
         .child(div().flex_1())
@@ -775,7 +777,7 @@ function checksField(app, cx, t, ticket) {
 
 function verdictField(app, cx, t, ticket) {
   const verdict = ticket.verdict ?? null;
-  return ui.field(t, "Urteil", v_flex().w_full().gap(4)
+  return ui.field(t, "Urteil", v_flex().w_full().gap(S.xs)
     .when(Boolean(verdict?.state), (el) => el
       .child(h_flex().w_full().gap(S.s).items_center()
         .child(ui.chip(t, model.VERDICT_WORDS[verdict.state] ?? verdict.state,
@@ -802,7 +804,7 @@ function sessionsField(app, cx, t, ticket) {
   const chips = model.sessionChips(ticket.sessions, terminals(), agents(), ticket.id);
   return ui.field(t, "Sessions", v_flex().w_full().gap(S.s)
     .when(chips.length === 0, (el) => el.child(div().text_size(T.xs).text_color(t.dim).child("Keine Session")))
-    .when(chips.length > 0, (el) => el.child(h_flex().w_full().gap(4).flex_wrap()
+    .when(chips.length > 0, (el) => el.child(h_flex().w_full().gap(S.xs).flex_wrap()
       .children(chips.map((session, index) => {
         const row = sessionCost(ticket, session, sources[index]);
         const cost = row ? ` · ${model.formatCost(row.cost)}` : "";
@@ -826,13 +828,13 @@ function sessionsField(app, cx, t, ticket) {
       onClick: (cx) => app.openWake(cx),
     }))
     .when(app.wakeOpen, (el) => el.child(
-      v_flex().w_full().gap(5).p(S.s).rounded(ui.RADIUS.m).border_1().border_color(t.border).bg(t.raised)
+      v_flex().w_full().gap(S.s).p(S.s).rounded(ui.RADIUS.m).border_1().border_color(t.border).bg(t.raised)
         .child(ui.dropdown(t, {
           id: "fabric-wake-name",
           value: app.wakeName,
           placeholder: "Agent",
           options: app.ticketAgents(ticket).map((agent) => ({
-            value: agent.name, label: agent.name, detail: agent.role, selected: agent.name === app.wakeName,
+            value: agent.name, label: agent.name, detail: model.roleLabel(agent.role), selected: agent.name === app.wakeName,
           })),
           open: app.menu === "wake-name",
           width: 220,
@@ -867,7 +869,7 @@ function costField(t, ticket) {
   const cost = model.ticketCost(ticket);
   const rows = Array.isArray(ticket.cost?.sessions) ? ticket.cost.sessions : [];
   const limit = Number.isFinite(ticket.max_cost) ? model.formatCost(ticket.max_cost) : "—";
-  return ui.field(t, "Kosten", v_flex().w_full().gap(4)
+  return ui.field(t, "Kosten", v_flex().w_full().gap(S.xs)
     .when(rows.length === 0, (el) => el.child(div().text_size(T.xs).text_color(t.dim).child("Keine Kosten erfasst")))
     .children(rows.map((row, index) => h_flex().w_full().min_h(20).gap(S.xs).items_center()
       .child(div().text_size(T.xs).text_color(t.muted).truncate()
@@ -881,14 +883,14 @@ function costField(t, ticket) {
 
 function waitsField(t, ticket) {
   const stages = Array.isArray(ticket.waits?.stages) ? ticket.waits.stages : [];
-  return ui.field(t, "Wartezeiten", v_flex().w_full().gap(4)
+  return ui.field(t, "Liegezeiten", v_flex().w_full().gap(S.xs)
     .when(stages.length === 0, (el) => el.child(div().text_size(T.xs).text_color(t.dim).child("—")))
     .children(stages.map((stage) => h_flex().w_full().min_h(20).gap(S.xs).items_center()
       .child(div().text_size(T.xs).text_color(t.muted).child(stage.label))
       .when(Boolean(stage.open), (el) => el.child(ui.chip(t, "offen", t.working)))
       .child(div().flex_1())
       .child(div().text_size(T.xs).text_color(t.dim).child(model.formatDuration(stage.ms)))))
-    .child(costRow(t, "Gesamt", model.formatDuration(ticket.waits?.total_ms))));
+    .child(costRow(t, "Gesamt", model.formatDuration(ticket.waits?.total_ms))), { hint: "Verweildauer je Stufe (Liegezeit)" });
 }
 
 function properties(app, cx, t, ticket, { compact = false } = {}) {
@@ -932,8 +934,8 @@ function properties(app, cx, t, ticket, { compact = false } = {}) {
   app.propsEndIndex = model.propertiesEndIndex(0, fields.length, false);
   return v_flex()
     .flex_none()
-    .w(PROPS)
-    .min_w(PROPS)
+    .w(ui.SIZE.inspector)
+    .min_w(ui.SIZE.inspector)
     .h_full()
     .border_l(1)
     .border_color(t.border)
@@ -1004,15 +1006,39 @@ function runAction(app, action, cx) {
 export function renderTicket(app, cx, t) {
   const ticket = app.ticket;
   if (!ticket) {
+    const error = app.ticketError;
     return v_flex()
       .size_full()
       .min_h(0)
       .child(ui.header(t, "Ticket", [
-        ui.button(t, { id: "fabric-ticket-back-empty", label: "Zurück", icon: "chevron-left", tooltip: "Zurück (Esc)", onClick: (cx) => app.navigate("tickets", {}, cx) }),
+        ui.button(t, {
+          id: "fabric-ticket-back-empty",
+          label: "Zurück",
+          icon: "chevron-left",
+          small: true,
+          tooltip: "Zurück zur Liste (Esc)",
+          onClick: (cx) => app.navigate("tickets", {}, cx),
+        }),
       ], { iconName: "tickets", compact: app.compact }))
-      .child(ui.loading(t, app.ticketError ?? "Das Ticket wird geladen …"));
+      .when(Boolean(error), (el) => el.child(ui.notice(t, error)))
+      .child(ui.emptyState(t, {
+        title: error ? "Ticket nicht lesbar" : "Ticket wird geladen …",
+        text: error
+          ? "Wähle ein anderes Ticket oder lade die Liste neu."
+          : "Beschreibung, Verlauf und Eigenschaften erscheinen gleich.",
+        compact: app.compact,
+        action: error
+          ? ui.button(t, {
+            id: "fabric-ticket-error-back",
+            label: "Zurück zur Liste",
+            icon: "chevron-left",
+            onClick: (cx) => app.navigate("tickets", {}, cx),
+          })
+          : null,
+      }));
   }
-  const headBlock = head(app, cx, t, ticket);
+  const headBlock = ticketHeader(app, cx, t, ticket);
+  const titleBar = titleBlock(app, cx, t, ticket);
   const decisions = decisionsBlock(app, cx, t, ticket);
   if (app.compact) {
     return v_flex()
@@ -1020,6 +1046,7 @@ export function renderTicket(app, cx, t) {
       .min_h(0)
       .overflow_hidden()
       .child(headBlock)
+      .child(titleBar)
       .child(
         v_flex()
           .id("fabric-ticket-scroll")
@@ -1043,6 +1070,7 @@ export function renderTicket(app, cx, t) {
     .min_h(0)
     .overflow_hidden()
     .child(headBlock)
+    .child(titleBar)
     .child(
       h_flex()
         .w_full()
