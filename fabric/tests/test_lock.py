@@ -323,6 +323,49 @@ class LockTests(FabricCase):
             self.git_out(repo, "push", "-q", "origin", "main")
         return bare
 
+    def add_git_shim(self):
+        """`git push origin --delete` mit gesetztem Marker scheitern lassen."""
+        real_git = shutil.which("git")
+        self.assertTrue(real_git, "git nicht gefunden")
+        shim = os.path.join(self.bin, "git")
+        self.write_file(
+            shim,
+            "#!/bin/sh\n"
+            'if [ "$1" = "push" ] && [ "$2" = "origin" ] && [ "$3" = "--delete" ] '
+            '&& [ -n "${GIT_FAIL_PUSH_DELETE:-}" ]; then\n'
+            '  echo "Aufräumen verweigert" >&2\n'
+            "  exit 1\n"
+            "fi\n"
+            f'exec "{real_git}" "$@"\n',
+        )
+        os.chmod(shim, 0o755)
+        return shim
+
+    def review_ticket_pr_merged(self):
+        """Review-Ticket mit gemergtem PR und noch unvollständigem Aufräumen.
+
+        Der erste Accept scheitert vor dem Session-Abbau am Löschen des
+        Remote-Branches; `pr.state` steht danach auf merged, die Sessions des
+        Tickets sind unverändert. Das ist der Ausgangszustand des PR-Wegs, der
+        bei der Wiederholung die schon gemergte PR erkennt.
+        """
+        repo, tid, worktree = self.review_ticket()
+        self.setup_origin(repo)
+        self.add_git_shim()
+        result = self.cli(
+            "accept", tid,
+            env={
+                "GH_LOG": self.gh_log,
+                "GH_STATE": self.gh_state,
+                "GIT_FAIL_PUSH_DELETE": "1",
+            },
+        )
+        self.assertNotEqual(result.returncode, 0)
+        ticket = self.ticket(tid)
+        self.assertEqual(ticket["status"], "review")
+        self.assertEqual(ticket["pr"]["state"], "merged")
+        return repo, tid, worktree
+
     # 1 -- Schreibender bricht mit Halter-Meldung ab
 
     def test_schreiber_timeout_meldet_halter(self):
@@ -816,6 +859,78 @@ class LockTests(FabricCase):
 
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("geändert", err)
+        self.assertEqual(self.hc_calls("send"), [])
+
+    # 13a -- Accept über den PR-Weg weckt Prüfer-Hinweise bei CAS-Konflikt nicht
+
+    def test_accept_pr_weg_weckt_pruefer_hinweise_nicht_bei_cas_konflikt(self):
+        repo, tid, _worktree = self.review_ticket()
+        self.setup_origin(repo)
+        self.ok("comment", tid, "--from", "ada", "Hinweis: Bitte Doku nachziehen")
+        started = os.path.join(self.tmp, "pr-kill-started")
+        release = os.path.join(self.tmp, "pr-kill-release")
+        # Orchestrator erreichbar: ein Wecken vor dem Commit wäre ein `hc send`.
+        self.set_live({"fab-herdr-app-orchestrator": "t11"})
+        self.clear_log()
+
+        proc = self.cli_popen(
+            "accept", tid,
+            marker_env={
+                "GH_LOG": self.gh_log,
+                "GH_STATE": self.gh_state,
+                "HC_KILL_STARTED": started,
+                "HC_KILL_RELEASE": release,
+            },
+        )
+        self.assertTrue(
+            self.wait_for(lambda: os.path.exists(started), timeout=20),
+            "Session-Abbau des PR-Accepts hat nicht begonnen",
+        )
+        self.assert_lock_free()
+
+        comment = self.cli("comment", tid, "--from", "mensch", "dazwischen")
+        self.assertEqual(comment.returncode, 0, comment.stderr)
+
+        self.write_file(release, "")
+        _out, err = proc.communicate(timeout=60)
+
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("geändert", err)
+        self.assertEqual(self.ticket(tid)["status"], "review")
+        self.assertEqual(self.hc_calls("send"), [])
+
+    # 13b -- Auch die Wiederholung mit schon gemergter PR weckt nichts
+
+    def test_accept_gemergter_pr_weckt_pruefer_hinweise_nicht_bei_cas_konflikt(self):
+        _repo, tid, _worktree = self.review_ticket_pr_merged()
+        self.ok("comment", tid, "--from", "ada", "Hinweis: Bitte Doku nachziehen")
+        started = os.path.join(self.tmp, "merged-kill-started")
+        release = os.path.join(self.tmp, "merged-kill-release")
+        self.set_live({"fab-herdr-app-orchestrator": "t11"})
+        self.clear_log()
+
+        proc = self.cli_popen(
+            "accept", tid,
+            marker_env={
+                "HC_KILL_STARTED": started,
+                "HC_KILL_RELEASE": release,
+            },
+        )
+        self.assertTrue(
+            self.wait_for(lambda: os.path.exists(started), timeout=20),
+            "Session-Abbau des PR-Accepts hat nicht begonnen",
+        )
+        self.assert_lock_free()
+
+        comment = self.cli("comment", tid, "--from", "mensch", "dazwischen")
+        self.assertEqual(comment.returncode, 0, comment.stderr)
+
+        self.write_file(release, "")
+        _out, err = proc.communicate(timeout=60)
+
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("geändert", err)
+        self.assertEqual(self.ticket(tid)["status"], "review")
         self.assertEqual(self.hc_calls("send"), [])
 
 
