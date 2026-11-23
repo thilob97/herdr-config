@@ -389,7 +389,7 @@ function changesSection(app, cx, t, ticket) {
       el.child(ui.notice(t, app.errorFor("changes").text, app.errorFor("changes").level)));
 }
 
-function historyRow(app, cx, t, row, index) {
+function historyRow(app, cx, t, row, index, cards = []) {
   if (row.kind === "wake") {
     return h_flex()
       .id(`fabric-wake-${index}`)
@@ -403,7 +403,7 @@ function historyRow(app, cx, t, row, index) {
   }
   const comment = row.comment;
   const images = model.imageRefs(comment.text ?? "");
-  const decision = model.decisionComment(app.ticket, comment);
+  const hint = model.commentDecisionHint(comment, cards);
   return v_flex()
     .id(`fabric-entry-${comment.n ?? index}`)
     .w_full()
@@ -417,24 +417,18 @@ function historyRow(app, cx, t, row, index) {
         .child(div().text_size(T.xs).text_color(t.dim)
           .child(model.relativeTime(comment.at))
           .tooltip(model.absoluteTime(comment.at)))
-        .child(div().flex_1())
-        .child(ui.iconButton(t, {
-          id: `fabric-comment-decide-${comment.n ?? index}`,
-          icon: "check",
-          tooltip: decision.disabled
-            ? `Als Entscheidung festhalten – ${decision.sentence ? "Ticket fehlt" : "nur ein nichtleerer Kommentar"}`
-            : "Als Entscheidung festhalten",
-          size: 22,
-          iconSize: 12,
-          disabled: Boolean(app.busy) || decision.disabled,
-          onClick: (cx) => app.markDecision(comment, cx),
-        })),
+        .child(div().flex_1()),
     )
     .child(
       div().pl(S.xl).w_full()
         .child(TextView.markdown(`fabric-comment-${comment.n ?? index}`, ui.mentionMarkdown(comment.text))
           .w_full().text_size(T.s).text_color(t.foreground).whitespace_normal().selectable(true)),
     )
+    .when(Boolean(hint), (el) => el.child(
+      div().pl(S.xl).w_full().text_size(T.xs).text_color(t.dim)
+        .whitespace_normal().child(hint.decidedAt
+          ? `${hint.text} · ${model.relativeTime(hint.decidedAt)}`
+          : hint.text)))
     .when(images.length > 0, (el) => el.child(
       div().pl(S.xl).w_full()
         .child(ui.imageGallery(t, images, (image) => app.openImage(image),
@@ -442,75 +436,42 @@ function historyRow(app, cx, t, row, index) {
     ));
 }
 
-function decisionsBlock(app, cx, t, ticket) {
-  const proposals = model.decisionProposals(ticket);
-  const error = app.errorFor("decision");
-  if (!proposals.length && !error) return null;
-  const busy = app.busy === "decision";
+/** Offene und entschiedene Vorschläge des Tickets, offene zuerst. */
+function decisionsSection(app, cx, t, cards) {
+  if (!cards.length) return null;
+  const error = app.errorFor("proposal");
+  const open = cards.filter((card) => card.status === "open").length;
+  const decided = cards.length - open;
+  const busy = app.busy === "proposal";
   return v_flex()
+    .id("fabric-proposals-scroll")
+    .flex_none()
     .w_full()
+    .max_h(320)
+    .overflow_y_scrollbar()
+    .track_scroll(app.proposalScroll)
     .px(S.l)
-    .py(S.s)
+    .py(S.m)
     .gap(S.s)
     .border_b(1)
     .border_color(t.border)
-    .child(
-      h_flex().w_full().gap(S.s).items_center()
-        .child(div().text_size(T.s).font_semibold().text_color(t.muted).child("Entscheidungen"))
-        .child(ui.chip(t, `${proposals.length} offen`, proposals.length ? t.working : t.dim,
-          "fabric-decisions-count", { tooltip: "Vorschläge, die auf Bestätigung oder Verwerfen warten" }))
-        .child(div().flex_1()),
-    )
-    .children(proposals.map((proposal) => v_flex()
-      .w_full()
-      .gap(S.xs)
-      .p(S.s)
-      .rounded(ui.RADIUS.s)
-      .border_1()
-      .border_color(t.border)
-      .bg(t.raised)
-      .child(
-        h_flex().w_full().gap(S.s).items_center()
-          .child(ui.chip(t, proposal.id || "—", t.accent, `fabric-decision-${proposal.key}`))
-          .child(div().flex_1())
-          .child(div().text_size(T.xs).text_color(t.dim).child(`von ${proposal.by || "—"}`)),
-      )
-      .child(div().w_full().text_size(T.s).text_color(t.foreground).whitespace_normal()
-        .child(proposal.text))
-      .when(Boolean(proposal.reason), (el) => el.child(
-        div().w_full().text_size(T.xs).text_color(t.dim).whitespace_normal()
-          .child(proposal.reason),
-      ))
-      .child(
-        h_flex().w_full().gap(S.xs).items_center()
-          .child(div().flex_1())
-          .child(ui.button(t, {
-            id: `fabric-decision-confirm-${proposal.key}`,
-            label: "Bestätigen",
-            icon: "check",
-            small: true,
-            primary: true,
-            disabled: busy || proposal.confirm.disabled,
-            reason: proposal.confirm.disabled ? "Vorschlag ohne ID" : "",
-            tooltip: `Vorschlag ${proposal.id || ""} bestätigen (fab decide confirm)`,
-            onClick: (cx) => app.decideProposal("confirm", proposal, cx),
-          }))
-          .child(ui.button(t, {
-            id: `fabric-decision-reject-${proposal.key}`,
-            label: "Verwerfen",
-            icon: "close",
-            small: true,
-            danger: true,
-            disabled: busy || proposal.reject.disabled,
-            reason: proposal.reject.disabled ? "Vorschlag ohne ID" : "",
-            tooltip: `Vorschlag ${proposal.id || ""} verwerfen (fab decide reject)`,
-            onClick: (cx) => app.decideProposal("reject", proposal, cx),
-          })),
-      )))
+    .child(ui.sectionTitle(t, "Zu entscheiden", [
+      ui.badge(t, open, open ? t.working : t.dim),
+      ...(decided
+        ? [ui.chip(t, `${decided} entschieden`, t.dim, "fabric-proposals-decided",
+          { tooltip: "Bereits übernommene oder abgelehnte Vorschläge" })]
+        : []),
+    ]))
+    .children(cards.map((card) => ui.proposalCard(t, card, {
+      compact: app.compact,
+      busy,
+      onAccept: (cx) => app.applyProposal(card, "accept", cx),
+      onReject: (cx) => app.applyProposal(card, "reject", cx),
+    })))
     .when(Boolean(error), (el) => el.child(ui.notice(t, error.text, error.level)));
 }
 
-function history(app, cx, t, ticket) {
+function history(app, cx, t, ticket, cards = []) {
   const rows = model.history(ticket, app.events);
   const header = h_flex().w_full().px(S.l).py(S.xs).items_center()
     .child(div().text_size(T.s).font_semibold().text_color(t.muted).child("Verlauf"))
@@ -526,7 +487,7 @@ function history(app, cx, t, ticket) {
       })),
     ];
   }
-  return [header, ...rows.map((row, index) => historyRow(app, cx, t, row, index))];
+  return [header, ...rows.map((row, index) => historyRow(app, cx, t, row, index, cards))];
 }
 
 function commentBox(app, cx, t, ticket) {
@@ -1054,7 +1015,8 @@ export function renderTicket(app, cx, t) {
   }
   const headBlock = ticketHeader(app, cx, t, ticket);
   const titleBar = titleBlock(app, cx, t, ticket);
-  const decisions = decisionsBlock(app, cx, t, ticket);
+  const cards = model.ticketCards(ticket, app.events ?? []);
+  const decisions = decisionsSection(app, cx, t, cards);
   if (app.compact) {
     return v_flex()
       .size_full()
@@ -1062,6 +1024,7 @@ export function renderTicket(app, cx, t) {
       .overflow_hidden()
       .child(headBlock)
       .child(titleBar)
+      .when(Boolean(decisions), (el) => el.child(decisions))
       .child(
         v_flex()
           .id("fabric-ticket-scroll")
@@ -1073,8 +1036,7 @@ export function renderTicket(app, cx, t) {
           .child(body(app, cx, t, ticket))
           .when(ticket.status === "review" && Boolean(ticket.branch), (el) =>
             el.child(changesSection(app, cx, t, ticket)))
-          .when(Boolean(decisions), (el) => el.child(decisions))
-          .children(history(app, cx, t, ticket))
+          .children(history(app, cx, t, ticket, cards))
           .children(properties(app, cx, t, ticket, { compact: true })),
       )
       .child(commentBox(app, cx, t, ticket))
@@ -1086,6 +1048,7 @@ export function renderTicket(app, cx, t) {
     .overflow_hidden()
     .child(headBlock)
     .child(titleBar)
+    .when(Boolean(decisions), (el) => el.child(decisions))
     .child(
       h_flex()
         .w_full()
@@ -1106,8 +1069,7 @@ export function renderTicket(app, cx, t) {
                 .child(body(app, cx, t, ticket))
                 .when(ticket.status === "review" && Boolean(ticket.branch), (el) =>
                   el.child(changesSection(app, cx, t, ticket)))
-                .when(Boolean(decisions), (el) => el.child(decisions))
-                .children(history(app, cx, t, ticket)),
+                .children(history(app, cx, t, ticket, cards)),
             )
             .child(commentBox(app, cx, t, ticket)),
         )

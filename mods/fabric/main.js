@@ -138,6 +138,7 @@ export default class Fabric extends View {
     this.changesLoadingFile = false;
     this.historyScroll = ScrollHandle.new();
     this.historyLastIndex = 1;
+    this.proposalScroll = ScrollHandle.new();
     this.propsScroll = ScrollHandle.new();
     this.propsEndIndex = 0;
     // Ein Dropdown ist zugleich offen; ein gemeinsamer Handle reicht.
@@ -2691,29 +2692,20 @@ export default class Fabric extends View {
     this.notifyNow();
   }
 
-  async markDecision(comment, cx) {
-    const ticket = this.ticket;
-    if (!ticket?.id) return;
-    const sentence = model.decisionSentence(comment?.text);
-    if (!sentence) return;
-    await this.action("decision", model.decideArgs(ticket.id, sentence), {
-      success: "Entscheidung festgehalten.",
-      after: async () => { await this.loadTicket(); },
-    });
-    this.notifyNow();
-  }
-
-  async decideProposal(action, proposal, cx) {
-    const ticket = this.ticket;
-    if (!ticket?.id || !proposal?.id) return;
+  /** Offene Entscheidungs- oder Lehren-Karte übernehmen bzw. ablehnen. */
+  async applyProposal(card, action, cx) {
     const reject = action === "reject";
-    const plan = reject ? proposal.reject : proposal.confirm;
-    if (!plan || plan.disabled || !plan.args) return;
-    await this.action("decision", plan.args, {
-      success: reject ? "Vorschlag verworfen." : "Entscheidung bestätigt.",
+    const args = reject ? card?.rejectArgs : card?.acceptArgs;
+    if (!args?.length) return;
+    const kindWord = card.kindWord || model.PROPOSAL_WORDS[card.kind] || "Vorschlag";
+    const result = await this.action("proposal", args, {
+      success: `${kindWord} ${reject ? "abgelehnt" : "übernommen"}.`,
       after: async () => { await this.loadTicket(); },
     });
-    this.notifyNow();
+    if (result.ok) {
+      this.inboxOpen = false;
+      this.notifyNow();
+    }
   }
 
 
@@ -3159,32 +3151,6 @@ export default class Fabric extends View {
         }
         return `${retry.agent === "orchestrator" ? "Team-Orchestrator" : retry.agent} erneut gestartet.`;
       },
-    });
-    if (result.ok) {
-      this.inboxOpen = false;
-      this.notifyNow();
-    }
-  }
-
-  /** Offenen Lehren-Vorschlag aus dem Posteingang bestätigen. */
-  async confirmLesson(entry, cx) {
-    const lesson = model.inboxLesson(entry);
-    if (!lesson) return;
-    const result = await this.action("lesson-confirm", lesson.confirm, {
-      success: "Lehre bestätigt.",
-    });
-    if (result.ok) {
-      this.inboxOpen = false;
-      this.notifyNow();
-    }
-  }
-
-  /** Offenen Lehren-Vorschlag aus dem Posteingang verwerfen. */
-  async discardLesson(entry, cx) {
-    const lesson = model.inboxLesson(entry);
-    if (!lesson) return;
-    const result = await this.action("lesson-discard", lesson.discard, {
-      success: "Lehre verworfen.",
     });
     if (result.ok) {
       this.inboxOpen = false;
@@ -4808,14 +4774,41 @@ export default class Fabric extends View {
       .child(ui.badge(t, this.inbox.length, this.inbox.length ? t.accent : t.dim))
       .tooltip("Posteingang");
 
+    const cards = model.inboxCards(this.inbox, this.events);
+    const openCount = cards.filter((card) => card.status === "open").length;
+    const rest = model.sortInbox(this.inbox)
+      .filter((entry) => entry.kind !== "decision" && entry.kind !== "lesson");
+
+    const cardSection = cards.length
+      ? [
+        div().flex_none().w_full().px(ui.SPACE.m).pt(ui.SPACE.s).pb(ui.SPACE.xs)
+          .child(ui.sectionTitle(t, "Zu entscheiden", [
+            ui.badge(t, openCount, openCount ? t.working : t.dim),
+          ])),
+        v_flex().w_full().px(ui.SPACE.s).pb(ui.SPACE.xs).gap(ui.SPACE.s)
+          .children(cards.map((card) => ui.proposalCard(t, card, {
+            compact: true,
+            busy: this.busy === "proposal",
+            onAccept: (cx) => this.applyProposal(card, "accept", cx),
+            onReject: (cx) => this.applyProposal(card, "reject", cx),
+            onOpenTicket: (cx) => {
+              this.inboxOpen = false;
+              this.openInWindow({ page: "ticket", id: card.ticket }, cx);
+            },
+          })))
+          .when(Boolean(this.errorFor("proposal")), (el) => el.child(
+            ui.notice(t, this.errorFor("proposal").text, this.errorFor("proposal").level))),
+      ]
+      : [];
+
     const panel = ui.popoverPanel(t, [
       h_flex().flex_none().w_full().px(ui.SPACE.m).h(38).items_center().border_b(1).border_color(t.border)
         .child(div().flex_1().text_size(ui.FONT.s).font_semibold().child("Posteingang"))
         .child(ui.badge(t, this.inbox.length, t.accent)),
-      this.inbox.length
-        ? v_flex().w_full().children(model.sortInbox(this.inbox).map((entry, index) => {
+      ...cardSection,
+      rest.length
+        ? v_flex().w_full().children(rest.map((entry, index) => {
           const retry = model.inboxRetry(entry);
-          const lesson = model.inboxLesson(entry);
           return h_flex()
             .id(`fabric-inbox-pop-${entry.ticket}-${index}`)
             .w_full()
@@ -4853,27 +4846,13 @@ export default class Fabric extends View {
                 small: true,
                 tooltip: "Den Agenten erneut starten und den Hinweis bei Erfolg entfernen",
                 onClick: (cx) => this.retryAgent(entry, cx),
-              }))))
-              .when(Boolean(lesson), (el) => el.child(h_flex().w_full().gap(ui.SPACE.xs)
-                .child(ui.button(t, {
-                  id: `fabric-inbox-pop-lesson-confirm-${entry.ticket}-${index}`,
-                  label: "Bestätigen",
-                  icon: "check",
-                  small: true,
-                  tooltip: "Diesen Lehren-Vorschlag bestätigen",
-                  onClick: (cx) => this.confirmLesson(entry, cx),
-                }))
-                .child(ui.button(t, {
-                  id: `fabric-inbox-pop-lesson-discard-${entry.ticket}-${index}`,
-                  label: "Verwerfen",
-                  icon: "close",
-                  small: true,
-                  tooltip: "Diesen Lehren-Vorschlag verwerfen",
-                  onClick: (cx) => this.discardLesson(entry, cx),
-                })))))
+              })))))
         }))
-        : ui.emptyState(t, { title: "Nichts zu tun", text: "Der Posteingang ist leer." }),
-    ], 360, 360);
+        : null,
+      !cards.length && !rest.length
+        ? ui.emptyState(t, { title: "Nichts zu tun", text: "Der Posteingang ist leer." })
+        : null,
+    ].filter(Boolean), 360, 360);
 
     return PopupWrapper(t, "fabric-inbox-panel", trigger, this.inboxOpen, panel);
   }
