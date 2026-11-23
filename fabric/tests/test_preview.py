@@ -126,7 +126,12 @@ class PreviewTests(FabricCase):
         self.preview_area()
         tid = "T-1"
         proc = self.spawn("import time; time.sleep(60)")
-        self.identity_state(tid, proc, marker="nicht-der-fremde-prozess")
+        self.identity_state(
+            tid,
+            proc,
+            marker="nicht-der-fremde-prozess",
+            started="Mon Jan  1 00:00:00 2001",
+        )
 
         notice = self.stop_quietly(tid)
 
@@ -173,9 +178,11 @@ class PreviewTests(FabricCase):
         state["pgid"] = state["pgid"] + 1
         preview_mod._write_state(tid, state)
 
-        preview_mod._terminate(state)
+        notice = self.stop_quietly(tid)
 
         self.assertIsNone(proc.poll())
+        self.assertIn("kein Signal", notice)
+        self.assertIsNone(preview_mod._owned(state))
 
     def test_stop_ohne_marker_sendet_kein_signal(self):
         self.preview_area()
