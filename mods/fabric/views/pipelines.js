@@ -11,17 +11,18 @@ const S = ui.SPACE;
 const LIST = 300;
 
 function stateGlyph(t, state) {
+  const color = ui.pipelineColor(t, state);
   switch (state) {
     case "pass":
-      return div().flex_none().text_color(t.done).child(ui.icon("check", 13));
+      return div().flex_none().text_color(color).child(ui.icon("check", 13));
     case "fail":
-      return div().flex_none().text_color(t.blocked).child(ui.icon("close", 13));
+      return div().flex_none().text_color(color).child(ui.icon("close", 13));
     case "running":
-      return div().flex_none().text_color(t.accent).child(ui.icon("play", 11));
+      return div().flex_none().text_color(color).child(ui.icon("play", 11));
     case "skipped":
-      return div().flex_none().text_color(t.dim).child(ui.dot(t, t.dim));
+      return div().flex_none().text_color(color).child(ui.dot(t, color));
     default:
-      return div().flex_none().text_color(t.muted).child(ui.icon("clock", 12));
+      return div().flex_none().text_color(color).child(ui.icon("clock", 12));
   }
 }
 
@@ -102,7 +103,7 @@ function leftPane(app, cx, t, rows) {
     .child(
       h_flex().w_full().min_w(0).gap(S.s).items_center().px(S.m).py(S.s)
         .child(div().flex_1().min_w(0).text_size(T.xs).text_color(t.dim)
-          .child(`${rows.length} Lauf${rows.length === 1 ? "" : "e"}`))
+          .child(`${rows.length} ${rows.length === 1 ? "Lauf" : "Läufe"}`))
         .when(Boolean(app.pipelineFilter), (el) => el
           .child(ui.chip(t, `Ticket ${app.pipelineFilter}`, t.accent, null,
             { tooltip: `Nur Läufe für Ticket ${app.pipelineFilter}` }))
