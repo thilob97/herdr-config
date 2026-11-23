@@ -2755,6 +2755,10 @@ def cmd_decide(args):
 
         with store.locked():
             ticket = store.load(args.id)
+            if not ticket.get("repo"):
+                raise FabError(
+                    f"{ticket['id']} hat kein Repo; eine Entscheidung gehört in einen Checkout"
+                )
             proposals = ticket.get("decision_proposals")
             if not isinstance(proposals, list):
                 proposals = []

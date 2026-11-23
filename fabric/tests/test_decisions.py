@@ -166,6 +166,14 @@ class ProposeConfirmTests(DecisionCase):
         self.assertEqual(self.ticket(tid).get("decision_proposals") or [], [])
         self.assertFalse(os.path.exists(self.file(repo)))
 
+    def test_propose_ohne_repo_bricht_ab(self):
+        tid = self.new("Ohne Repo")
+        self.patch_ticket(tid, repo=None)
+        result = self.propose(tid, "Wir nehmen SQLite.")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("kein Repo", result.stderr)
+        self.assertFalse(self.ticket(tid).get("decision_proposals"))
+
     def test_confirm_haengt_am_haupt_checkout_an(self):
         repo, tid, worktree = self.ready_ticket()
         self.patch_ticket(tid, repo=worktree)
