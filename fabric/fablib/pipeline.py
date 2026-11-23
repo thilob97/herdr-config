@@ -8,6 +8,7 @@ alle Schritte als `pending`; nach dem ersten Fehler werden die restlichen als
 import json
 import os
 import subprocess
+import sys
 
 from . import git, store
 from .errors import FabError
@@ -190,17 +191,51 @@ def run(
             if code != 0:
                 failed = True
                 first_code = code
-    except BaseException:
-        for step_row in store.pipeline_steps(run_id):
-            if step_row["state"] == "running":
-                store.pipeline_step_update(
-                    run_id, step_row["position"], state="fail"
+    except BaseException as exc:
+        # Jeder Aufräumschritt zählt einzeln: Ein Fehler beim Speichern darf
+        # weder den Lauf auf `running` lassen noch die ursprüngliche Ausnahme
+        # verdecken. Aufräumfehler gehen an stderr und als `__cause__` mit.
+        cleanup_errors = []
+
+        def attempt(label, action):
+            try:
+                action()
+            except BaseException as error:
+                cleanup_errors.append(error)
+                print(
+                    f"Pipeline {run_id}: Aufräumen fehlgeschlagen ({label}): "
+                    f"{type(error).__name__}: {error}",
+                    file=sys.stderr,
                 )
-            elif step_row["state"] == "pending":
-                store.pipeline_step_update(
-                    run_id, step_row["position"], state="skipped"
+
+        def mark_steps():
+            for step_row in store.pipeline_steps(run_id):
+                state = step_row["state"]
+                if state == "running":
+                    wanted = "fail"
+                elif state == "pending":
+                    wanted = "skipped"
+                else:
+                    continue
+                position = step_row["position"]
+                attempt(
+                    f"Schritt {position} auf {wanted}",
+                    lambda position=position, wanted=wanted: (
+                        store.pipeline_step_update(
+                            run_id, position, state=wanted
+                        )
+                    ),
                 )
-        store.pipeline_run_finish(run_id, "fail", store.now_ms() - start)
+
+        attempt("Schritte lesen", mark_steps)
+        attempt(
+            "Lauf auf fail",
+            lambda: store.pipeline_run_finish(
+                run_id, "fail", store.now_ms() - start
+            ),
+        )
+        if cleanup_errors:
+            raise exc from cleanup_errors[-1]
         raise
 
     store.pipeline_run_finish(

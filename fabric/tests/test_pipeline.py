@@ -1,4 +1,6 @@
 """Prüf-Pipelines: Schritte, Zustände und gespeicherte Läufe."""
+import contextlib
+import io
 import json
 import os
 from unittest import mock
@@ -215,3 +217,107 @@ class PipelineTest(PipelineCase):
         self.assertNotIn(
             "pending", [step["state"] for step in steps]
         )
+
+    def test_aufraeumfehler_verdeckt_ursache_nicht(self):
+        repo = self.make_repo()
+        self.write_steps(
+            repo,
+            [
+                {"name": "eins", "run": "true"},
+                {"name": "zwei", "run": "true"},
+            ],
+        )
+        original = KeyboardInterrupt("Abbruch")
+        cleanup = FabError("Datenbank gesperrt")
+        cleaning = {"active": False}
+        real_update = store.pipeline_step_update
+
+        def execute(command, cwd, timeout):
+            cleaning["active"] = True
+            raise original
+
+        def update(run_id, position, **fields):
+            if cleaning["active"]:
+                raise cleanup
+            return real_update(run_id, position, **fields)
+
+        stderr = io.StringIO()
+        with mock.patch.object(pipeline, "_execute", side_effect=execute), \
+                mock.patch.object(
+                    store, "pipeline_step_update", side_effect=update
+                ), \
+                contextlib.redirect_stderr(stderr):
+            with self.assertRaises(KeyboardInterrupt) as caught:
+                self.run_pipeline(repo, ticket="T-12")
+
+        self.assertIs(caught.exception, original)
+        self.assertIs(caught.exception.__cause__, cleanup)
+        self.assertIn("Datenbank gesperrt", stderr.getvalue())
+
+        with self.store_env():
+            run = store.pipeline_run_list("T-12")[-1]
+        self.assertEqual(run["state"], "fail")
+
+    def test_finish_fehler_laesst_ursache_durch(self):
+        repo = self.make_repo()
+        self.write_steps(repo, [{"name": "eins", "run": "true"}])
+        original = FabError("ursprünglich")
+        cleanup = RuntimeError("Speicher gesperrt")
+
+        stderr = io.StringIO()
+        with mock.patch.object(
+            pipeline, "_execute", side_effect=original
+        ), mock.patch.object(
+            store, "pipeline_run_finish", side_effect=cleanup
+        ), contextlib.redirect_stderr(stderr):
+            with self.assertRaises(FabError) as caught:
+                self.run_pipeline(repo, ticket="T-13")
+
+        self.assertIs(caught.exception, original)
+        self.assertIs(caught.exception.__cause__, cleanup)
+        self.assertIn("Speicher gesperrt", stderr.getvalue())
+
+    def test_rerun_meldet_aufraeumfehler_und_endet_fail(self):
+        repo = self.make_repo()
+        self.write_steps(
+            repo,
+            [
+                {"name": "eins", "run": "true"},
+                {"name": "zwei", "run": "true"},
+            ],
+        )
+        with self.store_env():
+            first = pipeline.run(repo, "verify", ticket="T-14")
+        self.assertEqual(first["state"], "pass")
+
+        original = KeyboardInterrupt("Abbruch")
+        cleanup = FabError("Datenbank gesperrt")
+        cleaning = {"active": False}
+        real_update = store.pipeline_step_update
+
+        def execute(command, cwd, timeout):
+            cleaning["active"] = True
+            raise original
+
+        def update(run_id, position, **fields):
+            if cleaning["active"]:
+                raise cleanup
+            return real_update(run_id, position, **fields)
+
+        stderr = io.StringIO()
+        with mock.patch.object(pipeline, "_execute", side_effect=execute), \
+                mock.patch.object(
+                    store, "pipeline_step_update", side_effect=update
+                ), \
+                contextlib.redirect_stderr(stderr), self.store_env():
+            with self.assertRaises(KeyboardInterrupt) as caught:
+                pipeline.rerun(first["run_id"])
+
+        self.assertIs(caught.exception, original)
+        self.assertIs(caught.exception.__cause__, cleanup)
+        self.assertIn("Datenbank gesperrt", stderr.getvalue())
+
+        with self.store_env():
+            run = store.pipeline_run_list("T-14")[-1]
+        self.assertNotEqual(run["id"], first["run_id"])
+        self.assertEqual(run["state"], "fail")
