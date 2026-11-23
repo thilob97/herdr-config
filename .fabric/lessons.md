@@ -11,3 +11,4 @@
 - Wenn du einen neuen Block in den zusammengesetzten Kontext einbaust, prüfe auch den Fall, dass die neuen Quellen fehlen, damit bestehende Blöcke wie der Team-Brief erhalten bleiben oder im Hinweis mit ihrer Quelle (etwa roster.json) genannt werden, und sichere diesen Fall mit einem Regressionstest gegen den alten Stand ab.
 - Lösche eine Sperr- oder Slot-Datei nur, nachdem du direkt vor dem Löschen geprüft hast, dass sie noch die gelesene Besitzer-PID enthält (oder ersetze sie atomar), und teste das Aufräumen toter Slots mit mehreren gleichzeitigen Wartenden in erzwungener Reihenfolge.
 - Wenn ein Block wegen Platzmangel ganz entfällt, nenne ihn wie eine gekürzte Quelle im Hinweis und teste die Grenze mit allen Quellen gleichzeitig, auch mit einer langen neuen Quelle, die ältere verdrängt.
+- Gehe vor jeder erneuten Übergabe jedes Abnahmekriterium einzeln mit seinem Prüfbefehl durch, auch die schon einmal bemängelten, und übergib erst, wenn keins mehr offen ist.
