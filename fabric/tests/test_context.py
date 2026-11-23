@@ -167,6 +167,48 @@ class PromptContextTests(ContextCase):
             os.path.join(repo, ".fabric", "decisions.md"), text
         )
 
+    def test_rest_unter_hinweislaenge_ueberschreitet_die_grenze_nicht(self):
+        repo = self.make_repo()
+        self.own_repo(repo)
+        tid = self.new("Kontext", repo=repo)
+        self.ok("decide", tid, "--from", "mensch", "Kurze Entscheidung.")
+        self.project(repo, "# S" + "S" * 100)
+        base = context.build_paths([repo], "", 100000)
+        maximum = len(base) + 8
+        text = context.build_paths([repo], "B" * 500, maximum)
+        self.assertLessEqual(len(text), maximum)
+        self.assertEqual(text, base)
+
+    def test_brief_verdraengt_die_entscheidungen_nicht(self):
+        repo = self.make_repo()
+        self.own_repo(repo)
+        tid = self.new("Kontext", repo=repo)
+        self.ok(
+            "decide", tid, "--from", "mensch",
+            "Entscheidung bleibt. " + "E" * 4000 + " ENDE",
+        )
+        self.project(repo, "# S" + "S" * 100)
+        text = context.build_paths([repo], "B" * 3000, 6000)
+        self.assertLessEqual(len(text), 6000)
+        self.assertIn("ENDE", text)
+        self.assertIn("[…] gekürzt", text)
+
+    def test_gekuerzte_entscheidungen_behalten_die_neueste(self):
+        repo = self.make_repo()
+        self.own_repo(repo)
+        tid = self.new("Kontext", repo=repo)
+        for number in range(1, 6):
+            self.ok(
+                "decide", tid, "--from", "mensch",
+                f"Entscheidung {number}. " + "E" * 1500 + f" ENDE{number}",
+            )
+        text = context.build_paths([repo], "", 6000)
+        self.assertLessEqual(len(text), 6000)
+        self.assertIn("ENDE5", text)
+        self.assertIn(
+            os.path.join(repo, ".fabric", "decisions.md"), text
+        )
+
     def test_kleine_obergrenze_kuerzt_nur_den_hinweis_hinten(self):
         text = context.clip("x" * 100, 40, "/sehr/langer/pfad/zum/projekt.md")
         self.assertLessEqual(len(text), 40)
