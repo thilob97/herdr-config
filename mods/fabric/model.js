@@ -2923,6 +2923,7 @@ export const PIPELINE_STATE_WORDS = {
   pass: "grün",
   fail: "rot",
   running: "läuft",
+  queued: "Warteschlange",
   pending: "wartet",
   skipped: "übersprungen",
 };
@@ -2934,7 +2935,7 @@ export const PIPELINE_TRIGGER_WORDS = {
   autopilot: "Autopilot",
 };
 
-const PIPELINE_STATES = new Set(["pass", "fail", "running", "skipped"]);
+const PIPELINE_STATES = new Set(["pass", "fail", "running", "queued", "skipped"]);
 
 /** Zustand eines Laufs oder Schritts; Unbekanntes wartet. */
 export function pipelineState(entry) {
@@ -2961,7 +2962,9 @@ export function pipelineStepSummary(steps) {
   if (!Array.isArray(steps)) return summary;
   for (const step of steps) {
     summary.total += 1;
-    summary[pipelineState(step)] += 1;
+    // `queued` gehört zu Läufen; ein solcher Schritt zählt wie bisher als wartend.
+    const state = pipelineState(step);
+    summary[Object.hasOwn(summary, state) ? state : "pending"] += 1;
   }
   return summary;
 }
