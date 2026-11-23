@@ -15,8 +15,7 @@ class DispatchTests(FabricCase):
         self.own_repo(repo)
         tid = self.new(title)
         self.ok("assign", tid, "zap", "--from", "mensch")
-        self.ok("edit", tid, "--repo", repo, "--from", "mensch")
-        self.ok("edit", tid, "--body", BODY, "--from", "mensch")
+        self.ok("edit", tid, "--repo", repo, "--body", BODY, "--from", "mensch")
         return tid
 
     def test_dispatch_verlangt_repo(self):
@@ -35,8 +34,8 @@ class DispatchTests(FabricCase):
         self.own_repo(repo)
         tid = self.new("Ohne Kriterien")
         self.ok("assign", tid, "zap", "--from", "mensch")
-        self.ok("edit", tid, "--repo", repo, "--from", "mensch")
-        self.ok("edit", tid, "--body", "## Ziel\nNur ein Ziel.\n", "--from", "mensch")
+        self.ok("edit", tid, "--repo", repo, "--body", "## Ziel\nNur ein Ziel.\n",
+                "--from", "mensch")
         result = self.cli("dispatch", tid, "--from", "mensch")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Abnahmekriterien", result.stderr)
@@ -47,8 +46,7 @@ class DispatchTests(FabricCase):
         first = self.prepared_ticket(repo, "Erstes")
         second = self.new("Zweites")
         self.ok("assign", second, "zap", "--from", "mensch")
-        self.ok("edit", second, "--repo", repo, "--from", "mensch")
-        self.ok("edit", second, "--body", BODY, "--from", "mensch")
+        self.ok("edit", second, "--repo", repo, "--body", BODY, "--from", "mensch")
         self.ok("link", second, "--blocked-by", first, "--from", "mensch")
         result = self.cli("dispatch", second, "--from", "mensch")
         self.assertNotEqual(result.returncode, 0)
@@ -273,8 +271,7 @@ class AutostartTests(FabricCase):
     def ready(self, repo, title, blockers=(), status="todo", body=BODY):
         tid = self.new(title)
         self.ok("assign", tid, "zap", "--from", "mensch")
-        self.ok("edit", tid, "--repo", repo, "--from", "mensch")
-        self.ok("edit", tid, "--body", body, "--from", "mensch")
+        self.ok("edit", tid, "--repo", repo, "--body", body, "--from", "mensch")
         if status:
             self.ok("status", tid, status, "--from", "mensch")
         if blockers:
@@ -326,8 +323,7 @@ class AutostartTests(FabricCase):
         repo, blocker = self.review_ticket()
         draft = self.ready(repo, "Entwurf", blockers=[blocker], status="draft")
         no_agent = self.new("Ohne Agent")
-        self.ok("edit", no_agent, "--repo", repo, "--from", "mensch")
-        self.ok("edit", no_agent, "--body", BODY, "--from", "mensch")
+        self.ok("edit", no_agent, "--repo", repo, "--body", BODY, "--from", "mensch")
         self.ok("status", no_agent, "todo", "--from", "mensch")
         self.ok("link", no_agent, "--blocked-by", blocker, "--from", "mensch")
         no_repo = self.new("Ohne Repo")
@@ -338,8 +334,8 @@ class AutostartTests(FabricCase):
         self.patch_ticket(no_repo, repo=None)
         no_criteria = self.new("Ohne Kriterien")
         self.ok("assign", no_criteria, "zap", "--from", "mensch")
-        self.ok("edit", no_criteria, "--repo", repo, "--from", "mensch")
-        self.ok("edit", no_criteria, "--body", "## Ziel\nNur ein Ziel.\n", "--from", "mensch")
+        self.ok("edit", no_criteria, "--repo", repo,
+                "--body", "## Ziel\nNur ein Ziel.\n", "--from", "mensch")
         self.ok("status", no_criteria, "todo", "--from", "mensch")
         self.ok("link", no_criteria, "--blocked-by", blocker, "--from", "mensch")
         mark = self.mark()

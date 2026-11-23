@@ -26,8 +26,7 @@ class ClaudeTrustTests(FabricCase):
         self.own_repo(repo)
         tid = self.new(title)
         self.ok("assign", tid, "zap", "--from", "mensch")
-        self.ok("edit", tid, "--repo", repo, "--from", "mensch")
-        self.ok("edit", tid, "--body", BODY, "--from", "mensch")
+        self.ok("edit", tid, "--repo", repo, "--body", BODY, "--from", "mensch")
         return tid
 
     def config(self):

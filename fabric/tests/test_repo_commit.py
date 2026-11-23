@@ -129,7 +129,6 @@ class RepoCommitTests(FabricCase):
 
         other = self.new("Zweites", repo=repo)
         self.ok("assign", other, "zap", "--from", "mensch")
-        self.ok("edit", other, "--repo", repo, "--from", "mensch")
         self.ok("edit", other, "--body", BODY, "--from", "mensch")
         self.ok("dispatch", other, "--from", "mensch")
         second = self.ticket(other)["worktree"]
