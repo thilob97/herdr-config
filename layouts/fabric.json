@@ -69,9 +69,9 @@
               "id": "fabric-inbox",
               "type": "block",
               "size": {
-                "weight": 2
+                "weight": 3
               },
-              "min": 90,
+              "min": 130,
               "content": {
                 "mod": "fabric",
                 "props": {

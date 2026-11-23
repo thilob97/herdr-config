@@ -6,7 +6,13 @@ import { View, div, image } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { props, closeOverlay, run, theme, setShared } from "herdr";
 
-const DOT = { error: "blocked", warning: "working", success: "done", info: "accent" };
+// Gestaltungs-Token, bewusst lokal kopiert (kein Modul-übergreifender Import).
+const FONT = { xs: 11, s: 12, m: 13 };
+const SPACE = { xs: 4, s: 8, m: 12, l: 16, xl: 24 };
+const RADIUS = { s: 6, m: 8, l: 12 };
+const DOT = 8;
+
+const TONE = { error: "blocked", warning: "working", success: "done", info: "accent" };
 
 export default class FabricToast extends View {
   render(cx) {
@@ -30,30 +36,34 @@ export default class FabricToast extends View {
     return h_flex()
       .id("toast")
       .size_full()
-      .px(18)
-      .gap(12)
+      .px(SPACE.l)
+      .gap(SPACE.m)
       .items_center()
       .bg(t.popover)
       .cursor_pointer()
       .hover((s) => s.bg(t.hover))
       .on_click(open)
-      .child(p.icon ? image(p.icon).w(18).h(18).flex_none() : div().size(8).rounded(4).flex_none().bg(t[DOT[p.level] ?? "accent"]))
+      .child(p.icon ? image(p.icon).w(18).h(18).flex_none() : div().size(DOT).rounded(DOT / 2).flex_none().bg(t[TONE[p.level] ?? "accent"]))
       .child(
         v_flex()
           .flex_1()
           .overflow_hidden()
-          .child(div().truncate().font_semibold().text_size(13).text_color(t.foreground).child(login ? `${login[1]} needs a login: run` : p.title ?? ""))
-          .when(!login && Boolean(p.body), (el) => el.child(div().truncate().text_size(12).text_color(t.muted).child(p.body ?? "")))
-          .when(Boolean(login), (el) => el.child(h_flex().gap(8).items_center()
-            .child(div().flex_1().min_w(0).truncate().tooltip(command).text_size(12).text_color(t.muted).child(command))
-            .child(div().id("toast-login-copy").flex_none().px(6).py(3).rounded(4).bg(t.raised)
-              .text_size(12).text_color(t.foreground).cursor_pointer().hover(s => s.bg(t.hover))
+          .child(div().truncate().font_semibold().text_size(FONT.m).text_color(t.foreground).child(login ? `${login[1]} braucht eine Anmeldung:` : p.title ?? ""))
+          .when(!login && Boolean(p.body), (el) => el.child(div().truncate().text_size(FONT.s).text_color(t.muted).child(p.body ?? "")))
+          .when(Boolean(login), (el) => el.child(h_flex().gap(SPACE.s).items_center()
+            .child(div().flex_1().min_w(0).truncate().tooltip(command).text_size(FONT.s).text_color(t.muted).child(command))
+            .child(h_flex().id("toast-login-copy").flex_none().h(24).px(SPACE.s).rounded(RADIUS.m)
+              .items_center().justify_center().border_1().border_color(t.input).bg(t.raised)
+              .text_size(FONT.s).text_color(t.foreground).font_medium()
+              .cursor_pointer().hover(s => s.opacity(0.86))
               .on_click((_e, cx) => { cx.stop_propagation(); cx.write_to_clipboard(command); this.copied = true; cx.notify(); })
-              .child(this.copied ? "Copied" : "Copy")))),
+              .child(this.copied ? "Kopiert" : "Kopieren")))),
       )
       .when(Boolean(openTicket), (el) => el.child(
-        div().id("fabric-toast-open").flex_none().px(8).py(4).rounded(4).bg(t.raised)
-          .text_size(12).text_color(t.foreground).cursor_pointer().hover(s => s.bg(t.hover))
+        h_flex().id("fabric-toast-open").flex_none().h(24).px(SPACE.s).rounded(RADIUS.m)
+          .items_center().justify_center().border_1().border_color(t.input).bg(t.raised)
+          .text_size(FONT.s).text_color(t.foreground).font_medium()
+          .cursor_pointer().hover(s => s.opacity(0.86))
           .on_click((_e, cx) => { cx.stop_propagation(); open(); })
           .child("Öffnen"),
       ));

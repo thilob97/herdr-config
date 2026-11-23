@@ -7,8 +7,8 @@ import assert from "node:assert/strict";
 import {
   activeAlarms, alarmButtons,
   busyLabel, costOf, costText, fabricAddresses, fabricEntry, fabricRows, freeAgentCards,
-  freeCornerIcon, freeSpriteKey, freeStatusWord, hiddenAgentAddresses, pinCommand, runtimeText,
-  statusWord, ticketFromName, truncateTask,
+  freeCornerIcon, freeSpriteKey, freeStatusWord, hiddenAgentAddresses, machineLabel, pinCommand,
+  roleLabel, runtimeText, statusWord, ticketFromName, truncateTask,
 } from "../model.js";
 import { visibleAgents } from "../../agents-filtered/model.js";
 
@@ -131,13 +131,15 @@ test("Rolle, Laufzeit und Kosten stehen nur da, wenn es sie gibt", () => {
     [orchestrator, zap, ada],
     [],
     [{ id: "T-12", title: "A" }, { id: "T-3", title: "B" }],
-    [{ name: "zap", role: "umsetzer" }],
+    [{ name: "zap", role: "umsetzer" }, { name: "ada", role: "pruefer" }],
     NOW,
   );
   const byAddress = new Map(rows.map((row) => [row.address, row]));
-  assert.equal(byAddress.get("t8x").meta, "umsetzer · bereit · 5m");
-  assert.equal(byAddress.get("t8y").meta, "bereit · 2h");
-  assert.equal(byAddress.get("t8k").meta, "bereit · 10m");
+  assert.equal(byAddress.get("t8x").role, "Umsetzer");
+  assert.equal(byAddress.get("t8y").role, "Prüferin / Prüfer");
+  assert.equal(byAddress.get("t8x").meta, "Umsetzer · bereit · 5 min");
+  assert.equal(byAddress.get("t8y").meta, "Prüferin / Prüfer · bereit · 2 h");
+  assert.equal(byAddress.get("t8k").meta, "bereit · 10 min");
   assert.equal(byAddress.get("t8x").costText, "");
 });
 
@@ -147,16 +149,36 @@ test("Kosten erscheinen, wenn Herdr sie meldet", () => {
   assert.equal(costText(1.234), "$1.23");
   assert.equal(costText(null), "");
   const { rows } = fabricRows([paid], [], [{ id: "T-1", title: "A" }], [], NOW);
-  assert.equal(rows[0].meta, "bereit · 10m · $1.23");
+  assert.equal(rows[0].meta, "bereit · 10 min · $1.23");
 });
 
 test("Laufzeit formatiert Minuten, Stunden, Tage; ohne Start leer", () => {
-  assert.equal(runtimeText(NOW - 30_000, NOW), "<1m");
-  assert.equal(runtimeText(NOW - 5 * MIN, NOW), "5m");
-  assert.equal(runtimeText(NOW - 125 * MIN, NOW), "2h");
-  assert.equal(runtimeText(NOW - 3 * 24 * 60 * MIN, NOW), "3d");
+  assert.equal(runtimeText(NOW - 30_000, NOW), "< 1 min");
+  assert.equal(runtimeText(NOW - 5 * MIN, NOW), "5 min");
+  assert.equal(runtimeText(NOW - 125 * MIN, NOW), "2 h");
+  assert.equal(runtimeText(NOW - 3 * 24 * 60 * MIN, NOW), "3 T");
   assert.equal(runtimeText(undefined, NOW), "");
   assert.equal(runtimeText(NOW + MIN, NOW), "");
+});
+
+test("Bezeichnungen folgen der Begriffstabelle", () => {
+  const statuses = ["working", "blocked", "done", "idle", "error"];
+  assert.deepEqual(statuses.map(statusWord), [
+    "arbeitet", "wartet", "fertig", "bereit", "Fehler",
+  ]);
+  assert.deepEqual(statuses.map(freeStatusWord), [
+    "arbeitet", "wartet", "fertig", "bereit", "Fehler",
+  ]);
+  assert.equal(busyLabel(0), "0 aktiv");
+  assert.equal(busyLabel(2), "2 aktiv");
+  assert.equal(machineLabel(null), "Dieser Rechner");
+  assert.equal(machineLabel("remote"), "remote");
+  assert.equal(roleLabel("umsetzer"), "Umsetzer");
+  assert.equal(roleLabel("pruefer"), "Prüferin / Prüfer");
+  assert.equal(runtimeText(NOW - 30_000, NOW), "< 1 min");
+  assert.equal(runtimeText(NOW - 5 * MIN, NOW), "5 min");
+  assert.equal(runtimeText(NOW - 125 * MIN, NOW), "2 h");
+  assert.equal(runtimeText(NOW - 3 * 24 * 60 * MIN, NOW), "3 T");
 });
 
 test("zwei Teams mit eigenem Orchestrator: Team oben, Agenten eingerückt, Subagent erbt", () => {
@@ -248,7 +270,7 @@ test("Gruppen folgen der Team-Reihenfolge, Unbekannte alphabetisch", () => {
   assert.deepEqual(teams.map((team) => team.orchestrator?.address ?? null), ["z1", "a1", null]);
 });
 
-// --- Freie Agenten ohne Fabric-Team (AGENTS-Abschnitt) ----------------------
+// --- Freie Agenten ohne Fabric-Team (Agenten-Abschnitt) --------------------
 
 test("freie Agenten: Space-Orchestrator ja, Fabric-Terminals und ihre Kinder nein", () => {
   const space = term("t7q", "orchestrator", { "hub.role": "orchestrator" }, {
@@ -283,14 +305,14 @@ test("freie Karten: alle fünf Status, Badge, Eck-Icon, Motiv, Klickziel", () =>
     [],
   );
   assert.deepEqual(cards.map((card) => card.badge), [
-    "WAITING", "ERROR", "DONE", "WORKING", "IDLE",
+    "wartet", "Fehler", "fertig", "arbeitet", "bereit",
   ]);
   assert.deepEqual(cards.map((card) => card.icon), ["clock", "alert", "note", "play", "zzz"]);
   for (const [index, card] of cards.entries()) {
     assert.equal(card.sprite, ["agent-a", "agent-b"][index % 2]);
     assert.deepEqual(card.click, { kind: "terminal", terminal: card.address });
   }
-  assert.deepEqual(statuses.map(freeStatusWord), ["WAITING", "ERROR", "DONE", "WORKING", "IDLE"]);
+  assert.deepEqual(statuses.map(freeStatusWord), ["wartet", "Fehler", "fertig", "arbeitet", "bereit"]);
   assert.equal(freeCornerIcon("weg"), "dot");
 });
 
@@ -305,7 +327,7 @@ test("Orchestrator-Motiv unterscheidet sich von Agenten-Motiven", () => {
   assert.notEqual(orchestrator.sprite, freeSpriteKey({ name: "zap" }));
 });
 
-test("Kürzung langer Aufgaben, Gruppenzähler 0/3 und N BUSY", () => {
+test("Kürzung langer Aufgaben, Gruppenzähler 0/3 und N aktiv", () => {
   const long = "Ein sehr langer Ticket-Titel, der in der schmalen Seitenleiste nicht vollständig Platz hat";
   assert.equal(truncateTask("kurz"), "kurz");
   assert.ok(truncateTask(long).length <= 42);
@@ -317,9 +339,9 @@ test("Kürzung langer Aufgaben, Gruppenzähler 0/3 und N BUSY", () => {
   }));
   const quiet = freeAgentCards(idle, [], []);
   assert.deepEqual(quiet.groups.map((group) => [group.name, group.busy, group.total]), [
-    ["THIS MACHINE", 0, 3],
+    ["Dieser Rechner", 0, 3],
   ]);
-  assert.equal(busyLabel(quiet.busy), "0 BUSY");
+  assert.equal(busyLabel(quiet.busy), "0 aktiv");
   assert.equal(quiet.groups[0].cards[0].task.endsWith("…"), true);
 
   const mixed = freeAgentCards([
@@ -327,10 +349,10 @@ test("Kürzung langer Aufgaben, Gruppenzähler 0/3 und N BUSY", () => {
     term("w1", "arbeit-1", {}, { status: "working" }),
     term("remote/w2", "arbeit-2", {}, { status: "working" }),
   ], [], []);
-  assert.equal(busyLabel(mixed.busy), "2 BUSY");
+  assert.equal(busyLabel(mixed.busy), "2 aktiv");
   assert.deepEqual(mixed.groups.map((group) => [group.name, group.busy, group.total]), [
-    ["THIS MACHINE", 1, 4],
-    ["REMOTE", 1, 1],
+    ["Dieser Rechner", 1, 4],
+    ["remote", 1, 1],
   ]);
   assert.deepEqual(mixed.groups[1].cards[0].click, { kind: "terminal", terminal: "remote/w2" });
 });
@@ -511,8 +533,8 @@ test("agents.sort 'grouped' hält Angeheftete vorn und sortiert nach Maschine", 
   });
 
   const { cards } = freeAgentCards([remote, local, pinnedRemote], [], [], "grouped");
-  assert.deepEqual(cards.map((card) => card.address), ["remote/p1", "remote/r1", "l1"]);
-  assert.deepEqual(cards.map((card) => card.group), ["REMOTE", "REMOTE", "THIS MACHINE"]);
+  assert.deepEqual(cards.map((card) => card.address), ["remote/p1", "l1", "remote/r1"]);
+  assert.deepEqual(cards.map((card) => card.group), ["remote", "Dieser Rechner", "remote"]);
 });
 
 // --- Alarme (Banner in der Seitenleiste) -----------------------------------

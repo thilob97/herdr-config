@@ -8,6 +8,8 @@
 
 **Nachweis T-116:** umgesetzt in `ff4d7b8`, `0b06018`, `df49bb3`, `194803d`, `a83eb4b` und `8103692`. Die Übersichtstabelle in Abschnitt 4.1 nennt je Befund den tatsächlich behebenden Commit; die Detailabschnitte verweisen darauf. Die Nachher-Screenshots liegen unter `docs/assets/ui-audit/nachher/`.
 
+**Nachweis T-117:** umgesetzt in `ccdb7f9`, `0971eac`, `cc2ac7c` und `bd37328`. Die Übersichtstabelle in Abschnitt 4.1 nennt je Befund den tatsächlich behebenden Commit; die Detailabschnitte verweisen darauf. Die Nachher-Screenshots (`seitenleiste-voll.png`, `seitenleiste-leer.png`, `seitenleiste-fehler.png`, `toast-ansicht.png`, `banner-alarm-seitenleiste.png`) liegen unter `docs/assets/ui-audit/nachher/`.
+
 ## 1. Ergebnis und Überblick
 
 Die Bestandsaufnahme umfasst **45 Vorher-Screenshots** (alle mit `fab preview shot T-115` in einer isolierten Vorschau-Instanz unter `/tmp/fab-preview/T-115` aufgenommen und unter `docs/assets/ui-audit/vorher/` abgelegt) sowie **44 konkrete UI-Befunde (`U-01` bis `U-44`)** und eine verbindliche **Begriffstabelle**.
@@ -184,9 +186,9 @@ Nicht per Vorschau-Route erreichbar sind die Zustände, die einen Klick im Fenst
 
 | Zustand | Vorher (`docs/assets/ui-audit/vorher/`) | Nachher (T-117) | Beobachtung |
 |---|---|---|---|
-| **Voll (Pixel-Karten, Teams & Posteingang)** | ![seitenleiste-voll](../assets/ui-audit/vorher/seitenleiste-voll.png)<br>`docs/assets/ui-audit/vorher/seitenleiste-voll.png` | — *(T-117, nicht aufgenommen)* | Freie Pixel-Karten nutzen durchgängig englische Großbuchstaben (`AGENTS`, `1 BUSY`, `THIS MACHINE`, `WAITING`, `WORKING`, `IDLE`, `U-40`), während direkt darunter im Team `herdr-app` deutsche Kleinschreibung (`bereit`, `wartet`, `arbeitet`) und rohe Rollenschlüssel (`pruefer`, `umsetzer`, `U-41`) stehen. Sechs verschiedene Nicht-Token-Schriftgrößen (`8.5`, `9.5`, `10`, `10.5`, `11`, `11.5`, `12 px`, `U-34`). |
-| **Leer** | ![seitenleiste-leer](../assets/ui-audit/vorher/seitenleiste-leer.png)<br>`docs/assets/ui-audit/vorher/seitenleiste-leer.png` | — *(T-117, nicht aufgenommen)* | Eigener zweizeiliger Leertext („Keine Fabric-Agenten / fab dispatch startet einen.“) mit `11.5 px`/`10.5 px` (`mods/fabric-sidebar/main.js:528-535`). Unten im `Posteingang`-Block überlappt `ui.emptyState` die Kopfzeile und schneidet den Knopf „Zum Board“ halb ab (`U-44`). |
-| **Fehler** | ![seitenleiste-fehler](../assets/ui-audit/vorher/seitenleiste-fehler.png)<br>`docs/assets/ui-audit/vorher/seitenleiste-fehler.png` | — *(T-117, nicht aufgenommen)* | `loadError` erscheint nur als nackte rote `10.5 px`-Zeile „Ticketdaten nicht lesbar“ ohne Fehlerpunkt/Rahmen (`mods/fabric-sidebar/main.js:510-519`, `U-38`). Freie Karte zeigt englisches `ERROR`, Team-Zeile darunter deutsches `Fehler` (`U-40`). |
+| **Voll (Pixel-Karten, Teams & Posteingang)** | ![seitenleiste-voll](../assets/ui-audit/vorher/seitenleiste-voll.png)<br>`docs/assets/ui-audit/vorher/seitenleiste-voll.png` | ![seitenleiste-voll](../assets/ui-audit/nachher/seitenleiste-voll.png)<br>`docs/assets/ui-audit/nachher/seitenleiste-voll.png` | Freie Pixel-Karten nutzen durchgängig englische Großbuchstaben (`AGENTS`, `1 BUSY`, `THIS MACHINE`, `WAITING`, `WORKING`, `IDLE`, `U-40`), während direkt darunter im Team `herdr-app` deutsche Kleinschreibung (`bereit`, `wartet`, `arbeitet`) und rohe Rollenschlüssel (`pruefer`, `umsetzer`, `U-41`) stehen. Sechs verschiedene Nicht-Token-Schriftgrößen (`8.5`, `9.5`, `10`, `10.5`, `11`, `11.5`, `12 px`, `U-34`). |
+| **Leer** | ![seitenleiste-leer](../assets/ui-audit/vorher/seitenleiste-leer.png)<br>`docs/assets/ui-audit/vorher/seitenleiste-leer.png` | ![seitenleiste-leer](../assets/ui-audit/nachher/seitenleiste-leer.png)<br>`docs/assets/ui-audit/nachher/seitenleiste-leer.png` | Eigener zweizeiliger Leertext („Keine Fabric-Agenten / fab dispatch startet einen.“) mit `11.5 px`/`10.5 px` (`mods/fabric-sidebar/main.js:528-535`). Unten im `Posteingang`-Block überlappt `ui.emptyState` die Kopfzeile und schneidet den Knopf „Zum Board“ halb ab (`U-44`). |
+| **Fehler** | ![seitenleiste-fehler](../assets/ui-audit/vorher/seitenleiste-fehler.png)<br>`docs/assets/ui-audit/vorher/seitenleiste-fehler.png` | ![seitenleiste-fehler](../assets/ui-audit/nachher/seitenleiste-fehler.png)<br>`docs/assets/ui-audit/nachher/seitenleiste-fehler.png` | `loadError` erscheint nur als nackte rote `10.5 px`-Zeile „Ticketdaten nicht lesbar“ ohne Fehlerpunkt/Rahmen (`mods/fabric-sidebar/main.js:510-519`, `U-38`). Freie Karte zeigt englisches `ERROR`, Team-Zeile darunter deutsches `Fehler` (`U-40`). |
 
 ### 3.14 Toasts (`mods/fabric-toast/main.js`)
 
@@ -194,7 +196,7 @@ Nicht per Vorschau-Route erreichbar sind die Zustände, die einen Klick im Fenst
 
 | Ansicht | Vorher (`docs/assets/ui-audit/vorher/`) | Nachher (T-117) | Beobachtung |
 |---|---|---|---|
-| **Voll & Fehler (Toast-Stack)** | ![toast-ansicht](../assets/ui-audit/vorher/toast-ansicht.png)<br>`docs/assets/ui-audit/vorher/toast-ansicht.png` | — *(T-117, nicht aufgenommen)* | Eigene Maße abseits der `ui.js`-Token (`px(18)`, `gap(12)`, `rounded(4)`, `px(8).py(4)`, `U-33`, `U-36`). Für Login-Meldungen stehen englische Texte im Code (`needs a login: run`, `Copy`, `Copied`, `mods/fabric-toast/main.js:45,52`, `U-42`). |
+| **Voll & Fehler (Toast-Stack)** | ![toast-ansicht](../assets/ui-audit/vorher/toast-ansicht.png)<br>`docs/assets/ui-audit/vorher/toast-ansicht.png` | ![toast-ansicht](../assets/ui-audit/nachher/toast-ansicht.png)<br>`docs/assets/ui-audit/nachher/toast-ansicht.png` | Eigene Maße abseits der `ui.js`-Token (`px(18)`, `gap(12)`, `rounded(4)`, `px(8).py(4)`, `U-33`, `U-36`). Für Login-Meldungen stehen englische Texte im Code (`needs a login: run`, `Copy`, `Copied`, `mods/fabric-toast/main.js:45,52`, `U-42`). |
 
 ### 3.15 Autopilot-Lampe (`mods/fabric/ui.js:193-202`, `mods/fabric/main.js:4580-4733`)
 
@@ -210,7 +212,7 @@ Nicht per Vorschau-Route erreichbar sind die Zustände, die einen Klick im Fenst
 
 | Ansicht | Vorher (`docs/assets/ui-audit/vorher/`) | Nachher (T-116 / T-117) | Beobachtung |
 |---|---|---|---|
-| **Voll / Fehler (Fenster & Seitenleiste)** | ![banner-alarm](../assets/ui-audit/vorher/banner-alarm.png)<br>`docs/assets/ui-audit/vorher/banner-alarm.png` | ![banner-alarm](../assets/ui-audit/nachher/banner-alarm.png)<br>`docs/assets/ui-audit/nachher/banner-alarm.png` | Fenster-Banner (`main.js:4512-4547`) und Seitenleisten-Banner (`fabric-sidebar/main.js:294-344`) sind getrennt gebaut und weichen optisch stark voneinander ab (`U-43`): im Fenster `bg(t.blocked + "14")`, `border(t.blocked + "55")`, `6 px`-Punkt, rote Schrift (`t.blocked`) und Standard-`ui.button(..., { small: true })` in `t.raised`; in der Seitenleiste `bg(t.blocked + "1f")`, `border(t.blocked + "66")`, Ausrufezeichen `!`, weiße Schrift (`t.foreground`, `10.5 px`) und rote Eigenbau-Knöpfe (`h(18)`). |
+| **Voll / Fehler (Fenster & Seitenleiste)** | ![banner-alarm](../assets/ui-audit/vorher/banner-alarm.png)<br>`docs/assets/ui-audit/vorher/banner-alarm.png` | ![banner-alarm](../assets/ui-audit/nachher/banner-alarm.png)<br>`docs/assets/ui-audit/nachher/banner-alarm.png` · ![banner-alarm-seitenleiste](../assets/ui-audit/nachher/banner-alarm-seitenleiste.png)<br>`docs/assets/ui-audit/nachher/banner-alarm-seitenleiste.png` | Fenster-Banner (`main.js:4512-4547`) und Seitenleisten-Banner (`fabric-sidebar/main.js:294-344`) sind getrennt gebaut und weichen optisch stark voneinander ab (`U-43`): im Fenster `bg(t.blocked + "14")`, `border(t.blocked + "55")`, `6 px`-Punkt, rote Schrift (`t.blocked`) und Standard-`ui.button(..., { small: true })` in `t.raised`; in der Seitenleiste `bg(t.blocked + "1f")`, `border(t.blocked + "66")`, Ausrufezeichen `!`, weiße Schrift (`t.foreground`, `10.5 px`) und rote Eigenbau-Knöpfe (`h(18)`). |
 
 ---
 
@@ -250,20 +252,20 @@ Nicht per Vorschau-Route erreichbar sind die Zustände, die einen Klick im Fenst
 | **U-28** | `mods/fabric/views/team.js:564`, `views/context.js:22`, `views/dialogs.js:634`, `ui.js:831-852` (Drawer) | Dialog | T-116 | erledigt (0b06018, df49bb3, 194803d) | Inkonsistente Drawer-Breiten (`420 px` vs. `560 px`) und Schließen-Knöpfe (`Abbrechen` vs. `Schließen`); `560 px`-Drawer im Ticket-Detail drückt den Hauptinhalt auf `~330 px` zusammen. |
 | **U-29** | `mods/fabric/views/board.js:100-148`, `views/ticket.js:400-419`, `views/tickets.js:91-118` (Board, Ticket-Detail) | Chips | T-116 | erledigt (0b06018, df49bb3) | Chip-Überflutung auf Board-Karten (bis zu 5 Chips/Pills + 2 Statuspunkte pro Karte) und im Ticket-Verlauf (jeder Kommentar trägt permanent `Als Entscheidung` + `N Erwähnungen`-Chip). |
 | **U-30** | `mods/fabric/views/ticket.js:37-73`, `views/repos.js:76-78`, `views/team.js:435-469` (Ticket-Detail, Repos, Team) | Chips | T-116 | erledigt (0b06018, df49bb3) | Redundante und aktionsähnliche Chips: klickbarer Chip `Läufe` direkt neben klickbarer Pill `Lauf rot/grün` im Ticket-Kopf; informationsloser Chip `jetzt` im Repo-Testlauf; Zähler-Chips `3 Mitglieder` / `1 Repo` doppelt zur Überschrift darunter. |
-| **U-31** | `mods/fabric-sidebar/main.js:73-343, 479-534` (Seitenleiste) | Abstand | T-117 | offen | Seitenleiste nutzt durchgehend Einzelzahlen (`px(5)`, `px(6)`, `px(10)`, `pt(6)`, `pb(2)`, `pb(3)`, `p(3)`, `p(6)`, `gap(1..6)`, `h(14)`, `h(16)`, `h(17)`, `h(18)`) statt der `SPACE`-/`SIZE`-Token aus `mods/fabric/ui.js`. |
-| **U-32** | `mods/fabric-sidebar/main.js:75,95,159,174,199,217,261,266,299,330,489` (Seitenleiste) | Abstand | T-117 | offen | Sieben verschiedene Einzel-Radien (`1`, `3`, `4`, `6`, `8`) statt `RADIUS` (`s: 6, m: 8, l: 12`) aus `mods/fabric/ui.js`. |
-| **U-33** | `mods/fabric-toast/main.js:33,34,40,47,49,55` (Toast) | Abstand | T-117 | offen | Toast nutzt `px(18)`, `gap(12)`, `rounded(4)`, `px(6).py(3)` und `px(8).py(4)` statt der Token `SPACE` und `RADIUS` aus `mods/fabric/ui.js`. |
-| **U-34** | `mods/fabric-sidebar/main.js:77,97,115,117,142,144,160,162,219,226,229,232,241,273,311,315,334,483,491,515,532,533` | Schriftgröße | T-117 | offen | Seitenleiste verwendet sieben verschiedene Einzel-Schriftgrößen (`8.5`, `9.5`, `10`, `10.5`, `11`, `11.5`, `12 px`), davon vier unterhalb der `11 px`-Untergrenze (`FONT.xs`). |
-| **U-35** | `mods/fabric-sidebar/main.js:219, 232` (Pixel-Karten in Seitenleiste) | Schriftgröße | T-117 | offen | Status-Badge (`8.5 px`) und Aufgabenzeile (`9.5 px`) der Pixel-Karten unterschreiten die `11 px`-Mindestgröße für UI-Text deutlich. |
-| **U-36** | `mods/fabric-toast/main.js:45,46,48,50,56` (Toast) | Schriftgröße | T-117 | offen | Toast codiert `.text_size(13)` und `.text_size(12)` als Rohzahlen statt `FONT.m` (`13`) und `FONT.s` (`12`). |
-| **U-37** | `mods/fabric-sidebar/main.js:76,96,201,202,205,218,300,302,332,333,340` (Seitenleiste) | Farbe | T-117 | offen | Acht verschiedene Hex-Alpha-Suffixe (`"12"`, `"18"`, `"1a"`, `"1e"`, `"1f"`, `"26"`, `"33"`, `"40"`, `"66"`) in `fabric-sidebar/main.js` weichen von den Chip-/Banner-Farben des Fensters ab. |
-| **U-38** | `mods/fabric-sidebar/main.js:510-519` (Seitenleiste) | Farbe | T-117 | offen | Ladefehler „Ticketdaten nicht lesbar“ ist eine nackte `10.5 px`-Textzeile ohne Hintergrund, Rahmen oder Punkt (anders als `ui.notice` im Fenster). |
-| **U-39** | `mods/fabric-toast/main.js:49-58` (Toast) | Farbe | T-117 | offen | Toast-Knöpfe (`Öffnen`, `Copy`) sind als rahmenlose `div`s ohne `border_1().border_color(t.input)` gebaut und wirken anders als `ui.button` im Fenster. |
-| **U-40** | `mods/fabric-sidebar/main.js:142`, `mods/fabric-sidebar/model.js:282-298, 387-389` (Seitenleiste) | Begriff | T-117 | offen | Englische Großbuchstaben `AGENTS`, `N BUSY`, `THIS MACHINE` und `WORKING`/`WAITING`/`DONE`/`IDLE`/`ERROR` direkt über deutschen Team-Zeilen. |
-| **U-41** | `mods/fabric-sidebar/model.js:5-11, 69-87, 119-121, 215-220` (Seitenleiste) | Begriff | T-117 | offen | Rohe interne Rollenschlüssel (`umsetzer`, `pruefer`) und englische Kurz-Zeiteinheiten (`<1m`, `5m`, `2h`, `3d` statt `< 1 min`, `5 min`, `2 h`, `3 T`) in der Seitenleiste; `blocked` heißt hier `wartet`, im Fenster `wartet auf dich`. |
-| **U-42** | `mods/fabric-toast/main.js:17-18, 45, 52` (Toast) | Begriff | T-117 | offen | Englische Meldungs- und Knopftexte `needs a login: run`, `Copy` und `Copied` im Toast-Mod. |
-| **U-43** | `mods/fabric-sidebar/main.js:294-344`, `mods/fabric-sidebar/model.js:553-579` (Seitenleiste) | Doppelfunktion | T-117 | offen | Seitenleisten-Alarm-Banner dupliziert Logik und Darstellung des Fenster-Alarm-Banners mit abweichenden Farben, Schriften und Knöpfen. |
-| **U-44** | `layouts/fabric.json:61-82`, `mods/fabric-sidebar/main.js:527-535`, `mods/fabric/views/inbox.js:98-110` (Seitenleiste) | abgeschnittener Text | T-117 | offen | Der `fabric-inbox`-Block in der Seitenleiste (`weight: 2`, `min: 90`) ist für `ui.header` + `ui.emptyState` zu niedrig: „Nichts zu tun“ überlappt die Kopfzeile, „Zum Board“ und Fehlertexte werden unten abgeschnitten. |
+| **U-31** | `mods/fabric-sidebar/main.js:73-343, 479-534` (Seitenleiste) | Abstand | T-117 | erledigt (0971eac) | Seitenleiste nutzt durchgehend Einzelzahlen (`px(5)`, `px(6)`, `px(10)`, `pt(6)`, `pb(2)`, `pb(3)`, `p(3)`, `p(6)`, `gap(1..6)`, `h(14)`, `h(16)`, `h(17)`, `h(18)`) statt der `SPACE`-/`SIZE`-Token aus `mods/fabric/ui.js`. |
+| **U-32** | `mods/fabric-sidebar/main.js:75,95,159,174,199,217,261,266,299,330,489` (Seitenleiste) | Abstand | T-117 | erledigt (0971eac) | Sieben verschiedene Einzel-Radien (`1`, `3`, `4`, `6`, `8`) statt `RADIUS` (`s: 6, m: 8, l: 12`) aus `mods/fabric/ui.js`. |
+| **U-33** | `mods/fabric-toast/main.js:33,34,40,47,49,55` (Toast) | Abstand | T-117 | erledigt (cc2ac7c) | Toast nutzt `px(18)`, `gap(12)`, `rounded(4)`, `px(6).py(3)` und `px(8).py(4)` statt der Token `SPACE` und `RADIUS` aus `mods/fabric/ui.js`. |
+| **U-34** | `mods/fabric-sidebar/main.js:77,97,115,117,142,144,160,162,219,226,229,232,241,273,311,315,334,483,491,515,532,533` | Schriftgröße | T-117 | erledigt (0971eac) | Seitenleiste verwendet sieben verschiedene Einzel-Schriftgrößen (`8.5`, `9.5`, `10`, `10.5`, `11`, `11.5`, `12 px`), davon vier unterhalb der `11 px`-Untergrenze (`FONT.xs`). |
+| **U-35** | `mods/fabric-sidebar/main.js:219, 232` (Pixel-Karten in Seitenleiste) | Schriftgröße | T-117 | erledigt (0971eac) | Status-Badge (`8.5 px`) und Aufgabenzeile (`9.5 px`) der Pixel-Karten unterschreiten die `11 px`-Mindestgröße für UI-Text deutlich. |
+| **U-36** | `mods/fabric-toast/main.js:45,46,48,50,56` (Toast) | Schriftgröße | T-117 | erledigt (cc2ac7c) | Toast codiert `.text_size(13)` und `.text_size(12)` als Rohzahlen statt `FONT.m` (`13`) und `FONT.s` (`12`). |
+| **U-37** | `mods/fabric-sidebar/main.js:76,96,201,202,205,218,300,302,332,333,340` (Seitenleiste) | Farbe | T-117 | erledigt (0971eac) | Acht verschiedene Hex-Alpha-Suffixe (`"12"`, `"18"`, `"1a"`, `"1e"`, `"1f"`, `"26"`, `"33"`, `"40"`, `"66"`) in `fabric-sidebar/main.js` weichen von den Chip-/Banner-Farben des Fensters ab. |
+| **U-38** | `mods/fabric-sidebar/main.js:510-519` (Seitenleiste) | Farbe | T-117 | erledigt (0971eac) | Ladefehler „Ticketdaten nicht lesbar“ ist eine nackte `10.5 px`-Textzeile ohne Hintergrund, Rahmen oder Punkt (anders als `ui.notice` im Fenster). |
+| **U-39** | `mods/fabric-toast/main.js:49-58` (Toast) | Farbe | T-117 | erledigt (cc2ac7c) | Toast-Knöpfe (`Öffnen`, `Copy`) sind als rahmenlose `div`s ohne `border_1().border_color(t.input)` gebaut und wirken anders als `ui.button` im Fenster. |
+| **U-40** | `mods/fabric-sidebar/main.js:142`, `mods/fabric-sidebar/model.js:282-298, 387-389` (Seitenleiste) | Begriff | T-117 | erledigt (ccdb7f9) | Englische Großbuchstaben `AGENTS`, `N BUSY`, `THIS MACHINE` und `WORKING`/`WAITING`/`DONE`/`IDLE`/`ERROR` direkt über deutschen Team-Zeilen. |
+| **U-41** | `mods/fabric-sidebar/model.js:5-11, 69-87, 119-121, 215-220` (Seitenleiste) | Begriff | T-117 | erledigt (ccdb7f9) | Rohe interne Rollenschlüssel (`umsetzer`, `pruefer`) und englische Kurz-Zeiteinheiten (`<1m`, `5m`, `2h`, `3d` statt `< 1 min`, `5 min`, `2 h`, `3 T`) in der Seitenleiste; `blocked` heißt hier `wartet`, im Fenster `wartet auf dich`. |
+| **U-42** | `mods/fabric-toast/main.js:17-18, 45, 52` (Toast) | Begriff | T-117 | erledigt (cc2ac7c) | Englische Meldungs- und Knopftexte `needs a login: run`, `Copy` und `Copied` im Toast-Mod. |
+| **U-43** | `mods/fabric-sidebar/main.js:294-344`, `mods/fabric-sidebar/model.js:553-579` (Seitenleiste) | Doppelfunktion | T-117 | erledigt (0971eac, bd37328) | Seitenleisten-Alarm-Banner dupliziert Logik und Darstellung des Fenster-Alarm-Banners mit abweichenden Farben, Schriften und Knöpfen. |
+| **U-44** | `layouts/fabric.json:61-82`, `mods/fabric-sidebar/main.js:527-535`, `mods/fabric/views/inbox.js:98-110` (Seitenleiste) | abgeschnittener Text | T-117 | erledigt (0971eac) | Der `fabric-inbox`-Block in der Seitenleiste (`weight: 2`, `min: 90`) ist für `ui.header` + `ui.emptyState` zu niedrig: „Nichts zu tun“ überlappt die Kopfzeile, „Zum Board“ und Fehlertexte werden unten abgeschnitten. |
 
 ---
 
@@ -509,7 +511,7 @@ Nicht per Vorschau-Route erreichbar sind die Zustände, die einen Klick im Fenst
 
 ### 4.3 Detaillierte Befunde für T-117 (`mods/fabric-sidebar`, `mods/fabric-toast`)
 
-#### U-31 · `mods/fabric-sidebar/main.js:73-343, 479-534` · Kategorie: Abstand · Zuordnung: T-117 · Status: offen
+#### U-31 · `mods/fabric-sidebar/main.js:73-343, 479-534` · Kategorie: Abstand · Zuordnung: T-117 · Status: erledigt (Commits je Befund in der Übersichtstabelle)
 - **Beleg:** `docs/assets/ui-audit/vorher/seitenleiste-voll.png`, `docs/assets/ui-audit/vorher/seitenleiste-leer.png`
 - **Befund:** `mods/fabric-sidebar/main.js` besitzt keine Token-Konstanten und verwendet für Höhen, Innenabstände und Lücken durchgehend Einzelzahlen außerhalb der `SPACE`-Skala (`4/8/12/16/24`) aus `mods/fabric/ui.js`:
   - `ticketChip` (`Zeile 73-74`): `.h(17).px(5)`
@@ -524,17 +526,17 @@ Nicht per Vorschau-Route erreichbar sind die Zustände, die einen Klick im Fenst
   - `render` (`Zeile 480-531`): `.h(34).px(10).gap(6)`, `.min_w(18).h(16).px(5)`, `.px(8).pb(4).gap(4)`, `.px(10).pb(4)`, `.py(2)`, `.px(12).py(8).gap(2)`.
 - **Vorschlag:** Am Kopf von `mods/fabric-sidebar/main.js` die Token `FONT`, `SPACE`, `RADIUS` und `SIZE` analog zu `mods/fabric/ui.js` als Konstanten definieren und alle Abstände und Elementhöhen in `mods/fabric-sidebar/main.js` daraus ableiten.
 
-#### U-32 · `mods/fabric-sidebar/main.js:75,95,159,174,199,217,261,266,299,330,489` · Kategorie: Abstand · Zuordnung: T-117 · Status: offen
+#### U-32 · `mods/fabric-sidebar/main.js:75,95,159,174,199,217,261,266,299,330,489` · Kategorie: Abstand · Zuordnung: T-117 · Status: erledigt (Commits je Befund in der Übersichtstabelle)
 - **Beleg:** `docs/assets/ui-audit/vorher/seitenleiste-voll.png`
 - **Befund:** Für Eckenradien nutzt `mods/fabric-sidebar/main.js` sieben verschiedene Einzelzahlen: `.rounded(1)` (`Zeile 159`), `.rounded(3)` (`Zeile 217`), `.rounded(4)` (`Zeilen 75, 95, 174, 266, 330`), `.rounded(6)` (`Zeilen 199, 261, 299`), `.rounded(8)` (`Zeile 489`), während `mods/fabric/ui.js` `RADIUS = { s: 6, m: 8, l: 12 }` definiert.
 - **Vorschlag:** Alle Eckenradien in `mods/fabric-sidebar/main.js` auf `RADIUS` (`s: 6, m: 8, l: 12` bzw. `size / 2` für runde Punkte/Badges) angleichen.
 
-#### U-33 · `mods/fabric-toast/main.js:33,34,40,47,49,55` · Kategorie: Abstand · Zuordnung: T-117 · Status: offen
+#### U-33 · `mods/fabric-toast/main.js:33,34,40,47,49,55` · Kategorie: Abstand · Zuordnung: T-117 · Status: erledigt (Commits je Befund in der Übersichtstabelle)
 - **Beleg:** `docs/assets/ui-audit/vorher/toast-ansicht.png`
 - **Befund:** `mods/fabric-toast/main.js` verwendet rohe Zahlen `.px(18)` (`Zeile 33`), `.gap(12)` (`Zeile 34`), `.rounded(4)` (`Zeilen 40, 49, 55`), `.gap(8)` (`Zeile 47`), `.px(6).py(3)` (`Zeile 49`) und `.px(8).py(4)` (`Zeile 55`) statt der Token `SPACE = { xs: 4, s: 8, m: 12, l: 16, xl: 24 }` und `RADIUS = { s: 6, m: 8, l: 12 }` aus `mods/fabric/ui.js`.
 - **Vorschlag:** In `mods/fabric-toast/main.js` die Token-Konstanten `FONT`, `SPACE`, `RADIUS` aus `mods/fabric/ui.js` übernehmen (`px(SPACE.l)`, `gap(SPACE.m)`, `rounded(RADIUS.s)` für Knöpfe).
 
-#### U-34 · `mods/fabric-sidebar/main.js:77,97,115,117,142,144,160,162,219,226,229,232,241,273,311,315,334,483,491,515,532,533` · Kategorie: Schriftgröße · Zuordnung: T-117 · Status: offen
+#### U-34 · `mods/fabric-sidebar/main.js:77,97,115,117,142,144,160,162,219,226,229,232,241,273,311,315,334,483,491,515,532,533` · Kategorie: Schriftgröße · Zuordnung: T-117 · Status: erledigt (Commits je Befund in der Übersichtstabelle)
 - **Beleg:** `docs/assets/ui-audit/vorher/seitenleiste-voll.png`, `docs/assets/ui-audit/vorher/seitenleiste-fehler.png`
 - **Befund:** In `mods/fabric-sidebar/main.js` kommen sieben verschiedene, frei gewählte Schriftgrößen inkl. halber Pixelwerte vor:
   - `8.5 px` (`Zeile 219`, Badge auf Pixel-Karte)
@@ -547,32 +549,32 @@ Nicht per Vorschau-Route erreichbar sind die Zustände, die einen Klick im Fenst
   Keine einzige Stelle nutzt `FONT`-Konstanten; vier Größen liegen unterhalb der `11 px`-Untergrenze (`FONT.xs = 11`).
 - **Vorschlag:** Alle Schriftgrößen in `mods/fabric-sidebar/main.js` auf `FONT = { xs: 11, s: 12, m: 13 }` aus `mods/fabric/ui.js` umstellen (Metazeilen, Chips, Gruppenköpfe: `FONT.xs = 11`; Agenten-/Kartentitel: `FONT.s = 12`).
 
-#### U-35 · `mods/fabric-sidebar/main.js:214-234` · Kategorie: Schriftgröße · Zuordnung: T-117 · Status: offen
+#### U-35 · `mods/fabric-sidebar/main.js:214-234` · Kategorie: Schriftgröße · Zuordnung: T-117 · Status: erledigt (Commits je Befund in der Übersichtstabelle)
 - **Beleg:** `docs/assets/ui-audit/vorher/seitenleiste-voll.png`
 - **Befund:** Auf den Pixel-Karten (`freeCard`) wird das Status-Badge (`WAITING`, `WORKING`, `IDLE`) in `8.5 px` auf `14 px` Höhe und die Aufgabenzeile darunter in `9.5 px` gerendert. Im 8-Stunden-Betrieb auf Desktop-Monitoren sind `8.5 px` und `9.5 px` deutlich unter der Lesbarkeitsgrenze von `11 px` (`FONT.xs`).
 - **Vorschlag:** Status-Badge und Aufgabenzeile in `freeCard` auf `FONT.xs` (`11 px`, Badge-Höhe `SIZE.chip` bzw. `18 px`) anheben.
 
-#### U-36 · `mods/fabric-toast/main.js:45,46,48,50,56` · Kategorie: Schriftgröße · Zuordnung: T-117 · Status: offen
+#### U-36 · `mods/fabric-toast/main.js:45,46,48,50,56` · Kategorie: Schriftgröße · Zuordnung: T-117 · Status: erledigt (Commits je Befund in der Übersichtstabelle)
 - **Beleg:** `docs/assets/ui-audit/vorher/toast-ansicht.png`
 - **Befund:** `mods/fabric-toast/main.js` setzt `.text_size(13)` (`Zeile 45`) und `.text_size(12)` (`Zeilen 46, 48, 50, 56`) als literale Zahlen statt über `FONT = { xs: 11, s: 12, m: 13 }`.
 - **Vorschlag:** `FONT`-Konstanten analog zu `mods/fabric/ui.js` in `mods/fabric-toast/main.js` definieren und `FONT.m` / `FONT.s` verwenden.
 
-#### U-37 · `mods/fabric-sidebar/main.js:76,96,201,202,205,218,300,302,332,333,340` · Kategorie: Farbe · Zuordnung: T-117 · Status: offen
+#### U-37 · `mods/fabric-sidebar/main.js:76,96,201,202,205,218,300,302,332,333,340` · Kategorie: Farbe · Zuordnung: T-117 · Status: erledigt (Commits je Befund in der Übersichtstabelle)
 - **Beleg:** `docs/assets/ui-audit/vorher/seitenleiste-voll.png`, `docs/assets/ui-audit/vorher/banner-alarm.png`
 - **Befund:** `mods/fabric-sidebar/main.js` mischt neun verschiedene Hex-Alpha-Suffixe (`+"12"`, `+"18"`, `+"1a"`, `+"1e"`, `+"1f"`, `+"26"`, `+"33"`, `+"40"`, `+"66"`). Ein Ticket-Chip in der Seitenleiste (`Zeile 76`) hat `t.accent + "1a"` mit Radius `4`, im Fenster (`ui.chip`, `ui.js:234`) dagegen `t.accent + "1e"` mit Radius `6`.
 - **Vorschlag:** Dieselben Alpha-Konstanten und Chip-Farben wie in `mods/fabric/ui.js` verwenden.
 
-#### U-38 · `mods/fabric-sidebar/main.js:510-519` · Kategorie: Farbe · Zuordnung: T-117 · Status: offen
+#### U-38 · `mods/fabric-sidebar/main.js:510-519` · Kategorie: Farbe · Zuordnung: T-117 · Status: erledigt (Commits je Befund in der Übersichtstabelle)
 - **Beleg:** `docs/assets/ui-audit/vorher/seitenleiste-fehler.png`
 - **Befund:** Bei einem Lesefehler (`this.loadError`) zeigt `mods/fabric-sidebar/main.js:510-519` lediglich ein ungerahmtes `div().px(10).pb(4).text_size(10.5).text_color(t.blocked).child("Ticketdaten nicht lesbar")`, während alle anderen Fabric-Flächen einen Fehlerhinweis mit Hintergrundtönung, Farbpunkt und `FONT.s` (`ui.notice`) darstellen.
 - **Vorschlag:** Den Fehlerhinweis in `mods/fabric-sidebar/main.js:510-519` im Stil von `ui.notice` (Hintergrund `t.blocked` getönt, `6 px`-Farbpunkt, `FONT.xs`/`FONT.s`) gestalten.
 
-#### U-39 · `mods/fabric-toast/main.js:49-58` · Kategorie: Farbe · Zuordnung: T-117 · Status: offen
+#### U-39 · `mods/fabric-toast/main.js:49-58` · Kategorie: Farbe · Zuordnung: T-117 · Status: erledigt (Commits je Befund in der Übersichtstabelle)
 - **Beleg:** `docs/assets/ui-audit/vorher/toast-ansicht.png`
 - **Befund:** Die Aktionsknöpfe im Toast (`#fabric-toast-open` „Öffnen“ und `#toast-login-copy`) haben `.bg(t.raised)` und `.rounded(4)` ohne Rahmen (`border_1().border_color(t.input)`), während alle sekundären Knöpfe im Fabric-Fenster (`ui.button`, `ui.js:337-340`) `.rounded(RADIUS.m).border_1().border_color(t.input).bg(t.raised)` tragen.
 - **Vorschlag:** Die Toast-Knöpfe in `mods/fabric-toast/main.js` mit `rounded(RADIUS.m)`, `border_1().border_color(t.input)`, `bg(t.raised)` und `FONT.s` an `ui.button(..., { small: true })` aus `mods/fabric/ui.js` angleichen.
 
-#### U-40 · `mods/fabric-sidebar/main.js:142`, `mods/fabric-sidebar/model.js:282-298, 387-389` · Kategorie: Begriff · Zuordnung: T-117 · Status: offen
+#### U-40 · `mods/fabric-sidebar/main.js:142`, `mods/fabric-sidebar/model.js:282-298, 387-389` · Kategorie: Begriff · Zuordnung: T-117 · Status: erledigt (Commits je Befund in der Übersichtstabelle)
 - **Beleg:** `docs/assets/ui-audit/vorher/seitenleiste-voll.png`, `docs/assets/ui-audit/vorher/seitenleiste-fehler.png`
 - **Befund:** Der obere Bereich der Seitenleiste (`mods/fabric-sidebar`) ist komplett auf Englisch in Großbuchstaben beschriftet, während der untere Bereich desselben Mods auf Deutsch beschriftet ist:
   - `mods/fabric-sidebar/main.js:142`: Abschnittskopf **`AGENTS`**
@@ -586,7 +588,7 @@ Nicht per Vorschau-Route erreichbar sind die Zustände, die einen Klick im Fenst
   - `machineLabel`: **`Dieser Rechner`** (bzw. bei benannter Maschine deren Name)
   - `FREE_STATUS_WORDS`: dieselben deutschen Statuswörter wie `STATUS_WORDS` (**`arbeitet`**, **`wartet`**, **`fertig`**, **`bereit`**, **`Fehler`**).
 
-#### U-41 · `mods/fabric-sidebar/model.js:5-11, 59-67, 119-121, 215-220` · Kategorie: Begriff · Zuordnung: T-117 · Status: offen
+#### U-41 · `mods/fabric-sidebar/model.js:5-11, 59-67, 119-121, 215-220` · Kategorie: Begriff · Zuordnung: T-117 · Status: erledigt (Commits je Befund in der Übersichtstabelle)
 - **Beleg:** `docs/assets/ui-audit/vorher/seitenleiste-voll.png`
 - **Befund:**
   1. In den Team-Zeilen der Seitenleiste (`mods/fabric-sidebar/model.js:119-121, 216`) wird `row.role` roh aus `roster.json` übernommen (`pruefer`, `umsetzer`).
@@ -594,7 +596,7 @@ Nicht per Vorschau-Route erreichbar sind die Zustände, die einen Klick im Fenst
   3. Für `status === "blocked"` zeigt `mods/fabric-sidebar/model.js:7` `wartet`, während `mods/fabric/model.js:1089` für `sessionStatus("blocked")` `wartet auf dich` nutzt.
 - **Vorschlag:** Rollen in `mods/fabric-sidebar/model.js` über dieselbe Zuordnung wie im Fenster (`umsetzer` → `Umsetzer`, `pruefer` → `Prüferin / Prüfer`) ausgeben und die Statuswörter (`arbeitet`, `wartet`, `fertig`, `bereit`, `Fehler`, `beendet`) zwischen Fenster und Seitenleiste exakt abgleichen.
 
-#### U-42 · `mods/fabric-toast/main.js:17-18, 45, 52` · Kategorie: Begriff · Zuordnung: T-117 · Status: offen
+#### U-42 · `mods/fabric-toast/main.js:17-18, 45, 52` · Kategorie: Begriff · Zuordnung: T-117 · Status: erledigt (Commits je Befund in der Übersichtstabelle)
 - **Beleg:** `docs/assets/ui-audit/vorher/toast-ansicht.png`
 - **Befund:** `mods/fabric-toast/main.js` enthält im Login-Zweig englische UI-Texte:
   - Zeile 45: ``login ? `${login[1]} needs a login: run` : p.title ?? ""``
@@ -602,14 +604,14 @@ Nicht per Vorschau-Route erreichbar sind die Zustände, die einen Klick im Fenst
   während Zeile 58 im selben Toast auf Deutsch `.child("Öffnen")` beschriftet ist.
 - **Vorschlag:** In `mods/fabric-toast/main.js:45,52` deutsche Texte verwenden: `` `${login[1]} braucht eine Anmeldung:` `` und `this.copied ? "Kopiert" : "Kopieren"`.
 
-#### U-43 · `mods/fabric-sidebar/main.js:294-344`, `mods/fabric-sidebar/model.js:553-579` · Kategorie: Doppelfunktion · Zuordnung: T-117 · Status: offen
+#### U-43 · `mods/fabric-sidebar/main.js:294-344`, `mods/fabric-sidebar/model.js:553-579` · Kategorie: Doppelfunktion · Zuordnung: T-117 · Status: erledigt (Commits je Befund in der Übersichtstabelle)
 - **Beleg:** `docs/assets/ui-audit/vorher/banner-alarm.png`
 - **Befund:** Der Alarm-Banner in `mods/fabric-sidebar/main.js:294-344` und der Alarm-Banner im Fabric-Fenster (`mods/fabric/main.js:4512-4547`) zeigen dieselben Alarme aus `index.json`, unterscheiden sich aber in fast jedem visuellen Parameter:
   - Seitenleiste: Ausrufezeichen `!` (`11 px`, fett) statt `6 px`-Farbpunkt; Textfarbe `t.foreground` (`10.5 px`) statt `t.blocked` (`12 px`); Hintergrund `t.blocked + "1f"` mit Rahmen `t.blocked + "66"` und `rounded(6)`; rote Eigenbau-Knöpfe (`h(18)`, `text_size(10)`, `bg(t.blocked + "18")`, `text_color(t.blocked)`).
   - Fenster: `6 px`-Farbpunkt; Textfarbe `t.blocked` (`FONT.s = 12 px`); Hintergrund `t.blocked + "14"` mit `border_b(1)` in `t.blocked + "55"`; neutrale `ui.button(..., { small: true })` (`h(24)`, `bg(t.raised)`, `text_color(t.foreground)`).
 - **Vorschlag:** Den Seitenleisten-Alarm-Banner in `mods/fabric-sidebar/main.js` visuell an den Fenster-Banner (`ui.js`-Token: `6 px`-Farbpunkt, `FONT.xs`/`FONT.s`, `RADIUS.m`, einheitliche Hintergrund-/Rahmentönung und Button-Gestaltung) angleichen.
 
-#### U-44 · `layouts/fabric.json:61-82`, `mods/fabric-sidebar/main.js:527-535`, `mods/fabric/views/inbox.js:98-110` · Kategorie: abgeschnittener Text · Zuordnung: T-117 · Status: offen
+#### U-44 · `layouts/fabric.json:61-82`, `mods/fabric-sidebar/main.js:527-535`, `mods/fabric/views/inbox.js:98-110` · Kategorie: abgeschnittener Text · Zuordnung: T-117 · Status: erledigt (Commits je Befund in der Übersichtstabelle)
 - **Beleg:** `docs/assets/ui-audit/vorher/seitenleiste-leer.png`, `docs/assets/ui-audit/vorher/seitenleiste-fehler.png`, `docs/assets/ui-audit/vorher/banner-alarm.png`
 - **Befund:** In `layouts/fabric.json:61-82` hat `fabric-agents` `weight: 9` (`min: 120`) und `fabric-inbox` nur `weight: 2` (`min: 90`). Dadurch bleiben dem `Posteingang`-Block unten links nur `~105 px` Gesamthöhe (abzüglich `46 px` für `ui.header` nur `~59 px` für den Inhalt). Im Leerzustand (`vorher/seitenleiste-leer.png`) zentriert `ui.emptyState` (`p(24)`) den dreizeiligen Block (`Nichts zu tun`, Erklärungstext, Knopf `Zum Board`) in diesen `59 px`, sodass „Nichts zu tun“ nach oben über die Trennlinie in den Header „Posteingang“ hineinragt und der Knopf „Zum Board“ unten halb abgeschnitten wird. Im Fehlerzustand (`vorher/seitenleiste-fehler.png`) wird der Fehlertext unter der `ui.notice` ebenfalls abgeschnitten.
 - **Vorschlag:** Für schmale/niedrige Panel-Flächen (`views/inbox.js` bzw. `ui.emptyState` mit `{ compact: true }`) das Padding von `SPACE.xl` (`24 px`) auf `SPACE.m` (`12 px`) reduzieren und `.overflow_y_scrollbar()` nutzen (bzw. in `layouts/fabric.json` das Gewicht von `fabric-inbox` auf `weight: 3`, `min: 130` anheben), damit Header, Text und Aktionsknopf niemals überlappen.
@@ -701,17 +703,17 @@ Jede Sache in der Fabric-Oberfläche (`mods/fabric`, `mods/fabric-sidebar`, `mod
 
 ### 6.2 Arbeitspaket T-117 (`mods/fabric-sidebar/main.js`, `mods/fabric-sidebar/model.js`, `mods/fabric-toast/main.js`)
 
-- [ ] **U-31** (`mods/fabric-sidebar/main.js`): Abstände und Elementhöhen auf `SPACE`- und `SIZE`-Konstanten aus `mods/fabric/ui.js` umstellen.
-- [ ] **U-32** (`mods/fabric-sidebar/main.js`): Eckenradien auf `RADIUS` (`6/8/12`) aus `mods/fabric/ui.js` umstellen.
-- [ ] **U-33** (`mods/fabric-toast/main.js`): Abstände und Radien im Toast auf `SPACE` und `RADIUS` aus `mods/fabric/ui.js` umstellen.
-- [ ] **U-34** (`mods/fabric-sidebar/main.js`): Alle sieben Einzel-Schriftgrößen (`8.5`–`12 px`) auf `FONT`-Konstanten (`11/12/13`) aus `mods/fabric/ui.js` umstellen.
-- [ ] **U-35** (`mods/fabric-sidebar/main.js:214-234`): Badge (`8.5 px`) und Aufgabenzeile (`9.5 px`) der Pixel-Karten auf `FONT.xs` (`11 px`) anheben.
-- [ ] **U-36** (`mods/fabric-toast/main.js`): Schriftgrößen im Toast über `FONT.m` (`13`) und `FONT.s` (`12`) referenzieren.
-- [ ] **U-37** (`mods/fabric-sidebar/main.js`): Hex-Alpha-Suffixe für Chips, Badges und Karten an `mods/fabric/ui.js` angleichen.
-- [ ] **U-38** (`mods/fabric-sidebar/main.js:510-519`): Fehleranzeige (`loadError`) optisch an `ui.notice` angleichen.
-- [ ] **U-39** (`mods/fabric-toast/main.js:49-58`): Toast-Knöpfe (`Öffnen`, `Kopieren`) mit Rahmen, Radius und Padding an `ui.button` angleichen.
-- [ ] **U-40** (`mods/fabric-sidebar/main.js:142`, `mods/fabric-sidebar/model.js:282-298,387-389`): Englische Begriffe (`AGENTS`, `N BUSY`, `THIS MACHINE`, `WORKING`/`WAITING`/`DONE`/`IDLE`/`ERROR`) auf die deutschen Zielbegriffe der Begriffstabelle (`Agenten`, `${n} aktiv`, `Dieser Rechner`, `arbeitet`/`wartet`/`fertig`/`bereit`/`Fehler`) umstellen und Tests in `mods/fabric-sidebar/test/model.test.mjs` aktualisieren.
-- [ ] **U-41** (`mods/fabric-sidebar/model.js:5-11,119-121,215-220`): Rollenbezeichnungen (`Umsetzer`, `Prüferin / Prüfer`) und Statuswörter in den Team-Zeilen der Seitenleiste angleichen.
-- [ ] **U-42** (`mods/fabric-toast/main.js:45,52`): Englische Login- und Kopier-Texte (`needs a login: run`, `Copy`, `Copied`) eindeutschen (`braucht eine Anmeldung:`, `Kopieren`, `Kopiert`).
-- [ ] **U-43** (`mods/fabric-sidebar/main.js:294-344`): Alarm-Banner der Seitenleiste optisch an den Fenster-Alarm-Banner angleichen.
-- [ ] **U-44** (`mods/fabric-sidebar/main.js:527-535`, `layouts/fabric.json`): Leer- und Fehlerdarstellung in der Seitenleiste so kompakt gestalten, dass im Posteingang-Block keine Überlappung mit der Kopfzeile mehr auftritt.
+- [x] **U-31** (`mods/fabric-sidebar/main.js`): Abstände und Elementhöhen auf `SPACE`- und `SIZE`-Konstanten aus `mods/fabric/ui.js` umstellen.
+- [x] **U-32** (`mods/fabric-sidebar/main.js`): Eckenradien auf `RADIUS` (`6/8/12`) aus `mods/fabric/ui.js` umstellen.
+- [x] **U-33** (`mods/fabric-toast/main.js`): Abstände und Radien im Toast auf `SPACE` und `RADIUS` aus `mods/fabric/ui.js` umstellen.
+- [x] **U-34** (`mods/fabric-sidebar/main.js`): Alle sieben Einzel-Schriftgrößen (`8.5`–`12 px`) auf `FONT`-Konstanten (`11/12/13`) aus `mods/fabric/ui.js` umstellen.
+- [x] **U-35** (`mods/fabric-sidebar/main.js:214-234`): Badge (`8.5 px`) und Aufgabenzeile (`9.5 px`) der Pixel-Karten auf `FONT.xs` (`11 px`) anheben.
+- [x] **U-36** (`mods/fabric-toast/main.js`): Schriftgrößen im Toast über `FONT.m` (`13`) und `FONT.s` (`12`) referenzieren.
+- [x] **U-37** (`mods/fabric-sidebar/main.js`): Hex-Alpha-Suffixe für Chips, Badges und Karten an `mods/fabric/ui.js` angleichen.
+- [x] **U-38** (`mods/fabric-sidebar/main.js:510-519`): Fehleranzeige (`loadError`) optisch an `ui.notice` angleichen.
+- [x] **U-39** (`mods/fabric-toast/main.js:49-58`): Toast-Knöpfe (`Öffnen`, `Kopieren`) mit Rahmen, Radius und Padding an `ui.button` angleichen.
+- [x] **U-40** (`mods/fabric-sidebar/main.js:142`, `mods/fabric-sidebar/model.js:282-298,387-389`): Englische Begriffe (`AGENTS`, `N BUSY`, `THIS MACHINE`, `WORKING`/`WAITING`/`DONE`/`IDLE`/`ERROR`) auf die deutschen Zielbegriffe der Begriffstabelle (`Agenten`, `${n} aktiv`, `Dieser Rechner`, `arbeitet`/`wartet`/`fertig`/`bereit`/`Fehler`) umstellen und Tests in `mods/fabric-sidebar/test/model.test.mjs` aktualisieren.
+- [x] **U-41** (`mods/fabric-sidebar/model.js:5-11,119-121,215-220`): Rollenbezeichnungen (`Umsetzer`, `Prüferin / Prüfer`) und Statuswörter in den Team-Zeilen der Seitenleiste angleichen.
+- [x] **U-42** (`mods/fabric-toast/main.js:45,52`): Englische Login- und Kopier-Texte (`needs a login: run`, `Copy`, `Copied`) eindeutschen (`braucht eine Anmeldung:`, `Kopieren`, `Kopiert`).
+- [x] **U-43** (`mods/fabric-sidebar/main.js:294-344`): Alarm-Banner der Seitenleiste optisch an den Fenster-Alarm-Banner angleichen.
+- [x] **U-44** (`mods/fabric-sidebar/main.js:527-535`, `layouts/fabric.json`): Leer- und Fehlerdarstellung in der Seitenleiste so kompakt gestalten, dass im Posteingang-Block keine Überlappung mit der Kopfzeile mehr auftritt.

@@ -14,6 +14,19 @@ export function statusWord(status) {
   return STATUS_WORDS[status] ?? (status ? String(status) : "unbekannt");
 }
 
+const ROLE_WORDS = {
+  umsetzer: "Umsetzer",
+  pruefer: "Prüferin / Prüfer",
+  orchestrator: "Orchestrator",
+  mensch: "Mensch",
+};
+
+/** Rollenbezeichnung aus der Begriffstabelle; Unbekanntes bleibt unverändert. */
+export function roleLabel(role) {
+  if (!role) return "";
+  return ROLE_WORDS[role] ?? String(role);
+}
+
 /** `fab-zap-t-12` → `T-12`; nur der Rückfall, wenn das Label `fab.ticket` fehlt. */
 export function ticketFromName(name) {
   const match = /^fab-(.+?)-(t-\d+)$/i.exec(String(name ?? ""));
@@ -59,11 +72,11 @@ export function costText(value) {
 export function runtimeText(created, now) {
   if (!Number.isFinite(created) || !Number.isFinite(now) || now < created) return "";
   const minutes = Math.floor((now - created) / 60000);
-  if (minutes < 1) return "<1m";
-  if (minutes < 60) return `${minutes}m`;
+  if (minutes < 1) return "< 1 min";
+  if (minutes < 60) return `${minutes} min`;
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h`;
-  return `${Math.floor(hours / 24)}d`;
+  if (hours < 24) return `${hours} h`;
+  return `${Math.floor(hours / 24)} T`;
 }
 
 function ticketNumber(ticket) {
@@ -207,13 +220,14 @@ export function fabricRows(
     const runtime = runtimeText(node.created, now);
     const cost = costText(node.cost);
     const status = node.status ? statusWord(node.status) : "";
+    const role = node.orchestrator ? "" : roleLabel(roles.get(node.agent) || "");
     const title = node.orchestrator
       ? "Orchestrator"
       : node.ticket
         ? `${node.agent} · ${titles.get(node.ticket) ? `${node.ticket} ${titles.get(node.ticket)}` : node.ticket}`
         : node.agent;
     const meta = [
-      node.orchestrator ? "" : roles.get(node.agent) || "",
+      role,
       status,
       runtime,
       cost,
@@ -221,7 +235,7 @@ export function fabricRows(
     return {
       ...node,
       depth,
-      role: node.orchestrator ? "" : roles.get(node.agent) || "",
+      role,
       title,
       meta,
       statusWord: status,
@@ -274,27 +288,27 @@ export function fabricRows(
 }
 
 // --- Freie Agenten ohne Fabric-Team -----------------------------------------
-// Eigener AGENTS-Abschnitt: Terminals, deren Programm einen Status meldet
+// Eigener Agenten-Abschnitt: Terminals, deren Programm einen Status meldet
 // (OSC 7501) und die weder ein `fab.*`-Label noch einen `fab-…`-Namen tragen
 // und auch nicht über `parent` an einem Fabric-Terminal hängen. Der
 // Space-Orchestrator wird über `hub.role` oder den Namen `orchestrator` erkannt.
 
 export const FREE_STATUS_WORDS = {
-  working: "WORKING",
-  blocked: "WAITING",
-  done: "DONE",
-  idle: "IDLE",
-  error: "ERROR",
+  working: "arbeitet",
+  blocked: "wartet",
+  done: "fertig",
+  idle: "bereit",
+  error: "Fehler",
 };
 
 export const FREE_SPRITES = ["agent-a", "agent-b"];
 
 export function freeStatusWord(status) {
-  return FREE_STATUS_WORDS[status] ?? (status ? String(status).toUpperCase() : "IDLE");
+  return FREE_STATUS_WORDS[status] ?? (status ? String(status) : "bereit");
 }
 
 export function busyLabel(busy) {
-  return `${Number(busy) || 0} BUSY`;
+  return `${Number(busy) || 0} aktiv`;
 }
 
 /** Eck-Symbol oben rechts; `z` schläft, `note` ist fertig, `clock` wartet. */
@@ -385,7 +399,7 @@ export function machineOf(terminal, spaces = []) {
 }
 
 export function machineLabel(machine) {
-  return machine ? String(machine).toUpperCase() : "THIS MACHINE";
+  return machine ? String(machine) : "Dieser Rechner";
 }
 
 /** Anheften/Lösen als reine Umschaltung; `main.js` führt den Befehl aus. */
@@ -479,7 +493,7 @@ export function freeAgentTask(title, name) {
   return task && task !== name ? task : "";
 }
 
-/** Karten und Gruppen des AGENTS-Abschnitts. `listed` ist `agents()` aus Herdr:
+/** Karten und Gruppen des Agenten-Abschnitts. `listed` ist `agents()` aus Herdr:
     nur Terminals mit gemeldetem Status sind freie Agenten. `sort` übernimmt die
     Einstellung `agents.sort`: `priority` (Standard, Wartende zuerst) oder
     `grouped` (nach Maschinengruppe). Angeheftete bleiben in beiden Fällen vorn. */
