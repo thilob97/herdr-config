@@ -372,7 +372,7 @@ Statusdatei `$FAB_HOME/autopilot.json` (Standard `data/fabric/autopilot.json`): 
 - **Pause:** `autopilot.json` steht auf `paused`; `since` ist `paused_since`, sonst `updated_at`. Bei aktivem main-Alarm erscheint die Pause nicht als eigener Alarm, weil der main-Alarm `resume` anbietet.
 - **tick:** `store.tick_alarm()` ist `stale` (älter als 5 min); `since` ist `last_tick`, der Text nennt das Alter.
 
-Jeder Alarm trägt eine stabile `id` (`main:<run>`, `pause:<since>`, `tick:<last_tick>`), `at`, `since`, `ticket`, `run`, `step`, `reverted`, `paused`, `reason`, `text` und `actions`. Die Lampe/Banner lesen `active` und `count`; der Toast dedupliziert über dieselbe `id` wie der Inbox-Eintrag `attention:<id>`. `fab alarm ack` quittiert **alle** aktuell abgeleiteten Alarme, auch die bei main unterdrückte Pause, und speichert die IDs dedupliziert (höchstens 100) unter dem Meta-Schlüssel `alarm_ack`; ein neuer main-Lauf hat eine neue `id` und löst wieder aus.
+Jeder Alarm trägt eine stabile `id` (`main:<run>`, `pause:<since>`, `tick:<last_tick>`), `at`, `since`, `ticket`, `run`, `step`, `reverted`, `paused`, `reason`, `text` und `actions`. Lampe und Banner lesen `alarms`; der Toast dedupliziert über dieselbe `id` wie der Inbox-Eintrag `attention:<id>`. `fab alarm ack` quittiert **alle** aktuell abgeleiteten Alarme, auch die bei main unterdrückte Pause, und speichert die IDs dedupliziert (höchstens 100) unter dem Meta-Schlüssel `alarm_ack`; ein neuer main-Lauf hat eine neue `id` und löst wieder aus.
 
 ## 5. Agenten starten
 
