@@ -1,0 +1,47 @@
+{
+  "name": "projektkarte",
+  "nodes": [
+    {
+      "id": "start",
+      "type": "trigger",
+      "trigger": "cron",
+      "every_minutes": 60
+    },
+    {
+      "id": "nachtfenster",
+      "type": "action",
+      "action": "shell",
+      "command": "case \"$(date +%H%M)\" in 02[0-5][0-9]) exit 0;; *) exit 1;; esac"
+    },
+    {
+      "id": "karte",
+      "type": "action",
+      "action": "fab",
+      "command": "map ."
+    },
+    {
+      "id": "ende",
+      "type": "end"
+    }
+  ],
+  "edges": [
+    {
+      "from": "start",
+      "to": "nachtfenster"
+    },
+    {
+      "from": "nachtfenster",
+      "to": "karte",
+      "when": "pass"
+    },
+    {
+      "from": "nachtfenster",
+      "to": "ende",
+      "when": "fail"
+    },
+    {
+      "from": "karte",
+      "to": "ende"
+    }
+  ]
+}
