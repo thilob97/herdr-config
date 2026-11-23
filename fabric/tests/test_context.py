@@ -118,9 +118,96 @@ class PromptContextTests(ContextCase):
             [first, second], "B" * 2000, 800, "/r/roster.json"
         )
         self.assertIn("[…] gekürzt, vollständig in", text)
+        # Nur der Brief ist zu lang; die Steckbriefe stehen vollständig da.
         self.assertIn("/r/roster.json", text)
         for repo in (first, second):
-            self.assertIn(os.path.join(repo, ".fabric", "project.md"), text)
+            self.assertNotIn(os.path.join(repo, ".fabric", "project.md"), text)
+        self.assertIn("Zweck: eins.", text)
+        self.assertIn("Zweck: zwei.", text)
+
+    def test_langer_steckbrief_laesst_die_neueste_entscheidung_stehen(self):
+        repo = self.make_repo()
+        self.own_repo(repo)
+        tid = self.new("Kontext", repo=repo)
+        for number in range(1, 6):
+            self.ok(
+                "decide", tid, "--from", "mensch",
+                f"Entscheidung {number}.",
+            )
+        project = "# Steckbrief\n\n" + "S" * 5886
+        self.assertEqual(len(project), 5900)
+        self.project(repo, project)
+        text = context.build_paths([repo], "", 6000)
+        self.assertLessEqual(len(text), 6000)
+        self.assertIn("Entscheidung 5.", text)
+        self.assertIn("[…] gekürzt, vollständig in", text)
+        self.assertIn(
+            os.path.join(repo, ".fabric", "project.md"), text
+        )
+        self.assertNotIn(
+            os.path.join(repo, ".fabric", "decisions.md"), text
+        )
+
+    def test_beide_quellen_zu_gross_nennt_steckbrief_und_entscheidungen(self):
+        repo = self.make_repo()
+        self.own_repo(repo)
+        tid = self.new("Kontext", repo=repo)
+        for number in range(1, 6):
+            self.ok(
+                "decide", tid, "--from", "mensch",
+                f"Entscheidung {number}. " + "E" * 1200,
+            )
+        self.project(repo, "# Steckbrief\n\n" + "S" * 5986)
+        text = context.build_paths([repo], "", 6000)
+        self.assertLessEqual(len(text), 6000)
+        self.assertIn(
+            os.path.join(repo, ".fabric", "project.md"), text
+        )
+        self.assertIn(
+            os.path.join(repo, ".fabric", "decisions.md"), text
+        )
+
+    def test_rest_unter_hinweislaenge_ueberschreitet_die_grenze_nicht(self):
+        repo = self.make_repo()
+        self.own_repo(repo)
+        tid = self.new("Kontext", repo=repo)
+        self.ok("decide", tid, "--from", "mensch", "Kurze Entscheidung.")
+        self.project(repo, "# S" + "S" * 100)
+        base = context.build_paths([repo], "", 100000)
+        maximum = len(base) + 8
+        text = context.build_paths([repo], "B" * 500, maximum)
+        self.assertLessEqual(len(text), maximum)
+        self.assertEqual(text, base)
+
+    def test_brief_verdraengt_die_entscheidungen_nicht(self):
+        repo = self.make_repo()
+        self.own_repo(repo)
+        tid = self.new("Kontext", repo=repo)
+        self.ok(
+            "decide", tid, "--from", "mensch",
+            "Entscheidung bleibt. " + "E" * 4000 + " ENDE",
+        )
+        self.project(repo, "# S" + "S" * 100)
+        text = context.build_paths([repo], "B" * 3000, 6000)
+        self.assertLessEqual(len(text), 6000)
+        self.assertIn("ENDE", text)
+        self.assertIn("[…] gekürzt", text)
+
+    def test_gekuerzte_entscheidungen_behalten_die_neueste(self):
+        repo = self.make_repo()
+        self.own_repo(repo)
+        tid = self.new("Kontext", repo=repo)
+        for number in range(1, 6):
+            self.ok(
+                "decide", tid, "--from", "mensch",
+                f"Entscheidung {number}. " + "E" * 1500 + f" ENDE{number}",
+            )
+        text = context.build_paths([repo], "", 6000)
+        self.assertLessEqual(len(text), 6000)
+        self.assertIn("ENDE5", text)
+        self.assertIn(
+            os.path.join(repo, ".fabric", "decisions.md"), text
+        )
 
     def test_kleine_obergrenze_kuerzt_nur_den_hinweis_hinten(self):
         text = context.clip("x" * 100, 40, "/sehr/langer/pfad/zum/projekt.md")

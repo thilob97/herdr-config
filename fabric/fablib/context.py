@@ -1,8 +1,8 @@
 """Projekt-Steckbrief und Team-Brief als Prompt-Kontext (T-59).
 
-`build` bekommt (Titel, Text)-Abschnitte und kürzt sie sichtbar auf die
-Zeichen-Obergrenze aus `fab settings set context_limit`. T-60 ergänzt die
-Entscheidungen der Repos; T-61 nutzt dieselbe Ausgabe für die Vorschau.
+`build_paths` bekommt (Titel, Text)-Abschnitte und kürzt sie sichtbar auf
+die Zeichen-Obergrenze aus `fab settings set context_limit`. T-60 ergänzt
+die Entscheidungen der Repos; T-61 nutzt dieselbe Ausgabe für die Vorschau.
 """
 import os
 
@@ -17,6 +17,8 @@ HINT = "[…] gekürzt, vollständig in {source}"
 SHORT_HINT = "[…] gekürzt"
 # Kürzester vollständiger Hinweis; `fab settings` weist kleinere Grenzen ab.
 MIN_LIMIT = len(SHORT_HINT)
+# Den Entscheidungen bleibt mindestens ein Viertel der Grenze.
+DECISION_RESERVE = 4
 
 
 def limit(roster):
@@ -68,12 +70,16 @@ def clip(text, maximum, source="", report=False):
     return result(text[:room].rstrip() + marker, True)
 
 
-def build(sections, brief="", maximum=DEFAULT_LIMIT, source="", report=False):
-    """Kontext aus Abschnitten plus Team-Brief; sichtbar gekürzt."""
-    entries = list(sections)
-    if (brief or "").strip():
-        entries.append((BRIEF_TITLE, brief))
-    return clip(compose(entries), maximum, source, report=report)
+def _fit_block(text, room, source):
+    """Block auf `room` Zeichen; ohne Platz für den Hinweis entfällt er ganz."""
+    if not text:
+        return "", False
+    if len(text) <= room:
+        return text, False
+    if room < MIN_LIMIT:
+        return "", True
+    cut = clip(text, room, source, report=True)
+    return cut["text"], cut["clipped"]
 
 
 def _project_sections(paths):
@@ -96,30 +102,113 @@ def _project_sections(paths):
     return sections, [path for _label, path, _text in found if path]
 
 
-def _decision_section(paths):
-    """Entscheidungs-Abschnitt der Repos; leer, wenn es keine Einträge gibt."""
-    lines = repos.decisions_many(paths, repos.DECISION_LIMIT)
+def _decision_block(lines):
+    """Abschnitt aus Entscheidungszeilen (älteste zuerst); leer ohne Einträge."""
     if not lines:
-        return []
-    return [(DECISION_TITLE, "\n".join(f"- {line}" for line in lines))]
+        return ""
+    return compose([(DECISION_TITLE, "\n".join(f"- {line}" for line in lines))])
+
+
+def _clip_decisions(lines, maximum, source=""):
+    """Entscheidungen auf `maximum`; die neuesten Einträge bleiben stehen."""
+    text = _decision_block(lines)
+    if len(text) <= maximum:
+        return text, False
+    marker = "\n\n" + (
+        HINT.format(source=source) if source else SHORT_HINT
+    )
+    if len(marker) > maximum:
+        marker = SHORT_HINT
+    header = f"## {DECISION_TITLE}\n\n"
+    room = maximum - len(header) - len(marker)
+    if room < 1:
+        return marker, True
+    kept = []
+    used = 0
+    for line in reversed(lines):
+        piece = f"- {line}"
+        need = len(piece) + (1 if kept else 0)
+        if used + need > room:
+            break
+        kept.append(piece)
+        used += need
+    if not kept:
+        kept = [f"- {lines[-1]}"[:room]]
+    return header + "\n".join(reversed(kept)) + marker, True
 
 
 def build_paths(paths, brief="", maximum=DEFAULT_LIMIT, fallback_source="",
                 report=False):
-    """Steckbriefe, Entscheidungen und Brief; der Hinweis nennt alle Quellen.
+    """Steckbriefe, Entscheidungen und Brief; Hinweis nur für gekürzte Quellen.
 
-    Der Brief steht hinten und wird darum zuerst gekürzt. Sobald er im
-    Kontext steht, nennt der Hinweis deshalb auch `fallback_source`
-    (die Team-Konfiguration), nicht nur die Steckbrief- und
-    Entscheidungs-Pfade.
+    Die neuesten Entscheidungen behalten mindestens `1/DECISION_RESERVE` der
+    Grenze; der Brief bekommt nur den Rest. Gekürzt wird zuerst der Brief,
+    dann der Steckbrief, zuletzt der älteste Teil der Entscheidungen. Der
+    Hinweis nennt nur die Quellen, deren Text tatsächlich fehlt.
     """
+    maximum = teams.check_context_limit(maximum)
     sections, found = _project_sections(paths)
-    sections += _decision_section(paths)
-    sources = list(found) + repos.decision_paths(paths)
-    if (brief or "").strip() and fallback_source:
-        sources.append(fallback_source)
-    source = ", ".join(sources) or fallback_source
-    return build(sections, brief, maximum, source, report=report)
+    project_text = compose(sections)
+    brief_text = (brief or "").strip()
+    brief_block = compose([(BRIEF_TITLE, brief_text)]) if brief_text else ""
+    decision_lines = repos.decisions_many(paths, repos.DECISION_LIMIT)
+    decision_text = _decision_block(decision_lines)
+    decision_source = ", ".join(repos.decision_paths(paths))
+    brief_source = fallback_source if brief_block else ""
+    project_source = ", ".join(found)
+    if brief_block and fallback_source:
+        project_source = ", ".join(list(found) + [fallback_source])
+
+    if not maximum:
+        return {"text": "", "clipped": False} if report else ""
+
+    clipped = False
+    blocks = [part for part in (project_text, decision_text, brief_block) if part]
+    if len("\n\n".join(blocks)) > maximum:
+        # Freier Platz nach dem Steckbrief, mindestens das reservierte Viertel.
+        # Der Brief zählt nicht mit: er wird zuerst gekürzt und verdrängt
+        # keine Entscheidungen.
+        budget = max(
+            maximum // DECISION_RESERVE,
+            MIN_LIMIT,
+            maximum - len(project_text) - (2 if project_text else 0),
+        )
+        if decision_lines:
+            decision_text, clipped = _clip_decisions(
+                decision_lines, budget, decision_source
+            )
+
+    room = maximum - len(decision_text)
+    if decision_text:
+        room -= 2
+    room = max(room, 0)
+    if project_text and len(project_text) > room:
+        project_text, project_clipped = _fit_block(
+            project_text, room, project_source
+        )
+        clipped = clipped or project_clipped
+        # Ohne Platz für den Steckbrief entfällt auch der Brief.
+        brief_block = ""
+    elif project_text:
+        rest = room - len(project_text)
+        if brief_block:
+            rest = max(rest - 2, 0)
+            brief_block, brief_clipped = _fit_block(
+                brief_block, rest, brief_source
+            )
+            clipped = clipped or brief_clipped
+    elif brief_block:
+        brief_block, brief_clipped = _fit_block(
+            brief_block, room, brief_source
+        )
+        clipped = clipped or brief_clipped
+
+    text = "\n\n".join(
+        part for part in (project_text, decision_text, brief_block) if part
+    )
+    if report:
+        return {"text": text, "clipped": clipped}
+    return text
 
 
 def team_of(roster, repo):
