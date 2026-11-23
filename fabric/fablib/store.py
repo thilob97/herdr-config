@@ -1726,6 +1726,22 @@ def pipeline_run_finish(run_id, state, duration_ms):
         )
 
 
+def pipeline_run_finish_if_open(run_id, state, duration_ms):
+    """Einen noch offenen Lauf beenden; True, wenn er offen war.
+
+    Die Bedingung steht im UPDATE, damit ein zwischenzeitlich fertig
+    gewordener Lauf nicht überschrieben wird.
+    """
+    ensure()
+    with _auto_tx():
+        cursor = _connect().execute(
+            "UPDATE pipeline_runs SET state=?, duration_ms=? "
+            "WHERE id=? AND state IN ('queued','running')",
+            (state, duration_ms, run_id),
+        )
+        return cursor.rowcount > 0
+
+
 def pipeline_run_load(run_id):
     ensure()
     row = _connect().execute(
@@ -1804,6 +1820,22 @@ def pipeline_step_update(run_id, position, **fields):
             f"UPDATE pipeline_steps SET {assignments} WHERE run=? AND position=?",
             (*values, run_id, position),
         )
+
+
+def pipeline_step_transition(run_id, position, source, target):
+    """Schritt nur umstellen, wenn er noch `source` ist; False sonst.
+
+    Die Bedingung steht im UPDATE, damit ein zwischenzeitlich fertig
+    geschriebener Schritt nicht überschrieben wird.
+    """
+    ensure()
+    with _auto_tx():
+        cursor = _connect().execute(
+            "UPDATE pipeline_steps SET state=? "
+            "WHERE run=? AND position=? AND state=?",
+            (target, run_id, position, source),
+        )
+        return cursor.rowcount > 0
 
 
 def pipeline_steps(run_id):

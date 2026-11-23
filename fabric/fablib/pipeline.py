@@ -110,6 +110,11 @@ def _reap_abandoned():
     verwaist. Er endet wie im Ausnahme-Aufräumen von `run()`: `running`-Schritte
     `fail`, `pending`-Schritte `skipped`, Lauf `fail`. Lebende Läufe behalten
     ihre Sperre und bleiben unberührt.
+
+    Die Liste und die Besitzprüfung sind nur ein Vorfilter: Zwischen beiden
+    kann der Besitzer fertig werden. Geschrieben wird deshalb ausschließlich
+    bedingt (`pipeline_step_transition`, `pipeline_run_finish_if_open`) – ein
+    bereits beendeter Lauf samt fertigen Schritten bleibt unangetastet.
     """
     for row in store.pipeline_run_list():
         if row.get("state") not in ("queued", "running"):
@@ -122,11 +127,11 @@ def _reap_abandoned():
                     step["state"]
                 )
                 if wanted is not None:
-                    store.pipeline_step_update(
-                        row["id"], step["position"], state=wanted
+                    store.pipeline_step_transition(
+                        row["id"], step["position"], step["state"], wanted
                     )
             started = row.get("started_at") or store.now_ms()
-            store.pipeline_run_finish(
+            store.pipeline_run_finish_if_open(
                 row["id"], "fail", max(0, store.now_ms() - started)
             )
         except Exception as error:  # noqa: BLE001 - Aufräumen darf nichts klemmen
@@ -303,15 +308,17 @@ def run(
         if cleanup_errors:
             raise exc from cleanup_errors[-1]
         raise
+    else:
+        # Endstatus vor dem Freigeben des Besitzes: Solange der Lauf offen ist,
+        # hält dieser Prozess seine Besitzdatei, und kein Aufräumen greift ein.
+        store.pipeline_run_finish(
+            run_id, "fail" if failed else "pass", store.now_ms() - start
+        )
     finally:
-        if slot is not None:
-            slot.release()
         if owner is not None:
             owner.release()
-
-    store.pipeline_run_finish(
-        run_id, "fail" if failed else "pass", store.now_ms() - start
-    )
+        if slot is not None:
+            slot.release()
 
     return {
         "state": "fail" if failed else "pass",

@@ -10,7 +10,7 @@ import sys
 import time
 from unittest import mock
 
-from fabric.fablib import agents, pipeline, store
+from fabric.fablib import agents, pipeline, store, verifyslots
 from fabric.tests.support import FabricCase
 
 ROOT = os.path.dirname(
@@ -326,6 +326,70 @@ class VerifyQueueTest(VerifyQueueCase):
             self.stop(killed)
             if second is not None:
                 self.stop(second)
+
+    def test_fertiger_lauf_wird_nicht_als_verwaist_ueberschrieben(self):
+        repo = self.make_repo()
+        self.write_steps(repo, [{"name": "eins", "run": "true"}])
+        with self.store_env():
+            run_id = store.pipeline_run_new(
+                trigger="verify",
+                ticket="T-2",
+                repo=repo,
+                worktree=repo,
+                branch="main",
+                head="a" * 40,
+                state="queued",
+            )
+            store.pipeline_step_add(run_id, 0, "eins", "true", "pending")
+            store.pipeline_run_start(run_id)
+            store.pipeline_step_update(run_id, 0, state="running")
+            real_steps = store.pipeline_steps
+
+            def stale_steps(target):
+                snapshot = real_steps(target)
+                # Der Besitzer wird genau zwischen Snapshot und Aufräumen
+                # fertig; das Aufräumen arbeitet mit veralteten Zuständen.
+                store.pipeline_step_update(target, 0, state="pass", exit_code=0)
+                store.pipeline_run_finish(target, "pass", 7)
+                return snapshot
+
+            with mock.patch.object(
+                verifyslots, "abandoned", return_value=True
+            ), mock.patch.object(
+                store, "pipeline_steps", side_effect=stale_steps
+            ):
+                pipeline._reap_abandoned()
+
+            row = store.pipeline_run_load(run_id)
+            steps = store.pipeline_steps(run_id)
+
+        self.assertEqual(row["state"], "pass")
+        self.assertEqual(row["duration_ms"], 7)
+        self.assertEqual([step["state"] for step in steps], ["pass"])
+
+    def test_besitz_wird_erst_nach_dem_endstatus_freigegeben(self):
+        repo = self.make_repo()
+        self.write_steps(repo, [{"name": "eins", "run": "true"}])
+        seen = {}
+        real_finish = store.pipeline_run_finish
+
+        def spy_finish(run_id, state, duration_ms):
+            seen["state"] = state
+            seen["abandoned"] = verifyslots.abandoned(run_id)
+            return real_finish(run_id, state, duration_ms)
+
+        with self.store_env(), mock.patch.dict(
+            os.environ, {"FAB_ROSTER": self.roster}
+        ), mock.patch.object(
+            store, "pipeline_run_finish", side_effect=spy_finish
+        ):
+            result = pipeline.run(repo, "verify", ticket="T-2")
+
+        self.assertEqual(result["state"], "pass")
+        self.assertEqual(seen["state"], "pass")
+        self.assertFalse(
+            seen["abandoned"], "Besitz war beim Endstatus schon frei"
+        )
 
     def test_wartezeit_zaehlt_nicht_ins_timeout(self):
         repo = self.make_repo()
