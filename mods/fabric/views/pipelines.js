@@ -337,6 +337,7 @@ export function renderPipelinesPage(app, cx, t) {
   const rows = model.pipelineRunsNewest(all)
     .filter((run) => !app.pipelineFilter || run.ticket === app.pipelineFilter);
   const running = all.filter((run) => model.pipelineState(run) === "running").length;
+  const queued = all.filter((run) => model.pipelineState(run) === "queued").length;
 
   return v_flex()
     .size_full()
@@ -344,7 +345,7 @@ export function renderPipelinesPage(app, cx, t) {
     .child(ui.header(t, "Pipelines", [
       ...(app.compact ? [] : [
         div().text_size(T.xs).text_color(t.dim)
-          .child(`${all.length} Läufe${running ? ` · ${running} läuft` : ""}`),
+          .child(`${all.length} Läufe${running ? ` · ${running} läuft` : ""}${queued ? ` · ${queued} in Warteschlange` : ""}`),
       ]),
       ui.iconButton(t, {
         id: "fabric-pipelines-refresh",

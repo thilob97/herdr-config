@@ -23,6 +23,8 @@ GLOBAL_KEY = "max_sessions_total"
 MIN_SESSIONS, MAX_SESSIONS = 1, 16
 MAX_SESSIONS_TOTAL = 64
 DEFAULT_MAX_SESSIONS = 4
+DEFAULT_MAX_VERIFY = 2
+MIN_VERIFY, MAX_VERIFY = 1, 16
 DEFAULT_ORCHESTRATOR_PROMPT = "prompts/orchestrator.md"
 DEFAULT_CONTEXT_LIMIT = 6000
 MAX_CONTEXT_LIMIT = 100000
@@ -74,6 +76,22 @@ def check_sessions(raw, what="max_sessions"):
     if value < MIN_SESSIONS or value > MAX_SESSIONS:
         raise FabError(
             f"{what} muss zwischen {MIN_SESSIONS} und {MAX_SESSIONS} liegen, "
+            f"nicht {value}"
+        )
+    return value
+
+
+def check_verify(raw, what="max_verify"):
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        raise FabError(
+            f"{what} muss eine ganze Zahl zwischen {MIN_VERIFY} und "
+            f"{MAX_VERIFY} sein"
+        )
+    if value < MIN_VERIFY or value > MAX_VERIFY:
+        raise FabError(
+            f"{what} muss zwischen {MIN_VERIFY} und {MAX_VERIFY} liegen, "
             f"nicht {value}"
         )
     return value
@@ -525,6 +543,15 @@ def _total(data, fallback):
     return max(MIN_SESSIONS, fallback)
 
 
+def _verify_limit(data):
+    """`max_verify` top-level; fehlt oder ist ungültig ⇒ 2."""
+    raw = data.get("max_verify") if isinstance(data, dict) else None
+    try:
+        return check_verify(raw)
+    except FabError:
+        return DEFAULT_MAX_VERIFY
+
+
 def _context_limit(data):
     raw = data.get("context_limit") if isinstance(data, dict) else None
     if raw is None:
@@ -575,6 +602,7 @@ def expansion(data):
             "agents": all_agents(data),
             "team": str(entry.get("name") or "") or None,
             "context_limit": limit,
+            "max_verify": _verify_limit(data),
         }
 
     raw_limit = data.get("max_sessions") if isinstance(data, dict) else None
@@ -591,6 +619,7 @@ def expansion(data):
         "agents": _legacy_agents(data),
         "team": None,
         "context_limit": limit,
+        "max_verify": _verify_limit(data),
     }
 
 
