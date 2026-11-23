@@ -2253,6 +2253,7 @@ test("Pipeline-Zustände werden abgeleitet, benannt und gezählt", () => {
   assert.equal(pipelineStateWord(pipelineState(failedRun)), "rot");
 
   assert.equal(pipelineDuration(undefined), "—");
+  assert.equal(pipelineDuration(null), "—");
   assert.equal(pipelineDuration(-1), "—");
   assert.equal(pipelineDuration(999), "< 1 s");
   assert.equal(pipelineDuration(2400), "2,4 s");

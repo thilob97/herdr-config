@@ -2891,6 +2891,7 @@ export function pipelineLogSearch(lines, query) {
 
 /** Dauer eines Laufs: unter einer Sekunde, Sekunden mit Zehntel, dann Minuten. */
 export function pipelineDuration(ms) {
+  if (ms === null || ms === undefined) return "—";
   const value = Number(ms);
   if (!Number.isFinite(value) || value < 0) return "—";
   if (value < 1000) return "< 1 s";
