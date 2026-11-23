@@ -101,10 +101,12 @@ if args[:2] == ["pr", "view"]:
         if not state:
             print("no pull requests found", file=sys.stderr)
             sys.exit(1)
-        if os.environ.get("GH_MERGE_COMMIT"):
-            oid = bare_head("main")
-        else:
-            oid = bare_head(os.environ.get("GH_HEAD"))
+        oid = os.environ.get("GH_MERGE_OID") or ""
+        if not oid:
+            if os.environ.get("GH_MERGE_COMMIT"):
+                oid = bare_head("main")
+            else:
+                oid = bare_head(os.environ.get("GH_HEAD"))
         payload = {
             "state": state,
             "number": 7,
@@ -217,6 +219,17 @@ class PrAcceptTests(FabricCase):
         head = self.git_out(bare, "rev-parse", f"refs/heads/{BRANCH}")
         self.git_out(bare, "update-ref", "refs/heads/main", head)
         self.write_file(self.gh_state, "MERGED")
+
+    def merge_on_origin(self, bare):
+        """Echten Merge-Commit von <BRANCH> auf origin/main bauen und pushen."""
+        clone = os.path.join(self.tmp, "clone-merge")
+        subprocess.run(["git", "clone", "-q", bare, clone], check=True)
+        self.git(clone, "config", "user.email", "test@example.com")
+        self.git(clone, "config", "user.name", "Test")
+        self.git_out(clone, "merge", "--no-ff", "-m", "Merge PR", f"origin/{BRANCH}")
+        merge = self.git_out(clone, "rev-parse", "HEAD")
+        self.git_out(clone, "push", "-q", "origin", "main")
+        return clone, merge
 
     def gh_env(self, bare="", **extra):
         env = {
@@ -767,6 +780,94 @@ class PrAcceptTests(FabricCase):
         )
         self.assertFalse(self.bare_branch(bare, BRANCH))
         self.assertTrue(os.path.isdir(worktree))
+
+    def test_pr_weg_verweigert_veraltetes_urteil(self):
+        repo, tid, worktree = self.review_ticket()
+        bare = self.setup_origin(repo)
+        verdict = dict(self.ticket(tid)["verdict"])
+        verdict["head"] = "0" * 40
+        self.patch_ticket(tid, verdict=verdict)
+
+        result = self.cli("accept", tid, env=self.gh_env(bare))
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Urteil gilt für HEAD", result.stderr)
+        ticket = self.ticket(tid)
+        self.assertEqual(ticket["status"], "review")
+        self.assertNotIn("accept", ticket)
+        self.assertEqual(self.gh_actions(), [])
+        self.assertFalse(self.bare_branch(bare, BRANCH))
+        self.assertTrue(os.path.isdir(worktree))
+
+    def test_gemergter_pr_ohne_pushed_schritt_ueberspringt_das_gate(self):
+        repo, tid, worktree = self.review_ticket()
+        bare = self.setup_origin(repo)
+        self.git_out(repo, "push", "-q", "origin", BRANCH)
+        self.patch_ticket(tid, pr={"url": URL, "state": "open"})
+        self.mark_merged(bare)
+        # origin/main läuft nach dem Merge weiter.
+        self.push_to_origin(bare, "spaeter", "later.txt", "später\n")
+
+        result = self.ok("accept", tid, env=self.gh_env(bare))
+
+        out = result.stdout + result.stderr
+        self.assertIn("über PR", result.stdout)
+        self.assertIn(URL, result.stdout)
+        self.assertNotIn("Merge-Stand", out)
+        self.assertNotIn("nicht abgenommen", out)
+        ticket = self.ticket(tid)
+        self.assertEqual(ticket["status"], "done")
+        self.assertFalse(os.path.exists(worktree))
+        self.assertEqual(
+            self.git(bare, "cat-file", "-e", "refs/heads/main:later.txt").returncode, 0
+        )
+
+    def test_revert_trifft_den_pr_merge_commit(self):
+        repo, tid, worktree = self.ready_ticket()
+        self.write_file(
+            os.path.join(worktree, "mods", "demo", "main.js"), "export default {}\n"
+        )
+        self.write_file(os.path.join(worktree, "mods", "demo", "mod.json"), "{}\n")
+        self.write_file(
+            os.path.join(worktree, "mods", "demo", "test", "demo.test.mjs"),
+            "// Test für die Logik\n",
+        )
+        self.commit_in(worktree, "aenderung.txt", "wert\n")
+        self.git_out(worktree, "add", "mods")
+        self.git_out(worktree, "commit", "-qm", "mods")
+        self.passing_verify(worktree)
+        self.ok("verify", tid)
+        self.ok("verdict", tid, "pass", "--from", "ada", "gut")
+        self.ok("handover", tid, "--from", "zap", "fertig")
+        bare = self.setup_origin(repo)
+        self.ok("accept", tid, "--pr-only", env=self.gh_env(bare))
+        clone, merge = self.merge_on_origin(bare)
+        self.write_file(os.path.join(clone, "later.txt"), "später\n")
+        self.git_out(clone, "add", "later.txt")
+        self.git_out(clone, "commit", "-qm", "später")
+        self.git_out(clone, "push", "-q", "origin", "main")
+        self.write_file(self.gh_state, "MERGED")
+
+        result = self.cli(
+            "accept", tid,
+            env=self.gh_env(bare, HERDR_APP_FAIL="1", GH_MERGE_OID=merge),
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("check rot", result.stderr)
+        ticket = self.ticket(tid)
+        self.assertEqual(ticket["status"], "review")
+        self.assertNotIn("pr_merged", self.accept_steps(tid))
+        self.assertNotEqual(
+            self.git_out(bare, "rev-parse", "refs/heads/main"), merge
+        )
+        self.assertEqual(
+            self.git(bare, "cat-file", "-e", "refs/heads/main:later.txt").returncode, 0
+        )
+        self.assertNotEqual(
+            self.git(bare, "cat-file", "-e", "refs/heads/main:aenderung.txt").returncode,
+            0,
+        )
 
     def test_origin_rueckstand_prueft_den_merge_stand_neu(self):
         repo, tid, worktree = self.review_ticket()
