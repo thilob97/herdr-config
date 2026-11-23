@@ -138,6 +138,18 @@ function runRow(app, cx, t, run, flows) {
     );
 }
 
+// Feste Höhe je Zeilenzahl: ein scrollbarer Block ohne eigene Höhe nimmt
+// sonst den ganzen Rest der Spalte und verdeckt „Läufe“ samt Leerzustand.
+function paneListHeight(count) {
+  // Zeile: 44 hohe Zeile plus Innenabstand und Lücke; oben und unten 4.
+  return Math.min(320, count * (ui.SIZE.rowTall + S.s + S.xs) + S.xs * 2);
+}
+
+function paneList(count, rows) {
+  return div().w_full().flex_none().h(paneListHeight(count)).min_h(0).overflow_hidden()
+    .child(v_flex().size_full().overflow_y_scrollbar().p(S.xs).gap(S.xs).children(rows));
+}
+
 function leftPane(app, cx, t, flows, runs) {
   const selected = flows.find((flow) => flow.name === app.flowName) ?? null;
   return v_flex()
@@ -166,8 +178,7 @@ function leftPane(app, cx, t, flows, runs) {
         ? ui.emptyState(t, { title: "Kein Workflow gewählt", compact: true })
         : runs.length === 0
           ? ui.emptyState(t, { title: "Noch kein Lauf", compact: true })
-          : v_flex().flex_1().min_h(0).overflow_y_scrollbar().p(S.xs).gap(S.xs)
-            .children(runs.map((run) => runRow(app, cx, t, run, flows))),
+          : paneList(runs.length, runs.map((run) => runRow(app, cx, t, run, flows))),
     );
 }
 
