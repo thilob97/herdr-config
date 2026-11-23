@@ -5,7 +5,7 @@
 """
 import json
 
-from . import agents, alarm, costs, events, render, store, teams
+from . import agents, costs, events, render, store, teams
 from .errors import FabError
 
 MAX_EVENTS = 300
@@ -282,6 +282,10 @@ def _teams(roster):
 
 
 def build():
+    # Lazy: `alarm` zieht `autopilot` und `git`; der Import soll nur den
+    # Index-Lauf kosten, nicht jeden `fab`-Aufruf.
+    from . import alarm
+
     tickets = store.all_tickets()
     rows = events.read_all()
     roster = agents.load(required=False)

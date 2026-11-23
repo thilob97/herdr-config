@@ -433,6 +433,17 @@ def _attach_output(tid, stdout, stderr):
     return paths
 
 
+def _rebuild_index():
+    """Lesemodell nach einer main-Prüfung neu schreiben; Fehler bleiben im Log."""
+    try:
+        from . import index
+
+        with store.locked():
+            index.rebuild()
+    except Exception as exc:  # noqa: BLE001 - Anzeige darf die Abnahme nicht kippen
+        log(f"Index nach main-Prüfung fehlgeschlagen: {exc}")
+
+
 def check_main(repo=None):
     """main nach einem Merge prüfen, bei zweimal Rot den Merge zurücknehmen.
 
@@ -583,12 +594,14 @@ def try_accept(ticket):
         return True
     ok, out, err, run_id = check_main(repo)
     if ok:
+        _rebuild_index()
         log(f"main nach {tid} grün")
         return True
     # Der Schutzschritt hängt nicht am Erfolg des Reverts.
     _paused = True
     _pause("main nach Merge rot")
     write_state("paused", "main nach Merge rot – Abnahmen pausiert", end=_end_text)
+    _rebuild_index()
     try:
         paths = _attach_output(tid, out, err)
     except (FabError, OSError) as exc:

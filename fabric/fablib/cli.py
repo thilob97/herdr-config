@@ -10,7 +10,6 @@ import unicodedata
 
 from . import (
     agents,
-    alarm,
     autopilot,
     config,
     context,
@@ -3063,6 +3062,8 @@ def cmd_run(args):
     if args.action == "rerun":
         old = _run_number(args.run)
         result = pipeline.rerun(old)
+        with store.locked():
+            index.rebuild()
         print(
             f"Lauf #{old} → #{result['run_id']}: {result['state']} "
             f"(Exit {result['code']})"
@@ -3180,6 +3181,8 @@ def cmd_autopilot(args):
 
 
 def cmd_alarm(args):
+    from . import alarm
+
     if args.action == "ack":
         with store.locked():
             acked = alarm.ack()
@@ -3824,7 +3827,6 @@ def _normalize_argv(argv):
 
 
 TICK_ALARM_SHOWN = "tick_alarm_shown"
-ALARM_SHOWN = "alarm_shown"
 
 
 def _ensure_tick_agent():
@@ -3866,39 +3868,6 @@ def _publish_tick_alarm(args):
         pass
 
 
-def _publish_alarm(args):
-    """`index.json` neu schreiben, wenn sich der Alarmzustand ändert.
-
-    Der Vergleich läuft über die signierte JSON-Form der Alarmliste; nur der
-    Übergang kostet einen Schreibvorgang. `--dry-run` schreibt nichts, und
-    `fab migrate` entscheidet allein über die Migration.
-    """
-    if getattr(args, "dry_run", False):
-        return
-    if getattr(args, "func", None) is cmd_migrate:
-        return
-    try:
-        state = alarm.status()
-        want = json.dumps(state["alarms"], ensure_ascii=False, sort_keys=True)
-        stored = store.meta_get(ALARM_SHOWN)
-        if stored is None and want == "[]":
-            # Erster Aufruf ohne Alarm: nichts schreiben. Schon das Setzen des
-            # Metas stößt die Lesemodell-Flush an und würde den Roster
-            # migrieren, bevor der Befehl ihn geprüft hat.
-            return
-        if (stored or "") == want:
-            return
-        with store.locked(timeout=0.5):
-            state = alarm.status()
-            want = json.dumps(state["alarms"], ensure_ascii=False, sort_keys=True)
-            if (store.meta_get(ALARM_SHOWN) or "") == want:
-                return
-            store.meta_set(ALARM_SHOWN, want)
-            index.rebuild()
-    except Exception:
-        pass
-
-
 def main(argv=None):
     if argv is None:
         argv = sys.argv[1:]
@@ -3907,7 +3876,6 @@ def main(argv=None):
     if not (getattr(args, "install", False) or getattr(args, "uninstall", False)):
         _ensure_tick_agent()
     _publish_tick_alarm(args)
-    _publish_alarm(args)
     try:
         return args.func(args) or 0
     except (FabError, HcError) as exc:

@@ -165,6 +165,28 @@ class AlarmTests(FabricCase):
                 [row for row in index.build()["inbox"] if row.get("alarm")], []
             )
 
+    def test_main_pruefung_veroeffentlicht_alarm_im_index(self):
+        self.main_run(ticket="T-70")
+        autopilot._rebuild_index()
+        payload = self.index()
+        self.assertTrue(payload["alarm"]["active"])
+        self.assertEqual(payload["alarm"]["alarms"][0]["id"], "main:1")
+
+        self.main_run(state="pass")
+        autopilot._rebuild_index()
+        self.assertFalse(self.index()["alarm"]["active"])
+
+    def test_pause_alarm_verschwindet_nach_resume_im_index(self):
+        with mock.patch.dict(os.environ, {"FAB_NOW": "1800000000000"}):
+            autopilot.write_state("paused", reason="rot")
+            autopilot._rebuild_index()
+        self.assertEqual(
+            [item["kind"] for item in self.index()["alarm"]["alarms"]], ["pause"]
+        )
+
+        self.ok("autopilot", "resume")
+        self.assertFalse(self.index()["alarm"]["active"])
+
     def test_verify_fail_erzeugt_keinen_alarm(self):
         with store.locked():
             run = store.pipeline_run_new(
