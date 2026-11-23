@@ -71,10 +71,18 @@ class PreviewTests(FabricCase):
         except subprocess.TimeoutExpired:
             pass
 
+    def _started(self, pid):
+        result = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.strip()
+
     def spawn(self, code, *, cwd=None, marker=None, arg=None):
         env = dict(self.env)
         if marker is not None:
-            env[preview_mod.MARKER_ENV] = marker
+            env["FAB_PREVIEW_ID"] = marker
         proc = subprocess.Popen(
             [sys.executable, "-c", code, arg or self.tmp],
             cwd=cwd or self.tmp,
@@ -96,8 +104,7 @@ class PreviewTests(FabricCase):
             "pid": proc.pid,
             "pgid": os.getpgid(proc.pid),
             "started": (
-                started if started is not None
-                else preview_mod._process_started(proc.pid)
+                started if started is not None else self._started(proc.pid)
             ),
             "marker": marker,
             "session": preview_mod._session_name(tid),
@@ -123,7 +130,7 @@ class PreviewTests(FabricCase):
 
         notice = self.stop_quietly(tid)
 
-        self.assertTrue(preview_mod._pid_alive(proc.pid))
+        self.assertIsNone(proc.poll())
         self.assertFalse(
             os.path.exists(os.path.join(self.preview_root(tid), "preview.json"))
         )
@@ -132,17 +139,43 @@ class PreviewTests(FabricCase):
     def test_stop_prueft_startzeit(self):
         self.preview_area()
         tid = "T-1"
-        proc = self.spawn("import time; time.sleep(60)", marker="marker-1")
+        root = self.preview_root(tid)
+        home = os.path.join(root, "home")
+        os.makedirs(home, exist_ok=True)
+        proc = self.spawn(
+            "import time; time.sleep(60)", cwd=home, marker="marker-1"
+        )
         self.identity_state(
-            tid, proc, marker="marker-1", started="Mon Jan  1 00:00:00 2001"
+            tid,
+            proc,
+            marker="marker-1",
+            started="Mon Jan  1 00:00:00 2001",
+            home=home,
         )
 
         self.stop_quietly(tid)
 
-        self.assertTrue(preview_mod._pid_alive(proc.pid))
+        self.assertIsNone(proc.poll())
         self.assertFalse(
-            os.path.exists(os.path.join(self.preview_root(tid), "preview.json"))
+            os.path.exists(os.path.join(root, "preview.json"))
         )
+
+    def test_stop_prueft_pgid(self):
+        self.preview_area()
+        tid = "T-1"
+        root = self.preview_root(tid)
+        home = os.path.join(root, "home")
+        os.makedirs(home, exist_ok=True)
+        proc = self.spawn(
+            "import time; time.sleep(60)", cwd=home, marker="marker-1"
+        )
+        state = self.identity_state(tid, proc, marker="marker-1", home=home)
+        state["pgid"] = state["pgid"] + 1
+        preview_mod._write_state(tid, state)
+
+        preview_mod._terminate(state)
+
+        self.assertIsNone(proc.poll())
 
     def test_stop_ohne_marker_sendet_kein_signal(self):
         self.preview_area()
@@ -152,7 +185,7 @@ class PreviewTests(FabricCase):
 
         preview_mod._terminate(state)
 
-        self.assertTrue(preview_mod._pid_alive(proc.pid))
+        self.assertIsNone(proc.poll())
 
     def test_stop_prueft_marker_des_prozesses(self):
         self.preview_area()
@@ -165,7 +198,7 @@ class PreviewTests(FabricCase):
         ):
             preview_mod._terminate(state)
 
-        self.assertTrue(preview_mod._pid_alive(proc.pid))
+        self.assertIsNone(proc.poll())
 
     def test_stop_beendet_eigenen_prozess_mit_kind(self):
         self.preview_area()
@@ -194,6 +227,24 @@ class PreviewTests(FabricCase):
         self.assertFalse(os.path.exists(root))
 
     def test_sigkill_nach_erneuter_identitaetspruefung(self):
+        self.preview_area()
+        tid = "T-1"
+        proc = self.spawn("import time; time.sleep(60)", marker="marker-1")
+        state = self.identity_state(tid, proc, marker="marker-1")
+        sent = []
+
+        def record(pgid, sig):
+            sent.append(sig)
+
+        with mock.patch.object(
+            preview_mod, "_owned", side_effect=[state["pgid"], None]
+        ), mock.patch.object(preview_mod, "_signal_group", side_effect=record):
+            preview_mod._terminate(state, timeout=0)
+
+        self.assertEqual(sent, [signal.SIGTERM])
+        self.assertIsNone(proc.poll())
+
+    def test_sigkill_beendet_prozess_nach_timeout(self):
         self.preview_area()
         tid = "T-1"
         root = self.preview_root(tid)
@@ -238,7 +289,7 @@ class PreviewTests(FabricCase):
         preview_mod._write_state(tid, {"pid": proc.pid, "ticket": tid})
 
         self.assertFalse(preview_mod.is_running(tid))
-        self.assertTrue(preview_mod._pid_alive(proc.pid))
+        self.assertIsNone(proc.poll())
 
     def test_start_kopiert_worktree_und_seedet_eigene_daten(self):
         repo, tid, worktree = self.preview_ticket()
