@@ -1,8 +1,10 @@
 """Prüf-Pipelines: Schritte, Zustände und gespeicherte Läufe."""
 import json
 import os
+from unittest import mock
 
 from fabric.fablib import pipeline, store
+from fabric.fablib.errors import FabError
 from fabric.tests.support import FabricCase
 
 
@@ -134,3 +136,46 @@ class PipelineTest(PipelineCase):
         self.assertEqual(result["steps"][0]["state"], "fail")
         self.assertEqual(result["steps"][0]["exit_code"], 124)
         self.assertIn("Timeout nach 0.2 s", result["steps"][0]["stderr"])
+
+    def test_alle_schritte_sind_beim_start_pending(self):
+        repo = self.make_repo()
+        self.write_steps(
+            repo,
+            [
+                {"name": "eins", "run": "printf 'eins\\n'"},
+                {"name": "zwei", "run": "printf 'zwei\\n'"},
+                {"name": "drei", "run": "printf 'drei\\n'"},
+            ],
+        )
+        seen = []
+        real_update = store.pipeline_step_update
+
+        def spy_update(run_id, position, **fields):
+            if not seen:
+                seen.extend(
+                    (step["position"], step["state"])
+                    for step in store.pipeline_steps(run_id)
+                )
+            return real_update(run_id, position, **fields)
+
+        with mock.patch.object(store, "pipeline_step_update", side_effect=spy_update):
+            result = self.run_pipeline(repo, ticket="T-9")
+
+        self.assertEqual(seen, [(0, "pending"), (1, "pending"), (2, "pending")])
+        self.assertEqual(result["state"], "pass")
+
+    def test_ausnahme_beendet_den_lauf_als_fail(self):
+        repo = self.make_repo()
+        self.write_steps(repo, [{"name": "eins", "run": "true"}])
+
+        with mock.patch.object(
+            pipeline,
+            "_execute",
+            side_effect=FabError("sh ist nicht vorhanden"),
+        ):
+            with self.assertRaises(FabError):
+                self.run_pipeline(repo, ticket="T-10")
+
+        with self.store_env():
+            run = store.pipeline_run_list("T-10")[-1]
+        self.assertEqual(run["state"], "fail")

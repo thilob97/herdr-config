@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 
+from fabric.fablib import store
 from fabric.tests.support import FAB, FabricCase
 
 
@@ -216,6 +217,23 @@ class GitflowTests(FabricCase):
         lane.ok("verify", tid)
         lane.ok("verdict", tid, "pass", "--from", "ada", "gut")
         return tid
+
+    def test_merge_stand_lauf_erscheint_beim_ticket(self):
+        repo, tid, worktree = self.review_ticket()
+        with self.store_env():
+            rows = store.pipeline_run_list(tid)
+        merge_rows = [
+            row
+            for row in rows
+            if "fab-merge-" in os.path.basename(row["worktree"] or "")
+        ]
+        self.assertEqual(len(merge_rows), 1, rows)
+        run = merge_rows[0]
+        self.assertEqual(run["ticket"], tid)
+        self.assertEqual(os.path.realpath(run["repo"]), os.path.realpath(repo))
+        self.assertEqual(run["state"], "pass")
+        listed = self.ok("runs", "--ticket", tid)
+        self.assertIn(f"#{run['id']}", listed.stdout)
 
     def test_parallele_handover_isolieren_ihr_merge_verzeichnis(self):
         """Zwei Instanzen mit gleicher Ticket-ID sehen nur ihr eigenes Merge-Verzeichnis."""
