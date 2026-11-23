@@ -2768,3 +2768,144 @@ export function tickDue(lastAttempt, now = Date.now(), interval = TICK_INTERVAL_
   if (!Number.isFinite(stamp) || stamp <= 0) return true;
   return Number(now) - stamp >= interval;
 }
+
+// ---------- Pipelines ----------
+
+export const PIPELINE_STATE_WORDS = {
+  pass: "grün",
+  fail: "rot",
+  running: "läuft",
+  pending: "wartet",
+  skipped: "übersprungen",
+};
+
+export const PIPELINE_TRIGGER_WORDS = {
+  verify: "Prüfung",
+  main: "main",
+  "repo-test": "Repo-Test",
+  autopilot: "Autopilot",
+};
+
+const PIPELINE_STATES = new Set(["pass", "fail", "running", "skipped"]);
+
+/** Zustand eines Laufs oder Schritts; Unbekanntes wartet. */
+export function pipelineState(entry) {
+  const state = typeof entry?.state === "string" ? entry.state.trim().toLowerCase() : "";
+  return PIPELINE_STATES.has(state) ? state : "pending";
+}
+
+/** Deutsches Wort zum Zustand; Unbekanntes wartet. */
+export function pipelineStateWord(state) {
+  return PIPELINE_STATE_WORDS[state] ?? "wartet";
+}
+
+/** Deutsches Wort zum Auslöser; unbekannte Auslöser bleiben roh. */
+export function pipelineTriggerWord(trigger) {
+  if (typeof trigger !== "string") return "—";
+  const raw = trigger.trim();
+  if (raw === "") return "—";
+  return PIPELINE_TRIGGER_WORDS[raw.toLowerCase()] ?? raw;
+}
+
+/** Zählt Schritte je Zustand. */
+export function pipelineStepSummary(steps) {
+  const summary = { total: 0, pass: 0, fail: 0, running: 0, pending: 0, skipped: 0 };
+  if (!Array.isArray(steps)) return summary;
+  for (const step of steps) {
+    summary.total += 1;
+    summary[pipelineState(step)] += 1;
+  }
+  return summary;
+}
+
+function pipelineRunId(run) {
+  const id = Number(run?.id);
+  return Number.isFinite(id) ? id : -Infinity;
+}
+
+/** Läufe nach numerischer Kennung absteigend, ohne die Eingabe zu ändern. */
+export function pipelineRunsNewest(runs) {
+  if (!Array.isArray(runs)) return [];
+  return [...runs].sort((left, right) => pipelineRunId(right) - pipelineRunId(left));
+}
+
+/** Jüngster Lauf eines Tickets oder null. */
+export function pipelineLastRun(runs, ticketId) {
+  if (!Array.isArray(runs)) return null;
+  let last = null;
+  for (const run of runs) {
+    if (run?.ticket !== ticketId) continue;
+    if (last === null || pipelineRunId(run) > pipelineRunId(last)) last = run;
+  }
+  return last;
+}
+
+/** Badge des jüngsten Laufs eines Tickets oder null. */
+export function pipelineBadge(runs, ticketId) {
+  const run = pipelineLastRun(runs, ticketId);
+  if (run === null) return null;
+  const state = pipelineState(run);
+  return { run, state, word: pipelineStateWord(state) };
+}
+
+/** Erster gescheiterter, sonst erster laufender Schritt; sonst null. */
+export function pipelineAutoStep(steps) {
+  if (!Array.isArray(steps)) return null;
+  const failed = steps.find((step) => pipelineState(step) === "fail");
+  if (failed) return failed;
+  return steps.find((step) => pipelineState(step) === "running") ?? null;
+}
+
+/** Ausgeklappte Schritte: nur der automatisch gewählte, nach Position. */
+export function pipelineOpenSteps(steps) {
+  const auto = pipelineAutoStep(steps);
+  if (auto === null) return {};
+  const position = Number(auto.position);
+  return Number.isFinite(position) ? { [position]: true } : {};
+}
+
+/** Logzeilen eines Schritts in Stream-Reihenfolge, ohne den Schluss-Umbruch. */
+export function pipelineLogLines(step) {
+  const lines = [];
+  for (const stream of ["stdout", "stderr"]) {
+    const text = step?.[stream];
+    if (typeof text !== "string" || text === "") continue;
+    const parts = text.split("\n");
+    if (parts[parts.length - 1] === "") parts.pop();
+    for (const part of parts) lines.push({ stream, text: part });
+  }
+  return lines;
+}
+
+/** Sucht in Logzeilen; leere Suche liefert alle Zeilen. */
+export function pipelineLogSearch(lines, query) {
+  const list = Array.isArray(lines) ? lines : [];
+  const needle = typeof query === "string" ? query.trim() : "";
+  if (needle === "") {
+    return { query: needle, total: list.length, count: list.length, lines: list };
+  }
+  const lower = needle.toLowerCase();
+  const hits = list.filter((line) => String(line?.text ?? "").toLowerCase().includes(lower));
+  return { query: needle, total: list.length, count: hits.length, lines: hits };
+}
+
+/** Dauer eines Laufs: unter einer Sekunde, Sekunden mit Zehntel, dann Minuten. */
+export function pipelineDuration(ms) {
+  if (ms === null || ms === undefined) return "—";
+  const value = Number(ms);
+  if (!Number.isFinite(value) || value < 0) return "—";
+  if (value < 1000) return "< 1 s";
+  if (value < 10000) return `${(value / 1000).toFixed(1).replace(".", ",")} s`;
+  const seconds = Math.round(value / 1000);
+  if (seconds < 60) return `${seconds} s`;
+  return formatDuration(value);
+}
+
+/** Ziel eines Laufs: Ticket, sonst die ersten acht Zeichen des Heads. */
+export function pipelineRunTarget(run) {
+  const ticket = typeof run?.ticket === "string" ? run.ticket.trim() : "";
+  if (ticket !== "") return ticket;
+  const head = typeof run?.head === "string" ? run.head.trim() : "";
+  if (head !== "") return head.slice(0, 8);
+  return "—";
+}

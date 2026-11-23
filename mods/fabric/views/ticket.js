@@ -19,7 +19,12 @@ function segmented(app, cx, t, value, onPick) {
   });
 }
 
+function headBadge(app, ticket) {
+  return model.pipelineBadge(app.pipelineRuns ?? [], ticket.id);
+}
+
 function head(app, cx, t, ticket) {
+  const badge = headBadge(app, ticket);
   return v_flex()
     .flex_none()
     .w_full()
@@ -41,6 +46,20 @@ function head(app, cx, t, ticket) {
         .child(div().text_size(T.xs).text_color(t.dim).child(ticket.id))
         .child(ui.chip(t, model.statusWord(ticket.status), ui.statusColor(t, ticket.status)))
         .when(ticket.waiting?.includes("mensch"), (el) => el.child(ui.chip(t, "wartet auf dich", t.accent)))
+        .when(Boolean(badge), (el) => el.child(ui.pill(t, {
+          id: "fabric-ticket-pipeline",
+          label: `Lauf ${badge.word}`,
+          color: ui.pipelineColor(t, badge.state),
+          tooltip: `Letzter Lauf #${badge.run.id} · ${model.pipelineTriggerWord(badge.run.trigger)} · ${model.relativeTime(badge.run.started_at)}`,
+          onClick: (cx) => app.navigate("pipelines", {
+            ticket: ticket.id,
+            run: badge.run.id,
+          }, cx),
+        })))
+        .child(ui.chip(t, "Läufe", t.muted, "fabric-ticket-pipelines", {
+          tooltip: "Läufe dieses Tickets (Pipelines)",
+          onClick: (cx) => app.navigate("pipelines", { ticket: ticket.id }, cx),
+        }))
         .child(div().flex_1())
         .child(ui.button(t, {
           id: "fabric-ticket-context",

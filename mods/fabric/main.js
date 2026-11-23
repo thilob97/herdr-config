@@ -18,6 +18,7 @@ import { renderPrompts } from "./views/prompts.js";
 import { renderTemplates } from "./views/templates.js";
 import { renderRepos } from "./views/repos.js";
 import { renderWorkflowsPage } from "./views/workflows.js";
+import { renderPipelinesPage } from "./views/pipelines.js";
 import { renderSettings } from "./views/settings.js";
 import { renderTicketsPanel } from "./views/tickets.js";
 import { renderInboxPanel } from "./views/inbox.js";
@@ -26,11 +27,12 @@ import { renderSwitcher } from "./views/switcher.js";
 import { renderDialogs, renderBlueprintDrawer } from "./views/dialogs.js";
 import { renderContextPreview } from "./views/context.js";
 
-const VIEWS = ["board", "tickets", "ticket", "team", "workflows", "prompts", "templates", "repos", "settings"];
+const VIEWS = ["board", "tickets", "ticket", "team", "workflows", "pipelines", "prompts", "templates", "repos", "settings"];
 const NAV = [
   { page: "board", icon: "board", label: "Board" },
   { page: "tickets", icon: "tickets", label: "Tickets" },
   { page: "workflows", icon: "play", label: "Workflows" },
+  { page: "pipelines", icon: "terminal", label: "Pipelines" },
   { page: "team", icon: "team", label: "Team" },
   { page: "prompts", icon: "prompt", label: "Prompts" },
   { page: "templates", icon: "prompt", label: "Vorlagen" },
@@ -196,6 +198,19 @@ export default class Fabric extends View {
     this.flowMode = null;
     this.flowBuilder = null;
     this.flowPendingName = null;
+    this.pipelineRuns = null;
+    this.pipelineRunsError = null;
+    this.pipelineRunsAt = 0;
+    this.pipelineRunsLoading = false;
+    this.pipelineRunId = null;
+    this.pipelineDetail = null;
+    this.pipelineDetailError = null;
+    this.pipelineDetailLoading = null;
+    this.pipelineOpen = {};
+    this.pipelineFilter = null;
+    this.pipelineSearch = InputState.new({ placeholder: "Log durchsuchen…" });
+    this.pipelineSearch.on("change", (_event, cx) => { this.notifyNow(); });
+    this.track(this.pipelineSearch);
     this.version = null;
     this.versionError = null;
     this.programs = null;
@@ -1135,6 +1150,9 @@ export default class Fabric extends View {
     if (!this.isApp || !cx) return;
     this.checkContextPreview(cx);
     const route = this.currentRoute();
+    if (route.page === "board" || route.page === "tickets" || route.page === "ticket") {
+      this.ensurePipelineRuns(cx);
+    }
     if (route.page === "team") {
       if (!this.roster || Date.now() - this.rosterAt > 15000) cx.spawn((cx) => this.loadRoster(cx));
       else this.syncTeamForms();
@@ -1200,6 +1218,17 @@ export default class Fabric extends View {
         });
       } else {
         this.syncFlowSelection(route, cx);
+      }
+    } else if (route.page === "pipelines") {
+      const stale = !this.pipelineRuns || Date.now() - this.pipelineRunsAt > 15000;
+      if (stale) {
+        cx.spawn(async (cx) => {
+          await this.loadPipelineRuns(cx);
+          this.syncPipelineSelection(this.currentRoute(), cx);
+          cx.notify();
+        });
+      } else {
+        this.syncPipelineSelection(route, cx);
       }
     } else if (route.page === "settings") {
       if (!this.version) cx.spawn((cx) => this.loadVersion(cx));
@@ -1839,6 +1868,154 @@ export default class Fabric extends View {
     const route = { page: "workflows", run: runId, mode: "run" };
     if (this.flowName) route.name = this.flowName;
     setShared("fabric.route", route);
+    this.notifyNow();
+  }
+
+  // ---------- Pipelines ----------
+
+  async loadPipelineRuns(cx) {
+    if (this.pipelineRunsLoading) return;
+    this.pipelineRunsLoading = true;
+    try {
+      const result = await this.execFab(["runs", "--json"], { timeout: 30000 });
+      if (result.code !== 0) throw new Error((result.stderr || "").trim() || `Code ${result.code}`);
+      const raw = parseJson(result.stdout, null);
+      if (!Array.isArray(raw)) throw new Error("runs --json lieferte keine Liste");
+      this.pipelineRuns = raw;
+      this.pipelineRunsError = null;
+      this.pipelineRunsAt = Date.now();
+    } catch (error) {
+      this.pipelineRunsError = `Läufe nicht lesbar: ${message(error)}`;
+    } finally {
+      this.pipelineRunsLoading = false;
+      this.notifyNow();
+    }
+  }
+
+  /** Läufe für Badges und die Pipeline-Seite im TTL-Fenster nachladen. */
+  ensurePipelineRuns(cx) {
+    if (!this.isApp || !cx || this.pipelineRunsLoading) return;
+    if (this.pipelineRuns && Date.now() - this.pipelineRunsAt <= 15000) return;
+    cx.spawn(async () => { await this.loadPipelineRuns(); });
+  }
+
+  /** Auswahl aus Route und Bestand zusammenführen; geladene Details bleiben stehen. */
+  syncPipelineSelection(route = this.currentRoute(), cx = null) {
+    this.pipelineFilter = route.ticket ? String(route.ticket) : null;
+    const rows = model.pipelineRunsNewest(this.pipelineRuns ?? [])
+      .filter((run) => !this.pipelineFilter || run.ticket === this.pipelineFilter);
+    let wanted = null;
+    if (route.run != null) {
+      const number = Number(route.run);
+      if (Number.isFinite(number)) wanted = number;
+    }
+    if (wanted == null) wanted = this.pipelineRunId;
+    if (!rows.some((run) => run.id === wanted)) wanted = rows[0]?.id ?? null;
+    if (wanted !== this.pipelineRunId) {
+      this.pipelineRunId = wanted;
+      this.pipelineDetail = null;
+      this.pipelineDetailError = null;
+      this.pipelineOpen = {};
+    }
+    if (wanted == null) return;
+    if (this.pipelineDetail?.run?.id === wanted) return;
+    if (this.pipelineDetailLoading === wanted) return;
+    cx?.spawn?.(async () => { await this.loadPipelineRun(wanted); });
+  }
+
+  async loadPipelineRun(id, { resetSearch = true } = {}) {
+    const runId = Number(id);
+    if (!Number.isFinite(runId)) return;
+    this.pipelineDetailLoading = runId;
+    try {
+      const result = await this.execFab(["run", "show", String(runId), "--json"], { timeout: 30000 });
+      if (result.code !== 0) throw new Error((result.stderr || "").trim() || `Code ${result.code}`);
+      const raw = parseJson(result.stdout, null);
+      if (!raw?.run || !Array.isArray(raw.steps)) {
+        throw new Error("run show --json lieferte keinen Lauf");
+      }
+      if (this.pipelineRunId !== runId) return;
+      this.pipelineDetail = raw;
+      this.pipelineDetailError = null;
+      this.pipelineOpen = model.pipelineOpenSteps(raw.steps);
+      if (resetSearch) this.pipelineSearch.set_value("");
+    } catch (error) {
+      if (this.pipelineRunId === runId) {
+        this.pipelineDetailError = `Lauf nicht lesbar: ${message(error)}`;
+      }
+    } finally {
+      if (this.pipelineDetailLoading === runId) this.pipelineDetailLoading = null;
+      this.notifyNow();
+    }
+  }
+
+  selectPipelineRun(id, cx) {
+    const runId = Number(id);
+    if (!Number.isFinite(runId)) return;
+    if (this.pipelineRunId !== runId) {
+      this.pipelineDetail = null;
+      this.pipelineDetailError = null;
+      this.pipelineOpen = {};
+    }
+    this.pipelineRunId = runId;
+    const route = { page: "pipelines", run: runId };
+    if (this.pipelineFilter) route.ticket = this.pipelineFilter;
+    setShared("fabric.route", route);
+    cx?.spawn?.(async () => { await this.loadPipelineRun(runId); });
+    this.notifyNow();
+  }
+
+  async reloadPipelines(cx) {
+    this.pipelineRunsAt = 0;
+    await this.loadPipelineRuns(cx);
+    this.syncPipelineSelection(this.currentRoute(), cx);
+    this.notifyNow();
+  }
+
+  /** Einziger Aufrufer von `fab run rerun`; wählt danach den neuen Lauf aus. */
+  async rerunPipeline(id, cx) {
+    if (this.busy) return;
+    this.busy = "pipeline-rerun";
+    this.setError("pipeline-rerun", null);
+    this.notifyNow();
+    let result = null;
+    let failure = null;
+    try {
+      result = await this.execFab(["run", "rerun", String(id)], { timeout: 1300000 });
+    } catch (error) {
+      failure = `fab ließ sich nicht starten: ${message(error)}`;
+    }
+    if (failure) {
+      this.setError("pipeline-rerun", failure);
+      notify({ title: "Fabric", body: failure, level: "error" });
+    } else {
+      const out = (result.stdout || "").trim();
+      if (result.code !== 0) {
+        const text = out || (result.stderr || "").trim() || `Exit ${result.code}`;
+        this.setError("pipeline-rerun", text, "warn");
+        notify({ title: "Fabric", body: text, level: "warning" });
+      } else {
+        this.setError("pipeline-rerun", null);
+        notify({ title: "Fabric", body: out || "Lauf wiederholt.", level: "success" });
+      }
+    }
+    this.busy = "";
+    await this.loadPipelineRuns(cx);
+    this.notifyNow();
+    if (failure || !result) return;
+    const match = /→\s*#(\d+)/.exec(result.stdout || "");
+    const newId = match
+      ? Number(match[1])
+      : model.pipelineRunsNewest(this.pipelineRuns ?? [])[0]?.id ?? null;
+    if (!Number.isFinite(newId)) return;
+    const route = { page: "pipelines", run: newId };
+    if (this.pipelineFilter) route.ticket = this.pipelineFilter;
+    setShared("fabric.route", route);
+    this.pipelineRunId = newId;
+    this.pipelineDetail = null;
+    this.pipelineDetailError = null;
+    this.pipelineOpen = {};
+    await this.loadPipelineRun(newId);
     this.notifyNow();
   }
 
@@ -2567,6 +2744,7 @@ export default class Fabric extends View {
       success: "Prüfung abgeschlossen.",
       timeout: 630000,
     });
+    await this.loadPipelineRuns();
   }
 
   async setStatusOf(id, status, cx) {
@@ -3999,6 +4177,7 @@ export default class Fabric extends View {
         : page === "ticket" ? renderTicket(this, cx, t)
           : page === "team" ? renderTeam(this, cx, t)
             : page === "workflows" ? renderWorkflowsPage(this, cx, t)
+              : page === "pipelines" ? renderPipelinesPage(this, cx, t)
               : page === "prompts" ? renderPrompts(this, cx, t)
               : page === "templates" ? renderTemplates(this, cx, t)
                 : page === "repos" ? renderRepos(this, cx, t)

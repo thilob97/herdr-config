@@ -20,6 +20,9 @@ import {
   flowRemoveEdge, flowPatchEdge, flowOutgoing, flowEdgeWhenOptions, flowPlaceholders, flowValidate,
   autopilotLamp, autopilotLogLines, autopilotPopover, autopilotActions, AUTOPILOT_STALE_MS,
   tickDue, TICK_INTERVAL_MS,
+  PIPELINE_STATE_WORDS, PIPELINE_TRIGGER_WORDS, pipelineState, pipelineStateWord, pipelineTriggerWord,
+  pipelineStepSummary, pipelineRunsNewest, pipelineLastRun, pipelineBadge, pipelineAutoStep,
+  pipelineOpenSteps, pipelineLogLines, pipelineLogSearch, pipelineDuration, pipelineRunTarget,
 } from "../model.js";
 
 test("Tickets werden nach Stufe gruppiert, in Stufenreihenfolge", () => {
@@ -2214,4 +2217,118 @@ test("Tick ist jede Minute fällig, auch ohne offenes Fabric-Fenster", () => {
   assert.equal(tickDue(1000, 1000 + TICK_INTERVAL_MS - 1), false);
   assert.equal(tickDue(1000, 1000 + TICK_INTERVAL_MS), true);
   assert.equal(tickDue(5000, 1000), false);
+});
+
+test("Pipeline-Zustände werden abgeleitet, benannt und gezählt", () => {
+  assert.equal(pipelineState({ state: "PASS" }), "pass");
+  assert.equal(pipelineState({ state: " fail " }), "fail");
+  assert.equal(pipelineState({ state: "running" }), "running");
+  assert.equal(pipelineState({ state: "skipped" }), "skipped");
+  assert.equal(pipelineState({ state: "pending" }), "pending");
+  assert.equal(pipelineState({ state: null }), "pending");
+  assert.equal(pipelineState({ state: "kaputt" }), "pending");
+  assert.equal(pipelineState(null), "pending");
+
+  assert.equal(pipelineStateWord("pass"), "grün");
+  assert.equal(pipelineStateWord("fail"), "rot");
+  assert.equal(pipelineStateWord("running"), "läuft");
+  assert.equal(pipelineStateWord("skipped"), "übersprungen");
+  assert.equal(pipelineStateWord("pending"), "wartet");
+  assert.equal(pipelineStateWord("kaputt"), "wartet");
+
+  assert.equal(pipelineTriggerWord("verify"), "Prüfung");
+  assert.equal(pipelineTriggerWord("repo-test"), "Repo-Test");
+  assert.equal(pipelineTriggerWord("unbekannt"), "unbekannt");
+  assert.equal(pipelineTriggerWord(""), "—");
+
+  const steps = [{ state: "pass" }, { state: "fail" }, { state: "skipped" }, { state: "skipped" }];
+  assert.deepEqual(pipelineStepSummary(steps), {
+    total: 4, pass: 1, fail: 1, running: 0, pending: 0, skipped: 2,
+  });
+
+  // Ein gescheiterter Lauf trägt seinen eigenen Zustand; die Schritte danach
+  // sind nur noch übersprungen.
+  const failedRun = { id: 7, ticket: "T-7", state: "fail", steps };
+  assert.equal(pipelineState(failedRun), "fail");
+  assert.equal(pipelineStateWord(pipelineState(failedRun)), "rot");
+
+  assert.equal(pipelineDuration(undefined), "—");
+  assert.equal(pipelineDuration(null), "—");
+  assert.equal(pipelineDuration(-1), "—");
+  assert.equal(pipelineDuration(999), "< 1 s");
+  assert.equal(pipelineDuration(2400), "2,4 s");
+  assert.equal(pipelineDuration(12345), "12 s");
+  assert.equal(pipelineDuration(60000), "1 min");
+  assert.equal(pipelineRunTarget({ ticket: "T-7", head: "abcdef123456" }), "T-7");
+  assert.equal(pipelineRunTarget({ ticket: "", head: "abcdef123456" }), "abcdef12");
+  assert.equal(pipelineRunTarget({}), "—");
+});
+
+test("Pipeline klappt den ersten gescheiterten oder laufenden Schritt auf", () => {
+  const steps = [
+    { position: 0, state: "pass" },
+    { position: 1, state: "fail" },
+    { position: 2, state: "skipped" },
+  ];
+  assert.equal(pipelineAutoStep(steps), steps[1]);
+  assert.deepEqual(pipelineOpenSteps(steps), { 1: true });
+
+  // Ohne Fehler zählt der laufende Schritt, nicht der übersprungene.
+  const runningSteps = [
+    { position: 3, state: "skipped" },
+    { position: 4, state: "running" },
+  ];
+  assert.equal(pipelineAutoStep(runningSteps), runningSteps[1]);
+  assert.deepEqual(pipelineOpenSteps(runningSteps), { 4: true });
+
+  const allPass = [{ position: 0, state: "pass" }, { position: 1, state: "pass" }];
+  assert.equal(pipelineAutoStep(allPass), null);
+  assert.deepEqual(pipelineOpenSteps(allPass), {});
+
+  const onlySkipped = [{ position: 5, state: "skipped" }];
+  assert.equal(pipelineAutoStep(onlySkipped), null);
+  assert.deepEqual(pipelineOpenSteps(onlySkipped), {});
+});
+
+test("Pipeline-Logsuche findet Zeilen unabhängig von der Schreibweise", () => {
+  const step = { stdout: "Prüfung ok\nzweite Zeile", stderr: "Fehler: rot" };
+  const lines = pipelineLogLines(step);
+
+  assert.deepEqual(lines, [
+    { stream: "stdout", text: "Prüfung ok" },
+    { stream: "stdout", text: "zweite Zeile" },
+    { stream: "stderr", text: "Fehler: rot" },
+  ]);
+
+  const hit = pipelineLogSearch(lines, "zeile");
+  assert.equal(hit.total, 3);
+  assert.equal(hit.count, 1);
+  assert.deepEqual(hit.lines, [{ stream: "stdout", text: "zweite Zeile" }]);
+
+  const miss = pipelineLogSearch(lines, "gibt-es-nicht");
+  assert.equal(miss.count, 0);
+  assert.deepEqual(miss.lines, []);
+
+  assert.deepEqual(pipelineLogSearch(lines, "   ").lines, lines);
+  assert.deepEqual(pipelineLogLines(null), []);
+});
+
+test("Pipeline-Badge zeigt den jüngsten Lauf des Tickets", () => {
+  const runs = [
+    { id: 1, ticket: "T-1", state: "fail" },
+    { id: 3, ticket: "T-1", state: "pass" },
+    { id: 2, ticket: "T-2", state: "running" },
+  ];
+  assert.deepEqual(pipelineRunsNewest(runs).map((run) => run.id), [3, 2, 1]);
+  assert.deepEqual(runs.map((run) => run.id), [1, 3, 2]);
+
+  assert.equal(pipelineLastRun(runs, "T-1").id, 3);
+  const badge = pipelineBadge(runs, "T-1");
+  assert.equal(badge.run.id, 3);
+  assert.equal(badge.state, "pass");
+  assert.equal(badge.word, "grün");
+
+  assert.equal(pipelineLastRun(runs, "T-9"), null);
+  assert.equal(pipelineBadge(runs, "T-9"), null);
+  assert.equal(pipelineBadge([], "T-1"), null);
 });

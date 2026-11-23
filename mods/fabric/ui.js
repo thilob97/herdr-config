@@ -94,6 +94,16 @@ export function inboxColor(t, kind) {
   return t.accent;
 }
 
+/** Farbe eines Pipeline-Zustands aus `model.pipelineState` → Theme-Farbe. */
+export function pipelineColor(t, state) {
+  switch (state) {
+    case "pass": return t.done;
+    case "fail": return t.blocked;
+    case "running": return t.working;
+    default: return t.dim;
+  }
+}
+
 // ---------- Kleine Bausteine ----------
 
 export function icon(name, size = 14) {
