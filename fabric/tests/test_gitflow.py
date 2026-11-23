@@ -2,9 +2,12 @@
 import glob
 import json
 import os
+import shlex
+import subprocess
+import sys
 import tempfile
 
-from fabric.tests.support import FabricCase
+from fabric.tests.support import FAB, FabricCase
 
 
 class GitflowTests(FabricCase):
@@ -180,9 +183,101 @@ class GitflowTests(FabricCase):
         self.assertIn("Urteil steht auf fail", result.stderr)
 
     def merge_worktrees(self, tid):
-        return glob.glob(
-            os.path.join(tempfile.gettempdir(), f"fab-merge-{tid}-*")
+        base = self.env.get("TMPDIR") or tempfile.gettempdir()
+        return glob.glob(os.path.join(base, f"fab-merge-{tid}-*"))
+
+    def lane_ticket(self, lane, gate):
+        """Ein verteiltes Ticket samt Prüfskript; `T76_GATE` hält den Merge-Lauf an."""
+        repo = lane.make_repo()
+        lane.own_repo(repo)
+        tid = lane.new("Kurzer Titel", repo=repo)
+        lane.ok("assign", tid, "zap", "--from", "mensch")
+        lane.ok("edit", tid, "--repo", repo, "--from", "mensch")
+        lane.ok(
+            "edit", tid, "--body",
+            "## Ziel\nEtwas tun.\n\n## Abnahmekriterien\n- [ ] es läuft\n\n## Grenzen\nkeine",
+            "--from", "mensch",
         )
+        lane.ok("dispatch", tid, "--from", "mensch")
+        worktree = json.loads(lane.ok("show", tid, "--json").stdout)["worktree"]
+        lane.commit_in(worktree, "aenderung.txt", "wert\n")
+        lane.write_file(
+            os.path.join(worktree, ".fabric", "verify.sh"),
+            "#!/bin/sh\n"
+            'if [ -n "${T76_GATE:-}" ]; then\n'
+            f"    touch {shlex.quote(os.path.join(gate, 'started'))}\n"
+            f"    while [ ! -f {shlex.quote(os.path.join(gate, 'go'))} ]; do\n"
+            "        sleep 0.05\n"
+            "    done\n"
+            "fi\n",
+        )
+        lane.git_out(worktree, "add", ".fabric/verify.sh")
+        lane.git_out(worktree, "commit", "-qm", "Prüfskript")
+        lane.ok("verify", tid)
+        lane.ok("verdict", tid, "pass", "--from", "ada", "gut")
+        return tid
+
+    def test_parallele_handover_isolieren_ihr_merge_verzeichnis(self):
+        """Zwei Instanzen mit gleicher Ticket-ID sehen nur ihr eigenes Merge-Verzeichnis."""
+        lanes = []
+        for _index in range(2):
+            lane = FabricCase("runTest")
+            lane.setUp()
+            self.addCleanup(lane.doCleanups)
+            lanes.append(lane)
+        gates = []
+        for lane in lanes:
+            gate = os.path.join(lane.tmp, "gate")
+            os.makedirs(gate, exist_ok=True)
+            gates.append(gate)
+        tid = None
+        for lane, gate in zip(lanes, gates):
+            tid = self.lane_ticket(lane, gate)
+        self.assertEqual(tid, "T-1")
+
+        procs = [
+            subprocess.Popen(
+                [sys.executable, FAB, "handover", tid, "--from", "zap", "fertig"],
+                env=dict(lane.env, T76_GATE=gate),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            for lane, gate in zip(lanes, gates)
+        ]
+        results = []
+        try:
+            started = [
+                os.path.join(gate, "started") for gate in gates
+            ]
+            self.assertTrue(
+                self.wait_for(
+                    lambda: all(os.path.exists(path) for path in started),
+                    timeout=30,
+                ),
+                f"Merge-Läufe überlappten nicht: {started}",
+            )
+            for lane in lanes:
+                base = lane.env.get("TMPDIR") or tempfile.gettempdir()
+                matches = glob.glob(os.path.join(base, f"fab-merge-{tid}-*"))
+                self.assertEqual(
+                    len(matches), 1, (lane.tmp, base, matches)
+                )
+        finally:
+            for gate in gates:
+                self._write(os.path.join(gate, "go"), "")
+            for proc in procs:
+                out, err = proc.communicate(timeout=120)
+                results.append((proc.returncode, out, err))
+
+        for code, out, err in results:
+            self.assertEqual(code, 0, err)
+        for lane in lanes:
+            base = lane.env.get("TMPDIR") or tempfile.gettempdir()
+            self.assertEqual(
+                glob.glob(os.path.join(base, f"fab-merge-{tid}-*")), []
+            )
+            self.assertEqual(lane.ticket(tid)["status"], "review")
 
     def test_handover_verweigert_roten_merge_stand(self):
         repo, tid, worktree = self.ready_ticket()
