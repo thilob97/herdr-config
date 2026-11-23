@@ -29,15 +29,15 @@ import { renderContextPreview } from "./views/context.js";
 
 const VIEWS = ["board", "tickets", "ticket", "team", "workflows", "pipelines", "prompts", "templates", "repos", "settings"];
 const NAV = [
-  { page: "board", icon: "board", label: "Board" },
-  { page: "tickets", icon: "tickets", label: "Tickets" },
-  { page: "workflows", icon: "play", label: "Workflows" },
-  { page: "pipelines", icon: "terminal", label: "Pipelines" },
-  { page: "team", icon: "team", label: "Team" },
-  { page: "prompts", icon: "prompt", label: "Prompts" },
-  { page: "templates", icon: "prompt", label: "Vorlagen" },
-  { page: "repos", icon: "repo", label: "Repos" },
-  { page: "settings", icon: "settings", label: "Einstellungen" },
+  { page: "board", icon: "board" },
+  { page: "tickets", icon: "tickets" },
+  { page: "workflows", icon: "play" },
+  { page: "pipelines", icon: "terminal" },
+  { page: "team", icon: "team" },
+  { page: "prompts", icon: "prompt" },
+  { page: "templates", icon: "prompt" },
+  { page: "repos", icon: "repo" },
+  { page: "settings", icon: "settings" },
 ];
 
 // Die Tasten der Erwähnungsliste gehören der Anwendung, nicht dem Fenster:

@@ -23,19 +23,22 @@ Die gewählte Auswahl ist überall dieselbe: `shared("fabric.selected")`. Was da
 ## 2. Fabric-Fenster
 
 **Rahmen**
-- Links eine Navigation (Icon + Wort) mit den Punkten: Board, Tickets, Team, Prompts, Vorlagen, Repos, Einstellungen. Unten der Status des Orchestrators als Pill (läuft / wartet auf dich / gestoppt; Klick führt zu Team).
-- Oben eine Leiste mit Suche (`/` fokussiert), dem Primärknopf **Neues Ticket** und dem Inbox-Zähler (öffnet ein Popover mit der Inbox).
+- Links eine Navigation (Icon + Wort) mit den Punkten: Board, Tickets, Workflows, Pipelines, Team, Prompts, Vorlagen, Repos, Einstellungen. Unten der Status des Orchestrators als Pill (läuft / wartet auf dich / gestoppt; Klick führt zu Team).
+- Oben eine Leiste mit Suche (`/` fokussiert), dem Primärknopf **Neues Ticket**, der Autopilot-Lampe und dem Posteingang-Zähler (öffnet ein Popover mit dem Posteingang). Die Autopilot-Lampe steht nur hier, nicht zusätzlich in der Navigation.
 - Das Fenster lässt sich ziehen; Bedienelemente stoppen das Ziehen mit `cx.stop_propagation()` beim Mouse-Down.
 - **Schmales Fenster (< 760 logische px):** Die Navigation wird zur Icon-Leiste über dem Inhalt; Suche und Knopftexte weichen Icons. Das Board stapelt seine Stufen untereinander, das Ticket-Detail wird einspaltig (Verlauf, darunter die Eigenschaften), Namen und lange Zeilen kürzen mit Ellipse und Tooltip. Belege: `docs/assets/t40-narrow-board.png`, `t40-narrow-team.png`, `t40-narrow-ticket.png`.
 
 **Board**
 - Spalten Entwurf · Geplant · In Arbeit · Prüfung · Fertig. „Fertig“ zeigt die letzten 20, „Verworfen“ ist ein Filter.
 - Im Spaltenkopf steht die Anzahl. „Prüfung“ wird hervorgehoben, wenn darin etwas auf den Menschen wartet.
-- Karten zeigen: ID, Titel (2 Zeilen), Avatar des Zuständigen, Kommentarzahl, das Badge „wartet auf dich“, Mini-Indikatoren für Checks und Urteil, Alter; bei Stillstand „stockt seit …“ (Tooltip = Grund).
+- Karten zeigen: ID, Titel (zwei Zeilen, voller Text im Tooltip), Avatar des Zuständigen, Kommentarzahl, das Badge „wartet auf dich“, Mini-Indikatoren für Checks und Urteil, Alter; bei Stillstand „stockt seit …“ (Tooltip = Grund). Branch, Kosten und Liegezeit stehen als eine graue Metazeile.
+- Ein leerer Filter oder ein leerer Datenbestand zeigt genau einen Leerzustand mit Aktion „Neues Ticket“ statt fünf leerer Spalten.
 - Filterleiste: Suche, Zuständig, Repo.
 - Klick auf eine Karte öffnet das Ticket. Status ändert man über das Kontextmenü der Karte oder im Detail; Drag & Drop ist nicht nötig.
 
-**Tickets**: Tabelle (`Table`) mit den Spalten ID, Titel, Status, Zuständig, Repo, Aktualisiert, Kommentare. Sortierbar, gleiche Filter wie das Board, Tastaturnavigation.
+**Tickets**: Tabelle (`Table`) mit den Spalten ID, Titel, Status, Zuständig, Repo, Aktualisiert, Kommentare. Sortierbar, gleiche Filter wie das Board, Tastaturnavigation. Der Filter „Verworfen“ ist mit dem Board geteilt.
+
+Im Hauptfenster tragen Board und Tickets keinen Knopf „Im Fenster öffnen“; den gibt es nur in den Sidepanels.
 
 **Ticket-Detail** (zweispaltig)
 - Links:
@@ -51,6 +54,7 @@ Die gewählte Auswahl ist überall dieselbe: `shared("fabric.selected")`. Was da
   - Branch und Worktree: nur lesen, kopierbar.
   - Blockiert durch: Mehrfachauswahl offener Tickets, jede Abhängigkeit einzeln entfernbar.
   - Checks: Zustand, HEAD, Zeit, Ausgabe ausklappbar, Knopf „Prüfen“.
+  - Liegezeiten: Verweildauer je Stufe (`In Arbeit`, `Prüfung bei ada`, `wartet auf mensch`).
   - Urteil: Zustand, von wem, Zusammenfassung.
   - Sessions: Chips mit Live-Status; Klick öffnet das Terminal, „Wecken…“ öffnet ein Feld mit Text und scrollt das Panel vollständig in den sichtbaren Bereich. Beleg: `docs/assets/t40-wake-panel.png`.
 - Änderungen (Status Prüfung, mit Branch): Kopfzeile mit HEAD und Summe `+`/`−`; „Ansehen“ öffnet die Dateiliste (mit `+`/`−` je Datei), den Diff der gewählten Datei, die Commits und die Nachweise als Bild-Vorschau (Anhänge und im Handover genannte Dateien/Screenshots). Daten kommen aus `fab diff ID --json` bzw. `--file PFAD`. Das Öffnen merkt sich den HEAD; erst dann ist **Abnehmen** frei. Ein neuer HEAD (andere Commit-Spitze) sperrt wieder.
@@ -78,7 +82,7 @@ Die gewählte Auswahl ist überall dieselbe: `shared("fabric.selected")`. Was da
   - Prüfer (Select, nur Mitglieder) und maximale gleichzeitige Sessions (`NumberInput`, 1–16).
   - Der Teamname steht als Feld in der Karte; ein geänderter Name wird als `--rename` mitgespeichert.
   - Speichern ersetzt Repos und Mitglieder als ganze Liste über `fab team edit`; Fehler von `fab` (Repo vergeben, Prüfer kein Mitglied, laufende Sessions beim Umbenennen) stehen inline an der Karte.
-  - Orchestrator: Status, Start / Stopp / Neu starten, „Terminal öffnen“ (Peek), Programm und Prompt-Pfad; „Prompt bearbeiten“ öffnet den Prompt dieses Teams (`fab prompt show/set orchestrator --team …`). Nutzen mehrere Teams denselben Promptpfad (`prompt_shared`), markiert die Karte den Pfad als geteilt und nennt per Tooltip die anderen Teams (`shared_with`); „Prompt bearbeiten“ wirkt dann auf alle diese Teams.
+  - Orchestrator: Status, Start / Stoppen / Neu starten, „Terminal öffnen“ (Peek), Programm und Prompt-Pfad; „Prompt bearbeiten“ öffnet den Prompt dieses Teams (`fab prompt show/set orchestrator --team …`). Nutzen mehrere Teams denselben Promptpfad (`prompt_shared`), markiert die Karte den Pfad als geteilt und nennt per Tooltip die anderen Teams (`shared_with`); „Prompt bearbeiten“ wirkt dann auf alle diese Teams.
 - **Neues Team** (Knopf über der Teamliste): Dialog mit Name, Repos, Mitgliedern, Prüfer und maximalen Sessions. `fab team add` legt automatisch `prompts/orchestrator-<name>.md` als Kopie der aktuellen Vorlage an. Fehler von `fab` stehen inline im Dialog.
 - Team löschen über „Team löschen“ an der Karte mit Bestätigungsdialog, der die Repos nennt. `fab team rm` verweigert mit Begründung, solange offene Tickets in den Repos des Teams liegen, sein Orchestrator (`fab orchestrator stop <name>`) oder eine Agenten-Session (`hc kill <terminal>`) läuft; die Meldung steht verbatim im Dialog. Die Promptdatei bleibt nach dem Löschen erhalten.
 - Beleg: `docs/assets/t22-teams.png` (Team-Seite mit „Neues Team“-Dialog und „Team löschen“ an der Karte).
@@ -106,12 +110,13 @@ Die gewählte Auswahl ist überall dieselbe: `shared("fabric.selected")`. Was da
 ## 3. Qualitätsmaßstab
 
 - **Design-Token an einer Stelle (`ui.js`):**
-  - Abstände 4/8/12/16/24;
+  - Abstände 4/8/12/16/24; Ausnahmen nur `0`;
   - Schrift 11/12/13/15/18;
   - Radien 6/8/12;
-  - Farben nur über `theme()`;
-  - ein Wörterbuch für Statusfarben und -wörter (`model.js`);
-  - Avatare aus Initialen in der Rollenfarbe.
+  - Spaltenbreiten `SIZE.listPane` (260) und `SIZE.inspector` (320), Dialoge `SIZE.modal` (520) und `SIZE.modalWide` (580), Drawer `SIZE.drawer` (420);
+  - Farben nur über `theme()`; Tönungen ausschließlich über `ALPHA` (`clear`, `faint`, `soft`, `tint`, `border`, `veil`);
+  - ein Wörterbuch für Statusfarben und -wörter (`model.js`), dazu `PAGE_WORDS`, `roleLabel`, `promptKindWord`;
+  - Avatare aus Initialen in der Rollenfarbe, Schrift mindestens `FONT.xs`.
 - **Jede Aktion** hat:
   - einen Busy-Zustand, in dem der Knopf deaktiviert ist und einen Spinner zeigt;
   - bei Erfolg einen kurzen Toast (`notify`, `level: "success"`);
@@ -122,7 +127,9 @@ Die gewählte Auswahl ist überall dieselbe: `shared("fabric.selected")`. Was da
 - **Tastatur:**
   - `cmd-shift-f` Fenster;
   - im Fenster: `cmd-n` neues Ticket, `/` Suche, `↑/↓` in Listen, `Enter` öffnen, `Esc` zurück, `cmd-enter` Kommentar senden, `cmd-s` speichern.
-- **Leerzustände** mit Erklärung und passender Aktion.
+- **Leerzustände** mit Erklärung und passender Aktion: immer `ui.emptyState`, in niedrigen Panels `compact`.
+- **Fehler** immer `ui.notice`, direkt unter dem Seitenkopf; Aktionsknöpfe gehören in die `actions` der Notice.
+- **Jede Seite** beginnt mit `ui.header`; rechte Detailspalten nutzen `ui.detailHeader`.
 - **Ladezustand** beim ersten Lesen.
 - **Lange Texte** werden abgeschnitten, der volle Text steht im Tooltip.
 - **Icon-Knöpfe** haben immer einen Tooltip.

@@ -11,10 +11,6 @@ const S = ui.SPACE;
 
 const COLORS = ["c1", "c2", "c3", "c4", "c5", "c6"];
 
-function sectionLabel(t, text) {
-  return div().text_size(T.xs).text_color(t.dim).child(text);
-}
-
 
 function newTicketDialog(app, cx, t) {
   const repos = [...new Set([
@@ -54,7 +50,7 @@ function newTicketDialog(app, cx, t) {
   return ui.modal(t, {
     title: "Neues Ticket",
     detail: "Ein Satz oder ein Issue genügt. Der Orchestrator formuliert Ziel, Kontext und Abnahmekriterien aus.",
-    width: 580,
+    width: ui.SIZE.modalWide,
     actions: [
       ui.button(t, {
         id: "fabric-new-cancel",
@@ -74,12 +70,10 @@ function newTicketDialog(app, cx, t) {
     ],
   }, [
     v_flex().w_full().gap(S.s)
-      .child(div().text_size(T.xs).text_color(t.dim).child("Auftrag"))
-      .child(app.newSentence ? ui.input(t, app.newSentence, { focused: true }) : div())
+      .child(ui.field(t, "Auftrag", app.newSentence ? ui.input(t, app.newSentence, { focused: true }) : div()))
       .when(app.mentionOpen("new"), (el) => el.child(app.mentionView("new", t)))
       .when(Boolean(app.newError), (el) => el.child(ui.notice(t, app.newError)))
-      .child(div().pt(S.xs).text_size(T.xs).text_color(t.dim).child("Vorlage"))
-      .child(ui.dropdown(t, {
+      .child(ui.field(t, "Vorlage", ui.dropdown(t, {
         id: "fabric-new-template",
         value: app.newTemplate ? model.templateLabel(app.newTemplate) : "Ohne Vorlage",
         options: templateOptions,
@@ -94,8 +88,7 @@ function newTicketDialog(app, cx, t) {
           cx.notify();
         },
       })))
-      .child(div().pt(S.xs).text_size(T.xs).text_color(t.dim).child("Repo"))
-      .child(ui.dropdown(t, {
+      .child(ui.field(t, "Repo", ui.dropdown(t, {
         id: "fabric-new-repo",
         value: app.newRepo ? model.repoName(app.newRepo) : "Kein Repo",
         options,
@@ -117,8 +110,7 @@ function newTicketDialog(app, cx, t) {
         },
       })))
       .when(Boolean(app.newRepo), (el) => el.child(ui.hint(t, app.newRepo)))
-      .child(div().pt(S.xs).text_size(T.xs).text_color(t.dim).child("Issue"))
-      .when(Boolean(app.newRepo), (el) => el.child(ui.dropdown(t, {
+      .child(ui.field(t, "Issue", app.newRepo ? ui.dropdown(t, {
         id: "fabric-new-issue",
         value: app.newIssue != null
           ? model.issueLabel((app.newIssues ?? []).find((issue) => String(issue.number) === String(app.newIssue)) ?? { number: app.newIssue })
@@ -134,8 +126,7 @@ function newTicketDialog(app, cx, t) {
           if (value) app.newTemplate = null;
           cx.notify();
         },
-      })))
-      .when(!app.newRepo, (el) => el.child(ui.hint(t, "Issues brauchen ein Repo.")))
+      }) : ui.hint(t, "Issues brauchen ein Repo.")))
       .when(Boolean(app.issuesError), (el) => el.child(ui.notice(t, app.issuesError, "warn")))
       .child(div().h(1).my(S.xs).bg(t.border))
       .child(ui.switchRow(t, {
@@ -166,7 +157,7 @@ function acceptDialog(app, cx, t) {
   return ui.modal(t, {
     title: `${ticket.id ?? "Ticket"} abnehmen?`,
     detail,
-    width: 520,
+    width: ui.SIZE.modal,
     actions: [
       ui.button(t, { id: "fabric-accept-cancel", label: "Abbrechen", onClick: (cx) => { app.modal = null; cx.notify(); } }),
       ui.button(t, {
@@ -203,7 +194,7 @@ function dropDialog(app, cx, t) {
   return ui.modal(t, {
     title: `${ticket.id ?? "Ticket"} verwerfen?`,
     detail,
-    width: 520,
+    width: ui.SIZE.modal,
     actions: [
       ui.button(t, { id: "fabric-drop-cancel", label: "Abbrechen", onClick: (cx) => { app.modal = null; cx.notify(); } }),
       ui.button(t, {
@@ -219,8 +210,7 @@ function dropDialog(app, cx, t) {
     ],
   }, [
     v_flex().w_full().gap(S.xs)
-      .child(div().text_size(T.xs).text_color(t.dim).child("Grund (steht im Verlauf)"))
-      .child(app.modal.reason ? ui.input(t, app.modal.reason, { focused: true }) : div())
+      .child(ui.field(t, "Grund (steht im Verlauf)", app.modal.reason ? ui.input(t, app.modal.reason, { focused: true }) : div()))
       .when(Boolean(app.errorFor("drop")), (el) => el.child(ui.notice(t, app.errorFor("drop").text))),
   ]);
 }
@@ -239,7 +229,7 @@ function deleteBlueprintDialog(app, cx, t) {
   return ui.modal(t, {
     title: `Blaupause ${blueprint.name} löschen?`,
     detail,
-    width: 540,
+    width: ui.SIZE.modal,
     actions: [
       ui.button(t, { id: "fabric-blueprint-delete-cancel", label: "Abbrechen", tooltip: "Nicht löschen", onClick: (cx) => { app.modal = null; cx.notify(); } }),
       ui.button(t, {
@@ -261,7 +251,7 @@ function unsavedDialog(app, cx, t) {
   return ui.modal(t, {
     title: "Ungespeicherte Änderungen",
     detail: `Diese Bereiche haben Änderungen:\n${labels}\n\nSpeichern, verwerfen oder hier bleiben.`,
-    width: 520,
+    width: ui.SIZE.modal,
     actions: [
       ui.button(t, { id: "fabric-unsaved-cancel", label: "Abbrechen", tooltip: "Hier bleiben", onClick: (cx) => { app.modal = null; cx.notify(); } }),
       ui.button(t, {
@@ -331,7 +321,7 @@ function newTeamDialog(app, cx, t) {
   return ui.modal(t, {
     title: "Neues Team",
     detail: "fab legt ein eigenes Team an und kopiert dafür einen eigenen Orchestrator-Prompt.",
-    width: 620,
+    width: ui.SIZE.modalWide,
     actions: [
       ui.button(t, {
         id: "fabric-team-new-cancel",
@@ -355,8 +345,7 @@ function newTeamDialog(app, cx, t) {
       .child(ui.field(t, "Name", app.newTeamName ? ui.input(t, app.newTeamName, { focused: true }) : div(), {
         hint: "a–z, 0–9, _ und -, höchstens 16 Zeichen",
       }))
-      .child(v_flex().w_full().gap(S.xs)
-        .child(sectionLabel(t, "Repos"))
+      .child(ui.field(t, "Repos", v_flex().w_full().gap(S.xs)
         .children((app.newTeamRepos ?? []).map((path, index) => h_flex()
           .w_full()
           .min_h(26)
@@ -391,9 +380,8 @@ function newTeamDialog(app, cx, t) {
             if (value === "__pick") app.pickNewTeamRepo(cx);
             else app.addNewTeamRepo(value, cx);
           },
-        })))
-      .child(v_flex().w_full().gap(S.xs)
-        .child(sectionLabel(t, "Mitglieder"))
+        }))))
+      .child(ui.field(t, "Mitglieder", v_flex().w_full().gap(S.xs)
         .children((app.newTeamMembers ?? []).map((name) => {
           const blueprint = app.blueprintFor(name) ?? { name, role: "", color: "c1" };
           return h_flex()
@@ -432,11 +420,9 @@ function newTeamDialog(app, cx, t) {
             app.menu = null;
             app.addNewTeamMember(value, cx);
           },
-        })))
+        }))))
       .child(h_flex().w_full().gap(S.m).items_end().flex_wrap()
-        .child(v_flex().flex_1().min_w(180).gap(5)
-          .child(sectionLabel(t, "Prüferin / Prüfer (nur Mitglieder)"))
-          .child(ui.dropdown(t, {
+        .child(div().flex_1().min_w(180).child(ui.field(t, "Prüferin / Prüfer (nur Mitglieder)", ui.dropdown(t, {
             id: "fabric-team-new-reviewer",
             value: app.newTeamReviewer || "",
             placeholder: "Bitte wählen",
@@ -453,10 +439,8 @@ function newTeamDialog(app, cx, t) {
               app.menu = null;
               app.setNewTeamReviewer(value, cx);
             },
-          })))
-        .child(v_flex().w(170).flex_none().gap(5)
-          .child(sectionLabel(t, "Gleichzeitige Sessions (1–16)"))
-          .child(ui.numberInput(t, app.newTeamSessions))))
+          }))))
+        .child(div().w(170).flex_none().child(ui.field(t, "Gleichzeitige Sessions (1–16)", ui.numberInput(t, app.newTeamSessions)))))
       .when(Boolean(error), (el) => el.child(ui.notice(t, error.text, error.level))),
   ]);
 }
@@ -472,7 +456,7 @@ function deleteTeamDialog(app, cx, t) {
   return ui.modal(t, {
     title: `Team ${team.name} löschen?`,
     detail,
-    width: 540,
+    width: ui.SIZE.modal,
     actions: [
       ui.button(t, {
         id: "fabric-team-delete-cancel",
@@ -505,7 +489,7 @@ function knowledgeNoteDialog(app, cx, t) {
   return ui.modal(t, {
     title: "Notiz anlegen",
     detail: fileName ? `Wird als ${fileName} im Wissensordner gespeichert.` : "Name und Text der Notiz.",
-    width: 560,
+    width: ui.SIZE.modalWide,
     actions: [
       ui.button(t, {
         id: "fabric-knowledge-note-cancel",
@@ -527,11 +511,10 @@ function knowledgeNoteDialog(app, cx, t) {
     ],
   }, [
     v_flex().w_full().gap(S.s)
-      .child(sectionLabel(t, "Name"))
-      .child(ui.input(t, note.name, { focused: true }))
-      .when(Boolean(fileName), (el) => el.child(div().text_size(T.xs).text_color(t.dim).child(`Datei: ${fileName}`)))
-      .child(sectionLabel(t, "Text"))
-      .child(ui.textarea(t, note.text, { height: 140 }))
+      .child(ui.field(t, "Name", ui.input(t, note.name, { focused: true }), {
+        hint: fileName ? `Datei: ${fileName}` : null,
+      }))
+      .child(ui.field(t, "Text", ui.textarea(t, note.text, { height: 140 })))
       .when(Boolean(problem), (el) => el.child(ui.notice(t, problem)))
       .when(Boolean(error), (el) => el.child(ui.notice(t, error.text, error.level))),
   ]);
@@ -543,7 +526,7 @@ function knowledgeRemoveDialog(app, cx, t) {
   return ui.modal(t, {
     title: `Eintrag ${name} entfernen?`,
     detail: "Die Datei wird aus dem Wissensordner gelöscht und die Löschung committet.",
-    width: 480,
+    width: ui.SIZE.modal,
     actions: [
       ui.button(t, {
         id: "fabric-knowledge-rm-cancel",
@@ -587,7 +570,7 @@ function colorRow(app, cx, t) {
   // Klicks aus dem Elementbaum eines älteren Drawers dürfen nicht in den
   // inzwischen sichtbaren Drawer schreiben.
   const draftId = app.blueprintDraftId;
-  return h_flex().w_full().gap(6).items_center().children(COLORS.map((key) => {
+  return h_flex().w_full().gap(S.s).items_center().children(COLORS.map((key) => {
     const active = app.blueprintColorKey === key;
     const color = ui.roleColor(t, key);
     return h_flex()
@@ -613,6 +596,7 @@ function colorRow(app, cx, t) {
 export function renderBlueprintDrawer(app, cx, t) {
   if (!app.blueprintDrawer) return null;
   const mode = app.blueprintDrawer.mode;
+  const editable = mode !== "view";
   const draftId = app.blueprintDraftId;
   const original = app.blueprintOriginal;
   const blueprint = app.blueprintFor(original);
@@ -628,10 +612,10 @@ export function renderBlueprintDrawer(app, cx, t) {
     title: mode === "new" ? "Neue Blaupause" : `Blaupause ${original}`,
     subtitle: mode === "new"
       ? "Rolle, Farbe, Programm und Rollenprompt"
-      : `${(blueprint?.teams ?? []).length} Team(s) · ${blueprint?.prompt ?? promptPath}`,
+      : `${(blueprint?.teams ?? []).length} Team${(blueprint?.teams ?? []).length === 1 ? "" : "s"} · ${blueprint?.prompt ?? promptPath}`,
     onClose: (cx) => app.closeBlueprintDrawer(cx),
     tooltip: "Drawer schließen (Esc)",
-    width: 420,
+    width: ui.SIZE.drawer,
     footer: [
       ...(mode === "edit" ? [ui.button(t, {
         id: "fabric-blueprint-delete",
@@ -644,11 +628,11 @@ export function renderBlueprintDrawer(app, cx, t) {
       })] : []),
       ui.button(t, {
         id: "fabric-blueprint-cancel",
-        label: "Abbrechen",
+        label: editable ? "Abbrechen" : "Schließen",
         tooltip: "Drawer schließen (Esc)",
         onClick: (cx) => app.closeBlueprintDrawer(cx),
       }),
-      ui.button(t, {
+      ...(editable ? [ui.button(t, {
         id: "fabric-blueprint-save",
         label: "Speichern",
         icon: "save",
@@ -657,7 +641,7 @@ export function renderBlueprintDrawer(app, cx, t) {
         disabled: Boolean(app.busy),
         tooltip: "Blaupause speichern (⌘S)",
         onClick: (cx) => app.saveBlueprint(cx),
-      }),
+      })] : []),
     ],
   }, [
     ui.field(t, "Name", app.blueprintName ? ui.input(t, app.blueprintName, { focused: true }) : div(), {

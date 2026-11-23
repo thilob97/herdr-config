@@ -22,54 +22,69 @@ function headBadge(app, ticket) {
   return model.pipelineBadge(app.pipelineRuns ?? [], ticket.id);
 }
 
-function head(app, cx, t, ticket) {
+function ticketHeader(app, cx, t, ticket) {
   const badge = headBadge(app, ticket);
+  const right = [
+    ui.chip(t, model.statusWord(ticket.status), ui.statusColor(t, ticket.status)),
+  ];
+  if (ticket.waiting?.includes("mensch")) right.push(ui.chip(t, "wartet auf dich", t.accent));
+  if (badge) {
+    right.push(ui.pill(t, {
+      id: "fabric-ticket-pipeline",
+      label: `Lauf ${badge.word}`,
+      color: ui.pipelineColor(t, badge.state),
+      tooltip: `Letzter Lauf #${badge.run.id} · ${model.pipelineTriggerWord(badge.run.trigger)} · ${model.relativeTime(badge.run.started_at)}`,
+      onClick: (cx) => app.navigate("pipelines", {
+        ticket: ticket.id,
+        run: badge.run.id,
+      }, cx),
+    }));
+  } else {
+    // Ohne Pipeline-Pill bleibt der Verweis auf die Läufe als einziger Einstieg.
+    right.push(ui.chip(t, "Läufe", t.muted, "fabric-ticket-pipelines", {
+      tooltip: "Läufe dieses Tickets (Pipelines)",
+      onClick: (cx) => app.navigate("pipelines", { ticket: ticket.id }, cx),
+    }));
+  }
+  right.push(ui.button(t, {
+    id: "fabric-ticket-context",
+    label: app.compact ? "Kontext" : "Was sieht der Agent?",
+    icon: "eye",
+    small: true,
+    tooltip: "Kontextvorschau des Tickets öffnen",
+    onClick: (cx) => app.toggleContextPreview("ticket", ticket.id, cx),
+  }));
+  right.push(app.compact
+    ? ui.iconButton(t, {
+      id: "fabric-ticket-back",
+      icon: "chevron-left",
+      tooltip: "Zurück zur Liste (Esc)",
+      onClick: (cx) => app.navigate("tickets", {}, cx),
+    })
+    : ui.button(t, {
+      id: "fabric-ticket-back",
+      label: "Zurück",
+      icon: "chevron-left",
+      small: true,
+      tooltip: "Zurück zur Liste (Esc)",
+      onClick: (cx) => app.navigate("tickets", {}, cx),
+    }));
+  return ui.header(t, "Ticket", right, {
+    iconName: "tickets",
+    subtitle: ticket.id,
+    compact: app.compact,
+  });
+}
+
+/** Titelzeile unter dem Seitenkopf; Branch und Läufe stehen nicht mehr redundant hier. */
+function titleBlock(app, cx, t, ticket) {
   return v_flex()
     .flex_none()
     .w_full()
     .px(S.l)
-    .py(S.m)
+    .pt(S.m)
+    .pb(S.xs)
     .gap(S.s)
-    .border_b(1)
-    .border_color(t.border)
-    .child(
-      h_flex().w_full().gap(S.s).items_center()
-        .child(ui.button(t, {
-          id: "fabric-ticket-back",
-          label: "Zurück",
-          icon: "chevron-left",
-          small: true,
-          tooltip: "Zurück zur Liste (Esc)",
-          onClick: (cx) => app.navigate("tickets", {}, cx),
-        }))
-        .child(div().text_size(T.xs).text_color(t.dim).child(ticket.id))
-        .child(ui.chip(t, model.statusWord(ticket.status), ui.statusColor(t, ticket.status)))
-        .when(ticket.waiting?.includes("mensch"), (el) => el.child(ui.chip(t, "wartet auf dich", t.accent)))
-        .when(Boolean(badge), (el) => el.child(ui.pill(t, {
-          id: "fabric-ticket-pipeline",
-          label: `Lauf ${badge.word}`,
-          color: ui.pipelineColor(t, badge.state),
-          tooltip: `Letzter Lauf #${badge.run.id} · ${model.pipelineTriggerWord(badge.run.trigger)} · ${model.relativeTime(badge.run.started_at)}`,
-          onClick: (cx) => app.navigate("pipelines", {
-            ticket: ticket.id,
-            run: badge.run.id,
-          }, cx),
-        })))
-        .child(ui.chip(t, "Läufe", t.muted, "fabric-ticket-pipelines", {
-          tooltip: "Läufe dieses Tickets (Pipelines)",
-          onClick: (cx) => app.navigate("pipelines", { ticket: ticket.id }, cx),
-        }))
-        .child(div().flex_1())
-        .child(ui.button(t, {
-          id: "fabric-ticket-context",
-          label: app.compact ? "Kontext" : "Was sieht der Agent?",
-          icon: "eye",
-          small: true,
-          tooltip: "Kontextvorschau des Tickets öffnen",
-          onClick: (cx) => app.toggleContextPreview("ticket", ticket.id, cx),
-        }))
-        .when(Boolean(ticket.branch) && !app.compact, (el) => el.child(ui.chip(t, ticket.branch, t.muted))),
-    )
     .child(
       app.titleEdit
         ? h_flex().w_full().gap(S.s).items_center()

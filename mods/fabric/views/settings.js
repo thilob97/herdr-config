@@ -23,7 +23,7 @@ const KEYS = [
   ["Esc", "Zurück, Dialog schließen, Fenster schließen"],
 ];
 
-function infoRow(t, label, value, { copy = null, mono = false } = {}) {
+function infoRow(app, t, label, value, { copy = null, mono = false } = {}) {
   return h_flex()
     .w_full()
     .min_h(28)
@@ -59,10 +59,10 @@ function dataCard(app, cx, t) {
         onClick: (cx) => app.rebuildIndex(cx),
       }),
     ]),
-    infoRow(t, "Datenordner", app.dir, { copy: app.dir, mono: true }),
-    infoRow(t, "Tickets", String(app.tickets.length)),
-    infoRow(t, "Ereignisse", String(app.events.length)),
-    infoRow(t, "Stand der Index-Datei", model.absoluteTime(app.index?.generated_at) || "—"),
+    infoRow(app, t, "Datenordner", app.dir, { copy: app.dir, mono: true }),
+    infoRow(app, t, "Tickets", String(app.tickets.length)),
+    infoRow(app, t, "Ereignisse", String(app.events.length)),
+    infoRow(app, t, "Stand der Index-Datei", model.absoluteTime(app.index?.generated_at) || "—"),
     div().text_size(T.xs).text_color(t.dim).whitespace_normal()
       .child(`Stufen: ${counts.join(" · ")}`),
   ], { id: "fabric-settings-data", padding: S.m, gap: S.xs });
@@ -75,9 +75,9 @@ function metricsCard(app, t) {
     : "";
   return ui.card(t, [
     ui.sectionTitle(t, "Kosten", [], "Aus dem Index; aktualisiert sich mit ihm."),
-    infoRow(t, "Gesamt", model.formatCost(totals.total)),
-    infoRow(t, "Heute", model.formatCost(totals.today)),
-    ...totals.teams.map((team) => infoRow(t, team.name,
+    infoRow(app, t, "Gesamt", model.formatCost(totals.total)),
+    infoRow(app, t, "Heute", model.formatCost(totals.today)),
+    ...totals.teams.map((team) => infoRow(app, t, team.name,
       `${model.formatCost(team.total)} · heute ${model.formatCost(team.today)} · ${team.tickets} Ticket${team.tickets === 1 ? "" : "s"}`)),
     ...(limitHint ? [div().text_size(T.xs).text_color(t.blocked).whitespace_normal().child(limitHint)] : []),
   ], { id: "fabric-settings-cost", padding: S.m, gap: S.xs });
@@ -86,14 +86,14 @@ function metricsCard(app, t) {
 function versionCard(app, cx, t) {
   return ui.card(t, [
     ui.sectionTitle(t, "Fabric"),
-    infoRow(t, "Version", app.version || (app.versionError ? `nicht lesbar: ${app.versionError}` : "wird gelesen …"), { mono: true }),
-    infoRow(t, "Roster", `${app.dir.replace(/\/data\/fabric$/, "")}/fabric/roster.json`, {
+    infoRow(app, t, "Version", app.version || (app.versionError ? `nicht lesbar: ${app.versionError}` : "wird gelesen …"), { mono: true }),
+    infoRow(app, t, "Roster", `${app.dir.replace(/\/data\/fabric$/, "")}/fabric/roster.json`, {
       copy: `${app.dir.replace(/\/data\/fabric$/, "")}/fabric/roster.json`, mono: true,
     }),
-    infoRow(t, "CLI", `${app.dir.replace(/\/data\/fabric$/, "")}/fabric/fab`, {
+    infoRow(app, t, "CLI", `${app.dir.replace(/\/data\/fabric$/, "")}/fabric/fab`, {
       copy: `${app.dir.replace(/\/data\/fabric$/, "")}/fabric/fab`, mono: true,
     }),
-    infoRow(t, "Agenten", `${app.agents.length} im Roster · Prüfer ${app.roster?.reviewer ?? "—"}`),
+    infoRow(app, t, "Agenten", `${app.agents.length} im Roster · Prüfer ${app.roster?.reviewer ?? "—"}`),
   ], { id: "fabric-settings-version", padding: S.m, gap: S.xs });
 }
 
@@ -140,12 +140,12 @@ function notifyCard(app, cx, t, settings) {
       }));
   };
   return ui.card(t, [
-    ui.sectionTitle(t, "Benachrichtigungen", [], "Neue Inbox-Einträge melden sich einmal, mit Ton."),
+    ui.sectionTitle(t, "Benachrichtigungen", [], "Neue Posteingang-Einträge melden sich einmal, mit Ton."),
     ui.switchRow(t, {
       id: "fabric-notify-enabled",
       checked: settings.enabled,
-      label: "Toasts für neue Inbox-Einträge",
-      detail: "In der Ruhezeit kommen keine Toasts; der Eintrag bleibt in der Inbox.",
+      label: "Toasts für neue Posteingang-Einträge",
+      detail: "In der Ruhezeit kommen keine Toasts; der Eintrag bleibt im Posteingang.",
       onChange: (enabled) => app.setNotify({ enabled }, cx),
     }),
     stepper("quiet_from", "Ruhezeit von"),
@@ -171,11 +171,12 @@ export function renderSettings(app, cx, t) {
     .when(Boolean(app.flash?.text), (el) => el.child(ui.notice(t, app.flash.text, app.flash.level)))
     .child(
       v_flex().flex_1().min_h(0).overflow_y_scrollbar().p(S.l).gap(S.m)
-        .child(h_flex().w_full().gap(S.m).items_start().flex_wrap()
-          .child(div().w(440).child(dataCard(app, cx, t)))
-          .child(div().w(440).child(metricsCard(app, t)))
-          .child(div().w(440).child(versionCard(app, cx, t))))
-        .child(div().w_full().max_w(900).child(notifyCard(app, cx, t, settings)))
-        .child(div().w_full().max_w(900).child(keysCard(app, cx, t))),
+        .child(v_flex().w_full().max_w(900).gap(S.m)
+          .child(h_flex().w_full().gap(S.m).items_start().flex_wrap()
+            .child(div().flex_1().min_w(280).child(dataCard(app, cx, t)))
+            .child(div().flex_1().min_w(280).child(metricsCard(app, t)))
+            .child(div().flex_1().min_w(280).child(versionCard(app, cx, t))))
+          .child(notifyCard(app, cx, t, settings))
+          .child(keysCard(app, cx, t))),
     );
 }
