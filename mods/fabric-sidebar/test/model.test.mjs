@@ -533,8 +533,11 @@ test("agents.sort 'grouped' hält Angeheftete vorn und sortiert nach Maschine", 
   });
 
   const { cards } = freeAgentCards([remote, local, pinnedRemote], [], [], "grouped");
-  assert.deepEqual(cards.map((card) => card.address), ["remote/p1", "l1", "remote/r1"]);
-  assert.deepEqual(cards.map((card) => card.group), ["remote", "Dieser Rechner", "remote"]);
+  // Reihenfolge hängt am Maschinen-Schlüssel, nicht am übersetzten Label:
+  // lokale Maschine (`null`) zuletzt, auch wenn ihr Label „Dieser Rechner“ lautet.
+  assert.deepEqual(cards.map((card) => card.address), ["remote/p1", "remote/r1", "l1"]);
+  assert.deepEqual(cards.map((card) => card.name), ["pin", "zeta", "alpha"]);
+  assert.deepEqual(cards.map((card) => card.group), ["remote", "remote", "Dieser Rechner"]);
 });
 
 // --- Alarme (Banner in der Seitenleiste) -----------------------------------
