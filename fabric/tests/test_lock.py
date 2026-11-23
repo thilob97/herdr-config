@@ -31,9 +31,14 @@ with store.locked():
 '''
 
 STUB_GH = '''#!/usr/bin/env python3
-"""gh-Stub: blockiert `pr create`, bis die Freigabedatei existiert."""
+"""gh-Stub: blockiert `pr create`, bis die Freigabedatei existiert.
+
+`pr view <x> --json state,number,mergeCommit` liefert JSON für die
+Merge-Nachweise; fehlt `GH_BARE`/`GH_HEAD`, bleibt der Merge-Commit leer.
+"""
 import json
 import os
+import subprocess
 import sys
 import time
 
@@ -64,10 +69,30 @@ if args[:2] == ["auth", "status"]:
     sys.exit(0)
 
 if args[:2] == ["pr", "view"]:
+    if os.environ.get("GH_VIEW_FAIL"):
+        print("PR-Ansicht nicht verfügbar", file=sys.stderr)
+        sys.exit(1)
     state = read_state()
     if not state:
         print("no pull requests found", file=sys.stderr)
         sys.exit(1)
+    if "state,number,mergeCommit" in args:
+        bare = os.environ.get("GH_BARE")
+        head = os.environ.get("GH_HEAD")
+        oid = ""
+        if bare and head:
+            sha = subprocess.run(
+                ["git", "--git-dir", bare, "rev-parse", f"refs/heads/{head}"],
+                capture_output=True, text=True,
+            )
+            if sha.returncode == 0:
+                oid = sha.stdout.strip()
+        print(json.dumps({
+            "state": state,
+            "number": 7,
+            "mergeCommit": {"oid": oid} if oid else None,
+        }))
+        sys.exit(0)
     if args[-1] == ".url":
         print(URL)
     elif args[-1] == ".state":
@@ -467,8 +492,7 @@ class LockTests(FabricCase):
         release = os.path.join(self.tmp, "handover-release")
         _repo, tid, _worktree, proc = self.blocked_handover(started, release)
 
-        comment = self.cli("comment", tid, "--from", "mensch", "dazwischen")
-        self.assertEqual(comment.returncode, 0, comment.stderr)
+        self.patch_ticket(tid, assignee="ada")
 
         self.write_file(release, "")
         _out, err = proc.communicate(timeout=60)
@@ -477,7 +501,22 @@ class LockTests(FabricCase):
         self.assertIn("geändert", err)
         self.assertIn("nichts eingetragen", err)
         ticket = self.ticket(tid)
-        self.assertNotEqual(ticket["status"], "review")
+        self.assertEqual(ticket["status"], "doing")
+        self.assertEqual(ticket["assignee"], "ada")
+
+    def test_handover_kommentar_waehrend_pruefung_geht_nicht_verloren(self):
+        started = os.path.join(self.tmp, "handover-comment-started")
+        release = os.path.join(self.tmp, "handover-comment-release")
+        _repo, tid, _worktree, proc = self.blocked_handover(started, release)
+
+        self.ok("comment", tid, "--from", "mensch", "dazwischen")
+
+        self.write_file(release, "")
+        _out, err = proc.communicate(timeout=60)
+
+        self.assertEqual(proc.returncode, 0, err)
+        ticket = self.ticket(tid)
+        self.assertEqual(ticket["status"], "review")
         texts = [row.get("text") or "" for row in ticket.get("comments") or []]
         self.assertIn("dazwischen", texts)
 
@@ -570,8 +609,7 @@ class LockTests(FabricCase):
         )
         self.assert_lock_free()
 
-        comment = self.cli("comment", tid, "--from", "mensch", "dazwischen")
-        self.assertEqual(comment.returncode, 0, comment.stderr)
+        self.patch_ticket(tid, title="Zwischendurch geändert")
 
         self.write_file(release, "")
         _out, err = proc.communicate(timeout=60)
@@ -608,8 +646,7 @@ class LockTests(FabricCase):
         )
         self.assert_lock_free()
 
-        comment = self.cli("comment", tid, "--from", "mensch", "dazwischen")
-        self.assertEqual(comment.returncode, 0, comment.stderr)
+        self.patch_ticket(tid, title="Zwischendurch geändert")
 
         self.write_file(release, "")
         _out, err = proc.communicate(timeout=60)
@@ -626,6 +663,8 @@ class LockTests(FabricCase):
         self.write_file(os.path.join(repo, "aenderung.txt"), "von main\n")
         self.git_out(repo, "add", "aenderung.txt")
         self.git_out(repo, "commit", "-qm", "main ändert dieselbe Datei")
+        # Der Konflikt kommt aus origin, nicht aus einem fremden lokalen Commit.
+        self.git_out(repo, "push", "-q", "origin", "main")
         mark = self.mark()
 
         result = self.cli(
@@ -755,8 +794,8 @@ class LockTests(FabricCase):
             self.wait_for(lambda: os.path.exists(started), timeout=20),
             "worktree add des Autostarts hat nicht begonnen",
         )
-        comment = self.cli("comment", follow, "--from", "mensch", "dazwischen")
-        self.assertEqual(comment.returncode, 0, comment.stderr)
+        patched = self.patch_ticket(follow, title="Zwischendurch geändert")
+        self.assertEqual(patched["title"], "Zwischendurch geändert")
 
         self.write_file(release, "")
         _out, err = proc.communicate(timeout=60)
@@ -813,8 +852,7 @@ class LockTests(FabricCase):
         self.set_live({"fab-herdr-app-zap-t-1": "t7"})
         self.clear_log()
 
-        comment = self.cli("comment", tid, "--from", "mensch", "dazwischen")
-        self.assertEqual(comment.returncode, 0, comment.stderr)
+        self.patch_ticket(tid, title="Zwischendurch geändert")
 
         self.write_file(release, "")
         _out, err = proc.communicate(timeout=60)
@@ -867,8 +905,7 @@ class LockTests(FabricCase):
             "Session-Abbau des Accepts hat nicht begonnen",
         )
 
-        comment = self.cli("comment", tid, "--from", "mensch", "dazwischen")
-        self.assertEqual(comment.returncode, 0, comment.stderr)
+        self.patch_ticket(tid, title="Zwischendurch geändert")
 
         self.write_file(release, "")
         _out, err = proc.communicate(timeout=60)
@@ -904,8 +941,7 @@ class LockTests(FabricCase):
         )
         self.assert_lock_free()
 
-        comment = self.cli("comment", tid, "--from", "mensch", "dazwischen")
-        self.assertEqual(comment.returncode, 0, comment.stderr)
+        self.patch_ticket(tid, title="Zwischendurch geändert")
 
         self.write_file(release, "")
         _out, err = proc.communicate(timeout=60)
@@ -938,8 +974,7 @@ class LockTests(FabricCase):
         )
         self.assert_lock_free()
 
-        comment = self.cli("comment", tid, "--from", "mensch", "dazwischen")
-        self.assertEqual(comment.returncode, 0, comment.stderr)
+        self.patch_ticket(tid, title="Zwischendurch geändert")
 
         self.write_file(release, "")
         _out, err = proc.communicate(timeout=60)

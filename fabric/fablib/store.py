@@ -932,10 +932,24 @@ def load(raw_id):
     return _legacy_load(raw_id)
 
 
+_REVISION_IGNORED = ("comments", "updated_at", "cost", "waits")
+
+
 def revision(ticket):
-    """Stabile SHA-256-Prüfsumme über den vollständigen Ticketinhalt."""
+    """Stabile SHA-256-Prüfsumme über den maßgeblichen Ticketinhalt.
+
+    Kommentare, `updated_at`, `cost` und `waits` bleiben außen vor: Ein
+    parallel geschriebener Kommentar oder eine nachgeführte Kosten-/Liegezeit
+    darf keinen CAS-Konflikt auslösen. Feldänderungen (Status, Branch,
+    Zuständiger, `accept` usw.) ändern die Revision weiterhin.
+    """
+    material = {
+        key: value
+        for key, value in ticket.items()
+        if key not in _REVISION_IGNORED
+    }
     canonical = json.dumps(
-        ticket, sort_keys=True, ensure_ascii=False, separators=(",", ":")
+        material, sort_keys=True, ensure_ascii=False, separators=(",", ":")
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 

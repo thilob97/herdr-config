@@ -554,27 +554,44 @@ def is_live():
 
 
 def try_accept(ticket):
-    """Ticket abnehmen, wenn Prüfung und Urteil auf demselben HEAD passen."""
+    """Ticket abnehmen, wenn Prüfung und Urteil auf demselben HEAD passen.
+
+    Ein bereits begonnenes `fab accept` (Schritte oder gemergter PR) wird
+    fortgesetzt, ohne das HEAD-/Urteil-Gate erneut zu verlangen; die
+    Abnahme selbst prüft ihre Vorbedingungen.
+    """
     global _paused
     tid = ticket["id"]
     checks = ticket.get("checks") or {}
     verdict = ticket.get("verdict") or {}
     repo = _repo_root(ticket.get("repo") or os.getcwd())
-    no_change = bool(ticket.get("no_change"))
-    if no_change and ticket.get("base") and ticket.get("branch"):
-        try:
-            no_change = git.commit_count(repo, ticket["base"], ticket["branch"]) == 0
-        except FabError as exc:
-            log(f"accept {tid}: Commit-Zahl nicht bestimmbar: {exc}")
-            no_change = False
+    accept = ticket.get("accept") or {}
+    steps = accept.get("steps") or {}
+    pr = ticket.get("pr") or {}
+    resuming = bool(steps) or pr.get("state") == "merged"
     current = head(ticket.get("worktree") or "")
-    if not no_change and not (
-        checks.get("state") == "pass"
-        and verdict.get("state") == "pass"
-        and same(checks.get("head", ""), current)
-        and same(verdict.get("head", ""), current)
-    ):
-        return False
+    no_change = False
+    if not resuming:
+        no_change = bool(ticket.get("no_change"))
+        if no_change and ticket.get("base") and ticket.get("branch"):
+            try:
+                if not git.branch_exists(repo, ticket["branch"]):
+                    no_change = False
+                else:
+                    ref = git.base_ref(repo, ticket["base"])
+                    no_change = (
+                        git.commit_count(repo, ref, ticket["branch"]) == 0
+                    )
+            except FabError as exc:
+                log(f"accept {tid}: Commit-Zahl nicht bestimmbar: {exc}")
+                no_change = False
+        if not no_change and not (
+            checks.get("state") == "pass"
+            and verdict.get("state") == "pass"
+            and same(checks.get("head", ""), current)
+            and same(verdict.get("head", ""), current)
+        ):
+            return False
     if _paused or (not no_change and not ensure_clean_main(repo)):
         return False
     if _conflict_sent.get(tid) == current:
