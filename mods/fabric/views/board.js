@@ -79,6 +79,7 @@ function card(app, cx, t, ticket) {
   const selected = app.cursorId === ticket.id;
   const cost = costChip(t, ticket);
   const wait = waitChip(t, ticket);
+  const badge = model.pipelineBadge(app.pipelineRuns ?? [], ticket.id);
   return v_flex()
     .id(`fabric-card-${ticket.id}`)
     .w_full()
@@ -136,7 +137,14 @@ function card(app, cx, t, ticket) {
         .when(Boolean(ticket.verdict), (el) => el.child(miniState(app, t, ticket, "VERDICT_WORDS", ticket.verdict, "Urteil")))
         .when(Boolean(ticket.branch), (el) => el.child(div().text_size(T.xs).text_color(t.dim).truncate().child(ticket.branch)))
         .when(Boolean(cost), (el) => el.child(cost))
-        .when(Boolean(wait), (el) => el.child(wait)),
+        .when(Boolean(wait), (el) => el.child(wait))
+        .when(Boolean(badge), (el) => el.child(ui.pill(t, {
+          id: `fabric-card-pipeline-${ticket.id}`,
+          label: `Lauf ${badge.word}`,
+          color: ui.pipelineColor(t, badge.state),
+          tooltip: `Letzter Lauf #${badge.run.id} · ${model.pipelineTriggerWord(badge.run.trigger)} · ${model.pipelineDuration(badge.run.duration_ms)} · ${model.relativeTime(badge.run.started_at)}`,
+          onClick: (cx) => app.navigate("pipelines", { run: badge.run.id }, cx),
+        }))),
     );
 }
 
