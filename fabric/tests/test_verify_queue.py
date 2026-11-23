@@ -11,6 +11,7 @@ import time
 from unittest import mock
 
 from fabric.fablib import agents, pipeline, store
+from fabric.fablib.errors import FabError
 from fabric.tests.support import FabricCase
 
 ROOT = os.path.dirname(
@@ -116,6 +117,18 @@ class VerifyQueueCase(FabricCase):
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.communicate()
+
+    def lock_is_free(self):
+        """Sperre in-process ohne Wartezeit prüfen (`FAB_LOCK_TIMEOUT=0`)."""
+        with self.store_env(), mock.patch.dict(
+            os.environ, {"FAB_LOCK_TIMEOUT": "0"}
+        ):
+            try:
+                with store.locked():
+                    pass
+            except FabError:
+                return False
+        return True
 
     def queued_run(self, ticket):
         with self.store_env():
@@ -281,16 +294,17 @@ class VerifyQueueTest(VerifyQueueCase):
                 self.wait_for(lambda: self.queued_run("T-4"), timeout=10)
             )
 
-            # Kein Wanduhrbudget: `fab list` antwortet, solange der Lauf noch
-            # wartet, und die Store-Sperre ist in-process sofort erwerbbar.
+            # Der Runner schreibt Lauf und Schritte kurz vor dem Warten. Erst
+            # wenn diese kurzen Transaktionen durch sind, muss die Sperre
+            # dauerhaft frei sein – ohne Wanduhrbudget für die Sperre selbst.
+            self.assertTrue(
+                self.wait_for(self.lock_is_free, timeout=30),
+                "Store-Sperre blieb belegt, während der Lauf wartet",
+            )
             result = self.cli("list", timeout=120)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue(self.queued_run("T-4"), "Lauf wartet nicht mehr")
-            with self.store_env(), mock.patch.dict(
-                os.environ, {"FAB_LOCK_TIMEOUT": "0"}
-            ):
-                with store.locked():
-                    pass
+            self.assertTrue(self.lock_is_free(), "Store-Sperre ist belegt")
         finally:
             self.stop(holder)
             self.stop(proc)
