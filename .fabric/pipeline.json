@@ -1,6 +1,6 @@
 {
   "steps": [
-    {"name": "unittest", "run": "python3 -m unittest discover -s fabric/tests -t ."},
+    {"name": "unittest", "run": "python3 fabric/tests/run_parallel.py"},
     {"name": "mod-fabric", "run": "node --test mods/fabric/test/"},
     {"name": "mod-fabric-sidebar", "run": "node --test mods/fabric-sidebar/test/"},
     {"name": "mod-agents-filtered", "run": "node --test mods/agents-filtered/test/"},
