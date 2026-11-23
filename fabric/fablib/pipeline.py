@@ -191,6 +191,15 @@ def run(
                 failed = True
                 first_code = code
     except BaseException:
+        for step_row in store.pipeline_steps(run_id):
+            if step_row["state"] == "running":
+                store.pipeline_step_update(
+                    run_id, step_row["position"], state="fail"
+                )
+            elif step_row["state"] == "pending":
+                store.pipeline_step_update(
+                    run_id, step_row["position"], state="skipped"
+                )
         store.pipeline_run_finish(run_id, "fail", store.now_ms() - start)
         raise
 

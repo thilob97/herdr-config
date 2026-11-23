@@ -1,3 +1,8 @@
 - Wenn du zusammengesetzten Text kürzt, nenne im Hinweis die Quelle, die tatsächlich abgeschnitten wurde, und teste die Kürzung bei mehreren vorhandenen Quellen, nicht nur bei einer.
 - Leite Anzeige-Status aus der Bedeutung je Knotentyp und Laufstatus der Engine ab, nicht aus dem Rohwert, und teste jeden Zweig einer Verzweigung sowie den fehlgeschlagenen Lauf.
 - Führe Git-Befehle, die auf main wirken, gegen einen echten Merge-Commit von fab accept (merge --no-ff) aus, bevor du sie als abgebildet meldest, und hänge Schutzschritte wie eine Pause nicht per && an deren Erfolg.
+- Prüfe jeden Test für ein unterdrücktes Ereignis per Gegenprobe gegen den alten Code und wähle Akteure so, dass das Ereignis ohne die Änderung tatsächlich einträte, etwa eine Übergabe durch einen anderen Akteur als den Zuständigen, weil das Wecken des Autors ohnehin entfällt.
+- Prüfe bei jeder Sperren-Verkürzung alle Pfade, die unter der Sperre weitere Abläufe auslösen (etwa accept → Autostart → Dispatch), und verschiebe langsame Schritte wie git worktree add oder Session-Starts hinter die Freigabe der Sperre, statt nur die direkten Einstiege umzubauen.
+- Bestimme die Basisreferenz für den Merge-Stand (lokales <base> oder origin/<base>) an genau einer Stelle und nutze sie in handover, accept und PR-Weg gleich, statt sie je Einstieg neu zu wählen.
+- Teste jeden Fehlerzweig eines neuen Ablaufs (rot, Konflikt, Abbruch) in jedem Einstiegspunkt, der ihn nutzt, also handover, accept und PR-Weg, statt nur den grünen Weg und einen Einstieg.
+- Wenn du einen Revert zurücknimmst und dabei Konflikte löst, prüfe den Ergebnis-Diff gegen das Inverse des Reverts und übernimm jede Zeile des Originals, auch in der Doku, außer den bewusst begründeten Abweichungen.

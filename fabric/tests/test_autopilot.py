@@ -269,6 +269,41 @@ class AutopilotCase(FabricCase):
                 self.assertFalse(autopilot.try_accept(changed))
             self.assertEqual(self.called(calls, "fab", "accept"), [])
 
+    def test_stored_no_change_with_new_commits_checks_live(self):
+        fake, calls = self.shell()
+        ticket = self.ticket(
+            no_change=True,
+            base="main",
+            branch="fab/T-1",
+            checks={"state": "fail", "head": HEAD},
+            verdict={"state": "fail", "head": HEAD},
+        )
+        with mock.patch.object(autopilot, "head", return_value=HEAD), \
+                mock.patch.object(
+                    autopilot.git, "commit_count", return_value=1
+                ) as count, \
+                mock.patch.object(autopilot, "ensure_clean_main", return_value=True), \
+                mock.patch.object(autopilot, "_sh", side_effect=fake):
+            self.assertFalse(autopilot.try_accept(ticket))
+        count.assert_called_once_with(os.path.realpath(self.repo), "main", "fab/T-1")
+        self.assertEqual(self.called(calls, "fab", "accept"), [])
+
+    def test_stored_no_change_with_commits_and_passing_checks_accepts(self):
+        fake, calls = self.shell()
+        ticket = self.ticket(no_change=True, base="main", branch="fab/T-1")
+        with mock.patch.object(autopilot, "head", return_value=HEAD), \
+                mock.patch.object(autopilot.git, "commit_count", return_value=1), \
+                mock.patch.object(
+                    autopilot, "ensure_clean_main", return_value=True
+                ) as clean, \
+                mock.patch.object(
+                    autopilot, "check_main", return_value=(True, "grün", "", 1)
+                ), \
+                mock.patch.object(autopilot, "_sh", side_effect=fake):
+            self.assertTrue(autopilot.try_accept(ticket))
+        clean.assert_called_once_with(os.path.realpath(self.repo))
+        self.assertEqual(len(self.called(calls, "fab", "accept")), 1)
+
     def test_accept_does_not_run_when_paused(self):
         autopilot.reset()
         autopilot._paused = True

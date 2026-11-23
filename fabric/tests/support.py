@@ -1,10 +1,12 @@
 """Gemeinsame Testhilfen: Temp-Home, Roster-Fixture, `hc`-Stub, Git-Repos."""
+import atexit
 import json
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -13,6 +15,38 @@ from fabric.fablib import store
 
 FAB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "fab")
 FABRIC = os.path.dirname(FAB)
+
+_TEMPLATE_LOCK = threading.Lock()
+_TEMPLATE_REPO = None
+
+
+def _git_at(path, *args):
+    subprocess.run(
+        ["git", *args], cwd=path, check=True, capture_output=True, text=True
+    )
+
+
+def template_repo():
+    """Ein vorbereitetes Git-Repo; `init_repo` kopiert es statt neu zu bauen.
+
+    Vier Git-Aufrufe je Fixture-Repo summieren sich über die Suite. Das
+    Template entsteht einmal je Testprozess und enthält nur den Start-Commit.
+    """
+    global _TEMPLATE_REPO
+    with _TEMPLATE_LOCK:
+        if _TEMPLATE_REPO and os.path.isdir(_TEMPLATE_REPO):
+            return _TEMPLATE_REPO
+        path = tempfile.mkdtemp(prefix="fabtest-git-")
+        _git_at(path, "init", "-q", "-b", "main")
+        _git_at(path, "config", "user.email", "test@example.com")
+        _git_at(path, "config", "user.name", "Test")
+        with open(os.path.join(path, "README.md"), "w", encoding="utf-8") as handle:
+            handle.write("start\n")
+        _git_at(path, "add", "README.md")
+        _git_at(path, "commit", "-qm", "start")
+        atexit.register(shutil.rmtree, path, ignore_errors=True)
+        _TEMPLATE_REPO = path
+        return path
 
 STUB_HC = '''#!/usr/bin/env python3
 """hc-Stub: protokolliert Aufrufe, beantwortet `ls --json` aus einer Fixture."""
@@ -464,18 +498,7 @@ class FabricCase(unittest.TestCase):
 
     def init_repo(self, path):
         os.makedirs(path, exist_ok=True)
-
-        def git(*args):
-            subprocess.run(
-                ["git", *args], cwd=path, check=True, capture_output=True, text=True
-            )
-
-        git("init", "-q", "-b", "main")
-        git("config", "user.email", "test@example.com")
-        git("config", "user.name", "Test")
-        self._write(os.path.join(path, "README.md"), "start\n")
-        git("add", "README.md")
-        git("commit", "-qm", "start")
+        shutil.copytree(template_repo(), path, dirs_exist_ok=True)
         return path
 
     def git(self, repo, *args):
@@ -494,10 +517,8 @@ class FabricCase(unittest.TestCase):
     def ready_ticket(self, title="Kurzer Titel"):
         """Repo + verteiltes Ticket mit Worktree (Agent über den Stub gestartet)."""
         repo = self.make_repo()
-        self.own_repo(repo)
-        tid = self.new(title)
+        tid = self.new(title, repo=repo)
         self.ok("assign", tid, "zap", "--from", "mensch")
-        self.ok("edit", tid, "--repo", repo, "--from", "mensch")
         self.ok(
             "edit", tid, "--body",
             "## Ziel\nEtwas tun.\n\n## Abnahmekriterien\n- [ ] es läuft\n\n## Grenzen\nkeine",

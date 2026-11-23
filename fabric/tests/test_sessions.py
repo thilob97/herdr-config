@@ -201,10 +201,9 @@ class SessionEndTests(FabricCase):
         self.own_repo(repo)
         tid = self.new("Kurzer Titel")
         self.ok("assign", tid, "zap", "--from", "mensch")
-        self.ok("edit", tid, "--repo", repo, "--from", "mensch")
         self.ok(
-            "edit", tid, "--body",
-            "## Ziel\nEtwas.\n\n## Abnahmekriterien\n- [ ] es läuft\n",
+            "edit", tid, "--repo", repo,
+            "--body", "## Ziel\nEtwas.\n\n## Abnahmekriterien\n- [ ] es läuft\n",
             "--from", "mensch",
         )
         self.set_live({})

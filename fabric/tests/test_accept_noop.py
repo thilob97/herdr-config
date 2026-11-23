@@ -7,6 +7,20 @@ from fabric.tests.support import FabricCase
 
 
 class AcceptNoopTests(FabricCase):
+    def test_handover_verweigert_no_change_mit_uncommitteten_aenderungen(self):
+        _repo, tid, worktree = self.ready_ticket()
+        self.write_file(os.path.join(worktree, "README.md"), "geändert\n")
+
+        result = self.cli("handover", tid, "--from", "zap", "Keine Änderung nötig")
+
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        out = result.stdout + result.stderr
+        self.assertIn("uncommittete Änderungen", out)
+        self.assertIn("committen", out)
+        ticket = self.ticket(tid)
+        self.assertNotIn("no_change", ticket)
+        self.assertEqual(ticket["status"], "doing")
+
     def test_handover_ohne_commits_setzt_no_change(self):
         _repo, tid, _worktree = self.ready_ticket()
         self.ok("handover", tid, "--from", "zap", "Keine Änderung nötig")

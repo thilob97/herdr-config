@@ -1326,6 +1326,14 @@ def cmd_handover(args):
             except FabError as exc:
                 reasons.append(str(exc))
                 no_change = False
+        if no_change:
+            pending = git.dirty(worktree)
+            if pending:
+                reasons.append(
+                    "Worktree hat uncommittete Änderungen, der Branch aber keine "
+                    f"Commits über {ticket['base']}; bitte zuerst committen:\n  - "
+                    + "\n  - ".join(pending.splitlines())
+                )
         if not no_change:
             checks = ticket.get("checks")
             if not checks:
