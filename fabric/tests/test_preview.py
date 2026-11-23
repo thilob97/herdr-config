@@ -45,6 +45,188 @@ class PreviewTests(FabricCase):
         with open(path, encoding="utf-8") as handle:
             return handle.read()
 
+    def preview_area(self):
+        root = os.path.join(self.tmp, "preview")
+        self.env["FAB_PREVIEW_ROOT"] = root
+        previous = os.environ.get("FAB_PREVIEW_ROOT")
+        os.environ["FAB_PREVIEW_ROOT"] = root
+
+        def restore():
+            if previous is None:
+                os.environ.pop("FAB_PREVIEW_ROOT", None)
+            else:
+                os.environ["FAB_PREVIEW_ROOT"] = previous
+
+        self.addCleanup(restore)
+        return root
+
+    def _kill(self, proc):
+        if preview_mod._pid_alive(proc.pid):
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+
+    def spawn(self, code, *, cwd=None, marker=None, arg=None):
+        env = dict(self.env)
+        if marker is not None:
+            env[preview_mod.MARKER_ENV] = marker
+        proc = subprocess.Popen(
+            [sys.executable, "-c", code, arg or self.tmp],
+            cwd=cwd or self.tmp,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        self.addCleanup(self._kill, proc)
+        return proc
+
+    def identity_state(self, tid, proc, *, marker, started=None, home=None):
+        root = self.preview_root(tid)
+        home = home or os.path.join(root, "home")
+        os.makedirs(home, exist_ok=True)
+        state = {
+            "ticket": tid,
+            "pid": proc.pid,
+            "pgid": os.getpgid(proc.pid),
+            "started": (
+                started if started is not None
+                else preview_mod._process_started(proc.pid)
+            ),
+            "marker": marker,
+            "session": preview_mod._session_name(tid),
+            "home": home,
+            "userhome": os.path.join(root, "userhome"),
+            "fab_home": os.path.join(home, "data", "fabric"),
+            "log": os.path.join(root, "app.log"),
+        }
+        preview_mod._write_state(tid, state)
+        return state
+
+    def stop_quietly(self, tid):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            preview_mod.stop(tid)
+        return err.getvalue()
+
+    def test_stop_beendet_fremden_prozess_mit_gleicher_pid_nicht(self):
+        self.preview_area()
+        tid = "T-1"
+        proc = self.spawn("import time; time.sleep(60)")
+        self.identity_state(tid, proc, marker="nicht-der-fremde-prozess")
+
+        notice = self.stop_quietly(tid)
+
+        self.assertTrue(preview_mod._pid_alive(proc.pid))
+        self.assertFalse(
+            os.path.exists(os.path.join(self.preview_root(tid), "preview.json"))
+        )
+        self.assertIn("kein Signal", notice)
+
+    def test_stop_prueft_startzeit(self):
+        self.preview_area()
+        tid = "T-1"
+        proc = self.spawn("import time; time.sleep(60)", marker="marker-1")
+        self.identity_state(
+            tid, proc, marker="marker-1", started="Mon Jan  1 00:00:00 2001"
+        )
+
+        self.stop_quietly(tid)
+
+        self.assertTrue(preview_mod._pid_alive(proc.pid))
+        self.assertFalse(
+            os.path.exists(os.path.join(self.preview_root(tid), "preview.json"))
+        )
+
+    def test_stop_ohne_marker_sendet_kein_signal(self):
+        self.preview_area()
+        tid = "T-1"
+        proc = self.spawn("import time; time.sleep(60)", marker="marker-1")
+        state = self.identity_state(tid, proc, marker="")
+
+        preview_mod._terminate(state)
+
+        self.assertTrue(preview_mod._pid_alive(proc.pid))
+
+    def test_stop_beendet_eigenen_prozess_mit_kind(self):
+        self.preview_area()
+        tid = "T-1"
+        root = self.preview_root(tid)
+        home = os.path.join(root, "home")
+        os.makedirs(home, exist_ok=True)
+        child_file = os.path.join(self.tmp, "child.pid")
+        code = (
+            "import subprocess, sys, time\n"
+            "p = subprocess.Popen(['sleep', '60'])\n"
+            "open(sys.argv[1], 'w').write(str(p.pid))\n"
+            "time.sleep(60)\n"
+        )
+        proc = self.spawn(code, cwd=home, marker="marker-1", arg=child_file)
+        self.assertTrue(
+            self.wait_for(lambda: os.path.isfile(child_file) and self._text(child_file))
+        )
+        child = int(self._text(child_file))
+        self.identity_state(tid, proc, marker="marker-1", home=home)
+
+        self.stop_quietly(tid)
+
+        self.assertTrue(self.wait_for(lambda: proc.poll() is not None))
+        self.assertTrue(self.wait_for(lambda: not preview_mod._pid_alive(child)))
+        self.assertFalse(os.path.exists(root))
+
+    def test_sigkill_nach_erneuter_identitaetspruefung(self):
+        self.preview_area()
+        tid = "T-1"
+        root = self.preview_root(tid)
+        home = os.path.join(root, "home")
+        os.makedirs(home, exist_ok=True)
+        pid_file = os.path.join(self.tmp, "pid")
+        code = (
+            "import os, signal, sys, time\n"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            "open(sys.argv[1], 'w').write(str(os.getpid()))\n"
+            "time.sleep(60)\n"
+        )
+        proc = self.spawn(code, cwd=home, marker="marker-1", arg=pid_file)
+        self.assertTrue(self.wait_for(lambda: os.path.isfile(pid_file)))
+        state = self.identity_state(tid, proc, marker="marker-1", home=home)
+
+        preview_mod._terminate(state, timeout=0.2)
+
+        self.assertTrue(self.wait_for(lambda: proc.poll() is not None))
+
+    def test_startfehler_beendet_eigenen_prozess(self):
+        self.preview_area()
+        tid = "T-1"
+        root = self.preview_root(tid)
+        home = os.path.join(root, "home")
+        os.makedirs(home, exist_ok=True)
+        proc = self.spawn("import time; time.sleep(60)", cwd=home, marker="marker-1")
+        state = self.identity_state(tid, proc, marker="marker-1", home=home)
+
+        with mock.patch.dict(os.environ, {"HERDR_APP_FAIL": "1"}), \
+                mock.patch.object(preview_mod, "START_TIMEOUT", 0.05), \
+                mock.patch.object(preview_mod, "POLL", 0.01):
+            with self.assertRaises(FabError):
+                preview_mod._wait_ready(state, tid)
+
+        self.assertTrue(self.wait_for(lambda: proc.poll() is not None))
+
+    def test_is_running_meldet_fremden_prozess_als_beendet(self):
+        self.preview_area()
+        tid = "T-1"
+        proc = self.spawn("import time; time.sleep(60)")
+        preview_mod._write_state(tid, {"pid": proc.pid, "ticket": tid})
+
+        self.assertFalse(preview_mod.is_running(tid))
+        self.assertTrue(preview_mod._pid_alive(proc.pid))
+
     def test_start_kopiert_worktree_und_seedet_eigene_daten(self):
         repo, tid, worktree = self.preview_ticket()
         canary = os.path.join(
