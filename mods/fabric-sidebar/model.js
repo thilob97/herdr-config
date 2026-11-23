@@ -523,10 +523,19 @@ export function freeAgentCards(terminals = [], listed = [], spaces = [], sort = 
     });
   }
 
+  // Sortiert Maschinen-Schlüssel; die lokale Maschine (`null`) steht zuletzt.
+  const byMachineKey = (a, b) => {
+    if (a === b) return 0;
+    if (a == null) return 1;
+    if (b == null) return -1;
+    return String(a).localeCompare(String(b));
+  };
   // Angeheftete zuerst. Danach `priority`: Dringlichkeit, dann Orchestrator,
-  // Name und Adresse; `grouped`: Maschinengruppe, Name, Adresse.
+  // Name und Adresse; `grouped`: Maschinen-Schlüssel (lokale Maschine zuletzt),
+  // Name, Adresse. Bewusst nicht `group`: das übersetzte Anzeige-Label darf die
+  // Reihenfolge nicht verschieben.
   const byName = (a, b) => Number(b.pinned) - Number(a.pinned)
-    || String(a.group).localeCompare(String(b.group))
+    || byMachineKey(a.machine, b.machine)
     || a.name.localeCompare(b.name)
     || a.address.localeCompare(b.address);
   const byPriority = (a, b) => Number(b.pinned) - Number(a.pinned)
