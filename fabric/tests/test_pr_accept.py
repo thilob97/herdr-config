@@ -869,6 +869,81 @@ class PrAcceptTests(FabricCase):
             0,
         )
 
+    def merged_pr_mit_rotem_check(self):
+        """PR gemergt, origin/main lief weiter, check schlägt fehl."""
+        repo, tid, worktree = self.ready_ticket()
+        self.write_file(
+            os.path.join(worktree, "mods", "demo", "main.js"), "export default {}\n"
+        )
+        self.write_file(os.path.join(worktree, "mods", "demo", "mod.json"), "{}\n")
+        self.write_file(
+            os.path.join(worktree, "mods", "demo", "test", "demo.test.mjs"),
+            "// Test für die Logik\n",
+        )
+        self.commit_in(worktree, "aenderung.txt", "wert\n")
+        self.git_out(worktree, "add", "mods")
+        self.git_out(worktree, "commit", "-qm", "mods")
+        self.passing_verify(worktree)
+        self.ok("verify", tid)
+        self.ok("verdict", tid, "pass", "--from", "ada", "gut")
+        self.ok("handover", tid, "--from", "zap", "fertig")
+        bare = self.setup_origin(repo)
+        self.ok("accept", tid, "--pr-only", env=self.gh_env(bare))
+        clone, merge = self.merge_on_origin(bare)
+        self.write_file(os.path.join(clone, "later.txt"), "später\n")
+        self.git_out(clone, "add", "later.txt")
+        self.git_out(clone, "commit", "-qm", "später")
+        self.git_out(clone, "push", "-q", "origin", "main")
+        self.write_file(self.gh_state, "MERGED")
+        return repo, tid, worktree, bare, merge
+
+    def assert_kein_revert(self, repo, tid, worktree, bare, vorher):
+        self.assertEqual(
+            self.git_out(bare, "rev-parse", "refs/heads/main"), vorher
+        )
+        self.assertEqual(
+            self.git(bare, "cat-file", "-e", "refs/heads/main:aenderung.txt").returncode,
+            0,
+        )
+        self.assertEqual(
+            self.git(bare, "cat-file", "-e", "refs/heads/main:later.txt").returncode,
+            0,
+        )
+        ticket = self.ticket(tid)
+        self.assertEqual(ticket["status"], "review")
+        self.assertNotIn("pr_merged", self.accept_steps(tid))
+        self.assertTrue(os.path.isdir(worktree))
+
+    def test_rot_ohne_merge_commit_bricht_ab(self):
+        repo, tid, worktree, bare, _merge = self.merged_pr_mit_rotem_check()
+        vorher = self.git_out(bare, "rev-parse", "refs/heads/main")
+
+        result = self.cli(
+            "accept",
+            tid,
+            env=self.gh_env(bare, HERDR_APP_FAIL="1", GH_HEAD="kein-merge"),
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("keinen Merge-Commit", result.stderr)
+        self.assert_kein_revert(repo, tid, worktree, bare, vorher)
+
+    def test_rot_mit_unbekanntem_merge_commit_bricht_ab(self):
+        repo, tid, worktree, bare, _merge = self.merged_pr_mit_rotem_check()
+        vorher = self.git_out(bare, "rev-parse", "refs/heads/main")
+        fremd = "deadbeef" * 5
+
+        result = self.cli(
+            "accept",
+            tid,
+            env=self.gh_env(bare, HERDR_APP_FAIL="1", GH_MERGE_OID=fremd),
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Merge-Commit", result.stderr)
+        self.assertIn(fremd, result.stderr)
+        self.assert_kein_revert(repo, tid, worktree, bare, vorher)
+
     def test_origin_rueckstand_prueft_den_merge_stand_neu(self):
         repo, tid, worktree = self.review_ticket()
         bare = self.setup_origin(repo)
