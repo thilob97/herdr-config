@@ -1633,6 +1633,27 @@ export function sortPrompts(prompts) {
   return [...(prompts ?? [])].sort((a, b) => rank(a) - rank(b) || String(a?.name).localeCompare(String(b?.name)));
 }
 
+/** Reiter der Repo-Ansicht in Anzeigereihenfolge. */
+export const REPO_TABS = ["verify", "lessons", "project", "wissen"];
+
+/** Reiter mit eigenem Editor; `wissen` ist nur Ansicht. */
+export const REPO_EDITOR_TABS = ["verify", "lessons", "project"];
+
+/** Reiter nach dem Laden: gültiger Deeplink gewinnt, ein Reload desselben
+ *  Repos behält den offenen Reiter, alles andere startet beim Prüfskript. */
+export function repoTabAfterLoad({ wanted = null, previousPath = null, path = null, current = "verify" } = {}) {
+  if (REPO_TABS.includes(wanted)) return wanted;
+  if (previousPath && path && previousPath === path) {
+    return REPO_TABS.includes(current) ? current : "verify";
+  }
+  return "verify";
+}
+
+/** Editor-Schlüssel eines Reiters oder `null`, wenn er keinen hat. */
+export function repoEditorKey(tab) {
+  return REPO_EDITOR_TABS.includes(tab) ? tab : null;
+}
+
 // ---------- Vorlagen und Issues ----------
 
 /** Feste Reihenfolge der mitgelieferten Vorlagen. */
@@ -1813,6 +1834,59 @@ export function templateSetArgs(name, text, from = "mensch") {
 
 export function repoSetArgs(path, key, text, from = "mensch") {
   return ["repo", "set", path, key, `--text=${text}`, `--from=${from}`];
+}
+
+// ---------- Wissensordner ----------
+
+/** `fab knowledge add`-Argumente; `--name` und `--force` nur wenn gesetzt. */
+export function knowledgeAddArgs(path, file, { name = "", force = false, from = "mensch" } = {}) {
+  return [
+    "knowledge", "add", path, file,
+    ...(name ? [`--name=${name}`] : []),
+    ...(force ? ["--force"] : []),
+    `--from=${from}`,
+  ];
+}
+
+/** `fab knowledge note`-Argumente. */
+export function knowledgeNoteArgs(path, name, text, from = "mensch") {
+  return ["knowledge", "note", path, name, `--text=${text}`, `--from=${from}`];
+}
+
+/** `fab knowledge rm`-Argumente. */
+export function knowledgeRemoveArgs(path, name, from = "mensch") {
+  return ["knowledge", "rm", path, name, `--from=${from}`];
+}
+
+/** Notizname mit `.md`-Endung; vorhandene Endungen bleiben. */
+export function knowledgeNoteFile(name) {
+  const value = String(name ?? "");
+  return value.toLowerCase().endsWith(".md") ? value : `${value}.md`;
+}
+
+/** Deutscher Hinweis zum Notiznamen oder leer, wenn er taugt. */
+export function knowledgeNameProblem(name) {
+  const value = String(name ?? "");
+  if (!value) return "Name fehlt.";
+  if (value.startsWith(".")) return "Der Name darf nicht mit einem Punkt beginnen.";
+  if (value.includes("/") || value.includes("\\")) return "Der Name darf keinen Pfadtrenner enthalten.";
+  if (value.includes("..")) return "Der Name darf kein „..“ enthalten.";
+  return "";
+}
+
+/** Dateigröße in B/KB/MB mit einer Nachkommastelle ab KB. */
+export function knowledgeSize(size) {
+  const value = typeof size === "number" ? size : Number(size);
+  if (size == null || size === "" || !Number.isFinite(value) || value < 0) return "—";
+  if (value < 1024) return `${Math.round(value)} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let amount = value / 1024;
+  let unit = 0;
+  while (amount >= 1024 && unit < units.length - 1) {
+    amount /= 1024;
+    unit += 1;
+  }
+  return `${amount.toFixed(1)} ${units[unit]}`;
 }
 
 // ---------- Layout-Helfer ----------

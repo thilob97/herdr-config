@@ -2,7 +2,9 @@
 import datetime
 import os
 import re
+import shutil
 import stat
+import tempfile
 
 from . import events, git, index, pipeline, store
 from .errors import FabError
@@ -13,6 +15,8 @@ TAIL_LINES = 40
 LESSONS = "lessons.md"
 DECISIONS = "decisions.md"
 PROJECT = "project.md"
+KNOWLEDGE = "knowledge"
+KNOWLEDGE_MAX = 20 * 1024 * 1024
 FILES = {"verify": VERIFY, "lessons": LESSONS, "project": PROJECT}
 KINDS = tuple(FILES)
 KIND_LABELS = {"verify": "Prüfskript", "lessons": "Lernnotizen", "project": "Steckbrief"}
@@ -152,6 +156,7 @@ def show(raw):
     top = _root(raw)
     script, lessons, folder = _paths(top)
     project = os.path.join(folder, PROJECT)
+    knowledge = os.path.join(folder, KNOWLEDGE)
     return {
         "path": top,
         "branch": git.branch(top),
@@ -159,6 +164,10 @@ def show(raw):
         "lessons": {"exists": os.path.isfile(lessons), "text": _read(lessons)},
         "project": {"exists": os.path.isfile(project), "text": _read(project)},
         "project_template": PROJECT_TEMPLATE,
+        "knowledge": {
+            "exists": os.path.isdir(knowledge),
+            "files": knowledge_files(top),
+        },
     }
 
 
@@ -258,6 +267,155 @@ def project_text(raw):
         return _read(target)
     except FabError:
         return None
+
+
+def knowledge_path(raw):
+    """(Repo-Wurzel, Wissensordner) eines vorhandenen Repos; sonst (None, None)."""
+    return _repo_file(raw, KNOWLEDGE)
+
+
+def _knowledge_kind(name):
+    """Deutsche Typangabe aus der Endung; unbekannte Endungen bleiben „Datei“."""
+    suffix = os.path.splitext(name)[1].lower()
+    if suffix == ".pdf":
+        return "PDF"
+    if suffix in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"):
+        return "Bild"
+    if suffix in (".md", ".markdown", ".txt"):
+        return "Notiz"
+    return "Datei"
+
+
+def knowledge_files(raw):
+    """Reguläre Wissensdateien als `[{name, size, kind}]`, nach Name sortiert."""
+    _top, folder = knowledge_path(raw)
+    if not folder or not os.path.isdir(folder):
+        return []
+    try:
+        names = os.listdir(folder)
+    except OSError as exc:
+        raise FabError(f"{folder} ist nicht lesbar: {exc}")
+    rows = []
+    for name in names:
+        if name.startswith("."):
+            continue
+        path = os.path.join(folder, name)
+        try:
+            info = os.lstat(path)
+        except OSError:
+            continue
+        if not stat.S_ISREG(info.st_mode):
+            continue
+        rows.append(
+            {"name": name, "size": info.st_size, "kind": _knowledge_kind(name)}
+        )
+    return sorted(rows, key=lambda row: row["name"])
+
+
+def _knowledge_name(name):
+    """Zielnamen einer Wissensdatei prüfen; Rückgabe ohne Leerraum am Rand."""
+    value = str(name or "").strip()
+    if not value:
+        raise FabError("Der Name der Wissensdatei darf nicht leer sein")
+    if "/" in value or "\\" in value:
+        raise FabError(
+            f"Der Name „{value}“ darf keine Pfadtrenner enthalten; "
+            f"Wissensdateien liegen flach in .fabric/{KNOWLEDGE}/"
+        )
+    if ".." in value:
+        raise FabError(f"Der Name „{value}“ darf kein „..“ enthalten")
+    if value.startswith("."):
+        raise FabError(f"Der Name „{value}“ darf nicht mit einem Punkt beginnen")
+    return value
+
+
+def _knowledge_folder(top):
+    """Wissensordner anlegen und prüfen, dass er real im Repo liegt."""
+    folder = os.path.join(_fabric_folder(top), KNOWLEDGE)
+    os.makedirs(folder, mode=0o755, exist_ok=True)
+    root = os.path.realpath(top)
+    real = os.path.realpath(folder)
+    if os.path.commonpath([root, real]) != root:
+        raise FabError(
+            f"{folder} zeigt nach {real} außerhalb von {root}; "
+            f"Wissensdateien bleiben im Repo"
+        )
+    return folder
+
+
+def knowledge_add(raw, source, name=None, force=False, actor="mensch"):
+    """Eine Datei binär und atomar in `.fabric/knowledge/` ablegen und committen."""
+    top = _root(raw)
+    source = os.path.abspath(os.path.expanduser(str(source)))
+    if not os.path.isfile(source):
+        raise FabError(f"Quelldatei gibt es nicht oder ist keine Datei: {source}")
+    wanted = _knowledge_name(name or os.path.basename(source))
+    size = os.path.getsize(source)
+    if size > KNOWLEDGE_MAX:
+        raise FabError(
+            f"„{wanted}“ ist {size} Bytes groß; höchstens "
+            f"{KNOWLEDGE_MAX} Bytes (20 MB) erlaubt"
+        )
+    folder = _knowledge_folder(top)
+    target = os.path.join(folder, wanted)
+    if os.path.lexists(target):
+        if not force:
+            raise FabError(f"„{wanted}“ existiert schon; --force überschreibt")
+        if os.path.islink(target):
+            os.unlink(target)
+    fd, temporary = tempfile.mkstemp(dir=folder, prefix=".fab-", suffix=".tmp")
+    os.close(fd)
+    try:
+        shutil.copyfile(source, temporary)
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, target)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+    _commit(top, target, f"Wissensdatei {wanted} hinzugefügt")
+    events.append("config", "", actor, "", f".fabric/{KNOWLEDGE}/{wanted} hinzugefügt")
+    return target
+
+
+def knowledge_note(raw, name, text, actor="mensch"):
+    """Eine Wissensnotiz als `.md` schreiben und committen."""
+    top = _root(raw)
+    value = str(name or "").strip()
+    stem = value[:-3] if value.lower().endswith(".md") else value
+    stem = _knowledge_name(stem)
+    filename = value if value.lower().endswith(".md") else f"{stem}.md"
+    folder = _knowledge_folder(top)
+    target = os.path.join(folder, filename)
+    if os.path.lexists(target):
+        raise FabError(f"„{filename}“ existiert schon")
+    store.atomic_write(target, text or "", mode=0o644)
+    _commit(top, target, f"Wissensnotiz {filename} angelegt")
+    events.append("config", "", actor, "", f".fabric/{KNOWLEDGE}/{filename} angelegt")
+    return target
+
+
+def knowledge_remove(raw, name, actor="mensch"):
+    """Eine Wissensdatei löschen und die Löschung committen."""
+    top = _root(raw)
+    wanted = _knowledge_name(name)
+    _top, folder = knowledge_path(raw)
+    target = os.path.join(folder, wanted)
+    root = os.path.realpath(top)
+    real = os.path.realpath(target)
+    if os.path.commonpath([root, real]) != root:
+        raise FabError(
+            f"{target} zeigt nach {real} außerhalb von {root}; "
+            f"Wissensdateien bleiben im Repo"
+        )
+    if not os.path.isfile(target):
+        raise FabError(f"Wissensdatei fehlt: {target}")
+    os.unlink(target)
+    _commit(top, target, f"Wissensdatei {wanted} entfernt")
+    events.append("config", "", actor, "", f".fabric/{KNOWLEDGE}/{wanted} entfernt")
+    return target
 
 
 def _lesson_lines(text):

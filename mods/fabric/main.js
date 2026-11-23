@@ -176,6 +176,7 @@ export default class Fabric extends View {
     this.repoDetail = null;
     this.repoError = null;
     this.repoTab = "verify";
+    this.knowledgeNote = null;
     this.verifyEditor = null;
     this.lessonsEditor = null;
     this.projectEditor = null;
@@ -1710,6 +1711,7 @@ export default class Fabric extends View {
 
   async loadRepo(path, cx) {
     if (!path) return;
+    const previousPath = this.repoDetail?.path;
     try {
       const result = await this.execFab(["repo", "show", path, "--json"], { timeout: 30000 });
       if (result.code !== 0) throw new Error((result.stderr || "").trim() || `Code ${result.code}`);
@@ -1726,12 +1728,8 @@ export default class Fabric extends View {
       this.repoTest = null;
       // Vorschau-Deeplink: einmal die gewünschte Datei zeigen, dann normal weiter.
       const wantedTab = shared("fabric.repoTab");
-      if (wantedTab === "verify" || wantedTab === "lessons" || wantedTab === "project") {
-        this.repoTab = wantedTab;
-        setShared("fabric.repoTab", null);
-      } else {
-        this.repoTab = "verify";
-      }
+      this.repoTab = model.repoTabAfterLoad({ wanted: wantedTab, previousPath, path, current: this.repoTab });
+      if (model.REPO_TABS.includes(wantedTab)) setShared("fabric.repoTab", null);
     } catch (error) {
       this.repoError = `Repo nicht lesbar: ${message(error)}`;
       this.repoDetail = null;
@@ -4044,26 +4042,27 @@ export default class Fabric extends View {
   async saveRepo(cx, only = null, silent = false) {
     if (!this.repoDetail) return false;
     const key = only ?? this.repoTab;
-    const editor = key === "verify" ? this.verifyEditor
-      : key === "project" ? this.projectEditor
+    const editorKey = model.repoEditorKey(key);
+    if (!editorKey) return false;
+    const editor = editorKey === "verify" ? this.verifyEditor
+      : editorKey === "project" ? this.projectEditor
         : this.lessonsEditor;
     if (!editor) {
-      this.setError(key === "verify" ? "verify" : key === "project" ? "project" : "lessons",
-        "Noch keine Datei angelegt.");
+      this.setError(editorKey, "Noch keine Datei angelegt.");
       this.notifyNow();
       return false;
     }
     const text = editor.value();
-    const success = key === "verify" ? "Prüfskript gespeichert."
-      : key === "project" ? "Steckbrief gespeichert."
+    const success = editorKey === "verify" ? "Prüfskript gespeichert."
+      : editorKey === "project" ? "Steckbrief gespeichert."
         : "Lernnotizen gespeichert.";
-    const result = await this.action("repo-set", model.repoSetArgs(this.repoDetail.path, key, text), {
+    const result = await this.action("repo-set", model.repoSetArgs(this.repoDetail.path, editorKey, text), {
       success,
       after: () => {
-        if (key === "verify") {
+        if (editorKey === "verify") {
           this.verifySaved = text;
           this.repoDetail.verify = { ...(this.repoDetail.verify ?? {}), exists: true, text };
-        } else if (key === "project") {
+        } else if (editorKey === "project") {
           this.projectSaved = text;
           this.repoDetail.project = { ...(this.repoDetail.project ?? {}), exists: true, text };
         } else {
@@ -4083,8 +4082,8 @@ export default class Fabric extends View {
       },
     });
     if (result.ok) {
-      if (key === "verify") this.verifySaved = text;
-      else if (key === "project") this.projectSaved = text;
+      if (editorKey === "verify") this.verifySaved = text;
+      else if (editorKey === "project") this.projectSaved = text;
       else this.lessonsSaved = text;
     }
     if (!silent) this.notifyNow();
@@ -4115,6 +4114,113 @@ export default class Fabric extends View {
     if (this.repoTab === "project" && this.projectEditor) this.projectEditor.set_value(this.projectSaved);
     this.setError("repo-set", null);
     this.notifyNow();
+  }
+
+  // ---------- Wissensordner ----------
+
+  async pickKnowledgeFile(cx) {
+    let result = null;
+    try {
+      result = await exec("/usr/bin/osascript", [
+        "-e", 'POSIX path of (choose file with prompt "Datei für den Wissensordner wählen")',
+      ]);
+    } catch (error) {
+      const text = `Datei wählen ging nicht: ${message(error)}`;
+      this.setError("knowledge-add", text);
+      notify({ title: "Fabric", body: text, level: "error" });
+      this.notifyNow();
+      return false;
+    }
+    if (result.code === 0) {
+      const path = (result.stdout || "").trim();
+      if (!path) return false;
+      return this.addKnowledgeFile(path, cx);
+    }
+    const stderr = result.stderr || "";
+    if (stderr.includes("User canceled") || stderr.includes("-128")) return false;
+    const text = `Datei wählen ging nicht: ${stderr.trim() || `osascript endete mit Code ${result.code}.`}`;
+    this.setError("knowledge-add", text);
+    notify({ title: "Fabric", body: text, level: "error" });
+    this.notifyNow();
+    return false;
+  }
+
+  async addKnowledgeFile(sourcePath, cx) {
+    if (!this.repoDetail || !sourcePath) return false;
+    const repoPath = this.repoDetail.path;
+    const result = await this.action("knowledge-add", model.knowledgeAddArgs(repoPath, sourcePath), {
+      success: "Datei zum Wissensordner hinzugefügt.",
+      after: () => this.loadRepo(repoPath, cx),
+    });
+    return result.ok;
+  }
+
+  async dropKnowledgeFiles(paths, cx) {
+    for (const path of paths ?? []) {
+      if (!path) continue;
+      await this.addKnowledgeFile(path, cx);
+    }
+  }
+
+  openKnowledgeNoteModal(cx) {
+    if (!this.repoDetail) return;
+    const name = InputState.new({ placeholder: "z. B. ideen" });
+    name.on("change", (_event, cx) => { this.notifyNow(); });
+    this.track(name);
+    const text = TextareaState.new({ placeholder: "Inhalt der Notiz …", rows: 5 });
+    text.on("change", (_event, cx) => { this.notifyNow(); });
+    this.track(text);
+    this.knowledgeNote = { name, text };
+    this.setError("knowledge-note", null);
+    this.modal = { kind: "knowledge-note" };
+    this.notifyNow();
+  }
+
+  async createKnowledgeNote(cx) {
+    if (!this.repoDetail || !this.knowledgeNote) return false;
+    const repoPath = this.repoDetail.path;
+    const name = this.knowledgeNote.name.value().trim();
+    const text = this.knowledgeNote.text.value();
+    const problem = model.knowledgeNameProblem(name);
+    if (problem) {
+      this.setError("knowledge-note", problem);
+      this.notifyNow();
+      return false;
+    }
+    if (!text.trim()) {
+      this.setError("knowledge-note", "Text fehlt.");
+      this.notifyNow();
+      return false;
+    }
+    const result = await this.action("knowledge-note", model.knowledgeNoteArgs(repoPath, name, text), {
+      success: "Notiz im Wissensordner gespeichert.",
+      after: () => this.loadRepo(repoPath, cx),
+    });
+    if (result.ok && this.modal?.kind === "knowledge-note") {
+      this.modal = null;
+      this.knowledgeNote = null;
+    }
+    this.notifyNow();
+    return result.ok;
+  }
+
+  confirmKnowledgeRemove(name, cx) {
+    this.setError("knowledge-rm", null);
+    this.modal = { kind: "knowledge-remove", name };
+    this.notifyNow();
+  }
+
+  async removeKnowledge(cx) {
+    const name = this.modal?.name;
+    if (!this.repoDetail || !name) return false;
+    const repoPath = this.repoDetail.path;
+    const result = await this.action("knowledge-rm", model.knowledgeRemoveArgs(repoPath, name), {
+      success: "Eintrag entfernt.",
+      after: () => this.loadRepo(repoPath, cx),
+    });
+    if (result.ok && this.modal?.kind === "knowledge-remove") this.modal = null;
+    this.notifyNow();
+    return result.ok;
   }
 
   async testRepo(cx) {

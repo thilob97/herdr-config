@@ -24,6 +24,9 @@ import {
   PIPELINE_STATE_WORDS, PIPELINE_TRIGGER_WORDS, pipelineState, pipelineStateWord, pipelineTriggerWord,
   pipelineStepSummary, pipelineRunsNewest, pipelineLastRun, pipelineBadge, pipelineAutoStep,
   pipelineOpenSteps, pipelineLogLines, pipelineLogSearch, pipelineDuration, pipelineRunTarget,
+  knowledgeAddArgs, knowledgeNoteArgs, knowledgeRemoveArgs, knowledgeNoteFile,
+  knowledgeNameProblem, knowledgeSize,
+  REPO_TABS, REPO_EDITOR_TABS, repoTabAfterLoad, repoEditorKey,
 } from "../model.js";
 
 test("Tickets werden nach Stufe gruppiert, in Stufenreihenfolge", () => {
@@ -2499,4 +2502,119 @@ test("Alarm-Toast: eine Alarm-Inbox-Zeile feuert genau einmal", () => {
   const second = inboxNotifications(inbox, first.seen, settings, local + 60000);
   assert.equal(second.fresh.length, 0);
   assert.equal(second.changed, false);
+});
+
+test("Wissensordner: Argumente für add, note und rm", () => {
+  assert.deepEqual(
+    knowledgeAddArgs("/repo", "/tmp/plan.pdf"),
+    ["knowledge", "add", "/repo", "/tmp/plan.pdf", "--from=mensch"],
+  );
+  assert.deepEqual(
+    knowledgeAddArgs("/repo", "/tmp/plan.pdf", { name: "plan.pdf", force: true }),
+    ["knowledge", "add", "/repo", "/tmp/plan.pdf", "--name=plan.pdf", "--force", "--from=mensch"],
+  );
+  assert.deepEqual(
+    knowledgeAddArgs("/repo", "/tmp/a.png", { name: "bild", from: "agent" }),
+    ["knowledge", "add", "/repo", "/tmp/a.png", "--name=bild", "--from=agent"],
+  );
+
+  const text = "- erster Punkt\nzweiter Punkt";
+  assert.deepEqual(
+    knowledgeNoteArgs("/repo", "ideen", text),
+    ["knowledge", "note", "/repo", "ideen", `--text=${text}`, "--from=mensch"],
+  );
+  assert.deepEqual(
+    knowledgeNoteArgs("/repo", "ideen", text, "agent"),
+    ["knowledge", "note", "/repo", "ideen", `--text=${text}`, "--from=agent"],
+  );
+
+  assert.deepEqual(
+    knowledgeRemoveArgs("/repo", "ideen"),
+    ["knowledge", "rm", "/repo", "ideen", "--from=mensch"],
+  );
+  assert.deepEqual(
+    knowledgeRemoveArgs("/repo", "ideen", "agent"),
+    ["knowledge", "rm", "/repo", "ideen", "--from=agent"],
+  );
+});
+
+test("Wissensordner: Notizname bekommt genau eine .md-Endung", () => {
+  assert.equal(knowledgeNoteFile("ideen"), "ideen.md");
+  assert.equal(knowledgeNoteFile("ideen.md"), "ideen.md");
+  assert.equal(knowledgeNoteFile("plan.markdown"), "plan.markdown.md");
+});
+
+test("Wissensordner: Namensprüfung meldet den ersten Fehler", () => {
+  assert.equal(knowledgeNameProblem("ideen"), "");
+  assert.equal(knowledgeNameProblem("ideen-notiz_2"), "");
+  assert.equal(knowledgeNameProblem(""), "Name fehlt.");
+  assert.equal(knowledgeNameProblem("a/b"), "Der Name darf keinen Pfadtrenner enthalten.");
+  assert.equal(knowledgeNameProblem("a\\b"), "Der Name darf keinen Pfadtrenner enthalten.");
+  assert.equal(knowledgeNameProblem("a..b"), "Der Name darf kein „..“ enthalten.");
+  assert.equal(knowledgeNameProblem(".plan"), "Der Name darf nicht mit einem Punkt beginnen.");
+  // Reihenfolge: Punkt vor Trenner, Trenner vor „..“.
+  assert.equal(knowledgeNameProblem("../plan"), "Der Name darf nicht mit einem Punkt beginnen.");
+  assert.equal(knowledgeNameProblem("a/b..c"), "Der Name darf keinen Pfadtrenner enthalten.");
+});
+
+test("Wissensordner: Größen lesbar formatieren", () => {
+  assert.equal(knowledgeSize(0), "0 B");
+  assert.equal(knowledgeSize(512), "512 B");
+  assert.equal(knowledgeSize(1536), "1.5 KB");
+  assert.equal(knowledgeSize(2097152), "2.0 MB");
+  assert.equal(knowledgeSize(-1), "—");
+  assert.equal(knowledgeSize(null), "—");
+  assert.equal(knowledgeSize(undefined), "—");
+  assert.equal(knowledgeSize("abc"), "—");
+  assert.equal(knowledgeSize(Number.NaN), "—");
+});
+
+test("Repo-Reiter: gültiger Deeplink gewinnt vor allem anderen", () => {
+  assert.equal(repoTabAfterLoad({ wanted: "wissen" }), "wissen");
+  assert.equal(repoTabAfterLoad({ wanted: "verify" }), "verify");
+  assert.equal(repoTabAfterLoad({ wanted: "lessons" }), "lessons");
+  assert.equal(repoTabAfterLoad({ wanted: "project" }), "project");
+  // Auch gegen ein anderes Repo und einen anderen aktuellen Reiter.
+  assert.equal(repoTabAfterLoad({ wanted: "wissen", previousPath: "/a", path: "/b", current: "verify" }), "wissen");
+  assert.equal(repoTabAfterLoad({ wanted: "lessons", previousPath: "/a", path: "/a", current: "project" }), "lessons");
+});
+
+test("Repo-Reiter: ungültiger oder leerer Wunsch wird ignoriert", () => {
+  assert.equal(repoTabAfterLoad({ wanted: "quatsch", previousPath: "/a", path: "/b" }), "verify");
+  assert.equal(repoTabAfterLoad({ wanted: "", previousPath: "/a", path: "/a", current: "wissen" }), "wissen");
+  assert.equal(repoTabAfterLoad({ wanted: null, previousPath: "/a", path: "/a", current: "project" }), "project");
+  assert.equal(repoTabAfterLoad({ wanted: undefined, path: "/b", current: "lessons" }), "verify");
+});
+
+test("Repo-Reiter: Reload desselben Repos behält den offenen Reiter", () => {
+  assert.equal(repoTabAfterLoad({ previousPath: "/a", path: "/a", current: "wissen" }), "wissen");
+  assert.equal(repoTabAfterLoad({ previousPath: "/a", path: "/a", current: "project" }), "project");
+  assert.equal(repoTabAfterLoad({ previousPath: "/a", path: "/a", current: "lessons" }), "lessons");
+  assert.equal(repoTabAfterLoad({ previousPath: "/a", path: "/a", current: "verify" }), "verify");
+});
+
+test("Repo-Reiter: anderes Repo, fehlender Vorpfad und unbekannter Reiter starten bei verify", () => {
+  assert.equal(repoTabAfterLoad({ previousPath: "/a", path: "/b", current: "wissen" }), "verify");
+  assert.equal(repoTabAfterLoad({ path: "/b", current: "project" }), "verify");
+  assert.equal(repoTabAfterLoad({ previousPath: "/a", path: "/a", current: "quatsch" }), "verify");
+  assert.equal(repoTabAfterLoad({ previousPath: "/a", path: "/a", current: null }), "verify");
+  assert.equal(repoTabAfterLoad(), "verify");
+});
+
+test("Repo-Reiter: nur verify, lessons und project haben einen Editor", () => {
+  assert.deepEqual(REPO_TABS, ["verify", "lessons", "project", "wissen"]);
+  assert.deepEqual(REPO_EDITOR_TABS, ["verify", "lessons", "project"]);
+  assert.equal(repoEditorKey("verify"), "verify");
+  assert.equal(repoEditorKey("lessons"), "lessons");
+  assert.equal(repoEditorKey("project"), "project");
+  assert.equal(repoEditorKey("wissen"), null);
+  assert.equal(repoEditorKey(null), null);
+  assert.equal(repoEditorKey("x"), null);
+});
+
+test("Wissensordner: .md-Endung wird ohne Rücksicht auf Schreibweise erkannt", () => {
+  assert.equal(knowledgeNoteFile("Plan.MD"), "Plan.MD");
+  assert.equal(knowledgeNoteFile("plan.Md"), "plan.Md");
+  assert.equal(knowledgeNoteFile("Plan"), "Plan.md");
+  assert.equal(knowledgeNoteFile(""), ".md");
 });
