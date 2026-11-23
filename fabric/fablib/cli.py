@@ -3212,7 +3212,7 @@ def build_parser():
     start.add_argument("id", metavar="ID")
     start.add_argument("--page",
                        choices=("board", "ticket", "settings", "workflows",
-                                "repos", "team", "context"),
+                                "repos", "team", "context", "pipelines"),
                        default="board", help="Startseite im Fenster")
     shot = preview_sub.add_parser("shot", help="Screenshot der Vorschau anhängen",
                                   description="Screenshot der Vorschau anhängen")

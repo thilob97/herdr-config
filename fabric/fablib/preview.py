@@ -285,6 +285,83 @@ def _seed_metrics(state):
                 os.environ[key] = value
 
 
+def _seed_pipelines(state):
+    """Demo-Pipelines in der Vorschau-Datenbank anlegen.
+
+    Screenshots brauchen einen roten Lauf mit übersprungenen Schritten: nur so
+    sind Fehler-Badge, automatisch aufgeklappte Logzeilen und die übersprungenen
+    Folgeschritte zu sehen. Der grüne Repo-Test dient als Gegenstück.
+    """
+    from . import store
+
+    keys = {
+        "HOME": state["userhome"],
+        "FAB_HOME": state["fab_home"],
+        "FAB_ROSTER": os.path.join(state["home"], "fabric", "roster.json"),
+    }
+    previous = {key: os.environ.get(key) for key in keys}
+    os.environ.update(keys)
+    try:
+        with store.locked():
+            green = store.pipeline_run_new(
+                trigger="repo-test",
+                repo=state["home"],
+                worktree=state["home"],
+                branch="main",
+                head="a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+            )
+            store.pipeline_step_add(
+                green, 0, "unittest", "python3 -m unittest", "pass",
+                duration_ms=7300, exit_code=0,
+                stdout="ran 42 tests in 7,1 s\n\nOK",
+            )
+            store.pipeline_step_add(
+                green, 1, "check-fabric", "fab check mods", "pass",
+                duration_ms=11100, exit_code=0,
+                stdout="fabric: 12 Module geprüft\nkeine Befunde",
+            )
+            store.pipeline_run_finish(green, "pass", 18400)
+            try:
+                ticket = store.load("T-1")
+            except FabError:
+                ticket = {}
+            red = store.pipeline_run_new(
+                trigger="verify",
+                ticket="T-1",
+                repo=str(ticket.get("repo") or state["home"]),
+                worktree=str(ticket.get("worktree") or state["home"]),
+                branch=str(ticket.get("branch") or "fab/T-1-pipeline-badges"),
+                head=str(
+                    ticket.get("head")
+                    or "3f9c2a1d4b5e6f708192a3b4c5d6e7f8091a2b3c"
+                ),
+            )
+            store.pipeline_step_add(
+                red, 0, "verify.sh", "./verify.sh", "pass",
+                duration_ms=1100, exit_code=0,
+                stdout="prüfung ok\nzweite zeile",
+            )
+            store.pipeline_step_add(
+                red, 1, "mod-fabric", "node --test", "fail",
+                duration_ms=2100, exit_code=1,
+                stdout="# tests 42\n# pass 41",
+                stderr="not ok 7 - Pipeline-Badge\n  AssertionError: erwartet grün",
+            )
+            store.pipeline_step_add(
+                red, 2, "check-fabric", "fab check mods", "skipped",
+            )
+            store.pipeline_step_add(
+                red, 3, "check-toast", "fab check toast", "skipped",
+            )
+            store.pipeline_run_finish(red, "fail", 3200)
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 def _seed(state, ticket, worktree):
     env = environment(state)
     env["FAB_ROSTER"] = os.path.join(root(ticket["id"]), "keine-roster.json")
@@ -377,6 +454,7 @@ def start(ticket, page="board"):
     _seed_window(state, page)
     _seed(state, ticket, worktree)
     _seed_metrics(state)
+    _seed_pipelines(state)
     with open(state["log"], "a", encoding="utf-8") as log:
         try:
             process = subprocess.Popen(
