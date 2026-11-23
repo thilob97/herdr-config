@@ -108,6 +108,23 @@ def merge_base(repo, base, branch_name):
     return basis
 
 
+def commit_count(repo, base, branch_name):
+    """Zahl der Commits von branch_name über base."""
+    result = git(["rev-list", "--count", f"{base}..{branch_name}"], repo)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip() or "unbekannter Fehler"
+        raise FabError(
+            f"git rev-list --count {base}..{branch_name} ist fehlgeschlagen: {detail}"
+        )
+    try:
+        return int(result.stdout.strip() or "0")
+    except ValueError:
+        raise FabError(
+            f"git rev-list --count {base}..{branch_name} lieferte keine Zahl: "
+            f"{result.stdout.strip()!r}"
+        )
+
+
 def diff_paths(repo, base, branch_name):
     """Dateien, die der Branch gegenüber der Merge-Basis mit base ändert."""
     basis = merge_base(repo, base, branch_name)

@@ -3,7 +3,7 @@ from . import store
 
 KINDS = frozenset(
     "created edited status assigned comment wake dispatch verify verdict handover "
-    "accept reject drop orchestrator config tick pr lesson flow decision "
+    "accept accept_noop reject drop orchestrator config tick pr lesson flow decision "
     "session_ended".split()
 )
 

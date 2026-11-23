@@ -83,6 +83,8 @@ def ticket_text(ticket, children=None, cost=None, waits=None, events=None):
         f"Branch: {ticket.get('branch') or '—'}",
         f"Worktree: {ticket.get('worktree') or '—'}",
     ]
+    if ticket.get("no_change"):
+        meta.append("ohne Änderung: keine Commits über der Basis")
     if ticket.get("parent"):
         meta.append(f"Eltern-Ticket: {ticket['parent']}")
     flow = ticket.get("flow")
