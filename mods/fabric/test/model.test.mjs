@@ -6,6 +6,8 @@ import assert from "node:assert/strict";
 
 import {
   groupByStage, mentionSegments, sortInbox, inboxRetry, inboxLesson, lessonArgs, timelineFeed, eventSummary, relativeTime,
+  PAGE_WORDS, pageWord, roleLabel, promptKindWord, actorLabel,
+  STAGES, STATUS_WORDS, INBOX_WORDS, EVENT_WORDS,
   stallLabel, stallReason,
   wakeLine, sessionChips, sessionStatus, childrenOf, childProgress,
   teamForTicket, teamAgents,
@@ -161,6 +163,12 @@ test("Zeitverlauf: Ereignisarten werden zu unterscheidbaren Sätzen", () => {
   assert.equal(eventSummary({ kind: "verdict", actor: "ada", text: "pass: HEAD geprüft" }).detail, "bestanden — HEAD geprüft");
   assert.equal(eventSummary({ kind: "verify", actor: "zap", text: "fail" }).detail, "rot");
   assert.equal(eventSummary({ kind: "comment", actor: "zap", text: "hallo" }).verb, "kommentierte");
+  const flow = eventSummary({ kind: "flow", actor: "flow", text: "main-pruefen" });
+  assert.equal(flow.actor, "Workflow");
+  assert.equal(flow.verb, "führte aus");
+  assert.equal(flow.detail, "main-pruefen");
+  assert.equal(eventSummary({ kind: "decision", actor: "mensch", text: "so" }).verb, "entschied");
+  assert.equal(eventSummary({ kind: "alarm", actor: "fab", text: "main rot" }).verb, "meldete");
 });
 
 test("Verlaufsende: Text, Kopfzeile, zwei Kommentare, fremde Weckzeilen zählen nicht", async () => {
@@ -218,6 +226,28 @@ test("Sitzungsstatus: herdr-Status wird zu deutschem Wort und Farbschlüssel", (
   assert.deepEqual(sessionStatus("exited"), { word: "beendet", color: "dim" });
   assert.deepEqual(sessionStatus(null), { word: "unbekannt", color: "dim" });
   assert.deepEqual(sessionStatus("fremd"), { word: "fremd", color: "dim" });
+});
+
+test("Zielbegriffe: Seiten und Ticket-Stufen tragen die Wörter der Begriffstabelle", () => {
+  assert.deepEqual(
+    ["board", "tickets", "workflows", "pipelines", "team", "prompts", "templates", "repos", "settings"]
+      .map((page) => PAGE_WORDS[page]),
+    ["Board", "Tickets", "Workflows", "Pipelines", "Team", "Prompts", "Vorlagen", "Repos", "Einstellungen"],
+  );
+  assert.equal(pageWord("timeline"), "Zeitverlauf");
+  assert.deepEqual(STAGES.map((stage) => stage.label), ["Entwurf", "Geplant", "In Arbeit", "Prüfung", "Fertig"]);
+  assert.equal(STATUS_WORDS.dropped, "Verworfen");
+  assert.equal(roleLabel("umsetzer"), "Umsetzer");
+  assert.equal(roleLabel("pruefer"), "Prüferin / Prüfer");
+  assert.equal(roleLabel("UI / UX Designer"), "UI / UX Designer");
+  assert.equal(roleLabel(""), "ohne Rolle");
+  assert.equal(promptKindWord("orchestrator"), "Orchestrator");
+  assert.equal(promptKindWord("preamble"), "Präambel");
+  assert.equal(promptKindWord("agent"), "Rolle");
+  assert.equal(INBOX_WORDS.decision, "Entscheidung");
+  assert.equal(EVENT_WORDS.flow, "Workflow");
+  assert.equal(actorLabel("flow"), "Workflow");
+  assert.equal(actorLabel("fab"), "Fabric");
 });
 
 test("Sitzungen finden ihr Terminal über Adresse, sonst über fab-<agent>-<id>", () => {
@@ -505,7 +535,7 @@ test("„weckt“-Vorschau: Agenten wecken, mensch landet in der Inbox, Unbekann
     { name: "fremd", kind: "unknown" },
   ]);
   assert.deepEqual(wakeTargets("@mensch", names, "mensch"), [{ name: "mensch", kind: "self" }]);
-  assert.equal(wakeSummary("@ada und @mensch", names), "Weckt ada · Inbox: mensch.");
+  assert.equal(wakeSummary("@ada und @mensch", names), "Weckt ada · Posteingang: mensch.");
   assert.equal(wakeSummary("@zap @fremd", names), "Weckt zap · Unbekannt: fremd.");
   assert.equal(wakeSummary("nur Text", names), "Weckt niemanden.");
 });
@@ -1479,7 +1509,7 @@ test("Benachrichtigung: Stufe und Klang je Inbox-Art", async () => {
   const { inboxNotifyLevel, inboxNotifySound, INBOX_LEVELS } = await import("../model.js");
 
   assert.deepEqual(INBOX_LEVELS, {
-    question: "warning", review: "info", attention: "error", lesson: "success",
+    question: "warning", review: "info", attention: "error", lesson: "success", decision: "info",
   });
   assert.equal(inboxNotifyLevel("question"), "warning");
   assert.equal(inboxNotifyLevel("review"), "info");
@@ -1512,8 +1542,9 @@ test("Benachrichtigung: inboxEntryId fällt ohne id auf Art, Ticket und Zeit zur
 
 // ---------- Kosten und Liegezeiten ----------
 
-test("Kosten werden ab einem Dollar zweistellig, kleine Beträge vierstellig gezeigt", () => {
+test("Kosten werden ab einem Cent zweistellig, kleine Beträge vierstellig gezeigt", () => {
   assert.equal(formatCost(1.234), "$1.23");
+  assert.equal(formatCost(0.42), "$0.42");
   assert.equal(formatCost(2), "$2.00");
   assert.equal(formatCost(0.0012), "$0.0012");
   assert.equal(formatCost(0), "$0.00");
@@ -1766,6 +1797,34 @@ test("Workflow-Layout vertikal: Schichten untereinander, Zweige nebeneinander", 
   assert.equal(edge.x2, at("ja").x + at("ja").w / 2);
   assert.equal(edge.y2, at("ja").y);
   assert.equal(edge.mid, (edge.y1 + edge.y2) / 2);
+});
+
+test("Workflow-Layout vertikal: übersprungene Schicht führt außen an den Karten vorbei", () => {
+  const flow = {
+    nodes: [
+      { id: "start", type: "trigger", trigger: "manual" },
+      { id: "a", type: "agent", agent: "zap" },
+      { id: "b", type: "agent", agent: "ada" },
+      { id: "ende", type: "end" },
+    ],
+    edges: [
+      { from: "start", to: "a" },
+      { from: "a", to: "b" },
+      { from: "b", to: "ende" },
+      { from: "start", to: "ende" },
+    ],
+  };
+  const layout = flowLayout(flow, { vertical: true, gapY: 28 });
+  const edge = layout.edges.find((row) => row.from === "start" && row.to === "ende");
+  const a = layout.nodes.find((node) => node.id === "a");
+  const start = layout.nodes.find((node) => node.id === "start");
+  const ende = layout.nodes.find((node) => node.id === "ende");
+
+  assert.equal(edge.skipped, true);
+  assert.equal(edge.x1, start.x + start.w + 1, "startet außen am Ausgangsknoten");
+  assert.equal(edge.x2, ende.x + ende.w + 1, "endet außen am Zielknoten");
+  assert.ok(edge.mid > start.y + start.h && edge.mid < a.y, "Label liegt in der Lücke unter dem Start");
+  assert.ok(edge.x1 > a.x + a.w, "die Kante läuft nicht durch die Karte darunter");
 });
 
 test("Workflow-Wörter, letzter Schritt und Knotengrund", () => {

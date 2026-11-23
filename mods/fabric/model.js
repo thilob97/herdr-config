@@ -4,7 +4,7 @@
 
 // ---------- Stufen und Statuswörter ----------
 
-const STATUS_WORDS = {
+export const STATUS_WORDS = {
   draft: "Entwurf",
   todo: "Geplant",
   doing: "In Arbeit",
@@ -22,6 +22,48 @@ export const STAGES = ["draft", "todo", "doing", "review", "done"].map((key) => 
 }));
 
 export const statusWord = (status) => STATUS_WORDS[status] ?? status ?? "";
+
+/** Seitennamen des Fensters; einzige Quelle für Navigation und Kopfzeilen. */
+export const PAGE_WORDS = {
+  board: "Board",
+  tickets: "Tickets",
+  ticket: "Ticket",
+  team: "Team",
+  workflows: "Workflows",
+  pipelines: "Pipelines",
+  prompts: "Prompts",
+  templates: "Vorlagen",
+  repos: "Repos",
+  settings: "Einstellungen",
+  timeline: "Zeitverlauf",
+};
+
+export const pageWord = (page) => PAGE_WORDS[page] ?? page ?? "";
+
+const ROLE_WORDS = {
+  umsetzer: "Umsetzer",
+  pruefer: "Prüferin / Prüfer",
+  orchestrator: "Orchestrator",
+  mensch: "Mensch",
+};
+
+/** Rolle aus dem Roster als deutsche Anzeige; unbekannte Namen bleiben stehen. */
+export function roleLabel(role) {
+  const raw = String(role ?? "").trim();
+  if (!raw) return "ohne Rolle";
+  return ROLE_WORDS[raw.toLowerCase()] ?? raw;
+}
+
+const PROMPT_KIND_WORDS = {
+  orchestrator: "Orchestrator",
+  preamble: "Präambel",
+  agent: "Rolle",
+};
+
+export function promptKindWord(kind) {
+  const raw = String(kind ?? "");
+  return PROMPT_KIND_WORDS[raw] ?? raw;
+}
 
 export const EVENT_WORDS = {
   created: "angelegt",
@@ -41,6 +83,9 @@ export const EVENT_WORDS = {
   orchestrator: "Orchestrator",
   config: "Konfiguration",
   lesson: "Lehre",
+  flow: "Workflow",
+  decision: "Entscheidung",
+  alarm: "Alarm",
 };
 
 export const eventWord = (kind) => EVENT_WORDS[kind] ?? kind ?? "";
@@ -53,6 +98,7 @@ export const INBOX_WORDS = {
   review: "Prüfung",
   attention: "Aufmerksamkeit",
   lesson: "Lehre",
+  decision: "Entscheidung",
 };
 
 // Erlaubte Wechsel. `done` gibt es nur über `fab accept`; `dropped` lässt sich
@@ -321,12 +367,12 @@ export function filterOptions(tickets) {
 /** Tabellenspalten; `key` ist ein Feld des Index-Eintrags. */
 export const TABLE_COLUMNS = [
   { key: "id", label: "ID", width: 64 },
-  { key: "title", label: "Titel", width: 300 },
+  { key: "title", label: "Titel", width: null },
   { key: "status", label: "Status", width: 96 },
   { key: "assignee", label: "Zuständig", width: 92 },
-  { key: "repo", label: "Repo", width: 132 },
+  { key: "repo", label: "Repo", width: 120 },
   { key: "updated_at", label: "Aktualisiert", width: 108 },
-  { key: "comment_count", label: "Kommentare", width: 92, numeric: true },
+  { key: "comment_count", label: "Kommentare", width: 84, numeric: true },
 ];
 
 /** Sortiert die Tabelle; fehlende Werte ans Ende. */
@@ -1077,7 +1123,7 @@ export function wakeSummary(text, names = [], author = "", pending = null) {
   const unknown = targets.filter((target) => target.kind === "unknown").map((target) => target.name);
   const parts = [];
   if (wake.length) parts.push(`Weckt ${wake.join(", ")}`);
-  if (inbox.length) parts.push(`Inbox: ${inbox.join(", ")}`);
+  if (inbox.length) parts.push(`Posteingang: ${inbox.join(", ")}`);
   if (unknown.length) parts.push(`Unbekannt: ${unknown.join(", ")}`);
   return `${parts.join(" · ")}.`;
 }
@@ -1212,10 +1258,10 @@ export function clockTime(at) {
 
 // ---------- Kosten und Liegezeiten ----------
 
-/** Kosten für Listen: ab einem Dollar zwei Nachkommastellen, kleine Beträge vier. */
+/** Kosten für Listen: ab einem Cent zwei Nachkommastellen, darunter vier. */
 export function formatCost(value) {
   if (!Number.isFinite(value)) return "—";
-  if (Math.abs(value) >= 1) return `$${value.toFixed(2)}`;
+  if (Math.abs(value) >= 0.01) return `$${value.toFixed(2)}`;
   if (value > 0) return `$${value.toFixed(4)}`;
   return "$0.00";
 }
@@ -1372,7 +1418,7 @@ export function inQuietHours(minutes, settings) {
   return from < to ? minute >= from && minute < to : minute >= from || minute < to;
 }
 
-export const INBOX_LEVELS = { question: "warning", review: "info", attention: "error", lesson: "success" };
+export const INBOX_LEVELS = { question: "warning", review: "info", attention: "error", lesson: "success", decision: "info" };
 
 /** Toast-Stufe einer Inbox-Art; Unbekanntes bleibt bei „info“. */
 export function inboxNotifyLevel(kind) {
@@ -1458,6 +1504,8 @@ export function historyEndIndex(ticket, events) {
 export function actorLabel(name) {
   if (name === "orchestrator") return "Orchestrator";
   if (name === "mensch") return "Mensch";
+  if (name === "flow") return "Workflow";
+  if (name === "fab") return "Fabric";
   return String(name ?? "");
 }
 
@@ -1539,6 +1587,12 @@ export function eventSummary(event) {
       return { ...base, verb: "wies zurück", detail: text };
     case "drop":
       return { ...base, verb: "verwarf", detail: text };
+    case "flow":
+      return { ...base, verb: "führte aus", detail: text || "Workflow" };
+    case "decision":
+      return { ...base, verb: "entschied", detail: text };
+    case "alarm":
+      return { ...base, verb: "meldete", detail: text || "Alarm" };
     default:
       return { ...base, verb: eventWord(kind) || "Ereignis", detail: text };
   }
@@ -1992,10 +2046,13 @@ const FLOW_KIND_WORDS = {
 
 const FLOW_TRIGGER_WORDS = {
   manual: "manuell",
+  cron: "cron",
   ticket_done: "Ticket fertig",
   github_issue: "GitHub-Issue",
   main_red: "main rot",
 };
+
+const FLOW_ACTION_WORDS = { shell: "Shell", fab: "fab", notify: "Benachrichtigung" };
 
 /** Knotenzustand auf Deutsch. Unbekanntes bleibt stehen. */
 export const flowStatusWord = (status) =>
@@ -2008,6 +2065,14 @@ export const flowRunWord = (status) =>
 /** Knotentyp auf Deutsch. Unbekanntes bleibt stehen. */
 export const flowKindWord = (type) =>
   FLOW_KIND_WORDS[type] ?? (type ? String(type) : "");
+
+/** Auslöserart auf Deutsch. Unbekanntes bleibt stehen. */
+export const flowTriggerWord = (kind) =>
+  FLOW_TRIGGER_WORDS[kind] ?? (kind ? String(kind) : "manuell");
+
+/** Aktionsart auf Deutsch. Unbekanntes bleibt stehen. */
+export const flowActionWord = (kind) =>
+  FLOW_ACTION_WORDS[kind] ?? (kind ? String(kind) : "");
 
 /** Letzter Schritt je Knoten; die spätere Position gewinnt. */
 export function flowNodeSteps(run) {
@@ -2172,7 +2237,7 @@ export function flowLayout(definition, options = {}) {
   const nodeWidth = flowMeasure(options.nodeWidth, 190);
   const nodeHeight = flowMeasure(options.nodeHeight, 64);
   const gapX = flowMeasure(options.gapX, 72);
-  const gapY = flowMeasure(options.gapY, 16);
+  const gapY = flowMeasure(options.gapY, 24);
   const padding = flowMeasure(options.padding, 20);
   const vertical = Boolean(options.vertical);
   const source = Array.isArray(definition?.nodes) ? definition.nodes.filter((node) => node?.id) : [];
@@ -2232,11 +2297,25 @@ export function flowLayout(definition, options = {}) {
     const from = geometry.get(edge.from);
     const to = geometry.get(edge.to);
     if (!from || !to) return;
-    const x1 = vertical ? from.x + from.w / 2 : from.x + from.w;
-    const y1 = vertical ? from.y + from.h : from.y + from.h / 2;
-    const x2 = vertical ? to.x + to.w / 2 : to.x;
-    const y2 = vertical ? to.y : to.y + to.h / 2;
+    let x1 = vertical ? from.x + from.w / 2 : from.x + from.w;
+    let y1 = vertical ? from.y + from.h : from.y + from.h / 2;
+    let x2 = vertical ? to.x + to.w / 2 : to.x;
+    let y2 = vertical ? to.y : to.y + to.h / 2;
     const back = vertical ? to.y <= from.y : to.x <= from.x;
+    // Überspringt eine senkrechte Kante eine Schicht, liefe sie mitten durch
+    // die Karten. Sie führt dann außen an den Spalten vorbei, das Label sitzt
+    // in der Lücke direkt unter dem Ausgangsknoten.
+    const skipped = vertical && !back && to.y - (from.y + from.h) > gapY + 1;
+    let mid;
+    if (skipped) {
+      x1 = from.x + from.w + 1;
+      y1 = from.y + from.h / 2;
+      x2 = to.x + to.w + 1;
+      y2 = to.y + to.h / 2;
+      mid = from.y + from.h + gapY / 2;
+    } else {
+      mid = back ? (vertical ? y1 + 26 : x1 + 26) : (vertical ? (y1 + y2) / 2 : (x1 + x2) / 2);
+    }
     edges.push({
       index,
       from: edge.from,
@@ -2246,18 +2325,20 @@ export function flowLayout(definition, options = {}) {
       y1,
       x2,
       y2,
-      mid: back ? (vertical ? y1 + 26 : x1 + 26) : (vertical ? (y1 + y2) / 2 : (x1 + x2) / 2),
+      mid,
       back,
       vertical,
+      skipped,
     });
   });
 
   const right = nodes.reduce((max, node) => Math.max(max, node.x + node.w), 0);
+  const edgeRight = edges.reduce((max, edge) => Math.max(max, edge.x1, edge.x2), 0);
   const bottom = nodes.reduce((max, node) => Math.max(max, node.y + node.h), 0);
   return {
     nodes,
     edges,
-    width: nodes.length ? right + padding : nodeWidth + 2 * padding,
+    width: nodes.length ? Math.max(right, edgeRight) + padding : nodeWidth + 2 * padding,
     height: nodes.length ? bottom + padding : nodeHeight + 2 * padding,
   };
 }

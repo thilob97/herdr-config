@@ -26,6 +26,21 @@ export const SIZE = {
   avatar: 24,
   nav: 34,
   sidebar: 208,
+  listPane: 260,
+  inspector: 320,
+  modal: 520,
+  modalWide: 580,
+  drawer: 420,
+};
+
+/** Einzige Alpha-Stufen für Theme-Farben; Views tönen ausschließlich hiermit. */
+export const ALPHA = {
+  clear: "00",
+  faint: "14",
+  soft: "1c",
+  tint: "24",
+  border: "55",
+  veil: "b8",
 };
 
 export const ICON = (name) => `mods/fabric/icons/${name}.svg`;
@@ -156,6 +171,27 @@ export function header(t, title, right = [], { iconName = null, subtitle = null,
     .children(right);
 }
 
+/** Kopf einer rechten Detailspalte in Master-Detail-Seiten. */
+export function detailHeader(t, title, right = [], { subtitle = null } = {}) {
+  return h_flex()
+    .flex_none()
+    .w_full()
+    .px(SPACE.l)
+    .py(SPACE.m)
+    .gap(SPACE.s)
+    .items_center()
+    .border_b(1)
+    .border_color(t.border)
+    .child(v_flex()
+      .flex_none()
+      .min_w(0)
+      .gap(0)
+      .child(div().text_size(FONT.m).font_semibold().truncate().child(title))
+      .when(Boolean(subtitle), (el) => el.child(div().text_size(FONT.xs).text_color(t.dim).truncate().child(subtitle))))
+    .child(div().flex_1())
+    .children(right);
+}
+
 export function sectionTitle(t, title, right = [], hint = null) {
   return h_flex()
     .w_full()
@@ -197,7 +233,7 @@ export function autopilotColor(t, key) {
 
 export function autopilotDot(t, { color = "dim", pulse = false, size = SIZE.dot } = {}) {
   let el = div().flex_none().size(size).rounded(size / 2).bg(autopilotColor(t, color));
-  if (pulse) el = el.loop("opacity", { from: 0.35, to: 1, period: 900 });
+  if (pulse) el = el.loop("opacity", { from: 0.75, to: 1, period: 2400 });
   return el;
 }
 
@@ -254,7 +290,7 @@ export function avatar(t, name, colorKey = "c1", size = SIZE.avatar) {
     .justify_center()
     .bg(color + "2b")
     .text_color(color)
-    .text_size(Math.max(9, Math.round(size * 0.4)))
+    .text_size(size >= 28 ? FONT.s : FONT.xs)
     .font_semibold()
     .child(model.initials(name))
     .tooltip(String(name || "unbekannt"));
@@ -281,17 +317,18 @@ export function keyHint(t, key) {
     .child(key);
 }
 
-export function emptyState(t, { title = "Nichts da", text = "", action = null } = {}) {
+export function emptyState(t, { title = "Nichts da", text = "", action = null, compact = false } = {}) {
   return v_flex()
     .size_full()
     .min_h(0)
+    .overflow_y_scrollbar()
     .items_center()
     .justify_center()
-    .p(SPACE.xl)
-    .gap(SPACE.s)
-    .child(div().text_size(FONT.l).text_color(t.muted).child(title))
-    .when(Boolean(text), (el) => el.child(div().text_size(FONT.s).text_color(t.dim).text_center().whitespace_normal().child(text)))
-    .when(Boolean(action), (el) => el.child(div().pt(SPACE.s).child(action)));
+    .p(compact ? SPACE.m : SPACE.xl)
+    .gap(compact ? SPACE.xs : SPACE.s)
+    .child(div().text_size(compact ? FONT.m : FONT.l).text_color(t.muted).text_center().child(title))
+    .when(Boolean(text), (el) => el.child(div().text_size(compact ? FONT.xs : FONT.s).text_color(t.dim).text_center().whitespace_normal().child(text)))
+    .when(Boolean(action), (el) => el.child(div().pt(compact ? SPACE.xs : SPACE.s).child(action)));
 }
 
 export function loading(t, text = "Lade …") {
@@ -304,10 +341,11 @@ export function loading(t, text = "Lade …") {
     .child(div().text_size(FONT.s).text_color(t.dim).child(text));
 }
 
-export function notice(t, message, level = "error") {
+export function notice(t, message, level = "error", { actions = [], id = null } = {}) {
   if (!message) return null;
   const color = levelColor(t, level);
-  return h_flex()
+  const el = h_flex()
+    .when(Boolean(id), (node) => node.id(id))
     .flex_none()
     .w_full()
     .px(SPACE.l)
@@ -318,7 +356,11 @@ export function notice(t, message, level = "error") {
     .border_b(1)
     .border_color(t.border)
     .child(div().flex_none().mt(1).size(6).rounded(3).bg(color))
-    .child(div().flex_1().min_w(0).whitespace_normal().text_size(FONT.s).text_color(color).child(message));
+    .child(div().flex_1().min_w(0).whitespace_normal().text_size(FONT.s).text_color(color).child(message))
+    .when(actions.length > 0, (node) => node.child(
+      h_flex().flex_none().gap(SPACE.xs).items_center().children(actions),
+    ));
+  return el;
 }
 
 export function button(t, {
@@ -963,7 +1005,7 @@ export function table(t, { id, columns, rows, sort, onSort, renderCell, onRow })
         .when(column.width, (el) => el.w(column.width))
         .when(!column.width, (el) => el.flex_1().min_w(0))
         .flex()
-        .flex_none()
+        .when(Boolean(column.width), (el) => el.flex_none())
         .h_full()
         .gap(3)
         .items_center()
@@ -992,7 +1034,7 @@ export function table(t, { id, columns, rows, sort, onSort, renderCell, onRow })
       .when(column.width, (el) => el.w(column.width))
       .when(!column.width, (el) => el.flex_1().min_w(0))
       .flex()
-      .flex_none()
+      .when(Boolean(column.width), (el) => el.flex_none())
       .items_center()
       .text_size(FONT.s)
       .child(renderCell(row, column, index === columns.length - 1)))));
