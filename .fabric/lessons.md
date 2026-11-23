@@ -12,3 +12,4 @@
 - Lösche eine Sperr- oder Slot-Datei nur, nachdem du direkt vor dem Löschen geprüft hast, dass sie noch die gelesene Besitzer-PID enthält (oder ersetze sie atomar), und teste das Aufräumen toter Slots mit mehreren gleichzeitigen Wartenden in erzwungener Reihenfolge.
 - Wenn ein Block wegen Platzmangel ganz entfällt, nenne ihn wie eine gekürzte Quelle im Hinweis und teste die Grenze mit allen Quellen gleichzeitig, auch mit einer langen neuen Quelle, die ältere verdrängt.
 - Gehe vor jeder erneuten Übergabe jedes Abnahmekriterium einzeln mit seinem Prüfbefehl durch, auch die schon einmal bemängelten, und übergib erst, wenn keins mehr offen ist.
+- Wenn du einen Ablauf in wiederaufnehmbare Schritte zerlegst, behalte jede bestehende Prüfung wie den Abgleich von verdict.head mit dem Worktree-HEAD in jedem Einstieg, auch im PR-Weg, und teste die Wiederaufnahme ab jedem gespeicherten Schritt, auch bei bereits gemergtem PR und rotem Check.
