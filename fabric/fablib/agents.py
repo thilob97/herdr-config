@@ -94,6 +94,7 @@ def load(required=True):
         "dir": os.path.dirname(path),
         "max_sessions": expanded["max_sessions"],
         "max_sessions_total": expanded["max_sessions_total"],
+        "max_verify": expanded["max_verify"],
         "reviewer": expanded["reviewer"],
         "agents": expanded["agents"],
         "orchestrator": expanded["orchestrator"],

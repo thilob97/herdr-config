@@ -1693,7 +1693,9 @@ def _pipeline_step_dict(row):
     }
 
 
-def pipeline_run_new(*, trigger, ticket=None, repo="", worktree="", branch="", head=""):
+def pipeline_run_new(
+    *, trigger, ticket=None, repo="", worktree="", branch="", head="", state="running"
+):
     ensure()
     at = now_ms()
     with _auto_tx():
@@ -1701,9 +1703,18 @@ def pipeline_run_new(*, trigger, ticket=None, repo="", worktree="", branch="", h
             "INSERT INTO pipeline_runs("
             "ticket,repo,worktree,branch,head,trigger,state,started_at,duration_ms) "
             "VALUES (?,?,?,?,?,?,?,?,?)",
-            (ticket, repo, worktree, branch, head, trigger, "running", at, 0),
+            (ticket, repo, worktree, branch, head, trigger, state, at, 0),
         )
         return int(cursor.lastrowid)
+
+
+def pipeline_run_start(run_id):
+    """Einen vorgemerkten Lauf (`queued`) als `running` markieren."""
+    ensure()
+    with _auto_tx():
+        _connect().execute(
+            "UPDATE pipeline_runs SET state='running' WHERE id=?", (run_id,)
+        )
 
 
 def pipeline_run_finish(run_id, state, duration_ms):

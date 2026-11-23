@@ -33,6 +33,7 @@ SETTINGS = (
     "reviewer",
     "orchestrator_argv",
     "max_sessions_total",
+    "max_verify",
     "context_limit",
     *TICK_KEYS,
     *ORCHESTRATOR_KEYS,
@@ -320,6 +321,7 @@ def payload():
         "path": roster["path"],
         "max_sessions": roster["max_sessions"],
         "max_sessions_total": roster["max_sessions_total"],
+        "max_verify": roster["max_verify"],
         "reviewer": roster["reviewer"],
         "orchestrator": {
             "argv": list(roster["orchestrator"]["argv"]),
@@ -954,6 +956,11 @@ def set_setting(key, value, actor, team=None):
         text = (
             f"max_sessions_total: {old if old is not None else '—'} → {number}"
         )
+    elif key == "max_verify":
+        number = teams.check_verify(raw)
+        old = data.get("max_verify")
+        data["max_verify"] = number
+        text = f"max_verify: {old if old is not None else '—'} → {number}"
     elif key == "context_limit":
         number = teams.check_context_limit(raw)
         if 0 < number < context.MIN_LIMIT:

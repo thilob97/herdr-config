@@ -3,14 +3,18 @@
 Ein Lauf gehört zu genau einem Ticket/Repo/Worktree und speichert jeden Schritt
 mit Zustand, Dauer, Exit-Code und getrennter Ausgabe. Beim Laufstart entstehen
 alle Schritte als `pending`; nach dem ersten Fehler werden die restlichen als
-`skipped` festgehalten. Bricht die Ausführung ab, endet der Lauf als `fail`.
+`skipped` festgehalten. Systemweit laufen höchstens `max_verify` Läufe
+gleichzeitig: Der Lauf steht zuerst als `queued` in der Ablage, belegt dann
+einen Slot (Abschnitt `verifyslots`) und wird erst danach `running`. Die
+Wartezeit zählt nicht ins Schritt-Timeout. Bricht die Ausführung ab, endet der
+Lauf als `fail`.
 """
 import json
 import os
 import subprocess
 import sys
 
-from . import git, store
+from . import git, store, verifyslots
 from .errors import FabError
 
 DEFAULT_TIMEOUT = 1200
@@ -112,7 +116,7 @@ def run(
             f"Unbekannter Auslöser {trigger!r}; erlaubt: {', '.join(TRIGGERS)}"
         )
     steps = load_steps(worktree)
-    limit = DEFAULT_TIMEOUT if timeout is None else timeout
+    step_timeout = DEFAULT_TIMEOUT if timeout is None else timeout
     repo = repo or worktree
     branch = branch or git.branch(worktree)
     head_before = head or git.head(worktree)
@@ -125,6 +129,7 @@ def run(
         worktree=worktree,
         branch=branch,
         head=head_before,
+        state="queued",
     )
     for position, step in enumerate(steps):
         store.pipeline_step_add(
@@ -137,8 +142,20 @@ def run(
     combined = []
     first_code = None
     failed = False
+    slot = None
 
     try:
+        capacity = verifyslots.limit()
+        slot = verifyslots.acquire(
+            capacity,
+            on_wait=lambda: print(
+                f"Lauf #{run_id}: in der Warteschlange "
+                f"(max. {capacity} gleichzeitig)",
+                file=sys.stderr,
+                flush=True,
+            ),
+        )
+        store.pipeline_run_start(run_id)
         for position, step in enumerate(steps):
             name = step["name"]
             command = step["run"]
@@ -160,7 +177,7 @@ def run(
 
             store.pipeline_step_update(run_id, position, state="running")
             step_start = store.now_ms()
-            code, out, err = _execute(command, worktree, limit)
+            code, out, err = _execute(command, worktree, step_timeout)
             duration = store.now_ms() - step_start
             state = "pass" if code == 0 else "fail"
             store.pipeline_step_update(
@@ -237,6 +254,9 @@ def run(
         if cleanup_errors:
             raise exc from cleanup_errors[-1]
         raise
+    finally:
+        if slot is not None:
+            slot.release()
 
     store.pipeline_run_finish(
         run_id, "fail" if failed else "pass", store.now_ms() - start
