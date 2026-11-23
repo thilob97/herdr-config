@@ -19,7 +19,7 @@ import sys
 import tempfile
 import time
 
-from . import git, hc, store
+from . import git, hc, pipeline, store
 from .errors import FabError, HcError
 
 TERMINAL = "autopilot"
@@ -30,7 +30,6 @@ STALL_MIN = 20
 DISPATCH_MIN = 30 * 60
 NUDGE_LOCK = 30 * 60
 CONFIG_PATHS = ("fabric/roster.json", "fabric/prompts/")
-VERIFY_SCRIPT = ".fabric/verify.sh"
 ERROR_MARKERS = ("FAIL", "ERROR", "Traceback", "not ok", "failing tests")
 SPEC_SECTION = re.compile(r"^test at \S+:\d+:\d+$")  # node --test, spec-Reporter
 STACK_FRAME = re.compile(r"^at .*:\d+:\d+\)?\s*\{?$")
@@ -427,25 +426,25 @@ def _attach_output(tid, stdout, stderr):
 def check_main(repo=None):
     """main nach einem Merge prüfen, bei zweimal Rot den Merge zurücknehmen.
 
-    Rückgabe `(grün, stdout, stderr)`. Ein fehlgeschlagener Revert ändert nichts
-    an der Entscheidung: der Aufrufer pausiert die Abnahmen in jedem Fall.
+    Rückgabe `(grün, stdout, stderr, run_id)`. Ein fehlgeschlagener Revert ändert
+    nichts an der Entscheidung: der Aufrufer pausiert die Abnahmen in jedem Fall.
     """
     repo = repo or _repo_root()
-    code, out, err = _run("sh", VERIFY_SCRIPT, cwd=repo, timeout=900)
-    if code == 0:
-        return True, out, err
+    result = pipeline.run(repo, "main", repo=repo, timeout=900)
+    if result["state"] == "pass":
+        return True, result["stdout"], result["stderr"], result["run_id"]
     # Ein Rot kann ein wackliger Test sein: einmal wiederholen.
     log("main rot, zweite Prüfung")
     time.sleep(60)
-    code, out, err = _run("sh", VERIFY_SCRIPT, cwd=repo, timeout=900)
-    if code == 0:
+    result = pipeline.run(repo, "main", repo=repo, timeout=900)
+    if result["state"] == "pass":
         log("main beim zweiten Lauf grün (wackliger Test?)")
-        return True, out, err
+        return True, result["stdout"], result["stderr"], result["run_id"]
     reverted = git.git(["revert", "-m", "1", "--no-edit", "HEAD"], repo)
     if reverted.returncode != 0:
         detail = (reverted.stderr or reverted.stdout).strip()
         log(f"Revert fehlgeschlagen: {detail}")
-    return False, out, err
+    return False, result["stdout"], result["stderr"], result["run_id"]
 
 
 def start(until="done", cwd=None):
@@ -568,7 +567,7 @@ def try_accept(ticket):
             )
             log(f"Konflikt {tid}: an {agent} übergeben")
         return False
-    ok, out, err = check_main(repo)
+    ok, out, err, run_id = check_main(repo)
     if ok:
         log(f"main nach {tid} grün")
         return True
@@ -587,6 +586,7 @@ def try_accept(ticket):
     if paths:
         message.append("Anhänge: " + ", ".join(paths))
     message.append(_error_quote(out, err))
+    message.append(f"Lauf: #{run_id} (fab run show {run_id})")
     _sh(
         "fab", "comment", tid, "--from", "mensch", "--no-wake", "--",
         "\n".join(message),

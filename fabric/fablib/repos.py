@@ -3,15 +3,13 @@ import datetime
 import os
 import re
 import stat
-import subprocess
 
-from . import events, git, index, store
+from . import events, git, index, pipeline, store
 from .errors import FabError
 
-# Die Testsuite dauert inzwischen über zehn Minuten; 600 s reichten nicht mehr.
-VERIFY_TIMEOUT = 1200
-TAIL_LINES = 40
 VERIFY = "verify.sh"
+PIPELINE = os.path.join(".fabric", "pipeline.json")
+TAIL_LINES = 40
 LESSONS = "lessons.md"
 DECISIONS = "decisions.md"
 PROJECT = "project.md"
@@ -113,34 +111,6 @@ def _read(path):
         return None
     except OSError as exc:
         raise FabError(f"{path} ist nicht lesbar: {exc}")
-
-
-def _tail(output):
-    lines = (output or "").strip().splitlines()
-    return "\n".join(lines[-TAIL_LINES:])
-
-
-def _run(top, script):
-    """Führt das Prüfskript aus; Rückgabe (Exit-Code, letzte 40 Zeilen)."""
-    try:
-        result = subprocess.run(
-            ["sh", script],
-            cwd=top,
-            capture_output=True,
-            text=True,
-            timeout=VERIFY_TIMEOUT,
-        )
-    except FileNotFoundError:
-        raise FabError("sh ist nicht vorhanden")
-    except subprocess.TimeoutExpired as exc:
-        output = ""
-        for part in (exc.stdout, exc.stderr):
-            if isinstance(part, str):
-                output += part
-        output += f"\nTimeout nach {VERIFY_TIMEOUT} s"
-        return 124, _tail(output)
-    output = (result.stdout or "") + (result.stderr or "")
-    return result.returncode, _tail(output)
 
 
 def known(extra=()):
@@ -437,10 +407,15 @@ def set_file(raw, kind, text, actor):
 def test(raw):
     top = _root(raw)
     script, _lessons, _folder = _paths(top)
-    if not os.path.isfile(script):
+    steps_file = os.path.join(top, PIPELINE)
+    if not os.path.isfile(script) and not os.path.isfile(steps_file):
         raise FabError(
             f"Prüfskript fehlt: {script}; lege es im UI unter Repos an oder mit "
             f'fab repo set "{top}" verify --text "…" --from mensch'
         )
-    code, tail = _run(top, script)
-    return {"exit": code, "tail": tail}
+    result = pipeline.run(top, "repo-test", repo=top, tail_lines=TAIL_LINES)
+    return {
+        "exit": result["code"],
+        "tail": result["tail"],
+        "run_id": result["run_id"],
+    }

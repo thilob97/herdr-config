@@ -4,11 +4,7 @@ import os
 import re
 import subprocess
 
-from . import store
 from .errors import FabError
-
-# Die Testsuite dauert inzwischen über zehn Minuten; 600 s reichten nicht mehr.
-VERIFY_TIMEOUT = 1200
 
 GITHUB_URL = re.compile(
     r"^(?:https?://(?:[^@/]+@)?github\.com/|ssh://(?:[^@/]+@)?github\.com/"
@@ -610,39 +606,8 @@ def gh_pr_merge(repo, url):
     raise FabError(f"PR-Merge ist fehlgeschlagen: {detail}")
 
 
-def run_verify(worktree):
-    """`sh <worktree>/.fabric/verify.sh`, Timeout 1200 s."""
-    script = os.path.join(worktree, ".fabric", "verify.sh")
-    if not os.path.isfile(script):
-        raise FabError(
-            f"Prüfskript fehlt: {script}. Der Agent legt .fabric/verify.sh an "
-            f"und committet es."
-        )
-    try:
-        result = subprocess.run(
-            ["sh", script],
-            cwd=worktree,
-            capture_output=True,
-            text=True,
-            timeout=VERIFY_TIMEOUT,
-        )
-        code = result.returncode
-        output = (result.stdout or "") + (result.stderr or "")
-    except subprocess.TimeoutExpired as exc:
-        code = 124
-        output = ""
-        if isinstance(exc.stdout, str):
-            output += exc.stdout
-        if isinstance(exc.stderr, str):
-            output += exc.stderr
-        output += f"\nTimeout nach {VERIFY_TIMEOUT} s"
-    except FileNotFoundError:
-        raise FabError("sh ist nicht vorhanden")
-    tail = "\n".join(output.strip().splitlines()[-20:])
-    return {
-        "state": "pass" if code == 0 else "fail",
-        "head": head(worktree),
-        "at": store.now_ms(),
-        "tail": tail,
-        "code": code,
-    }
+def run_verify(worktree, *, trigger="verify", ticket=None, repo=""):
+    """Pipeline im Worktree ausführen; Ergebnis wie bisher zuzüglich `run_id`."""
+    from . import pipeline
+
+    return pipeline.run(worktree, trigger, ticket=ticket, repo=repo)
