@@ -190,7 +190,7 @@ function head(app, cx, t, definition, run) {
   const mode = app.flowMode === "builder" ? "builder" : "run";
   const title = mode === "builder"
     ? (builder?.draft?.name || "Neuer Workflow")
-    : (definition?.name ?? builder?.draft?.name ?? "Workflows");
+    : (definition?.name ?? builder?.draft?.name ?? model.pageWord("workflows"));
   const ended = !run || RUN_ENDED.has(run.status);
   const busy = Boolean(app.busy);
   const runLine = run

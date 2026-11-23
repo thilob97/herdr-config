@@ -257,17 +257,22 @@ test("Zielbegriffe: Seiten und Ticket-Stufen tragen die Wörter der Begriffstabe
 test("Seitenköpfe: jede in den Views genutzte Seite hat einen PAGE_WORDS-Eintrag", () => {
   const views = join(dirname(fileURLToPath(import.meta.url)), "..", "views");
   const files = readdirSync(views).filter((name) => name.endsWith(".js"));
+  const words = new Set(Object.values(PAGE_WORDS));
   const used = new Map();
   for (const file of files) {
     const source = readFileSync(join(views, file), "utf8");
     for (const match of source.matchAll(/model\.pageWord\("([^"]+)"\)/g)) {
       used.set(match[1], file);
     }
-    assert.doesNotMatch(
-      source,
-      /ui\.header\(\s*t,\s*["`]/,
-      `${file}: Seitenkopf als Literal statt model.pageWord()`,
-    );
+    const heads = source.matchAll(/ui\.(?:header|detailHeader)\(\s*t,\s*(?:"([^"]*)"|`([^`]*)`)/g);
+    for (const head of heads) {
+      const title = head[1] ?? head[2];
+      if (title.includes("${")) continue;
+      assert.ok(
+        !words.has(title),
+        `${file}: Seitenkopf-Literal „${title}“ statt model.pageWord()`,
+      );
+    }
   }
   assert.ok(used.size > 0, "keine pageWord-Nutzung in den Views gefunden");
   const missing = [...used]
