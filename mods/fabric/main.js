@@ -4430,21 +4430,29 @@ export default class Fabric extends View {
       }));
 
     const contentPane = v_flex().flex_1().min_w(0).h_full().min_h(0).overflow_hidden().child(content);
+    const drawerLayer = (node) => div().absolute().right_0().top_0().bottom_0().bg(t.surface).overflow_hidden().child(node);
     const body = v_flex()
       .flex_1()
       .min_h(0)
       .items_stretch()
       .when(this.compact, (el) => el.child(compactNav))
       .child(
-        h_flex()
+        div()
+          .relative()
           .flex_1()
+          .min_w(0)
           .min_h(0)
-          .items_stretch()
-          .when(!this.compact, (el) => el.child(nav))
-          .child(contentPane)
-          .when(Boolean(this.blueprintDrawer), (el) => el.child(renderBlueprintDrawer(this, cx, t)))
-          .when(Boolean(this.teamPrompt), (el) => el.child(renderTeamPromptDrawer(this, cx, t)))
-          .when(Boolean(this.contextPreview), (el) => el.child(renderContextPreview(this, cx, t))),
+          .child(
+            h_flex()
+              .flex_1()
+              .min_h(0)
+              .items_stretch()
+              .when(!this.compact, (el) => el.child(nav))
+              .child(contentPane),
+          )
+          .when(Boolean(this.blueprintDrawer), (el) => el.child(drawerLayer(renderBlueprintDrawer(this, cx, t))))
+          .when(Boolean(this.teamPrompt), (el) => el.child(drawerLayer(renderTeamPromptDrawer(this, cx, t))))
+          .when(Boolean(this.contextPreview), (el) => el.child(drawerLayer(renderContextPreview(this, cx, t)))),
       );
 
     const overlay = [];
