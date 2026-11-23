@@ -3,3 +3,4 @@
 - Führe Git-Befehle, die auf main wirken, gegen einen echten Merge-Commit von fab accept (merge --no-ff) aus, bevor du sie als abgebildet meldest, und hänge Schutzschritte wie eine Pause nicht per && an deren Erfolg.
 - Prüfe jeden Test für ein unterdrücktes Ereignis per Gegenprobe gegen den alten Code und wähle Akteure so, dass das Ereignis ohne die Änderung tatsächlich einträte, etwa eine Übergabe durch einen anderen Akteur als den Zuständigen, weil das Wecken des Autors ohnehin entfällt.
 - Prüfe bei jeder Sperren-Verkürzung alle Pfade, die unter der Sperre weitere Abläufe auslösen (etwa accept → Autostart → Dispatch), und verschiebe langsame Schritte wie git worktree add oder Session-Starts hinter die Freigabe der Sperre, statt nur die direkten Einstiege umzubauen.
+- Bestimme die Basisreferenz für den Merge-Stand (lokales <base> oder origin/<base>) an genau einer Stelle und nutze sie in handover, accept und PR-Weg gleich, statt sie je Einstieg neu zu wählen.
