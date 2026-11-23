@@ -516,3 +516,121 @@ class KnowledgeContextTests(FabricCase):
         self.assertFalse(
             [line for line in hints if "decisions.md" in line], hints
         )
+
+
+class MapContextTests(FabricCase):
+    def project_map(self, repo, text="# Projektkarte\n\n## Ziel\nKarte.\n"):
+        path = os.path.join(repo, ".fabric", "map.md")
+        self.write_file(path, text)
+        return path
+
+    def test_ohne_karte_kein_abschnitt(self):
+        repo = self.make_repo()
+        text = context.build_paths([repo], "", 6000)
+        self.assertNotIn(context.MAP_TITLE, text)
+        self.assertEqual(text, "")
+
+    def test_karte_nennt_absoluten_pfad_ohne_inhalt(self):
+        repo = self.make_repo()
+        secret = "GEHEIMER KARTENINHALT 4711"
+        target = self.project_map(repo, f"# Karte\n\n{secret}\n")
+        text = context.build_paths([repo], "", 6000)
+        self.assertIn(f"## {context.MAP_TITLE}", text)
+        self.assertIn(os.path.realpath(target), text)
+        self.assertNotIn(secret, text)
+
+    def test_fuenf_quellen_kuerzen_nur_den_brief(self):
+        repo = self.make_repo()
+        project = os.path.join(repo, ".fabric", "project.md")
+        decisions = os.path.join(repo, ".fabric", "decisions.md")
+        self.write_file(project, "# Steckbrief\n\nZweck: Testprojekt.\n")
+        self.write_file(decisions, "- Kurz.\n")
+        folder = os.path.join(repo, ".fabric", "knowledge")
+        os.makedirs(folder, exist_ok=True)
+        for name in ("handbuch.md", "skizze.pdf"):
+            self.write_file(os.path.join(folder, name), "GEHEIMER INHALT\n")
+        target = self.project_map(repo)
+        text = context.build_paths([repo], "B" * 5000, 1200, "/r/roster.json")
+        self.assertLessEqual(len(text), 1200)
+        for part in (
+            "## Projekt-Steckbrief",
+            "## Entscheidungen",
+            "## Wissensordner",
+            "## Projektkarte",
+            "## Team-Brief",
+        ):
+            self.assertIn(part, text)
+        sources = (
+            os.path.realpath(project),
+            os.path.realpath(decisions),
+            os.path.realpath(folder),
+            os.path.realpath(target),
+        )
+        # Steckbrief und Entscheidungen stehen vollständig da; Wissensordner
+        # und Karte nennen ihren absoluten Pfad.
+        self.assertIn("Zweck: Testprojekt.", text)
+        self.assertIn("- Kurz.", text)
+        self.assertIn(sources[2], text)
+        self.assertIn(sources[3], text)
+
+        hint = context.HINT.format(source="")
+        hints = [
+            line for line in text.splitlines() if hint in line
+        ]
+        self.assertEqual(len(hints), 1, hints)
+        self.assertIn("/r/roster.json", hints[0])
+        for path in sources:
+            self.assertNotIn(path, hints[0])
+
+    def test_mehrere_gekuerzte_quellen_nennen_nur_ihre_pfade(self):
+        repo = self.make_repo()
+        project = os.path.join(repo, ".fabric", "project.md")
+        decisions = os.path.join(repo, ".fabric", "decisions.md")
+        self.write_file(project, "# Steckbrief\n\n" + "S" * 4000)
+        self.write_file(decisions, "- Kurz.\n")
+        folder = os.path.join(repo, ".fabric", "knowledge")
+        os.makedirs(folder, exist_ok=True)
+        for number in range(40):
+            self.write_file(
+                os.path.join(folder, f"notiz-{number:02d}.md"), "INHALT\n"
+            )
+        target = self.project_map(repo)
+        maximum = 2400
+        text = context.build_paths(
+            [repo], "B" * 4000, maximum, "/r/roster.json"
+        )
+        self.assertLessEqual(len(text), maximum)
+        project_path = os.path.realpath(project)
+        decision_path = os.path.realpath(decisions)
+        real_folder = os.path.realpath(folder)
+        real_map = os.path.realpath(target)
+        for part in (
+            "## Projekt-Steckbrief",
+            "## Projektkarte",
+            "## Team-Brief",
+        ):
+            self.assertIn(part, text)
+        self.assertIn(real_map, text)
+        self.assertIn("- Kurz.", text)
+
+        hint = context.HINT.format(source="")
+        hints = [
+            line for line in text.splitlines() if hint in line
+        ]
+        self.assertTrue(hints, text)
+        self.assertEqual(len(hints), 3, hints)
+        self.assertEqual(
+            len([line for line in hints if project_path in line]), 1, hints
+        )
+        self.assertEqual(
+            len([line for line in hints if real_folder in line]), 1, hints
+        )
+        self.assertTrue(
+            [line for line in hints if "/r/roster.json" in line], hints
+        )
+        self.assertFalse(
+            [line for line in hints if decision_path in line], hints
+        )
+        self.assertFalse(
+            [line for line in hints if real_map in line], hints
+        )
