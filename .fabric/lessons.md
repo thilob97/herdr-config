@@ -5,3 +5,4 @@
 - Prüfe bei jeder Sperren-Verkürzung alle Pfade, die unter der Sperre weitere Abläufe auslösen (etwa accept → Autostart → Dispatch), und verschiebe langsame Schritte wie git worktree add oder Session-Starts hinter die Freigabe der Sperre, statt nur die direkten Einstiege umzubauen.
 - Bestimme die Basisreferenz für den Merge-Stand (lokales <base> oder origin/<base>) an genau einer Stelle und nutze sie in handover, accept und PR-Weg gleich, statt sie je Einstieg neu zu wählen.
 - Teste jeden Fehlerzweig eines neuen Ablaufs (rot, Konflikt, Abbruch) in jedem Einstiegspunkt, der ihn nutzt, also handover, accept und PR-Weg, statt nur den grünen Weg und einen Einstieg.
+- Wenn du einen Revert zurücknimmst und dabei Konflikte löst, prüfe den Ergebnis-Diff gegen das Inverse des Reverts und übernimm jede Zeile des Originals, auch in der Doku, außer den bewusst begründeten Abweichungen.
