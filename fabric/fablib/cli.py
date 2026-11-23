@@ -3880,7 +3880,13 @@ def _publish_alarm(args):
     try:
         state = alarm.status()
         want = json.dumps(state["alarms"], ensure_ascii=False, sort_keys=True)
-        if (store.meta_get(ALARM_SHOWN) or "") == want:
+        stored = store.meta_get(ALARM_SHOWN)
+        if stored is None and want == "[]":
+            # Erster Aufruf ohne Alarm: nichts schreiben. Schon das Setzen des
+            # Metas stößt die Lesemodell-Flush an und würde den Roster
+            # migrieren, bevor der Befehl ihn geprüft hat.
+            return
+        if (stored or "") == want:
             return
         with store.locked(timeout=0.5):
             state = alarm.status()

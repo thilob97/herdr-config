@@ -1725,6 +1725,10 @@ def pipeline_run_load(run_id):
 
 def pipeline_run_list(ticket=None):
     ensure()
+    # Im Altdatei-Fallback gibt es keine Pipeline-Tabellen; `_connect()` würde
+    # sonst eine leere DB anlegen und den Fallback still beenden.
+    if not _db_ready():
+        return []
     conn = _connect()
     if ticket is None:
         rows = conn.execute(
