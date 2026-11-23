@@ -21,7 +21,6 @@ from . import (
     index,
     pipeline,
     preview,
-    projectmap,
     prompts,
     render,
     repos,
@@ -3173,14 +3172,6 @@ def cmd_context(args):
     return 0
 
 
-def cmd_map(args):
-    actor = _actor(args) or "fab"
-    result = projectmap.build(args.path, actor)
-    state = "geschrieben" if result["changed"] else "unverändert"
-    print(f"{result['path']} {state}")
-    return 0
-
-
 def _git_value(*args):
     result = git.git(list(args), agents.FABRIC_DIR)
     return result.stdout.strip() if result.returncode == 0 else ""
@@ -3761,12 +3752,6 @@ def build_parser():
     item.add_argument("--team", metavar="NAME",
                       help="Kontext eines ganzen Teams")
     item.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe")
-
-    item = command("map", "Projektkarte aus Git und Dateisystem erzeugen", cmd_map)
-    item.add_argument("path", metavar="PFAD", nargs="?", default=".",
-                      help="Repo-Pfad; Standard ist der aktuelle Ordner")
-    item.add_argument("--from", dest="from_", metavar="NAME", default="fab",
-                      help="wer schreibt (Standard: fab)")
 
     item = command("lesson", "Lehren vorschlagen, bestätigen und verwerfen", cmd_lesson)
     lesson_sub = item.add_subparsers(dest="action", metavar="AKTION", required=True)

@@ -33,14 +33,6 @@ class FlowExamplesCase(FabricCase):
             self.dry("nachtschicht"),
         )
 
-    def test_projektkarte_loads_and_plans(self):
-        result = self.add("projektkarte")
-        self.assertIn("Workflow „projektkarte“ gespeichert", result.stdout)
-        self.assertIn(
-            "start → nachtfenster → karte → ende",
-            self.dry("projektkarte"),
-        )
-
     def test_deps_montag_loads_and_plans(self):
         result = self.add("deps-montag")
         self.assertIn("Workflow „deps-montag“ gespeichert", result.stdout)
@@ -50,7 +42,7 @@ class FlowExamplesCase(FabricCase):
         )
 
     def test_both_files_validate(self):
-        for name in ("nachtschicht", "deps-montag", "projektkarte"):
+        for name in ("nachtschicht", "deps-montag"):
             with open(self.example(name), encoding="utf-8") as handle:
                 definition = json.load(handle)
             cleaned = flows.validate(definition)
@@ -109,72 +101,6 @@ class FlowExamplesCase(FabricCase):
             self.assertNotIn("pause-pruefen", [node for node, _ in steps])
             self.assertNotIn("abnahme", [node for node, _ in steps])
             self.assertEqual(store.all_tickets(), [])
-
-    def projektkarte_env(self, clock):
-        bindir = os.path.join(self.tmp, f"projektkarte-clock-{clock}")
-        os.makedirs(bindir, exist_ok=True)
-        fake_date = os.path.join(bindir, "date")
-        self.write_file(fake_date, f"#!/bin/sh\necho {clock}\n")
-        os.chmod(fake_date, 0o755)
-        return {"PATH": bindir + os.pathsep + self.env.get("PATH", "")}
-
-    def test_projektkarte_only_runs_in_window(self):
-        for clock in ("0200", "0230", "0259"):
-            with self.subTest(clock=clock):
-                result = subprocess.run(
-                    self.node("projektkarte", "nachtfenster")["command"],
-                    shell=True, cwd=self.tmp,
-                    env=dict(self.env, **self.projektkarte_env(clock)),
-                    capture_output=True, text=True,
-                )
-                self.assertEqual(
-                    result.returncode, 0,
-                    f"{clock} liegt im Projektkarte-Fenster",
-                )
-        for clock in ("0000", "0159", "0300", "1200", "2359"):
-            with self.subTest(clock=clock):
-                result = subprocess.run(
-                    self.node("projektkarte", "nachtfenster")["command"],
-                    shell=True, cwd=self.tmp,
-                    env=dict(self.env, **self.projektkarte_env(clock)),
-                    capture_output=True, text=True,
-                )
-                self.assertNotEqual(
-                    result.returncode, 0,
-                    f"{clock} liegt außerhalb des Projektkarte-Fensters",
-                )
-
-    def test_projektkarte_runs_in_window_and_commits_map(self):
-        repo = self.make_repo()
-        self.add("projektkarte")
-        result = self.ok(
-            "flow", "run", "projektkarte",
-            env=self.projektkarte_env("0230"), cwd=repo,
-        )
-        self.assertIn("Lauf 1", result.stdout)
-        self.assertTrue(os.path.isfile(os.path.join(repo, ".fabric", "map.md")))
-        self.assertEqual(self.git_out(repo, "status", "--porcelain"), "")
-        self.assertEqual(
-            self.git_out(repo, "ls-files", ".fabric/map.md"), ".fabric/map.md"
-        )
-
-    def test_projektkarte_outside_window_skips_map(self):
-        repo = self.make_repo()
-        self.add("projektkarte")
-        result = self.ok(
-            "flow", "run", "projektkarte",
-            env=self.projektkarte_env("1200"), cwd=repo,
-        )
-        self.assertIn("Lauf 1", result.stdout)
-        self.assertFalse(os.path.exists(os.path.join(repo, ".fabric", "map.md")))
-
-        with self.store_env():
-            runs = store.flow_run_list("projektkarte")
-            self.assertEqual(len(runs), 1)
-            self.assertEqual(runs[0]["status"], "done")
-            self.assertEqual(runs[0]["data"].get("current"), "ende")
-            nodes = [step["node"] for step in store.flow_steps(runs[0]["id"])]
-        self.assertNotIn("karte", nodes)
 
     def test_revert_command_handles_merge_commit(self):
         repo = self.make_repo()

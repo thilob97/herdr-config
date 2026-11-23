@@ -6,14 +6,13 @@ die Entscheidungen der Repos; T-61 nutzt dieselbe Ausgabe für die Vorschau.
 """
 import os
 
-from . import projectmap, repos, teams
+from . import repos, teams
 from .errors import FabError
 
 DEFAULT_LIMIT = teams.DEFAULT_CONTEXT_LIMIT
 PROJECT_TITLE = "Projekt-Steckbrief"
 DECISION_TITLE = "Entscheidungen"
 WISSEN_TITLE = "Wissensordner"
-MAP_TITLE = "Projektkarte"
 BRIEF_TITLE = "Team-Brief"
 HINT = "[…] gekürzt, vollständig in {source}"
 SHORT_HINT = "[…] gekürzt"
@@ -144,32 +143,6 @@ def _knowledge_sections(paths):
     return sections, [folder for _label, folder, _files in found]
 
 
-def _map_sections(paths):
-    """(Abschnitte, Kartenpfade) für die Projektkarten der Repos.
-
-    Der Abschnitt nennt nur den absoluten Kartenpfad, keinen Dateiinhalt.
-    Ohne vorhandene Karte entfällt er.
-    """
-    found = []
-    for raw in paths or ():
-        top, target = projectmap.path(raw)
-        if not target or not os.path.isfile(target):
-            continue
-        target = os.path.realpath(target)
-        label = os.path.basename(
-            top or os.path.abspath(os.path.expanduser(str(raw)))
-        )
-        found.append((label, target))
-    sections = [
-        (
-            MAP_TITLE if len(found) == 1 else f"{MAP_TITLE}: {label}",
-            target,
-        )
-        for label, target in found
-    ]
-    return sections, [target for _label, target in found]
-
-
 def _decision_block(lines):
     """Abschnitt aus Entscheidungszeilen (älteste zuerst); leer ohne Einträge."""
     if not lines:
@@ -207,13 +180,13 @@ def _clip_decisions(lines, maximum, source=""):
 
 def build_paths(paths, brief="", maximum=DEFAULT_LIMIT, fallback_source="",
                 report=False):
-    """Steckbriefe, Entscheidungen, Wissensordner, Projektkarte und Brief.
+    """Steckbriefe, Entscheidungen, Wissensordner und Brief.
 
-    Gesamtlänge zählt alle fünf. Die neuesten Entscheidungen behalten
-    mindestens `1/DECISION_RESERVE` der Grenze. Danach bekommen der
-    Wissensordner und die Projektkarte ihren Platz (beide sind nur
-    Zeiger), dann der Steckbrief, zuletzt der Brief. Der Hinweis nennt nur
-    die Quellen, deren Text tatsächlich fehlt.
+    Gesamtlänge zählt alle vier. Die neuesten Entscheidungen behalten
+    mindestens `1/DECISION_RESERVE` der Grenze. Danach bekommt der
+    Wissensordner seinen Platz (er ist nur ein Zeiger), dann der Steckbrief,
+    zuletzt der Brief. Der Hinweis nennt nur die Quellen, deren Text
+    tatsächlich fehlt.
     """
     maximum = teams.check_context_limit(maximum)
     sections, found = _project_sections(paths)
@@ -226,11 +199,10 @@ def build_paths(paths, brief="", maximum=DEFAULT_LIMIT, fallback_source="",
     knowledge_sections, knowledge_found = _knowledge_sections(paths)
     knowledge_text = compose(knowledge_sections)
     knowledge_source = ", ".join(knowledge_found)
-    map_sections, map_found = _map_sections(paths)
-    map_text = compose(map_sections)
-    map_source = ", ".join(map_found)
     brief_source = fallback_source if brief_block else ""
     project_source = ", ".join(found)
+    if brief_block and fallback_source:
+        project_source = ", ".join(list(found) + [fallback_source])
 
     if not maximum:
         return {"text": "", "clipped": False} if report else ""
@@ -238,9 +210,7 @@ def build_paths(paths, brief="", maximum=DEFAULT_LIMIT, fallback_source="",
     clipped = False
     blocks = [
         part
-        for part in (
-            project_text, decision_text, knowledge_text, map_text, brief_block
-        )
+        for part in (project_text, decision_text, knowledge_text, brief_block)
         if part
     ]
     if len("\n\n".join(blocks)) > maximum:
@@ -261,19 +231,14 @@ def build_paths(paths, brief="", maximum=DEFAULT_LIMIT, fallback_source="",
     if decision_text:
         room -= 2
     room = max(room, 0)
-    if knowledge_text or map_text:
-        # Wissensordner und Projektkarte sind nur Zeiger: ihre Pfade bleiben
-        # reserviert, damit eine lange Dateiliste weder den Steckbrief noch
-        # den Brief vollständig verdrängt.
-        need_k = (
-            _reserve(knowledge_text, knowledge_source, 2)
-            if knowledge_text else 0
-        )
-        need_m = _reserve(map_text, map_source, 2) if map_text else 0
+    if knowledge_text:
+        # Der Wissensordner ist nur ein Zeiger: sein Ordnerpfad und der
+        # Steckbrief-Titel bleiben reserviert, damit eine lange Dateiliste
+        # weder den Steckbrief noch den Brief vollständig verdrängt.
+        need_k = _reserve(knowledge_text, knowledge_source, 2)
         need_b = _reserve(brief_block, brief_source, 1) if brief_block else 0
         project_room = max(
             room - need_k - (2 if need_k else 0)
-            - need_m - (2 if need_m else 0)
             - need_b - (2 if need_b else 0),
             0,
         )
@@ -285,11 +250,7 @@ def build_paths(paths, brief="", maximum=DEFAULT_LIMIT, fallback_source="",
         remaining = max(
             room - len(project_text) - (2 if project_text else 0), 0
         )
-        knowledge_room = max(
-            remaining - need_m - (2 if need_m else 0)
-            - need_b - (2 if need_b else 0),
-            0,
-        )
+        knowledge_room = max(remaining - need_b - (2 if need_b else 0), 0)
         knowledge_text, knowledge_clipped = _fit_block(
             knowledge_text, knowledge_room, knowledge_source
         )
@@ -297,22 +258,12 @@ def build_paths(paths, brief="", maximum=DEFAULT_LIMIT, fallback_source="",
         remaining = max(
             remaining - len(knowledge_text) - (2 if knowledge_text else 0), 0
         )
-        map_room = max(remaining - need_b - (2 if need_b else 0), 0)
-        map_text, map_clipped = _fit_block(map_text, map_room, map_source)
-        clipped = clipped or map_clipped
-        remaining = max(
-            remaining - len(map_text) - (2 if map_text else 0), 0
-        )
         if brief_block:
             brief_block, brief_clipped = _fit_block(
                 brief_block, remaining, brief_source
             )
             clipped = clipped or brief_clipped
     elif project_text and len(project_text) > room:
-        # Der Brief entfällt in diesem Zweig vollständig; sein Pfad gehört
-        # deshalb in den Hinweis des gekürzten Steckbriefs.
-        if brief_block and fallback_source:
-            project_source = ", ".join(list(found) + [fallback_source])
         project_text, project_clipped = _fit_block(
             project_text, room, project_source
         )
@@ -335,9 +286,7 @@ def build_paths(paths, brief="", maximum=DEFAULT_LIMIT, fallback_source="",
 
     text = "\n\n".join(
         part
-        for part in (
-            project_text, decision_text, knowledge_text, map_text, brief_block
-        )
+        for part in (project_text, decision_text, knowledge_text, brief_block)
         if part
     )
     if report:
