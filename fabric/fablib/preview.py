@@ -26,6 +26,7 @@ COPY_ITEMS = ("settings.json", "keys.json", "layouts", "mods", "fabric")
 FAB = os.path.join(
     os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "fab"
 )
+MARKER_ENV = "FAB_PREVIEW_ID"
 
 
 def root(ticket_id):
@@ -81,12 +82,116 @@ def _pid_alive(pid):
     return True
 
 
+def _process_started(pid):
+    """Startzeit des Prozesses; None, wenn sie nicht lesbar ist."""
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def _process_group(pid):
+    try:
+        return os.getpgid(int(pid))
+    except (ProcessLookupError, TypeError, ValueError):
+        return None
+
+
+def _process_marker(pid):
+    """FAB_PREVIEW_ID des Prozesses als (lesbar, Wert).
+
+    Linux legt die Umgebung unter /proc ab. macOS gibt fremde Umgebungen
+    nicht heraus; dort ist der Marker nicht lesbar.
+    """
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False, None
+    try:
+        with open(f"/proc/{pid}/environ", "rb") as handle:
+            raw = handle.read()
+    except OSError:
+        return False, None
+    prefix = MARKER_ENV.encode() + b"="
+    for entry in raw.split(b"\0"):
+        if entry.startswith(prefix):
+            return True, entry[len(prefix):].decode("utf-8", "replace")
+    return True, None
+
+
+def _process_cwd(pid):
+    try:
+        result = subprocess.run(
+            ["lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    for line in result.stdout.splitlines():
+        if line.startswith("n") and len(line) > 1:
+            return os.path.realpath(line[1:])
+    return None
+
+
+def _owned(state):
+    """Prozessgruppe, wenn die gespeicherte PID noch der eigene Prozess ist.
+
+    Startzeit, Gruppe und Marker müssen live stimmen. Wo der Marker nicht
+    lesbar ist (macOS), muss stattdessen das Arbeitsverzeichnis das
+    Vorschau-Home sein.
+    """
+    state = state or {}
+    try:
+        pid = int(state.get("pid"))
+    except (TypeError, ValueError):
+        return None
+    if not _pid_alive(pid):
+        return None
+    started = state.get("started")
+    if not started or _process_started(pid) != started:
+        return None
+    pgid = _process_group(pid)
+    try:
+        stored = int(state.get("pgid"))
+    except (TypeError, ValueError):
+        return None
+    if pgid is None or pgid != stored:
+        return None
+    marker = state.get("marker")
+    if not marker:
+        return None
+    readable, live = _process_marker(pid)
+    if readable:
+        if live != marker:
+            return None
+    else:
+        home = state.get("home")
+        if not home or _process_cwd(pid) != os.path.realpath(home):
+            return None
+    return pgid
+
+
 def is_running(ticket_id):
     state = load_state(ticket_id)
     if not state:
         return False
-    if _pid_alive(state.get("pid")):
-        return True
+    if state.get("pid"):
+        if _owned(state) is not None:
+            return True
+        if _pid_alive(state.get("pid")):
+            return False
     try:
         result = subprocess.run(
             [APP, "status"],
@@ -124,6 +229,8 @@ def environment(state):
             "HC_SESSION": state["session"],
         }
     )
+    if state.get("marker"):
+        env[MARKER_ENV] = state["marker"]
     return env
 
 
@@ -137,22 +244,34 @@ def _detail(result):
     return (result.stderr or result.stdout).strip() or f"Exit {result.returncode}"
 
 
-def _terminate(pid, timeout=STOP_TIMEOUT):
-    if not _pid_alive(pid):
-        return
+def _signal_group(pgid, sig):
     try:
-        os.kill(int(pid), signal.SIGTERM)
-    except (ProcessLookupError, ValueError):
-        return
+        os.killpg(pgid, sig)
+    except (ProcessLookupError, PermissionError, ValueError):
+        pass
+
+
+def _terminate(state, timeout=STOP_TIMEOUT):
+    """Beendet nur den eigenen Vorschau-Prozess samt Prozessgruppe.
+
+    Gibt einen Hinweis zurück, wenn die gespeicherte PID nicht mehr zum
+    eigenen Prozess gehört; dann wurde nichts signalisiert.
+    """
+    pid = (state or {}).get("pid")
+    if not pid or not _pid_alive(pid):
+        return None
+    pgid = _owned(state)
+    if pgid is None:
+        return f"PID {pid} gehört nicht mehr zur Vorschau; kein Signal gesendet"
+    _signal_group(pgid, signal.SIGTERM)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if not _pid_alive(pid):
-            return
+        if _owned(state) is None:
+            return None
         time.sleep(0.1)
-    try:
-        os.kill(int(pid), signal.SIGKILL)
-    except (ProcessLookupError, ValueError):
-        pass
+    if _owned(state) is not None:
+        _signal_group(pgid, signal.SIGKILL)
+    return None
 
 
 def _copy_worktree(worktree, target):
@@ -411,7 +530,13 @@ def _wait_ready(state, ticket_id):
         if result is not None and result.returncode == 0:
             return
         if time.monotonic() >= deadline:
-            _terminate(state.get("pid"))
+            notice = _terminate(state)
+            if notice:
+                print(f"{ticket_id}: {notice}", file=sys.stderr)
+                try:
+                    os.remove(state_path(ticket_id))
+                except OSError:
+                    pass
             raise FabError(
                 f"{ticket_id}: Vorschau-Core wurde in {int(START_TIMEOUT)} s nicht bereit"
             )
@@ -434,6 +559,9 @@ def start(ticket, page="board"):
     state = {
         "ticket": ticket_id,
         "pid": None,
+        "pgid": None,
+        "started": None,
+        "marker": f"{ticket_id}-{os.getpid()}-{os.urandom(8).hex()}",
         "session": _session_name(ticket_id),
         "home": home(ticket_id),
         "userhome": os.path.join(base, "userhome"),
@@ -469,6 +597,15 @@ def start(ticket, page="board"):
         except FileNotFoundError:
             raise FabError("herdr-app ist nicht im PATH")
     state["pid"] = process.pid
+    state["pgid"] = _process_group(process.pid)
+    for _ in range(5):
+        state["started"] = _process_started(process.pid)
+        if state["started"]:
+            break
+        time.sleep(0.05)
+    if not state["started"] or state["pgid"] is None:
+        _signal_group(process.pid, signal.SIGKILL)
+        raise FabError(f"{ticket_id}: Identität der Vorschau nicht lesbar")
     _write_state(ticket_id, state)
     _wait_ready(state, ticket_id)
     return state
@@ -523,7 +660,9 @@ def stop(ticket_id):
         keep = {}
     else:
         keep = state
-    _terminate(state.get("pid"))
+    notice = _terminate(state)
+    if notice:
+        print(f"{ticket_id}: {notice}", file=sys.stderr)
     try:
         subprocess.run(
             [HC, "server", "stop"],

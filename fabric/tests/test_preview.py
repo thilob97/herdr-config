@@ -1,8 +1,17 @@
 """Vorschau-Instanz je Worktree: start, shot, stop und Prompt-Doku."""
+import contextlib
+import io
 import json
 import os
 import shutil
+import signal
+import subprocess
+import sys
+import time
+from unittest import mock
 
+from fabric.fablib import preview as preview_mod
+from fabric.fablib.errors import FabError
 from fabric.tests.support import FABRIC, FabricCase
 
 
