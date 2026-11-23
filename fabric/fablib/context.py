@@ -83,6 +83,18 @@ def _fit_block(text, room, source):
     return cut["text"], cut["clipped"]
 
 
+def _minimum_block(text, source, prefix_parts):
+    """Kleinster Block, der Quelle und Pfad noch nennt."""
+    parts = text.split("\n\n")[:prefix_parts]
+    marker = HINT.format(source=source) if source else SHORT_HINT
+    return "\n\n".join(parts) + "\n\n" + marker
+
+
+def _reserve(text, source, prefix_parts):
+    """Platz, den `_minimum_block` dauerhaft braucht."""
+    return min(len(text), len(_minimum_block(text, source, prefix_parts)))
+
+
 def _project_sections(paths):
     """(Abschnitte, gefundene Pfade) für die Steckbriefe der Repos."""
     found = []
@@ -219,16 +231,39 @@ def build_paths(paths, brief="", maximum=DEFAULT_LIMIT, fallback_source="",
     if decision_text:
         room -= 2
     room = max(room, 0)
-    # Der Wissensordner ist nur ein Zeiger; er bekommt seinen Platz zuerst
-    # und die Dateiliste wird vor dem Steckbrief gekürzt.
     if knowledge_text:
+        # Der Wissensordner ist nur ein Zeiger: sein Ordnerpfad und der
+        # Steckbrief-Titel bleiben reserviert, damit eine lange Dateiliste
+        # weder den Steckbrief noch den Brief vollständig verdrängt.
+        need_k = _reserve(knowledge_text, knowledge_source, 2)
+        need_b = _reserve(brief_block, brief_source, 1) if brief_block else 0
+        project_room = max(
+            room - need_k - (2 if need_k else 0)
+            - need_b - (2 if need_b else 0),
+            0,
+        )
+        if project_text:
+            project_text, project_clipped = _fit_block(
+                project_text, project_room, project_source
+            )
+            clipped = clipped or project_clipped
+        remaining = max(
+            room - len(project_text) - (2 if project_text else 0), 0
+        )
+        knowledge_room = max(remaining - need_b - (2 if need_b else 0), 0)
         knowledge_text, knowledge_clipped = _fit_block(
-            knowledge_text, room, knowledge_source
+            knowledge_text, knowledge_room, knowledge_source
         )
         clipped = clipped or knowledge_clipped
-        if knowledge_text:
-            room = max(room - len(knowledge_text) - 2, 0)
-    if project_text and len(project_text) > room:
+        remaining = max(
+            remaining - len(knowledge_text) - (2 if knowledge_text else 0), 0
+        )
+        if brief_block:
+            brief_block, brief_clipped = _fit_block(
+                brief_block, remaining, brief_source
+            )
+            clipped = clipped or brief_clipped
+    elif project_text and len(project_text) > room:
         project_text, project_clipped = _fit_block(
             project_text, room, project_source
         )

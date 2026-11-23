@@ -1633,6 +1633,27 @@ export function sortPrompts(prompts) {
   return [...(prompts ?? [])].sort((a, b) => rank(a) - rank(b) || String(a?.name).localeCompare(String(b?.name)));
 }
 
+/** Reiter der Repo-Ansicht in Anzeigereihenfolge. */
+export const REPO_TABS = ["verify", "lessons", "project", "wissen"];
+
+/** Reiter mit eigenem Editor; `wissen` ist nur Ansicht. */
+export const REPO_EDITOR_TABS = ["verify", "lessons", "project"];
+
+/** Reiter nach dem Laden: gültiger Deeplink gewinnt, ein Reload desselben
+ *  Repos behält den offenen Reiter, alles andere startet beim Prüfskript. */
+export function repoTabAfterLoad({ wanted = null, previousPath = null, path = null, current = "verify" } = {}) {
+  if (REPO_TABS.includes(wanted)) return wanted;
+  if (previousPath && path && previousPath === path) {
+    return REPO_TABS.includes(current) ? current : "verify";
+  }
+  return "verify";
+}
+
+/** Editor-Schlüssel eines Reiters oder `null`, wenn er keinen hat. */
+export function repoEditorKey(tab) {
+  return REPO_EDITOR_TABS.includes(tab) ? tab : null;
+}
+
 // ---------- Vorlagen und Issues ----------
 
 /** Feste Reihenfolge der mitgelieferten Vorlagen. */
@@ -1840,7 +1861,7 @@ export function knowledgeRemoveArgs(path, name, from = "mensch") {
 /** Notizname mit `.md`-Endung; vorhandene Endungen bleiben. */
 export function knowledgeNoteFile(name) {
   const value = String(name ?? "");
-  return value.endsWith(".md") ? value : `${value}.md`;
+  return value.toLowerCase().endsWith(".md") ? value : `${value}.md`;
 }
 
 /** Deutscher Hinweis zum Notiznamen oder leer, wenn er taugt. */

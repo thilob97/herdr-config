@@ -26,6 +26,7 @@ import {
   pipelineOpenSteps, pipelineLogLines, pipelineLogSearch, pipelineDuration, pipelineRunTarget,
   knowledgeAddArgs, knowledgeNoteArgs, knowledgeRemoveArgs, knowledgeNoteFile,
   knowledgeNameProblem, knowledgeSize,
+  REPO_TABS, REPO_EDITOR_TABS, repoTabAfterLoad, repoEditorKey,
 } from "../model.js";
 
 test("Tickets werden nach Stufe gruppiert, in Stufenreihenfolge", () => {
@@ -2566,4 +2567,54 @@ test("Wissensordner: Größen lesbar formatieren", () => {
   assert.equal(knowledgeSize(undefined), "—");
   assert.equal(knowledgeSize("abc"), "—");
   assert.equal(knowledgeSize(Number.NaN), "—");
+});
+
+test("Repo-Reiter: gültiger Deeplink gewinnt vor allem anderen", () => {
+  assert.equal(repoTabAfterLoad({ wanted: "wissen" }), "wissen");
+  assert.equal(repoTabAfterLoad({ wanted: "verify" }), "verify");
+  assert.equal(repoTabAfterLoad({ wanted: "lessons" }), "lessons");
+  assert.equal(repoTabAfterLoad({ wanted: "project" }), "project");
+  // Auch gegen ein anderes Repo und einen anderen aktuellen Reiter.
+  assert.equal(repoTabAfterLoad({ wanted: "wissen", previousPath: "/a", path: "/b", current: "verify" }), "wissen");
+  assert.equal(repoTabAfterLoad({ wanted: "lessons", previousPath: "/a", path: "/a", current: "project" }), "lessons");
+});
+
+test("Repo-Reiter: ungültiger oder leerer Wunsch wird ignoriert", () => {
+  assert.equal(repoTabAfterLoad({ wanted: "quatsch", previousPath: "/a", path: "/b" }), "verify");
+  assert.equal(repoTabAfterLoad({ wanted: "", previousPath: "/a", path: "/a", current: "wissen" }), "wissen");
+  assert.equal(repoTabAfterLoad({ wanted: null, previousPath: "/a", path: "/a", current: "project" }), "project");
+  assert.equal(repoTabAfterLoad({ wanted: undefined, path: "/b", current: "lessons" }), "verify");
+});
+
+test("Repo-Reiter: Reload desselben Repos behält den offenen Reiter", () => {
+  assert.equal(repoTabAfterLoad({ previousPath: "/a", path: "/a", current: "wissen" }), "wissen");
+  assert.equal(repoTabAfterLoad({ previousPath: "/a", path: "/a", current: "project" }), "project");
+  assert.equal(repoTabAfterLoad({ previousPath: "/a", path: "/a", current: "lessons" }), "lessons");
+  assert.equal(repoTabAfterLoad({ previousPath: "/a", path: "/a", current: "verify" }), "verify");
+});
+
+test("Repo-Reiter: anderes Repo, fehlender Vorpfad und unbekannter Reiter starten bei verify", () => {
+  assert.equal(repoTabAfterLoad({ previousPath: "/a", path: "/b", current: "wissen" }), "verify");
+  assert.equal(repoTabAfterLoad({ path: "/b", current: "project" }), "verify");
+  assert.equal(repoTabAfterLoad({ previousPath: "/a", path: "/a", current: "quatsch" }), "verify");
+  assert.equal(repoTabAfterLoad({ previousPath: "/a", path: "/a", current: null }), "verify");
+  assert.equal(repoTabAfterLoad(), "verify");
+});
+
+test("Repo-Reiter: nur verify, lessons und project haben einen Editor", () => {
+  assert.deepEqual(REPO_TABS, ["verify", "lessons", "project", "wissen"]);
+  assert.deepEqual(REPO_EDITOR_TABS, ["verify", "lessons", "project"]);
+  assert.equal(repoEditorKey("verify"), "verify");
+  assert.equal(repoEditorKey("lessons"), "lessons");
+  assert.equal(repoEditorKey("project"), "project");
+  assert.equal(repoEditorKey("wissen"), null);
+  assert.equal(repoEditorKey(null), null);
+  assert.equal(repoEditorKey("x"), null);
+});
+
+test("Wissensordner: .md-Endung wird ohne Rücksicht auf Schreibweise erkannt", () => {
+  assert.equal(knowledgeNoteFile("Plan.MD"), "Plan.MD");
+  assert.equal(knowledgeNoteFile("plan.Md"), "plan.Md");
+  assert.equal(knowledgeNoteFile("Plan"), "Plan.md");
+  assert.equal(knowledgeNoteFile(""), ".md");
 });

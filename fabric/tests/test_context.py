@@ -479,3 +479,40 @@ class KnowledgeContextTests(FabricCase):
         self.assertIn(prefix, text)
         self.assertIn("[…] gekürzt", text)
         self.assertNotIn("notiz-39.md", text)
+
+    def test_lange_dateiliste_verdraengt_steckbrief_und_brief_nicht(self):
+        repo = self.make_repo()
+        folder = self.knowledge(
+            repo, tuple(f"notiz-{number:02d}.md" for number in range(60))
+        )
+        real = os.path.realpath(folder)
+        self.write_file(
+            os.path.join(repo, ".fabric", "project.md"),
+            "# Steckbrief\n\n" + "S" * 1487,
+        )
+        self.write_file(
+            os.path.join(repo, ".fabric", "decisions.md"),
+            "".join(f"- Entscheidung {number}.\n" for number in range(1, 6)),
+        )
+
+        text = context.build_paths([repo], "B" * 3000, 1500, "/r/roster.json")
+        self.assertLessEqual(len(text), 1500)
+        self.assertIn(f"## {context.PROJECT_TITLE}", text)
+        self.assertIn(real, text)
+        self.assertIn(f"## {context.BRIEF_TITLE}", text)
+
+        hint = context.HINT.format(source="")
+        hints = [line for line in text.splitlines() if hint in line]
+        self.assertTrue(hints, text)
+        self.assertEqual(
+            len([line for line in hints if "project.md" in line]), 1, hints
+        )
+        self.assertEqual(
+            len([line for line in hints if real in line]), 1, hints
+        )
+        self.assertTrue(
+            [line for line in hints if "/r/roster.json" in line], hints
+        )
+        self.assertFalse(
+            [line for line in hints if "decisions.md" in line], hints
+        )

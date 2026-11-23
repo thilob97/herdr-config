@@ -1728,14 +1728,8 @@ export default class Fabric extends View {
       this.repoTest = null;
       // Vorschau-Deeplink: einmal die gewünschte Datei zeigen, dann normal weiter.
       const wantedTab = shared("fabric.repoTab");
-      if (wantedTab === "verify" || wantedTab === "lessons" || wantedTab === "project" || wantedTab === "wissen") {
-        this.repoTab = wantedTab;
-        setShared("fabric.repoTab", null);
-      } else if (previousPath !== path) {
-        // Neu gewähltes Repo startet beim Prüfskript; ein Reload (z. B. nach
-        // einer Wissens-Aktion) behält den offenen Tab.
-        this.repoTab = "verify";
-      }
+      this.repoTab = model.repoTabAfterLoad({ wanted: wantedTab, previousPath, path, current: this.repoTab });
+      if (model.REPO_TABS.includes(wantedTab)) setShared("fabric.repoTab", null);
     } catch (error) {
       this.repoError = `Repo nicht lesbar: ${message(error)}`;
       this.repoDetail = null;
@@ -4048,27 +4042,27 @@ export default class Fabric extends View {
   async saveRepo(cx, only = null, silent = false) {
     if (!this.repoDetail) return false;
     const key = only ?? this.repoTab;
-    if (key !== "verify" && key !== "lessons" && key !== "project") return false;
-    const editor = key === "verify" ? this.verifyEditor
-      : key === "project" ? this.projectEditor
+    const editorKey = model.repoEditorKey(key);
+    if (!editorKey) return false;
+    const editor = editorKey === "verify" ? this.verifyEditor
+      : editorKey === "project" ? this.projectEditor
         : this.lessonsEditor;
     if (!editor) {
-      this.setError(key === "verify" ? "verify" : key === "project" ? "project" : "lessons",
-        "Noch keine Datei angelegt.");
+      this.setError(editorKey, "Noch keine Datei angelegt.");
       this.notifyNow();
       return false;
     }
     const text = editor.value();
-    const success = key === "verify" ? "Prüfskript gespeichert."
-      : key === "project" ? "Steckbrief gespeichert."
+    const success = editorKey === "verify" ? "Prüfskript gespeichert."
+      : editorKey === "project" ? "Steckbrief gespeichert."
         : "Lernnotizen gespeichert.";
-    const result = await this.action("repo-set", model.repoSetArgs(this.repoDetail.path, key, text), {
+    const result = await this.action("repo-set", model.repoSetArgs(this.repoDetail.path, editorKey, text), {
       success,
       after: () => {
-        if (key === "verify") {
+        if (editorKey === "verify") {
           this.verifySaved = text;
           this.repoDetail.verify = { ...(this.repoDetail.verify ?? {}), exists: true, text };
-        } else if (key === "project") {
+        } else if (editorKey === "project") {
           this.projectSaved = text;
           this.repoDetail.project = { ...(this.repoDetail.project ?? {}), exists: true, text };
         } else {
@@ -4088,8 +4082,8 @@ export default class Fabric extends View {
       },
     });
     if (result.ok) {
-      if (key === "verify") this.verifySaved = text;
-      else if (key === "project") this.projectSaved = text;
+      if (editorKey === "verify") this.verifySaved = text;
+      else if (editorKey === "project") this.projectSaved = text;
       else this.lessonsSaved = text;
     }
     if (!silent) this.notifyNow();
