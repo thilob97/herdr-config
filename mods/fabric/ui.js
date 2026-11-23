@@ -100,7 +100,6 @@ export function pipelineColor(t, state) {
     case "pass": return t.done;
     case "fail": return t.blocked;
     case "running": return t.working;
-    case "queued": return t.accent;
     default: return t.dim;
   }
 }
