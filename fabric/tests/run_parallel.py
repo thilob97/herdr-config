@@ -170,9 +170,12 @@ def main(argv=None):
             }
             for future in concurrent.futures.as_completed(futures):
                 result = future.result()
-                if result.signal is not None:
-                    # Der Arbeitsprozess wurde von außen beendet: nicht als
-                    # ROT zählen, sondern genau einmal wiederholen.
+                signal_number = signal_of(result)
+                if signal_number is not None:
+                    # Der Testprozess selbst oder ein Unterprozess eines Tests
+                    # wurde von außen beendet: nicht als ROT zählen, sondern
+                    # genau einmal wiederholen.
+                    detail = " im Unterprozess" if result.code > 0 else ""
                     print(
                         "SIG %s (%d Tests, %.1fs, Signal %d%s, Wiederholung)"
                         % (

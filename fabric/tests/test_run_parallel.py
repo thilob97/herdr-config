@@ -109,3 +109,71 @@ class RunParallelTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stderr)
         output = result.stdout + result.stderr
         self.assertNotIn("Abbruch: ", output)
+
+# Ein Test scheitert an einem Unterprozess, der per SIGTERM endet. Beim ersten
+# Lauf tötet sich das Kind, danach nur noch, wenn die Markierung fehlt.
+UNTERPROZESS_SIGTERM_EINMAL = '''"""Unterprozess stirbt einmal per SIGTERM, dann grün."""
+import os
+import subprocess
+import sys
+import unittest
+
+KILL = "import os, signal; os.kill(os.getpid(), signal.SIGTERM)"
+MARKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "inner.marker")
+
+
+class Inner(unittest.TestCase):
+    def test_unterprozess(self):
+        einmal = not os.path.exists(MARKER)
+        if einmal:
+            with open(MARKER, "w", encoding="utf-8") as handle:
+                handle.write("1")
+        code = subprocess.run([sys.executable, "-c", KILL if einmal else "pass"]).returncode
+        self.assertEqual(code, 0, "")
+'''
+
+UNTERPROZESS_SIGTERM_IMMER = '''"""Unterprozess stirbt bei jedem Lauf per SIGTERM."""
+import subprocess
+import sys
+import unittest
+
+
+class Inner(unittest.TestCase):
+    def test_unterprozess(self):
+        code = subprocess.run(
+            [sys.executable, "-c",
+             "import os, signal; os.kill(os.getpid(), signal.SIGTERM)"],
+        ).returncode
+        self.assertEqual(code, 0, "")
+'''
+
+
+class RunParallelSignalTests(unittest.TestCase):
+    def write(self, folder, name, text):
+        path = os.path.join(folder, name)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        return path
+
+    def run_runner(self, *files):
+        return subprocess.run(
+            [sys.executable, RUNNER, "--jobs", "2", *files],
+            capture_output=True,
+            text=True,
+        )
+
+    def test_unterprozess_sigterm_wird_wiederholt(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = self.write(folder, "test_inner.py", UNTERPROZESS_SIGTERM_EINMAL)
+            result = self.run_runner(path)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = result.stdout + result.stderr
+        self.assertIn("Wiederholung nach Signal 15", output)
+        self.assertIn("0 rot", output)
+
+    def test_unterprozess_sigterm_ist_abbruch(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = self.write(folder, "test_inner.py", UNTERPROZESS_SIGTERM_IMMER)
+            result = self.run_runner(path)
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertIn("Abbruch: Signal 15 in", result.stdout)
