@@ -18,3 +18,4 @@
 - Baue einen neuen festen Bereich nie außerhalb des Scrollbereichs ein, sondern prüfe per Vorschau-Shot bei normaler Fensterhöhe, dass Beschreibung und Verlauf sichtbar bleiben, bevor du übergibst.
 - Belege jede Verhaltensaussage, die du in die Doku schreibst, vorher mit Datei:Zeile im Code für jeden Fall (etwa übernommen, abgelehnt und verworfen), statt vom häufigsten Fall auf alle zu schließen.
 - Sieh dir vor der Übergabe jeden Nachher-Shot selbst bis zu allen vier Fensterkanten an, vergleiche ihn mit seinem Vorher-Shot und prüfe per fab show, dass jeder im Übergabekommentar genannte Shot wirklich am Ticket hängt.
+- Wenn ein Ticket die Ursache eines Fehlers beheben soll, belege den Absender mit Datei:Zeile und einem Repro, das vorher fehlschlägt und danach nicht mehr, statt nur die Folge abzufangen oder zu wiederholen, und hole eine ausdrückliche Umfangsentscheidung ein, falls sich die Ursache im Repo nicht beheben lässt.
