@@ -492,3 +492,42 @@ class PipelineTest(PipelineCase):
         self.assertEqual(run["duration_ms"], 9)
         self.assertEqual(run["reason"], "")
         self.assertEqual([step["state"] for step in steps], ["pass"])
+
+    def test_unittest_fehler_mit_signalendem_unterprozess_hat_abbruchgrund(self):
+        repo = self.make_repo()
+        fixture = os.path.join(repo, "test_unterprozess_signal.py")
+        self._write(
+            fixture,
+            "import subprocess\n"
+            "import sys\n"
+            "import unittest\n"
+            "\n"
+            "\n"
+            "class Inner(unittest.TestCase):\n"
+            "    def test_unterprozess(self):\n"
+            "        code = subprocess.run(\n"
+            "            [sys.executable, '-c',\n"
+            "             'import os, signal; os.kill(os.getpid(), signal.SIGTERM)'],\n"
+            "        ).returncode\n"
+            "        self.assertEqual(code, 0, '')\n",
+        )
+        runner = os.path.join(
+            os.path.dirname(os.path.abspath(pipeline.__file__)),
+            "..",
+            "tests",
+            "run_parallel.py",
+        )
+        self.write_steps(
+            repo,
+            [{"name": "unittest", "run": f"{sys.executable} {runner} {fixture}"}],
+        )
+
+        result = self.run_pipeline(repo, ticket="T-26")
+
+        self.assertEqual(result["state"], "fail")
+        self.assertEqual(result["code"], pipeline.ABORT_EXIT)
+        self.assertTrue(result["reason"].startswith("Abbruch:"), result["reason"])
+        self.assertIn("Signal 15", result["reason"])
+        with self.store_env():
+            run = store.pipeline_run_load(result["run_id"])
+        self.assertEqual(run["reason"], result["reason"])

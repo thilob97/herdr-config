@@ -427,6 +427,42 @@ class SqliteTests(FabricCase):
 
         return datetime.fromtimestamp(store.now_ms() / 1000).date().isoformat()
 
+    def test_altdatenbank_bekommt_pipeline_grund(self):
+        """Alte DB ohne pipeline_runs.reason: Spalte nachziehen, Läufe bleiben."""
+        path = os.path.join(self.home, "fabric.db")
+        conn = sqlite3.connect(path)
+        try:
+            for statement in store._SCHEMA:
+                if "CREATE TABLE IF NOT EXISTS pipeline_runs" in statement:
+                    statement = statement.replace(
+                        "        duration_ms INTEGER,\n        reason TEXT\n",
+                        "        duration_ms INTEGER\n",
+                    )
+                conn.execute(statement)
+            conn.execute("PRAGMA user_version=2")
+            conn.execute(
+                "INSERT INTO pipeline_runs(ticket,trigger,state,started_at,"
+                "duration_ms) VALUES ('T-9','verify','pass',1,2)"
+            )
+            conn.commit()
+            columns = [row[1] for row in conn.execute(
+                "PRAGMA table_info(pipeline_runs)")]
+        finally:
+            conn.close()
+        self.assertNotIn("reason", columns)
+
+        with self._env():
+            store._close_conn()
+            runs = store.pipeline_run_list()
+            columns = [row[1] for row in store._connect().execute(
+                "PRAGMA table_info(pipeline_runs)")]
+
+        self.assertEqual(
+            [(run["ticket"], run["state"], run["reason"]) for run in runs],
+            [("T-9", "pass", "")],
+        )
+        self.assertIn("reason", columns)
+
     # 8
 
     def test_sql_abfragen(self):

@@ -5,10 +5,10 @@ Jeder Lauf bekommt ein eigenes ``HOME``, ``FAB_HOME`` und ``TMPDIR``, damit
 Store, Sperre und Temp-Dateien der Testdateien nicht kollidieren. Der
 Exit-Code ist 0 nur, wenn jede Datei grün war; sonst werden die betroffenen
 Dateien mit ihrer vollständigen Ausgabe (inklusive Traceback) gezeigt.
-Endet ein Arbeitsprozess durch ein Signal (etwa SIGTERM von außen), wird die
-Datei genau einmal in einem frischen Prozess wiederholt. Bleibt es beim
-Signal, gilt sie als abgebrochen: ``Abbruch: Signal <n> in <Datei>`` und
-Exit-Code 3.
+Endet ein Arbeitsprozess durch ein Signal (etwa SIGTERM von außen) oder
+scheitert ein Test an einem per Signal beendeten Unterprozess, wird die Datei
+genau einmal in einem frischen Prozess wiederholt. Bleibt es beim Signal, gilt
+sie als abgebrochen: ``Abbruch: Signal <n> in <Datei>`` und Exit-Code 3.
 
 Aufruf ohne Dateien lädt alle ``fabric/tests/test_*.py``. Explizite Dateien
 sind für Tests des Läufers selbst gedacht. Die Prozesszahl ist standardmäßig
@@ -27,6 +27,12 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 RAN_RE = re.compile(r"^Ran (\d+) tests? in ", re.MULTILINE)
+# Ein unittest-Fehler, dessen Ursache ein per Signal beendeter Unterprozess
+# ist: `assertEqual(r.returncode, 0)` zeigt `-15 != 0`, ein nicht geprüfter
+# Rückgabewert erscheint als `returned non-zero exit status -15`.
+SIGNAL_DEATH_RE = re.compile(
+    r"-(\d+) != 0\b|returned non-zero exit status -(\d+)"
+)
 # Exit-Code, wenn mindestens eine Testdatei zweimal durch ein Signal endete.
 ABORT_EXIT = 3
 
@@ -107,6 +113,23 @@ def display(path):
         return path
 
 
+def signal_of(result):
+    """Signalnummer, wenn der Lauf an einem per Signal beendeten Prozess scheitert.
+
+    Zwei Fälle zählen als Abbruch: Der Testdatei-Prozess selbst wurde beendet
+    (negativer Rückgabewert), oder ein Test scheitert an einem Unterprozess,
+    den ein Signal beendet hat (`-15 != 0` im Traceback). Alles andere bleibt
+    ein gewöhnlicher roter Test.
+    """
+    if result.signal is not None:
+        return result.signal
+    if result.code > 0:
+        match = SIGNAL_DEATH_RE.search(result.output or "")
+        if match:
+            return int(match.group(1) or match.group(2))
+    return None
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
@@ -151,16 +174,17 @@ def main(argv=None):
                     # Der Arbeitsprozess wurde von außen beendet: nicht als
                     # ROT zählen, sondern genau einmal wiederholen.
                     print(
-                        "SIG %s (%d Tests, %.1fs, Signal %d, Wiederholung)"
+                        "SIG %s (%d Tests, %.1fs, Signal %d%s, Wiederholung)"
                         % (
                             display(result.path),
                             result.tests,
                             result.seconds,
-                            result.signal,
+                            signal_number,
+                            detail,
                         ),
                         flush=True,
                     )
-                    first_signals.append((result.path, result.signal))
+                    first_signals.append((result.path, signal_number))
                     continue
                 results.append(result)
                 status = "ok" if result.ok else "ROT"
@@ -173,23 +197,25 @@ def main(argv=None):
         # Wiederholung in einem frischen Prozess; bleibt es beim Signal, gilt
         # die Datei als abgebrochen (Exit 3).
         aborted = []
+        aborted_results = []
         if first_signals:
             first_signals.sort(key=lambda item: os.path.basename(item[0]))
             with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
                 futures = {
                     pool.submit(
                         run_one, path, session, len(files) + offset
-                    ): (path, signal)
-                    for offset, (path, signal) in enumerate(first_signals)
+                    ): (path, signal_number)
+                    for offset, (path, signal_number) in enumerate(first_signals)
                 }
                 for future in concurrent.futures.as_completed(futures):
                     result = future.result()
-                    signal = futures[future][1]
-                    if result.signal is not None:
-                        aborted.append((result.signal, result.path))
-                        results.append(result)
-                        continue
+                    first_signal = futures[future][1]
+                    signal_number = signal_of(result)
                     results.append(result)
+                    if signal_number is not None:
+                        aborted.append((signal_number, result.path))
+                        aborted_results.append(result)
+                        continue
                     if result.ok:
                         print(
                             "ok %s (%d Tests, %.1fs, Wiederholung nach Signal %d)"
@@ -197,7 +223,7 @@ def main(argv=None):
                                 display(result.path),
                                 result.tests,
                                 result.seconds,
-                                signal,
+                                first_signal,
                             ),
                             flush=True,
                         )
@@ -215,7 +241,9 @@ def main(argv=None):
         shutil.rmtree(session, ignore_errors=True)
 
     failed = [
-        result for result in results if not result.ok and result.signal is None
+        result
+        for result in results
+        if not result.ok and result not in aborted_results
     ]
     total = sum(result.tests for result in results)
     print()
