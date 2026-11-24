@@ -386,6 +386,7 @@ class VerifyQueueTest(VerifyQueueCase):
 
         self.assertEqual(row["state"], "pass")
         self.assertEqual(row["duration_ms"], 7)
+        self.assertEqual(row["reason"], "")
         self.assertEqual([step["state"] for step in steps], ["pass"])
 
     def test_besitz_wird_erst_nach_dem_endstatus_freigegeben(self):
@@ -394,10 +395,11 @@ class VerifyQueueTest(VerifyQueueCase):
         seen = {}
         real_finish = store.pipeline_run_finish
 
-        def spy_finish(run_id, state, duration_ms):
+        def spy_finish(run_id, state, duration_ms, reason=""):
             seen["state"] = state
+            seen["reason"] = reason
             seen["abandoned"] = verifyslots.abandoned(run_id)
-            return real_finish(run_id, state, duration_ms)
+            return real_finish(run_id, state, duration_ms, reason)
 
         with self.store_env(), mock.patch.dict(
             os.environ, {"FAB_ROSTER": self.roster}

@@ -41,7 +41,7 @@ class PersistError(FabError):
 
 DEFAULT_HOME = "~/.config/herdr-app/data/fabric"
 LOCK_TIMEOUT_DEFAULT = 30.0
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 STATUSES = ("draft", "todo", "doing", "review", "done", "dropped")
 MAX_CHILDREN = 3
 _ID_RE = re.compile(r"^[Tt]-(\d+)$")
@@ -92,7 +92,8 @@ _PIPELINE_SCHEMA = (
         trigger TEXT NOT NULL,
         state TEXT NOT NULL,
         started_at INTEGER,
-        duration_ms INTEGER
+        duration_ms INTEGER,
+        reason TEXT
     )""",
     "CREATE INDEX IF NOT EXISTS pipeline_runs_ticket ON pipeline_runs(ticket)",
     "CREATE INDEX IF NOT EXISTS pipeline_runs_trigger ON pipeline_runs(trigger)",
@@ -321,6 +322,14 @@ def _connect():
         for statement in _PIPELINE_SCHEMA:
             conn.execute(statement)
         conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
+    # T-127: Abbruchgrund je Lauf; bestehende Datenbanken bekommen die Spalte
+    # wie `comments.data` per `ALTER TABLE` und behalten ihre Läufe.
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(pipeline_runs)")}
+    if columns and "reason" not in columns:
+        try:
+            conn.execute("ALTER TABLE pipeline_runs ADD COLUMN reason TEXT")
+        except sqlite3.OperationalError:
+            pass
     _conn = conn
     _conn_home = current
     return conn
@@ -1670,7 +1679,7 @@ def flow_approvals():
 
 
 _RUN_COLUMNS_PIPELINE = (
-    "id,ticket,repo,worktree,branch,head,trigger,state,started_at,duration_ms"
+    "id,ticket,repo,worktree,branch,head,trigger,state,started_at,duration_ms,reason"
 )
 
 _STEP_COLUMNS_PIPELINE = (
@@ -1690,6 +1699,7 @@ def _pipeline_run_dict(row):
         "state": row["state"],
         "started_at": row["started_at"],
         "duration_ms": row["duration_ms"],
+        "reason": row["reason"] or "",
     }
 
 
@@ -1731,27 +1741,29 @@ def pipeline_run_start(run_id):
         )
 
 
-def pipeline_run_finish(run_id, state, duration_ms):
+def pipeline_run_finish(run_id, state, duration_ms, reason=""):
+    """Lauf beenden und optional den Abbruchgrund (T-127) speichern."""
     ensure()
     with _auto_tx():
         _connect().execute(
-            "UPDATE pipeline_runs SET state=?, duration_ms=? WHERE id=?",
-            (state, duration_ms, run_id),
+            "UPDATE pipeline_runs SET state=?, duration_ms=?, reason=? WHERE id=?",
+            (state, duration_ms, reason or "", run_id),
         )
 
 
-def pipeline_run_finish_if_open(run_id, state, duration_ms):
+def pipeline_run_finish_if_open(run_id, state, duration_ms, reason=""):
     """Einen noch offenen Lauf beenden; True, wenn er offen war.
 
     Die Bedingung steht im UPDATE, damit ein zwischenzeitlich fertig
-    gewordener Lauf nicht überschrieben wird.
+    gewordener Lauf nicht überschrieben wird. Der Grund bleibt bei einem
+    bereits beendeten Lauf unangetastet.
     """
     ensure()
     with _auto_tx():
         cursor = _connect().execute(
-            "UPDATE pipeline_runs SET state=?, duration_ms=? "
+            "UPDATE pipeline_runs SET state=?, duration_ms=?, reason=? "
             "WHERE id=? AND state IN ('queued','running')",
-            (state, duration_ms, run_id),
+            (state, duration_ms, reason or "", run_id),
         )
         return cursor.rowcount > 0
 

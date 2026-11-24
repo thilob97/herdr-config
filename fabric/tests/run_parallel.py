@@ -5,6 +5,10 @@ Jeder Lauf bekommt ein eigenes ``HOME``, ``FAB_HOME`` und ``TMPDIR``, damit
 Store, Sperre und Temp-Dateien der Testdateien nicht kollidieren. Der
 Exit-Code ist 0 nur, wenn jede Datei grün war; sonst werden die betroffenen
 Dateien mit ihrer vollständigen Ausgabe (inklusive Traceback) gezeigt.
+Endet ein Arbeitsprozess durch ein Signal (etwa SIGTERM von außen), wird die
+Datei genau einmal in einem frischen Prozess wiederholt. Bleibt es beim
+Signal, gilt sie als abgebrochen: ``Abbruch: Signal <n> in <Datei>`` und
+Exit-Code 3.
 
 Aufruf ohne Dateien lädt alle ``fabric/tests/test_*.py``. Explizite Dateien
 sind für Tests des Läufers selbst gedacht. Die Prozesszahl ist standardmäßig
@@ -23,6 +27,8 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 RAN_RE = re.compile(r"^Ran (\d+) tests? in ", re.MULTILINE)
+# Exit-Code, wenn mindestens eine Testdatei zweimal durch ein Signal endete.
+ABORT_EXIT = 3
 
 
 def discover():
@@ -58,6 +64,11 @@ class Result:
     @property
     def ok(self):
         return self.code == 0
+
+    @property
+    def signal(self):
+        """Signalnummer, wenn der Arbeitsprozess durch ein Signal endete."""
+        return -self.code if self.code < 0 else None
 
     @property
     def name(self):
@@ -128,6 +139,7 @@ def main(argv=None):
     session = tempfile.mkdtemp(prefix="fbpar-", dir=base)
     try:
         results = []
+        first_signals = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
             futures = {
                 pool.submit(run_one, path, session, index): path
@@ -135,6 +147,21 @@ def main(argv=None):
             }
             for future in concurrent.futures.as_completed(futures):
                 result = future.result()
+                if result.signal is not None:
+                    # Der Arbeitsprozess wurde von außen beendet: nicht als
+                    # ROT zählen, sondern genau einmal wiederholen.
+                    print(
+                        "SIG %s (%d Tests, %.1fs, Signal %d, Wiederholung)"
+                        % (
+                            display(result.path),
+                            result.tests,
+                            result.seconds,
+                            result.signal,
+                        ),
+                        flush=True,
+                    )
+                    first_signals.append((result.path, result.signal))
+                    continue
                 results.append(result)
                 status = "ok" if result.ok else "ROT"
                 print(
@@ -142,10 +169,54 @@ def main(argv=None):
                     % (status, display(result.path), result.tests, result.seconds),
                     flush=True,
                 )
+
+        # Wiederholung in einem frischen Prozess; bleibt es beim Signal, gilt
+        # die Datei als abgebrochen (Exit 3).
+        aborted = []
+        if first_signals:
+            first_signals.sort(key=lambda item: os.path.basename(item[0]))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
+                futures = {
+                    pool.submit(
+                        run_one, path, session, len(files) + offset
+                    ): (path, signal)
+                    for offset, (path, signal) in enumerate(first_signals)
+                }
+                for future in concurrent.futures.as_completed(futures):
+                    result = future.result()
+                    signal = futures[future][1]
+                    if result.signal is not None:
+                        aborted.append((result.signal, result.path))
+                        results.append(result)
+                        continue
+                    results.append(result)
+                    if result.ok:
+                        print(
+                            "ok %s (%d Tests, %.1fs, Wiederholung nach Signal %d)"
+                            % (
+                                display(result.path),
+                                result.tests,
+                                result.seconds,
+                                signal,
+                            ),
+                            flush=True,
+                        )
+                    else:
+                        print(
+                            "ROT %s (%d Tests, %.1fs)"
+                            % (
+                                display(result.path),
+                                result.tests,
+                                result.seconds,
+                            ),
+                            flush=True,
+                        )
     finally:
         shutil.rmtree(session, ignore_errors=True)
 
-    failed = [result for result in results if not result.ok]
+    failed = [
+        result for result in results if not result.ok and result.signal is None
+    ]
     total = sum(result.tests for result in results)
     print()
     for result in sorted(failed, key=lambda item: item.name):
@@ -156,8 +227,12 @@ def main(argv=None):
         print()
     print(
         "%d Tests in %d Dateien, %d rot"
-        % (total, len(results), len(failed))
+        % (total, len(files), len(failed))
     )
+    for signal, path in sorted(aborted, key=lambda item: os.path.basename(item[1])):
+        print("Abbruch: Signal %d in %s" % (signal, display(path)))
+    if aborted:
+        return ABORT_EXIT
     return 0 if not failed else 1
 
 

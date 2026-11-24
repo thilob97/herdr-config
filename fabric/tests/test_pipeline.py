@@ -3,9 +3,10 @@ import contextlib
 import io
 import json
 import os
+import sys
 from unittest import mock
 
-from fabric.fablib import pipeline, store
+from fabric.fablib import pipeline, store, verifyslots
 from fabric.fablib.errors import FabError
 from fabric.tests.support import FabricCase
 
@@ -138,6 +139,12 @@ class PipelineTest(PipelineCase):
         self.assertEqual(result["steps"][0]["state"], "fail")
         self.assertEqual(result["steps"][0]["exit_code"], 124)
         self.assertIn("Timeout nach 0.2 s", result["steps"][0]["stderr"])
+        self.assertEqual(
+            result["reason"], "Abbruch: Zeitlimit nach 0.2 s im Schritt langsam"
+        )
+        with self.store_env():
+            run = store.pipeline_run_load(result["run_id"])
+        self.assertEqual(run["reason"], result["reason"])
 
     def test_alle_schritte_sind_beim_start_pending(self):
         repo = self.make_repo()
@@ -353,3 +360,135 @@ class PipelineTest(PipelineCase):
             run = store.pipeline_run_list("T-14")[-1]
         self.assertNotEqual(run["id"], first["run_id"])
         self.assertEqual(run["state"], "fail")
+
+    # -- Abbruchgrund (T-127)
+
+    def test_signalender_schritt_hat_abbruchgrund(self):
+        repo = self.make_repo()
+        self.write_steps(repo, [{"name": "toter", "run": "kill -TERM $$"}])
+
+        result = self.run_pipeline(repo, ticket="T-21")
+
+        self.assertEqual(result["state"], "fail")
+        self.assertEqual(result["code"], -15)
+        self.assertTrue(result["reason"].startswith("Abbruch:"), result["reason"])
+        self.assertIn("Signal 15", result["reason"])
+        self.assertIn("toter", result["reason"])
+        with self.store_env():
+            run = store.pipeline_run_load(result["run_id"])
+        self.assertEqual(run["reason"], result["reason"])
+
+    def test_gewöhnlicher_roter_schritt_hat_leeren_grund(self):
+        repo = self.make_repo()
+        self.write_steps(
+            repo, [{"name": "rot", "run": "printf 'kaputt\\n' >&2; exit 1"}]
+        )
+
+        result = self.run_pipeline(repo, ticket="T-22")
+
+        self.assertEqual(result["state"], "fail")
+        self.assertEqual(result["code"], 1)
+        self.assertEqual(result["reason"], "")
+        with self.store_env():
+            run = store.pipeline_run_load(result["run_id"])
+        self.assertEqual(run["reason"], "")
+
+    def test_testlaeufer_signal_hat_abbruchgrund(self):
+        repo = self.make_repo()
+        fixture = os.path.join(repo, "test_dauerhaft_signal.py")
+        self._write(
+            fixture,
+            "import os\nimport signal\n\n"
+            "os.kill(os.getpid(), signal.SIGTERM)\n",
+        )
+        runner = os.path.join(
+            os.path.dirname(os.path.abspath(pipeline.__file__)),
+            "..",
+            "tests",
+            "run_parallel.py",
+        )
+        self.write_steps(
+            repo,
+            [{"name": "unittest", "run": f"{sys.executable} {runner} {fixture}"}],
+        )
+
+        result = self.run_pipeline(repo, ticket="T-23")
+
+        self.assertEqual(result["state"], "fail")
+        self.assertEqual(result["code"], pipeline.ABORT_EXIT)
+        self.assertTrue(result["reason"].startswith("Abbruch:"), result["reason"])
+        self.assertIn("Signal 15", result["reason"])
+        with self.store_env():
+            run = store.pipeline_run_load(result["run_id"])
+        self.assertEqual(run["reason"], result["reason"])
+
+    def test_verwaister_lauf_hat_abbruchgrund_und_show_zeile(self):
+        repo = self.make_repo()
+        self.write_steps(repo, [{"name": "eins", "run": "true"}])
+        with self.store_env():
+            run_id = store.pipeline_run_new(
+                trigger="verify",
+                ticket="T-24",
+                repo=repo,
+                worktree=repo,
+                branch="main",
+                head="b" * 40,
+                state="queued",
+            )
+            store.pipeline_step_add(run_id, 0, "eins", "true", "pending")
+            store.pipeline_run_start(run_id)
+            store.pipeline_step_update(run_id, 0, state="running")
+            with mock.patch.object(verifyslots, "abandoned", return_value=True):
+                pipeline._reap_abandoned()
+            run = store.pipeline_run_load(run_id)
+            steps = store.pipeline_steps(run_id)
+
+        self.assertEqual(run["state"], "fail")
+        self.assertTrue(run["reason"].startswith("Abbruch:"), run["reason"])
+        self.assertIn("verwaister Lauf", run["reason"])
+        self.assertEqual([step["state"] for step in steps], ["fail"])
+
+        shown = self.cli("run", "show", str(run_id))
+        self.assertEqual(shown.returncode, 0, shown.stderr)
+        self.assertIn("Grund: Abbruch:", shown.stdout)
+
+    def test_fertiger_lauf_zwischen_snapshot_und_schreiben_bleibt_ohne_grund(self):
+        repo = self.make_repo()
+        self.write_steps(repo, [{"name": "eins", "run": "true"}])
+        with self.store_env():
+            run_id = store.pipeline_run_new(
+                trigger="verify",
+                ticket="T-25",
+                repo=repo,
+                worktree=repo,
+                branch="main",
+                head="c" * 40,
+                state="queued",
+            )
+            store.pipeline_step_add(run_id, 0, "eins", "true", "pending")
+            store.pipeline_run_start(run_id)
+            store.pipeline_step_update(run_id, 0, state="running")
+            real_steps = store.pipeline_steps
+
+            def stale_steps(target):
+                snapshot = real_steps(target)
+                # Der Besitzer wird genau zwischen Snapshot und Aufräumen
+                # fertig; das Aufräumen arbeitet mit veralteten Zuständen.
+                store.pipeline_step_update(target, 0, state="pass", exit_code=0)
+                store.pipeline_run_finish(target, "pass", 9)
+                return snapshot
+
+            with mock.patch.object(
+                verifyslots, "abandoned", return_value=True
+            ), mock.patch.object(
+                store, "pipeline_steps", side_effect=stale_steps
+            ):
+                pipeline._reap_abandoned()
+
+            run = store.pipeline_run_load(run_id)
+            steps = store.pipeline_steps(run_id)
+
+        self.assertEqual(run["state"], "pass")
+        self.assertEqual(run["duration_ms"], 9)
+        self.assertEqual(run["reason"], "")
+        self.assertEqual([step["state"] for step in steps], ["pass"])
