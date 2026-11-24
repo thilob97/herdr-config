@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from unittest import mock
 
@@ -201,6 +202,13 @@ class VerifyQueueTest(VerifyQueueCase):
         self.write_steps(repo, [{"name": "kurz", "run": "sleep 0.3"}])
         holder = self.start_holder(2)
         proc = self.start_runner(repo, "T-9")
+        err_parts = []
+
+        def read_stderr():
+            for line in proc.stderr:
+                err_parts.append(line)
+
+        threading.Thread(target=read_stderr, daemon=True).start()
         try:
             self.assertTrue(
                 self.wait_for(lambda: self.queued_run("T-9"), timeout=10)
@@ -215,8 +223,21 @@ class VerifyQueueTest(VerifyQueueCase):
             self.assertIn("Warteschlange", text)
             self.assertNotIn("queued", text)
 
+            # "queued" in der Ablage heißt noch nicht, dass der Läufer im
+            # acquire() wartet: Zwischen Einreihen und Slot-Belegung liegt ein
+            # Fenster, das unter Last groß wird. Erst wenn er die Wartelinie
+            # geschrieben hat, ist der Slot wirklich umkämpft; sonst wird der
+            # Slot frei, ohne dass je gewartet wurde.
+            self.assertTrue(
+                self.wait_for(
+                    lambda: "Warteschlange" in "".join(err_parts), timeout=10
+                ),
+                "Läufer meldete die Warteschlange nicht",
+            )
+
             self.stop(holder)
-            out, err = proc.communicate(timeout=30)
+            out, _ = proc.communicate(timeout=30)
+            err = "".join(err_parts)
             self.assertEqual(proc.returncode, 0, err)
             self.assertIn("pass", out)
             self.assertIn("Warteschlange", err)
