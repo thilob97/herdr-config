@@ -493,11 +493,22 @@ export function freeAgentTask(title, name) {
   return task && task !== name ? task : "";
 }
 
+/** Fester Sortierschlüssel der lokalen Maschine. Vor T-117 sortierte ihr
+    Anzeige-Label „THIS MACHINE“ sie alphabetisch ein; das ist das Soll. Seit
+    T-117 lautet das Label „Dieser Rechner“, die Position darf sich dadurch
+    nicht verschieben. */
+const LOCAL_MACHINE_KEY = "THIS MACHINE";
+
 /** Karten und Gruppen des Agenten-Abschnitts. `listed` ist `agents()` aus Herdr:
     nur Terminals mit gemeldetem Status sind freie Agenten. `sort` übernimmt die
     Einstellung `agents.sort`: `priority` (Standard, Wartende zuerst) oder
-    `grouped` (nach Maschinengruppe). Angeheftete bleiben in beiden Fällen vorn. */
-export function freeAgentCards(terminals = [], listed = [], spaces = [], sort = "priority") {
+    `grouped` (nach Maschinen-Schlüssel). Angeheftete bleiben in beiden Fällen
+    vorn. `labelOf` übersetzt den Maschinen-Schlüssel ins Anzeige-Label und ist
+    injizierbar; die Reihenfolge hängt nie davon ab. */
+export function freeAgentCards(
+  terminals = [], listed = [], spaces = [], sort = "priority", labelOf = machineLabel,
+) {
+  const label = typeof labelOf === "function" ? labelOf : machineLabel;
   const cards = [];
 
   for (const { terminal, agent, status, address, pinned } of freeAgentEntries(terminals, listed)) {
@@ -512,7 +523,7 @@ export function freeAgentCards(terminals = [], listed = [], spaces = [], sort = 
       app,
       status,
       machine,
-      group: machineLabel(machine),
+      group: label(machine),
       orchestrator,
       pinned,
       badge: freeStatusWord(status),
@@ -523,17 +534,14 @@ export function freeAgentCards(terminals = [], listed = [], spaces = [], sort = 
     });
   }
 
-  // Sortiert Maschinen-Schlüssel; die lokale Maschine (`null`) steht zuletzt.
-  const byMachineKey = (a, b) => {
-    if (a === b) return 0;
-    if (a == null) return 1;
-    if (b == null) return -1;
-    return String(a).localeCompare(String(b));
-  };
+  // Sortiert Maschinen-Schlüssel; die lokale Maschine (`null`) bekommt den
+  // festen Schlüssel „THIS MACHINE“ und damit ihre Position von vor T-117.
+  const machineKey = (machine) => (machine == null ? LOCAL_MACHINE_KEY : String(machine));
+  const byMachineKey = (a, b) => machineKey(a).localeCompare(machineKey(b));
   // Angeheftete zuerst. Danach `priority`: Dringlichkeit, dann Orchestrator,
-  // Name und Adresse; `grouped`: Maschinen-Schlüssel (lokale Maschine zuletzt),
-  // Name, Adresse. Bewusst nicht `group`: das übersetzte Anzeige-Label darf die
-  // Reihenfolge nicht verschieben.
+  // Name und Adresse; `grouped`: Maschinen-Schlüssel, Name, Adresse. Bewusst
+  // nicht `group`: das übersetzte Anzeige-Label darf die Reihenfolge nicht
+  // verschieben.
   const byName = (a, b) => Number(b.pinned) - Number(a.pinned)
     || byMachineKey(a.machine, b.machine)
     || a.name.localeCompare(b.name)
