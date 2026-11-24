@@ -241,7 +241,89 @@ test("Zielbegriffe: Seiten und Ticket-Stufen tragen die Wörter der Begriffstabe
   assert.equal(actorLabel("fab"), "Fabric");
 });
 
-test("Seitenköpfe: jede in den Views genutzte Seite hat einen PAGE_WORDS-Eintrag", () => {
+// Ausdruck hinter `const|let|var <name> =` bis zum Semikolon auf oberster
+// Ebene; Klammern und Strings werden übersprungen.
+function initializerOf(source, name) {
+  const escaped = name.replace(/\$/g, "\\$&");
+  const match = new RegExp(
+    `(?:^|[^\\w$.])(?:const|let|var)\\s+${escaped}\\s*=`,
+    "m",
+  ).exec(source);
+  if (!match) return null;
+  const start = match.index + match[0].length;
+  let depth = 0;
+  let quote = null;
+  for (let i = start; i < source.length; i += 1) {
+    const char = source[i];
+    if (quote) {
+      if (char === "\\") i += 1;
+      else if (char === quote) quote = null;
+      continue;
+    }
+    if (char === '"' || char === "'" || char === "`") quote = char;
+    else if ("([{".includes(char)) depth += 1;
+    else if (")]}".includes(char)) depth -= 1;
+    else if (char === ";" && depth === 0) return source.slice(start, i);
+  }
+  return null;
+}
+
+// Argumente eines Aufrufs ab der öffnenden Klammer, getrennt an Kommas auf
+// oberster Ebene.
+function callArguments(source, open) {
+  const args = [];
+  let depth = 0;
+  let quote = null;
+  let start = open + 1;
+  for (let i = start; i < source.length; i += 1) {
+    const char = source[i];
+    if (quote) {
+      if (char === "\\") i += 1;
+      else if (char === quote) quote = null;
+      continue;
+    }
+    if (char === '"' || char === "'" || char === "`") quote = char;
+    else if ("([{".includes(char)) depth += 1;
+    else if (")]}".includes(char)) {
+      if (depth === 0) {
+        args.push(source.slice(start, i));
+        return args;
+      }
+      depth -= 1;
+    } else if (char === "," && depth === 0) {
+      args.push(source.slice(start, i));
+      start = i + 1;
+    }
+  }
+  return args;
+}
+
+// Statische Teile der String-Literale; Template-Ausdrücke zählen nicht.
+function stringLiterals(source) {
+  const found = [];
+  const pattern = /"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'|`((?:\\.|[^`\\])*)`/g;
+  for (const match of source.matchAll(pattern)) {
+    if (match[3] != null) {
+      for (const part of match[3].split(/\$\{[^}]*\}/)) found.push(part);
+    } else {
+      found.push(match[1] ?? match[2]);
+    }
+  }
+  return found;
+}
+
+// Titel-Ausdruck; eine reine Titelvariable wird über ihre Initialisierung
+// aufgelöst, damit Literale auch hinter einer Zwischenvariable auffallen.
+function titleExpression(source, expression, depth = 0) {
+  const trimmed = expression.trim();
+  if (depth >= 3 || !/^[A-Za-z_$][\w$]*$/.test(trimmed)) return trimmed;
+  const initializer = initializerOf(source, trimmed);
+  return initializer == null
+    ? trimmed
+    : titleExpression(source, initializer, depth + 1);
+}
+
+test("Seitenköpfe: keine PAGE_WORDS-Literale, auch nicht über Titelvariablen", () => {
   const views = join(dirname(fileURLToPath(import.meta.url)), "..", "views");
   const files = readdirSync(views).filter((name) => name.endsWith(".js"));
   const words = new Set(Object.values(PAGE_WORDS));
@@ -251,14 +333,15 @@ test("Seitenköpfe: jede in den Views genutzte Seite hat einen PAGE_WORDS-Eintra
     for (const match of source.matchAll(/model\.pageWord\("([^"]+)"\)/g)) {
       used.set(match[1], file);
     }
-    const heads = source.matchAll(/ui\.(?:header|detailHeader)\(\s*t,\s*(?:"([^"]*)"|`([^`]*)`)/g);
-    for (const head of heads) {
-      const title = head[1] ?? head[2];
-      if (title.includes("${")) continue;
-      assert.ok(
-        !words.has(title),
-        `${file}: Seitenkopf-Literal „${title}“ statt model.pageWord()`,
-      );
+    for (const match of source.matchAll(/ui\.(?:header|detailHeader)\s*\(/g)) {
+      const args = callArguments(source, match.index + match[0].length - 1);
+      if (args.length < 2) continue;
+      for (const literal of stringLiterals(titleExpression(source, args[1]))) {
+        assert.ok(
+          !words.has(literal),
+          `${file}: Seitenkopf-Literal „${literal}“ statt model.pageWord()`,
+        );
+      }
     }
   }
   assert.ok(used.size > 0, "keine pageWord-Nutzung in den Views gefunden");
