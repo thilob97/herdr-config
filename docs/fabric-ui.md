@@ -16,6 +16,8 @@ Grundlagen: `docs/concept.md`, Vertrag `docs/fabric.md` (Daten, CLI, Abschnitt 3
 
 **Zu entscheiden:** Der Posteingang und sein Popover im Fenster zeigen alle offenen Entscheidungs- und Lehren-Vorschläge aller Tickets als Karten. Jede Karte nennt die Frage, den Vorschlagenden, die Begründung, den Ticket-Verweis, die Folgen je Antwort und die Knöpfe **Übernehmen** und **Ablehnen**; die Knöpfe wirken wie `fab decide confirm|reject` bzw. `fab lesson confirm|discard`.
 
+Zwei bewusste Grenzen dieser Karten: Der Verlaufshinweis „Entscheidung offen → oben“ bzw. das Ergebnis am Kommentar (`commentDecisionHint`) erscheint nur, wenn der Kommentartext — nach Zusammenfassen von Leerraum — exakt dem Vorschlagssatz gleicht. `fab decide` und `fab lesson` legen selbst keinen Kommentar an; im Alltag trägt deshalb fast kein Kommentar den Hinweis. Entschiedene Karten stammen nur aus den letzten 300 Ereignissen (`MAX_EVENTS` in `fabric/fablib/index.py`); ältere entschiedene Vorschläge fallen still aus Ticket und Posteingang, der Vorschlag selbst bleibt in `.fabric/decisions.md` bzw. `.fabric/lessons.md` erhalten.
+
 Die gewählte Auswahl ist überall dieselbe: `shared("fabric.selected")`. Was das Fenster zeigt, steht in `shared("fabric.route")` (z. B. `{ page: "ticket", id: "T-3" }`).
 
 **Fehlgeschlagener Agentenstart:** Scheitert ein Start beim Wecken, hält `fab` den gekürzten Grund (`hc`/`herdr-app`-stderr) im `wake`-Ereignis und als Kommentar fest. Nach 5 s folgt genau ein automatischer zweiter Versuch im Hintergrund. Scheitert auch der, steht im Posteingang ein Eintrag „Aufmerksamkeit“ mit Ticket, Agent und Grund und dem Knopf **Erneut starten**; ein erfolgreicher Start räumt den Eintrag ab. Beleg: `docs/assets/t27-retry.png`.
@@ -45,7 +47,7 @@ Im Hauptfenster tragen Board und Tickets keinen Knopf „Im Fenster öffnen“; 
 **Ticket-Detail** (zweispaltig)
 - Links:
   - Titel, inline editierbar.
-  - **Zu entscheiden** oben im Ticket, vor Beschreibung und Verlauf: dieselben Karten mit Frage, Vorschlagendem, Begründung, Ticket-Verweis, Folgen je Antwort und den Knöpfen **Übernehmen**/**Ablehnen** (wie `fab decide confirm|reject` bzw. `fab lesson confirm|discard`). Entschiedene Karten bleiben mit Ergebnis, wer entschieden hat und wann sichtbar, ohne Knöpfe.
+  - **Zu entscheiden** oben im Ticket, vor Beschreibung und Verlauf: dieselben Karten mit Frage, Vorschlagendem, Begründung, Ticket-Verweis, Folgen je Antwort und den Knöpfen **Übernehmen**/**Ablehnen** (wie `fab decide confirm|reject` bzw. `fab lesson confirm|discard`). Entschiedene Karten bleiben mit Ergebnis, wer entschieden hat und wann sichtbar, ohne Knöpfe — begrenzt auf die letzten 300 Ereignisse (siehe oben).
   - Beschreibung im Markdown-Editor mit Umschalter Ansicht/Bearbeiten, Speichern/Verwerfen und einem Hinweis auf ungespeicherte Änderungen.
   - Verlauf: Kommentare mit Avatar, Name, Zeit (relativ, absolut im Tooltip) und hervorgehobenen `@erwähnungen`. Weck-Ergebnisse stehen als dezente Systemzeilen dazwischen. Kommentare, die zu einer Karte gehören, tragen nur den Hinweis „Entscheidung offen → oben“ bzw. das Ergebnis (übernommen oder abgelehnt, wer und wann), keinen Aktionsknopf. Neueste unten, der Verlauf scrollt beim Öffnen ans Ende.
   - Kommentarfeld: mehrzeilig, `@` schlägt Namen aller Teammitglieder vor (plus `orchestrator`, `mensch`), `cmd-enter` sendet. Unter dem Feld steht, wen der Kommentar wecken wird.
