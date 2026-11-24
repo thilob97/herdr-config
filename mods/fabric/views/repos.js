@@ -186,7 +186,9 @@ function detail(app, cx, t) {
     .child(
       v_flex().flex_1().min_h(0).p(S.l).gap(S.m)
         .child(
-          h_flex().w_full().gap(S.s).items_center()
+          // Bei schmalem Fenster rutschen die Aktionen in die zweite Zeile,
+          // statt rechts aus dem Fenster geschnitten zu werden (T-122).
+          h_flex().w_full().gap(S.s).items_center().flex_wrap()
             .child(ui.tabs(t, {
               id: "fabric-repo-tabs",
               value: tab,
