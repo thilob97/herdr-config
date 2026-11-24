@@ -98,7 +98,9 @@ def renew_start(team_entry, now=None):
 
     Versuch, Grund und Terminal bleiben erhalten; nur `at` wandert auf den
     Aufwachzeitpunkt, damit `START_GRACE_MINUTES` neu beginnt. Ein bereits
-    endgültig fehlgeschlagener Start bleibt unverändert.
+    endgültig fehlgeschlagener Start bleibt unverändert. Der Aufrufer prüft
+    vorher `start_action` auf `answered`; sonst ginge eine vor dem Schlaf
+    erfolgte Antwort verloren.
     """
     state = start_state(team_entry)
     if not state or state.get("state") != "pending":

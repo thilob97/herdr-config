@@ -394,6 +394,39 @@ class OrchestratorRestartCase(FabricCase):
         self.assertNotIn("neu gestartet", later.stdout)
         self.assertEqual(self.hc_calls("run"), [])
 
+    def test_antwort_vor_schlafluecke_geht_nicht_verloren(self):
+        now = self.now()
+        tid = self.ticket_id()
+        self.set_orchestrator()
+        self.set_last_tick(now - MINUTE)
+        self.orchestrator_comment(tid, now - 31 * MINUTE)
+        self.ok("tick", env={"FAB_NOW": str(now)})
+        self.assertEqual(self.start_state()["state"], "pending")
+        # Leerlauf abschalten: Der Folgetick darf nur den Startzustand prüfen.
+        self.ok(
+            "settings", "set", "orchestrator_idle_minutes", "0",
+            "--from", "mensch",
+        )
+        # Antwort kurz nach dem Start, dann Schlaf vor dem nächsten Tick.
+        self.orchestrator_comment(tid, now + 2 * MINUTE)
+        self.set_last_tick(now + MINUTE)
+        wake = now + 60 * MINUTE
+        self.clear_log()
+        result = self.ok("tick", env={"FAB_NOW": str(wake)})
+        self.assertIn("antwortet wieder", result.stdout)
+        self.assertNotIn("Startfrist beginnt neu", result.stdout)
+        self.assertFalse(self.start_state())
+        self.assertEqual(self.hc_calls("run"), [])
+
+        # Auch der Folgetick startet nicht neu: Die Antwort bleibt gültig.
+        self.clear_log()
+        later = self.ok("tick", env={"FAB_NOW": str(wake + 6 * MINUTE)})
+        self.assertNotIn("zweiter Versuch", later.stdout)
+        self.assertNotIn("Start ohne Antwort", later.stdout)
+        self.assertEqual(self.hc_calls("run"), [])
+        self.assertFalse(self.start_state())
+        self.assert_no_attention(wake + 6 * MINUTE)
+
     def test_antwort_nach_neustart_verhindert_zweiten_start(self):
         now = self.now()
         tid = self.ticket_id()
