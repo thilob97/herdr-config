@@ -138,6 +138,18 @@ function runRow(app, cx, t, run, flows) {
     );
 }
 
+// Feste Höhe je Zeilenzahl: ein scrollbarer Block ohne eigene Höhe nimmt
+// sonst den ganzen Rest der Spalte und verdeckt „Läufe“ samt Leerzustand.
+function paneListHeight(count) {
+  // Zeile: 44 hohe Zeile plus Innenabstand und Lücke; oben und unten 4.
+  return Math.min(320, count * (ui.SIZE.rowTall + S.s + S.xs) + S.xs * 2);
+}
+
+function paneList(count, rows) {
+  return div().w_full().flex_none().h(paneListHeight(count)).min_h(0).overflow_hidden()
+    .child(v_flex().size_full().overflow_y_scrollbar().p(S.xs).gap(S.xs).children(rows));
+}
+
 function leftPane(app, cx, t, flows, runs) {
   const selected = flows.find((flow) => flow.name === app.flowName) ?? null;
   return v_flex()
@@ -150,11 +162,14 @@ function leftPane(app, cx, t, flows, runs) {
     .child(div().px(S.m).py(S.s).text_size(T.xs).text_color(t.dim)
       .child(`${flows.length} Workflow${flows.length === 1 ? "" : "s"}`))
     .child(
-      app.flows
-        ? v_flex().flex_none().max_h(320).min_h(0).overflow_y_scrollbar().p(S.xs).gap(S.xs)
-          .children(flows.map((flow) => workflowRow(app, cx, t, flow,
-            (app.flowRuns ?? []).filter((run) => run.workflow === flow.name).length)))
-        : div().px(S.m).pb(S.s).text_size(T.xs).text_color(t.dim).child("wird geladen …"),
+      !app.flows
+        ? div().px(S.m).pb(S.s).text_size(T.xs).text_color(t.dim).child("wird geladen …")
+        : flows.length === 0
+          // Eine leere Liste belegt keinen Platz, sonst rückt sie den
+          // Leerzustand darunter aus dem Sichtbereich.
+          ? div()
+          : paneList(flows.length, flows.map((flow) => workflowRow(app, cx, t, flow,
+            (app.flowRuns ?? []).filter((run) => run.workflow === flow.name).length))),
     )
     .child(div().w_full().border_t(1).border_color(t.border))
     .child(div().px(S.m).py(S.s)
@@ -166,8 +181,7 @@ function leftPane(app, cx, t, flows, runs) {
         ? ui.emptyState(t, { title: "Kein Workflow gewählt", compact: true })
         : runs.length === 0
           ? ui.emptyState(t, { title: "Noch kein Lauf", compact: true })
-          : v_flex().flex_1().min_h(0).overflow_y_scrollbar().p(S.xs).gap(S.xs)
-            .children(runs.map((run) => runRow(app, cx, t, run, flows))),
+          : paneList(runs.length, runs.map((run) => runRow(app, cx, t, run, flows))),
     );
 }
 
@@ -176,7 +190,7 @@ function head(app, cx, t, definition, run) {
   const mode = app.flowMode === "builder" ? "builder" : "run";
   const title = mode === "builder"
     ? (builder?.draft?.name || "Neuer Workflow")
-    : (definition?.name ?? builder?.draft?.name ?? "Workflows");
+    : (definition?.name ?? builder?.draft?.name ?? model.pageWord("workflows"));
   const ended = !run || RUN_ENDED.has(run.status);
   const busy = Boolean(app.busy);
   const runLine = run
