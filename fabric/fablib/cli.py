@@ -19,6 +19,7 @@ from . import (
     git,
     hc,
     index,
+    managed,
     orchestrator,
     pipeline,
     preview,
@@ -1685,9 +1686,9 @@ def _accept_step(steps, name, **values):
 def _sync_base(top, base):
     """Lokale Basis vor dem Push auf origin/<base> nachziehen.
 
-    Rückstände auf origin werden fast-forwarded; eigene Commits werden nur
-    rebased, wenn sie ausschließlich unter `.fabric/` liegen. Fremde lokale
-    Commits brechen mit FabError ab.
+    Rückstände auf origin werden fast-forwarded; eigene Commits werden rebased,
+    wenn sie ausschließlich von `fab` verwaltete Pfade berühren
+    (`managed.FAB_PATHS`). Fremde lokale Commits brechen mit FabError ab.
     """
     git.fetch(top)
     remote = git.remote_ref(top, "origin", base)
@@ -1700,16 +1701,12 @@ def _sync_base(top, base):
         git.merge_ff_only(top, f"origin/{base}")
         return git.head(top)
     paths = git.diff_range_paths(top, remote, local)
-    fremd = [
-        path
-        for path in paths
-        if not (path == ".fabric" or path.startswith(".fabric/"))
-    ]
+    fremd = [path for path in paths if not managed.is_fab_path(path)]
     if fremd:
         raise FabError(
             f"{base}: fremde lokale Commits über origin/{base}; nichts gepusht. "
-            f"Nur Commits unter .fabric/ werden automatisch rebased:\n- "
-            + "\n- ".join(fremd)
+            f"Nur Commits unter {', '.join(managed.FAB_PATHS)} werden automatisch "
+            f"rebased:\n- " + "\n- ".join(fremd)
         )
     git.rebase(top, f"origin/{base}")
     return git.head(top)

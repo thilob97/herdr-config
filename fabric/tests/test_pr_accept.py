@@ -8,7 +8,7 @@ import os
 import shutil
 import subprocess
 
-from fabric.fablib import store
+from fabric.fablib import managed, store
 from fabric.tests.support import FabricCase
 
 STUB_GH = '''#!/usr/bin/env python3
@@ -1001,6 +1001,107 @@ class PrAcceptTests(FabricCase):
         self.assertEqual(
             self.git(bare, "cat-file", "-e", "refs/heads/main:aenderung.txt").returncode,
             0,
+        )
+
+    def accept_mit_fab_commit(self, *paths):
+        """Ein fab-eigener Commit lokal auf main, dann der volle Abnahmeweg."""
+        repo, tid, worktree = self.ready_ticket()
+        bare = self.setup_origin(repo)
+        for name in paths:
+            self.write_file(os.path.join(repo, name), "lokal\n")
+            self.git_out(repo, "add", name)
+        self.git_out(repo, "commit", "-qm", "chore: fab-Konfiguration")
+        self.commit_in(worktree, "aenderung.txt", "wert\n")
+        self.passing_verify(worktree)
+        self.ok("verify", tid)
+        self.ok("verdict", tid, "pass", "--from", "ada", "gut")
+        self.ok("handover", tid, "--from", "zap", "fertig")
+        return repo, tid, worktree, bare
+
+    def test_roster_commit_wird_rebased_und_die_basis_gepusht(self):
+        # `fab team edit` committet fabric/roster.json lokal auf main
+        # (config.py:172).
+        repo, tid, worktree, bare = self.accept_mit_fab_commit(
+            managed.ROSTER_FILE
+        )
+
+        result = self.ok("accept", tid, env=self.gh_env(bare, GH_MERGE_COMMIT="1"))
+
+        self.assertIn(URL, result.stdout + result.stderr)
+        self.assertEqual(self.ticket(tid)["status"], "done")
+        for name in (managed.ROSTER_FILE, "aenderung.txt"):
+            self.assertEqual(
+                self.git(
+                    bare, "cat-file", "-e", f"refs/heads/main:{name}"
+                ).returncode,
+                0,
+                name,
+            )
+
+    def test_prompt_commit_wird_rebased_und_die_basis_gepusht(self):
+        # `fab prompts save` committet unter fabric/prompts/ (prompts.py:137).
+        prompt = managed.PROMPTS_DIR + "zap.md"
+        repo, tid, worktree, bare = self.accept_mit_fab_commit(prompt)
+
+        result = self.ok("accept", tid, env=self.gh_env(bare, GH_MERGE_COMMIT="1"))
+
+        self.assertIn(URL, result.stdout + result.stderr)
+        self.assertEqual(self.ticket(tid)["status"], "done")
+        for name in (prompt, "aenderung.txt"):
+            self.assertEqual(
+                self.git(
+                    bare, "cat-file", "-e", f"refs/heads/main:{name}"
+                ).returncode,
+                0,
+                name,
+            )
+
+    def test_template_commit_wird_rebased_und_die_basis_gepusht(self):
+        # `fab templates save` committet unter fabric/templates/ (templates.py:127).
+        template = managed.TEMPLATES_DIR + "bug.md"
+        repo, tid, worktree, bare = self.accept_mit_fab_commit(template)
+
+        result = self.ok("accept", tid, env=self.gh_env(bare, GH_MERGE_COMMIT="1"))
+
+        self.assertIn(URL, result.stdout + result.stderr)
+        self.assertEqual(self.ticket(tid)["status"], "done")
+        for name in (template, "aenderung.txt"):
+            self.assertEqual(
+                self.git(
+                    bare, "cat-file", "-e", f"refs/heads/main:{name}"
+                ).returncode,
+                0,
+                name,
+            )
+
+    def test_gemischter_commit_bricht_ab(self):
+        repo, tid, worktree = self.review_ticket()
+        bare = self.setup_origin(repo)
+        bare_main = self.git_out(bare, "rev-parse", "refs/heads/main")
+        self.write_file(os.path.join(repo, managed.ROSTER_FILE), "lokal\n")
+        self.write_file(os.path.join(repo, "fremd.txt"), "fremd\n")
+        self.git_out(repo, "add", managed.ROSTER_FILE, "fremd.txt")
+        self.git_out(repo, "commit", "-qm", "gemischter Commit")
+
+        result = self.cli("accept", tid, env=self.gh_env(bare))
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("fremde lokale Commits", result.stderr)
+        self.assertIn("fremd.txt", result.stderr)
+        # Die Meldung nennt alle erlaubten Pfade, nicht nur `.fabric/`.
+        for allowed in managed.FAB_PATHS:
+            self.assertIn(allowed, result.stderr)
+        ticket = self.ticket(tid)
+        self.assertEqual(ticket["status"], "review")
+        self.assertNotIn("accept", ticket)
+        self.assertEqual(self.git_out(bare, "rev-parse", "refs/heads/main"), bare_main)
+        self.assertFalse(self.bare_branch(bare, BRANCH))
+        self.assertTrue(os.path.isdir(worktree))
+        self.assertEqual(
+            [call for call in self.gh_calls() if call[:2] in (
+                ["pr", "create"], ["pr", "merge"],
+            )],
+            [],
         )
 
     def test_fremder_lokaler_commit_bricht_ab(self):

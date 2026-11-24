@@ -244,7 +244,7 @@ Vor dem Push im PR-Weg gleicht `fab accept` die lokale Basis mit `origin/<base>`
 
 - Fehlt `origin/<base>`, bleibt die lokale Basis unverändert und wird gepusht.
 - Liegt die lokale Basis hinter `origin/<base>` und hat keine eigenen Commits, wird sie per `git merge --ff-only origin/<base>` nachgezogen.
-- Andernfalls hat sie eigene Commits über `origin/<base>`; diese dürfen ausschließlich `.fabric/` betreffen, dann rebased `fab` auf `origin/<base>`. Betrifft auch nur eine Datei außerhalb `.fabric/`, bricht es vor jedem Push mit `fremde lokale Commits über origin/<base>; nichts gepusht` und der Dateiliste ab. Ein Rückstand zu `origin/<base>` ist damit kein Abbruchgrund mehr.
+- Andernfalls hat sie eigene Commits über `origin/<base>`; diese dürfen ausschließlich die von `fab` verwalteten Pfade `.fabric/`, `fabric/roster.json`, `fabric/prompts/` und `fabric/templates/` betreffen (`fabric/fablib/managed.py:12-18`). Dann rebased `fab` auf `origin/<base>` (`fabric/fablib/cli.py:1704-1712`) und pusht die Basis mit. Das nimmt die Auto-Commits mit, die `fab` selbst auf main legt: `chore(roster)` aus `fabric/fablib/config.py:172` und `agents.py:56`, `chore(prompt)` aus `prompts.py:137` und `chore(template)` aus `templates.py:127`; das Vorlagenziel liegt neben dem Roster (`templates.py:29-34`). Betrifft auch nur eine Datei außerhalb dieser Pfade – etwa `fabric/fablib/x.py` oder ein gemischter Commit –, bricht es vor jedem Push mit `fremde lokale Commits über origin/<base>; nichts gepusht` und der Liste der fremden Dateien ab; die Meldung nennt alle erlaubten Pfade. Ein Rückstand zu `origin/<base>` ist damit kein Abbruchgrund mehr.
 
 ### Wiederaufnehmbare Abnahme
 
