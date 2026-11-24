@@ -16,3 +16,4 @@
 - Behebe jeden Audit-Befund in einem eigenen Commit mit der Befund-ID, setze seinen Detailabschnitt im Audit auf erledigt und lege zu jedem Vorher-Screenshot ein Nachher-Bild an, bevor du übergibst.
 - Prüfe vor jedem Rebase auf main, ob ein dort neuer Commit wie ein Revert auch auf origin/main liegt, rebase nur auf origin/main und nimm keinen lokalen Revert eines Vorgängertickets in den Ticket-Branch auf.
 - Baue einen neuen festen Bereich nie außerhalb des Scrollbereichs ein, sondern prüfe per Vorschau-Shot bei normaler Fensterhöhe, dass Beschreibung und Verlauf sichtbar bleiben, bevor du übergibst.
+- Belege jede Verhaltensaussage, die du in die Doku schreibst, vorher mit Datei:Zeile im Code für jeden Fall (etwa übernommen, abgelehnt und verworfen), statt vom häufigsten Fall auf alle zu schließen.
