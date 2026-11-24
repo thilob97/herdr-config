@@ -18,6 +18,7 @@ from . import (
     events,
     flows,
     hc,
+    index,
     orchestrator,
     sessions,
     store,
@@ -163,16 +164,73 @@ def _teams(roster):
 
 
 def _tick_orchestrator(roster, team_entry, live, lines, dry):
-    """Leerlauf eines Team-Orchestrators; Rückgabe: neu gestartet?"""
+    """Start, Schlaflücke oder Leerlauf eines Team-Orchestrators.
+
+    Rückgabe: wurde etwas geschrieben bzw. neu gestartet?
+    """
     team_name = str(team_entry.get("name") or "")
     row = None
     for target in agents.orchestrator_targets(roster, team_name):
         if target in live:
             row = live[target]
             break
+    state = orchestrator.start_state(team_entry)
+    if state:
+        action = orchestrator.start_action(roster, team_entry, row, state)
+        if action == "answered":
+            if not dry:
+                orchestrator.clear_start(team_entry)
+            lines.append(f"{team_name}: Orchestrator antwortet wieder")
+            return False
+        if action == "wait":
+            return False
+        if action == "retry":
+            reason = "Start ohne Antwort: zweiter Versuch"
+            if dry:
+                lines.append(
+                    f"{team_name}: geplant: Orchestrator neu starten – {reason}"
+                )
+                return False
+            orchestrator.restart(
+                roster, team_entry, reason, "tick", attempt=2
+            )
+            lines.append(f"{team_name}: Orchestrator neu gestartet – {reason}")
+            return True
+        if action == "fail":
+            if dry:
+                lines.append(
+                    f"{team_name}: geplant: Start ohne Antwort – "
+                    "zwei Versuche ohne Turn"
+                )
+                return False
+            orchestrator.mark_start_failed(team_entry)
+            events.append(
+                "orchestrator", "", "tick", team_name, "Start ohne Antwort",
+                reason="zwei Startversuche ohne fab-Aufruf oder Arbeits-Status",
+            )
+            index.rebuild()
+            lines.append(
+                f"{team_name}: Start ohne Antwort – zwei Versuche ohne Turn"
+            )
+            return True
+        if action == "failed":
+            return False
     if row is None:
         return False
-    due, reason = orchestrator.idle_due(roster, team_entry, row)
+    now = store.now_ms()
+    if orchestrator.sleep_gap(team_entry, now):
+        if dry:
+            lines.append(
+                f"{team_name}: geplant: Schlafzeit – Leerlauf beginnt neu"
+            )
+            return False
+        orchestrator.reset_idle(team_entry, now)
+        lines.append(
+            f"{team_name}: Schlafzeit seit dem letzten tick – "
+            "Leerlauf beginnt neu"
+        )
+        return True
+    due, reason = orchestrator.idle_due(roster, team_entry, row, now)
     if not due:
         return False
     waiting = orchestrator.waiting_tickets(roster, team_name)

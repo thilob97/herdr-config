@@ -19,6 +19,7 @@ from . import (
     git,
     hc,
     index,
+    orchestrator,
     pipeline,
     preview,
     projectmap,
@@ -2333,6 +2334,7 @@ def _orchestrator_state(roster, team_entry):
         "terminal": (row or {}).get("address"),
         "status": (row or {}).get("status"),
         "started_at": started,
+        "start": orchestrator.start_state(team_entry),
     }
 
 
@@ -2343,15 +2345,25 @@ def cmd_orchestrator(args):
     targets = agents.orchestrator_targets(roster, team_name)
     if args.action == "status":
         state = _orchestrator_state(roster, team_entry)
+        failed = (state["start"] or {}).get("state") == "failed"
         if args.json:
             print(json.dumps(state, ensure_ascii=False, indent=2))
         elif state["live"]:
-            print(
-                f"Orchestrator {team_name} läuft ({state['terminal']}) · "
-                f"{state['status'] or 'ohne Status'}"
-            )
+            if failed:
+                print(
+                    f"Orchestrator {team_name} läuft ({state['terminal']}) · "
+                    "Start ohne Antwort"
+                )
+            else:
+                print(
+                    f"Orchestrator {team_name} läuft ({state['terminal']}) · "
+                    f"{state['status'] or 'ohne Status'}"
+                )
         else:
-            print(f"Orchestrator {team_name} läuft nicht")
+            text = f"Orchestrator {team_name} läuft nicht"
+            if failed:
+                text += " · Start ohne Antwort"
+            print(text)
         return 0
     if args.action == "restart":
         actor = _require_actor(args)
@@ -2374,6 +2386,7 @@ def cmd_orchestrator(args):
             events.append("orchestrator", "", actor, team_name, text)
             events.append("config", "", actor, "", f"Orchestrator {team_name} neu gestartet")
             index.rebuild()
+            orchestrator.clear_start(team_entry)
         print(f"Orchestrator {team_name} neu gestartet ({started['name']})")
         if warning:
             print(warning)
@@ -2390,6 +2403,7 @@ def cmd_orchestrator(args):
                 text += f" ({warning})"
             events.append("orchestrator", "", "fab", team_name, text)
             index.rebuild()
+            orchestrator.clear_start(team_entry)
             print(f"Orchestrator {team_name} gestartet ({started['name']})")
             if warning:
                 print(warning)
@@ -2402,6 +2416,7 @@ def cmd_orchestrator(args):
             hc.kill(live_name)
             events.append("orchestrator", "", "fab", team_name, "beendet")
             index.rebuild()
+            orchestrator.clear_start(team_entry)
             print(f"Orchestrator {team_name} beendet")
             return 0
     return 0

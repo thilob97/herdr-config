@@ -8,9 +8,11 @@ Der Kontext des Orchestrators bleibt begrenzt:
   neu, sofern kein Ticket auf ihn wartet.
 
 Zähler und Leerlauf werden aus dem Ereignisprotokoll und dem Terminalstatus
-gelesen; es gibt keinen zusätzlichen Zustand. Ein `orchestrator`-Ereignis mit
-`text = "neu gestartet"` markiert den Neustart und setzt den Zähler zurück.
+gelesen; nur Startzustand und Schlafzeit-Reset liegen als Meta-Zustand je Team.
+Ein `orchestrator`-Ereignis mit `text = "neu gestartet"` markiert den Neustart
+und setzt den Zähler zurück.
 """
+import json
 import re
 
 from . import agents, events, hc, index, store
@@ -19,6 +21,8 @@ from .errors import FabError, HcError
 DEFAULT_DISPATCHES = 5
 DEFAULT_IDLE_MINUTES = 30
 MINUTE = 60 * 1000
+START_GRACE_MINUTES = 5
+SLEEP_GAP_MINUTES = 10
 
 _STARTED = ("gestartet", "neu gestartet")
 _FAILED_DISPATCH = ("Start fehlgeschlagen", "automatisch nicht gestartet")
@@ -47,6 +51,97 @@ def policy(team_entry):
 
 def _team_name(team_entry):
     return str((team_entry or {}).get("name") or "")
+
+
+def _start_key(team_name):
+    return f"orchestrator_start:{team_name}"
+
+
+def _idle_reset_key(team_name):
+    return f"orchestrator_idle_reset:{team_name}"
+
+
+def start_state(team_entry):
+    """Gespeicherter Startzustand des Teams, sonst None."""
+    raw = store.meta_get(_start_key(_team_name(team_entry)))
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(data, dict) or not data.get("at"):
+        return None
+    if data.get("state") not in ("pending", "failed"):
+        return None
+    return data
+
+
+def mark_start(team_entry, reason, attempt=1, terminal=""):
+    """Merkt einen Start, dessen erster Turn noch aussteht."""
+    state = {
+        "at": store.now_ms(),
+        "attempt": int(attempt),
+        "state": "pending",
+        "reason": str(reason or ""),
+        "terminal": str(terminal or ""),
+    }
+    store.meta_set(
+        _start_key(_team_name(team_entry)),
+        json.dumps(state, ensure_ascii=False),
+    )
+    return state
+
+
+def mark_start_failed(team_entry):
+    """Markiert den Start als endgültig ohne Antwort; kein dritter Versuch."""
+    state = start_state(team_entry) or {}
+    now = store.now_ms()
+    data = {
+        "at": int(state.get("at") or now),
+        "attempt": int(state.get("attempt") or 1),
+        "state": "failed",
+        "reason": str(state.get("reason") or ""),
+        "terminal": str(state.get("terminal") or ""),
+        "failed_at": now,
+    }
+    store.meta_set(
+        _start_key(_team_name(team_entry)),
+        json.dumps(data, ensure_ascii=False),
+    )
+    return data
+
+
+def clear_start(team_entry):
+    """Löscht den Startzustand des Teams."""
+    store.meta_set(_start_key(_team_name(team_entry)), "")
+
+
+def start_action(roster, team_entry, row, state, now=None):
+    """Was mit einem offenen Startzustand geschieht.
+
+    `answered` heißt: ein `orchestrator`-Ereignis des Teams seit dem Start
+    oder ein beschäftigter Terminal-Status. `retry`/`fail` folgen erst nach
+    `START_GRACE_MINUTES`; `failed` bleibt liegen, bis jemand eingreift.
+    """
+    if not state:
+        return "answered"
+    team_name = _team_name(team_entry)
+    rows = events.read_all()
+    answered = (
+        _activity_ms(roster, team_name, rows) >= int(state.get("at") or 0)
+        or agents.status(row) in agents.BUSY_STATUSES
+    )
+    if answered:
+        return "answered"
+    if state.get("state") == "failed":
+        return "failed"
+    now = store.now_ms() if now is None else now
+    if now - int(state.get("at") or 0) < START_GRACE_MINUTES * MINUTE:
+        return "wait"
+    if int(state.get("attempt") or 1) <= 1:
+        return "retry"
+    return "fail"
 
 
 def _ticket_teams(roster):
@@ -147,6 +242,29 @@ def _terminal_activity(row):
     return 0
 
 
+def sleep_gap(team_entry, now=None):
+    """Lag zwischen dem letzten `fab tick` und jetzt eine Schlaflücke?"""
+    last = store.last_tick()
+    if last is None:
+        return False
+    now = store.now_ms() if now is None else now
+    return now - int(last) >= SLEEP_GAP_MINUTES * MINUTE
+
+
+def _idle_reset_ms(team_name):
+    try:
+        return int(store.meta_get(_idle_reset_key(team_name)) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def reset_idle(team_entry, now=None):
+    """Setzt den Leerlauf-Ursprung nach einer Schlaflücke auf jetzt."""
+    now = store.now_ms() if now is None else now
+    store.meta_set(_idle_reset_key(_team_name(team_entry)), int(now))
+    return int(now)
+
+
 def idle_due(roster, team_entry, row, now=None):
     """(fällig, Grund) für Leerlauf; nur bei lebendem, nicht beschäftigtem Terminal."""
     _dispatches, idle = policy(team_entry)
@@ -155,7 +273,7 @@ def idle_due(roster, team_entry, row, now=None):
     now = store.now_ms() if now is None else now
     team_name = _team_name(team_entry)
     rows = events.read_all()
-    last = _activity_ms(roster, team_name, rows)
+    last = max(_activity_ms(roster, team_name, rows), _idle_reset_ms(team_name))
     if last <= 0 or now - last >= idle * MINUTE:
         last = max(last, _terminal_activity(row))
     if last <= 0:
@@ -218,7 +336,7 @@ def waiting_tickets(roster, team_name, rows=None):
     return waiting
 
 
-def restart(roster, team_entry, reason, actor="fab"):
+def restart(roster, team_entry, reason, actor="fab", attempt=1):
     """Beendet den laufenden Orchestrator und startet ihn frisch.
 
     Schreibt ein `orchestrator`-Ereignis mit Grund; der Aufrufer hält den
@@ -238,6 +356,9 @@ def restart(roster, team_entry, reason, actor="fab"):
                 f"(hc kill {target})"
             )
     started = agents.start_orchestrator(roster, team_name)
+    mark_start(
+        team_entry, reason, attempt=attempt, terminal=started.get("terminal")
+    )
     text = "neu gestartet"
     warning = started.get("warning")
     if warning:

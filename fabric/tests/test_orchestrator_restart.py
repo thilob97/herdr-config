@@ -6,6 +6,7 @@ from fabric.tests.support import FabricCase
 
 MINUTE = 60 * 1000
 ORCHESTRATOR = "fab-herdr-app-orchestrator"
+TEAM = "herdr-app"
 
 
 class OrchestratorRestartCase(FabricCase):
@@ -40,6 +41,26 @@ class OrchestratorRestartCase(FabricCase):
 
     def calls(self):
         return [row[0] for row in self.hc_calls()]
+
+    def set_last_tick(self, at):
+        with self.store_env():
+            with store.locked():
+                store.set_last_tick(at)
+
+    def orchestrator_comment(self, tid, at, text="Stand"):
+        """Ein fab-Aufruf des Orchestrators zu einem festen Zeitpunkt."""
+        self.add_events(
+            [{"at": at, "kind": "comment", "ticket": tid,
+              "actor": "orchestrator", "target": "", "text": text}]
+        )
+
+    def start_state(self):
+        raw = self.meta(f"orchestrator_start:{TEAM}")
+        return json.loads(raw) if raw else None
+
+    def assert_no_attention(self, now):
+        result = self.ok("inbox", env={"FAB_NOW": str(now)})
+        self.assertNotIn("Start ohne Antwort", result.stdout)
 
     # -- Zähler
 
@@ -208,3 +229,152 @@ class OrchestratorRestartCase(FabricCase):
         self.clear_log()
         self.assertIn("Keine Aktion.", self.ok("tick").stdout)
         self.assertEqual(self.hc_calls("kill"), [])
+
+    # -- Start ohne Antwort und Schlafzeit (T-126)
+
+    def test_schlafluecke_startet_nicht_neu_und_zaehlt_neu(self):
+        now = self.now()
+        tid = self.ticket_id()
+        self.set_orchestrator()
+        # Der Orchestrator war während der Schlafzeit aktiv: Die Lücke
+        # zwischen letztem Tick und Aktivität ist kein Leerlauf.
+        self.set_last_tick(now - 3 * 60 * MINUTE)
+        self.orchestrator_comment(tid, now - 2 * 60 * MINUTE)
+        self.clear_log()
+        result = self.ok("tick", env={"FAB_NOW": str(now)})
+        self.assertIn("Schlafzeit", result.stdout)
+        self.assertNotIn("neu gestartet", result.stdout)
+        self.assertEqual(self.hc_calls("run"), [])
+
+        # Der nächste Lauf zählt ab dem Reset neu: kein alter Leerlauf.
+        self.clear_log()
+        result = self.ok("tick", env={"FAB_NOW": str(now + MINUTE)})
+        self.assertNotIn("neu gestartet", result.stdout)
+        self.assertEqual(self.hc_calls("run"), [])
+
+    def test_ohne_schlafluecke_leerlauf_startet_weiter(self):
+        """Bestehendes Verhalten: Aktivität vor dem letzten Tick bleibt Leerlauf."""
+        now = self.now()
+        tid = self.ticket_id()
+        self.set_orchestrator()
+        self.set_last_tick(now - MINUTE)
+        self.orchestrator_comment(tid, now - 31 * MINUTE)
+        self.clear_log()
+        result = self.ok("tick", env={"FAB_NOW": str(now)})
+        self.assertIn("Orchestrator neu gestartet", result.stdout)
+        self.assertNotIn("Schlafzeit", result.stdout)
+        self.assertEqual(len(self.hc_calls("run")), 1)
+        # Der Neustart merkt sich seinen ersten Versuch für die Turn-Prüfung.
+        state = self.start_state()
+        self.assertEqual(state["attempt"], 1)
+        self.assertEqual(state["state"], "pending")
+
+    def test_zweiter_versuch_nach_frist_genau_einmal(self):
+        now = self.now()
+        tid = self.ticket_id()
+        self.set_orchestrator()
+        self.set_last_tick(now - MINUTE)
+        self.orchestrator_comment(tid, now - 31 * MINUTE)
+        self.clear_log()
+        first = self.ok("tick", env={"FAB_NOW": str(now)})
+        self.assertIn("Orchestrator neu gestartet", first.stdout)
+        self.assertEqual(len(self.hc_calls("run")), 1)
+        state = self.start_state()
+        self.assertEqual(state["attempt"], 1)
+        self.assertEqual(state["state"], "pending")
+
+        # Vor der Frist bleibt der zweite Start aus.
+        self.clear_log()
+        early = self.ok("tick", env={"FAB_NOW": str(now + 4 * MINUTE)})
+        self.assertNotIn("neu gestartet", early.stdout)
+        self.assertEqual(self.hc_calls("run"), [])
+
+        # Nach der Frist genau ein zweiter Versuch, noch kein Alarm.
+        self.clear_log()
+        mark = self.mark()
+        late = self.ok("tick", env={"FAB_NOW": str(now + 6 * MINUTE)})
+        self.assertIn("Orchestrator neu gestartet", late.stdout)
+        self.assertEqual(len(self.hc_calls("run")), 1)
+        restarts = self.events_since(mark, "orchestrator")
+        self.assertEqual(len(restarts), 1)
+        self.assertIn("zweiter Versuch", restarts[0]["reason"])
+        state = self.start_state()
+        self.assertEqual(state["attempt"], 2)
+        self.assertEqual(state["state"], "pending")
+        self.assert_no_attention(now + 6 * MINUTE)
+
+    def test_zweiter_versuch_ohne_antwort_meldet_attention(self):
+        now = self.now()
+        tid = self.ticket_id()
+        self.set_orchestrator()
+        self.set_last_tick(now - MINUTE)
+        self.orchestrator_comment(tid, now - 31 * MINUTE)
+        self.ok("tick", env={"FAB_NOW": str(now)})
+        self.ok("tick", env={"FAB_NOW": str(now + 6 * MINUTE)})
+        self.assertEqual(len(self.hc_calls("run")), 2)
+
+        # Zwei Versuche ohne Turn: einmal melden, nicht erneut starten.
+        self.clear_log()
+        mark = self.mark()
+        failed = self.ok("tick", env={"FAB_NOW": str(now + 12 * MINUTE)})
+        self.assertIn("Start ohne Antwort", failed.stdout)
+        self.assertEqual(self.hc_calls("run"), [])
+        state = self.start_state()
+        self.assertEqual(state["state"], "failed")
+        self.assertIn("failed_at", state)
+        reported = self.events_since(mark, "orchestrator")
+        self.assertEqual(len(reported), 1)
+        self.assertEqual(reported[0]["text"], "Start ohne Antwort")
+        self.assertIn("zwei Startversuche", reported[0]["reason"])
+
+        inbox = self.ok("inbox", env={"FAB_NOW": str(now + 12 * MINUTE)})
+        self.assertIn("Start ohne Antwort", inbox.stdout)
+        status = self.ok(
+            "orchestrator", "status", env={"FAB_NOW": str(now + 12 * MINUTE)}
+        )
+        self.assertIn("Start ohne Antwort", status.stdout)
+        self.assertNotIn("idle", status.stdout)
+
+        self.clear_log()
+        later = self.ok("tick", env={"FAB_NOW": str(now + 60 * MINUTE)})
+        self.assertNotIn("neu gestartet", later.stdout)
+        self.assertEqual(self.hc_calls("run"), [])
+
+    def test_antwort_nach_neustart_verhindert_zweiten_start(self):
+        now = self.now()
+        tid = self.ticket_id()
+        self.set_orchestrator()
+        self.set_last_tick(now - MINUTE)
+        self.orchestrator_comment(tid, now - 31 * MINUTE)
+        self.ok("tick", env={"FAB_NOW": str(now)})
+        self.assertEqual(len(self.hc_calls("run")), 1)
+        self.assertEqual(self.start_state()["state"], "pending")
+        # Ein Orchestrator-Ereignis nach dem Start beantwortet den Prompt.
+        self.orchestrator_comment(tid, now + 2 * MINUTE)
+        self.clear_log()
+        result = self.ok("tick", env={"FAB_NOW": str(now + 6 * MINUTE)})
+        self.assertNotIn("neu gestartet", result.stdout)
+        self.assertEqual(self.hc_calls("run"), [])
+        self.assertFalse(self.start_state())
+        self.assert_no_attention(now + 6 * MINUTE)
+
+    def test_arbeitsstatus_nach_neustart_gilt_als_antwort(self):
+        now = self.now()
+        tid = self.ticket_id()
+        self.set_orchestrator(status="done")
+        self.set_last_tick(now - MINUTE)
+        self.orchestrator_comment(tid, now - 31 * MINUTE)
+        self.ok("tick", env={"FAB_NOW": str(now)})
+        self.assertEqual(len(self.hc_calls("run")), 1)
+        self.assertEqual(self.start_state()["state"], "pending")
+        # Ein Arbeitsstatus der Session zählt ebenfalls als Antwort.
+        self.set_terminals(
+            [{"address": "t0", "name": ORCHESTRATOR, "state": "live",
+              "status": "working"}]
+        )
+        self.clear_log()
+        result = self.ok("tick", env={"FAB_NOW": str(now + 6 * MINUTE)})
+        self.assertNotIn("neu gestartet", result.stdout)
+        self.assertEqual(self.hc_calls("run"), [])
+        self.assertFalse(self.start_state())
+        self.assert_no_attention(now + 6 * MINUTE)
