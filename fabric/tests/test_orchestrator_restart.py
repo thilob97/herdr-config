@@ -303,6 +303,60 @@ class OrchestratorRestartCase(FabricCase):
         self.assertEqual(state["state"], "pending")
         self.assert_no_attention(now + 6 * MINUTE)
 
+    def test_schlafluecke_nach_neustart_verlaengert_startfrist(self):
+        now = self.now()
+        tid = self.ticket_id()
+        self.set_orchestrator()
+        self.set_last_tick(now - MINUTE)
+        self.orchestrator_comment(tid, now - 31 * MINUTE)
+        self.ok("tick", env={"FAB_NOW": str(now)})
+        self.assertEqual(len(self.hc_calls("run")), 1)
+        self.assertEqual(self.start_state()["at"], now)
+
+        # Schläft der Rechner direkt nach dem Neustart, beginnt die Frist
+        # beim Aufwachen neu: kein zweiter Versuch, keine Meldung.
+        wake = now + 60 * MINUTE
+        self.set_last_tick(now)
+        self.clear_log()
+        mark = self.mark()
+        result = self.ok("tick", env={"FAB_NOW": str(wake)})
+        self.assertIn("Startfrist beginnt neu", result.stdout)
+        self.assertNotIn("neu gestartet", result.stdout)
+        self.assertNotIn("Start ohne Antwort", result.stdout)
+        self.assertEqual(self.hc_calls("run"), [])
+        state = self.start_state()
+        self.assertEqual(state["state"], "pending")
+        self.assertEqual(state["attempt"], 1)
+        self.assertEqual(state["at"], wake)
+        self.assertEqual(self.events_since(mark, "orchestrator"), [])
+        self.assert_no_attention(wake)
+
+    def test_nach_schlafluecke_greift_zweiter_versuch_wieder(self):
+        now = self.now()
+        tid = self.ticket_id()
+        self.set_orchestrator()
+        self.set_last_tick(now - MINUTE)
+        self.orchestrator_comment(tid, now - 31 * MINUTE)
+        self.ok("tick", env={"FAB_NOW": str(now)})
+        wake = now + 60 * MINUTE
+        self.set_last_tick(now)
+        self.ok("tick", env={"FAB_NOW": str(wake)})
+
+        # Ohne neue Schlaflücke greift ab dem Aufwachen wieder der bisherige
+        # zweite Versuch nach abgelaufener Frist.
+        self.clear_log()
+        mark = self.mark()
+        late = self.ok("tick", env={"FAB_NOW": str(wake + 6 * MINUTE)})
+        self.assertIn("Orchestrator neu gestartet", late.stdout)
+        self.assertEqual(len(self.hc_calls("run")), 1)
+        restarts = self.events_since(mark, "orchestrator")
+        self.assertEqual(len(restarts), 1)
+        self.assertIn("zweiter Versuch", restarts[0]["reason"])
+        state = self.start_state()
+        self.assertEqual(state["state"], "pending")
+        self.assertEqual(state["attempt"], 2)
+        self.assert_no_attention(wake + 6 * MINUTE)
+
     def test_zweiter_versuch_ohne_antwort_meldet_attention(self):
         now = self.now()
         tid = self.ticket_id()

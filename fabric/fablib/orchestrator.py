@@ -93,6 +93,25 @@ def mark_start(team_entry, reason, attempt=1, terminal=""):
     return state
 
 
+def renew_start(team_entry, now=None):
+    """Setzt die Frist eines offenen Starts nach einer Schlaflücke auf jetzt.
+
+    Versuch, Grund und Terminal bleiben erhalten; nur `at` wandert auf den
+    Aufwachzeitpunkt, damit `START_GRACE_MINUTES` neu beginnt. Ein bereits
+    endgültig fehlgeschlagener Start bleibt unverändert.
+    """
+    state = start_state(team_entry)
+    if not state or state.get("state") != "pending":
+        return state
+    now = store.now_ms() if now is None else now
+    state["at"] = int(now)
+    store.meta_set(
+        _start_key(_team_name(team_entry)),
+        json.dumps(state, ensure_ascii=False),
+    )
+    return state
+
+
 def mark_start_failed(team_entry):
     """Markiert den Start als endgültig ohne Antwort; kein dritter Versuch."""
     state = start_state(team_entry) or {}
@@ -243,7 +262,13 @@ def _terminal_activity(row):
 
 
 def sleep_gap(team_entry, now=None):
-    """Lag zwischen dem letzten `fab tick` und jetzt eine Schlaflücke?"""
+    """Lag zwischen dem letzten `fab tick` und jetzt eine Schlaflücke?
+
+    Jeder Abstand von mindestens `SLEEP_GAP_MINUTES` seit `store.last_tick()`
+    gilt als Schlaf – auch wenn der Wächter nicht lief und `fab tick` nur von
+    Hand aufgerufen wird. Diesen Fall deckt der Tick-Alarm (`stale`, älter als
+    5 Minuten) ab; die Erkennung selbst bleibt davon unberührt.
+    """
     last = store.last_tick()
     if last is None:
         return False
