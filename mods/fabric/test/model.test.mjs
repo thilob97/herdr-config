@@ -7,6 +7,9 @@ import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+// Fensterlayout (T-122): läuft mit, weil package.json genau diese Datei lädt.
+import "./window-body.test.mjs";
+
 import {
   groupByStage, mentionSegments, sortInbox, inboxRetry, lessonArgs, timelineFeed, eventSummary, relativeTime,
   PAGE_WORDS, pageWord, roleLabel, promptKindWord, actorLabel,
