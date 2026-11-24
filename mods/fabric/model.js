@@ -631,11 +631,35 @@ export function decisionSentence(text) {
   return String(text ?? "").replace(/\s+/g, " ").trim();
 }
 
-/** `fab decide`; der Satz steht hinter `--`, damit auch ein führendes `-` Text bleibt. */
-export function decideArgs(id, sentence, from = "mensch") {
-  return ["decide", id, `--from=${from}`, "--", sentence];
+export const PROPOSAL_WORDS = Object.freeze({ decision: "Entscheidung", lesson: "Lehre" });
+
+/** Vorschlagstext als Frage: ein vorhandener Fragesatz bleibt, sonst wird
+ *  „Soll „…“ gelten?“ daraus. Abschließende Satzzeichen fallen dabei weg. */
+export function proposalQuestion(text) {
+  const sentence = decisionSentence(text);
+  if (!sentence) return "";
+  if (sentence.endsWith("?")) return sentence;
+  return `Soll „${sentence.replace(/[.!]+$/, "")}“ gelten?`;
 }
 
+/** Was Übernehmen und Ablehnen je Vorschlagsart bewirken. */
+export function proposalConsequences(kind) {
+  const target = kind === "lesson" ? "Die Lehre landet in .fabric/lessons.md." : "Die Entscheidung landet in .fabric/decisions.md.";
+  const discard = kind === "lesson" ? "Die Lehre wird verworfen und nicht festgehalten." : "Die Entscheidung wird verworfen und nicht festgehalten.";
+  return { accept: target, reject: discard };
+}
+
+/** Anzeigewort eines Kartenstatus. */
+export function proposalStatusWord(status) {
+  switch (status) {
+    case "open": return "offen";
+    case "accepted": return "übernommen";
+    case "rejected": return "abgelehnt";
+    default: return "";
+  }
+}
+
+/** `fab decide`; der Satz steht hinter `--`, damit auch ein führendes `-` Text bleibt. */
 export function decideConfirmArgs(id, proposal, from = "mensch") {
   return ["decide", "confirm", id, proposal, `--from=${from}`];
 }
@@ -644,43 +668,154 @@ export function decideRejectArgs(id, proposal, from = "mensch") {
   return ["decide", "reject", id, proposal, `--from=${from}`];
 }
 
-/** Ein Kommentar als Entscheidung: Satz, Knopfzustand und Argumente. */
-export function decisionComment(ticket, comment) {
-  const id = String(ticket?.id ?? "").trim();
-  const sentence = decisionSentence(comment?.text);
-  const disabled = !id || !sentence;
+/** Gemeinsamer Kontexttext für offene und entschiedene Karten. */
+function proposalContext(by, reason, ticket, fallbackAuthor = "") {
+  const author = String(by ?? "").trim() || fallbackAuthor;
+  const why = String(reason ?? "").trim();
+  const ticketId = String(ticket ?? "").trim();
+  const text = author
+    ? `Vorschlag von ${author}${why ? ` · Begründung: ${why}` : ""} · Ticket ${ticketId}`
+    : `Ticket ${ticketId}`;
+  return { by: author, reason: why, ticket: ticketId, text };
+}
+
+/** Argumente einer offenen Karte; ohne Ticket-ID oder Vorschlags-ID gibt es keine. */
+function proposalArgs(kind, ticket, id) {
+  if (!ticket || !id) return { accept: null, reject: null };
+  if (kind === "lesson") {
+    return { accept: lessonArgs(ticket, "confirm", id), reject: lessonArgs(ticket, "discard", id) };
+  }
+  return { accept: decideConfirmArgs(ticket, id), reject: decideRejectArgs(ticket, id) };
+}
+
+function openProposalCard(kind, ticket, proposal, index) {
+  const ticketId = String(ticket ?? "").trim();
+  const id = String(proposal?.id ?? "").trim();
+  const text = String(proposal?.text ?? "");
+  const args = proposalArgs(kind, ticketId, id);
   return {
-    sentence,
-    disabled,
-    args: disabled ? null : decideArgs(id, sentence),
+    key: `open-${kind}-${ticketId || "ohne-ticket"}-${id || "ohne-id"}-${index}`,
+    kind,
+    kindWord: PROPOSAL_WORDS[kind],
+    id,
+    ticket: ticketId,
+    sentence: decisionSentence(text),
+    question: proposalQuestion(text),
+    context: proposalContext(proposal?.by, proposal?.reason, ticketId, "fab"),
+    consequences: proposalConsequences(kind),
+    status: "open",
+    statusWord: proposalStatusWord("open"),
+    decidedBy: "",
+    decidedAt: null,
+    acceptArgs: args.accept,
+    rejectArgs: args.reject,
   };
 }
 
-/** Offene Entscheidungs-Vorschläge samt Knopfzustand. Nur ein Vorschlag mit
- *  ID und ein Ticket mit ID lassen sich bestätigen oder verwerfen. */
-export function decisionProposals(ticket) {
-  const ticketId = String(ticket?.id ?? "").trim();
-  return (Array.isArray(ticket?.decision_proposals) ? ticket.decision_proposals : [])
-    .filter((item) => item && typeof item === "object")
-    .map((item, index) => {
-      const id = String(item.id ?? "").trim();
-      const actionable = Boolean(ticketId && id);
-      return {
-        key: `${id || "ohne-id"}-${index}`,
-        id,
-        text: String(item.text ?? ""),
-        reason: String(item.reason ?? ""),
-        by: String(item.by ?? ""),
-        confirm: {
-          disabled: !actionable,
-          args: actionable ? decideConfirmArgs(ticketId, id) : null,
-        },
-        reject: {
-          disabled: !actionable,
-          args: actionable ? decideRejectArgs(ticketId, id) : null,
-        },
-      };
+const DECIDED_EVENT = /^(bestätigt|verworfen):\s*(.+)$/;
+
+/** Entschiedene Karten aus Verlaufsereignissen; `ticketFilter === null` nimmt alle. */
+function decidedProposalCards(events, ticketFilter) {
+  if (!Array.isArray(events)) return [];
+  const cards = [];
+  events.forEach((event, index) => {
+    if (!event || typeof event !== "object") return;
+    if (event.kind !== "decision" && event.kind !== "lesson") return;
+    const ticket = String(event.ticket ?? "").trim();
+    if (ticketFilter !== null && ticket !== ticketFilter) return;
+    const match = DECIDED_EVENT.exec(String(event.text ?? ""));
+    if (!match) return;
+    const status = match[1] === "bestätigt" ? "accepted" : "rejected";
+    const sentence = decisionSentence(match[2]);
+    cards.push({
+      key: `decided-${event.kind}-${ticket || "ohne-ticket"}-${event.at ?? "ohne-zeit"}-${index}`,
+      kind: event.kind,
+      kindWord: PROPOSAL_WORDS[event.kind],
+      id: "",
+      ticket,
+      sentence,
+      question: proposalQuestion(sentence),
+      context: proposalContext("", "", ticket),
+      consequences: proposalConsequences(event.kind),
+      status,
+      statusWord: proposalStatusWord(status),
+      decidedBy: event.actor || "",
+      decidedAt: event.at ?? null,
+      acceptArgs: null,
+      rejectArgs: null,
     });
+  });
+  return cards;
+}
+
+/** Offene vor entschiedenen Karten, offene Entscheidungen vor Lehren,
+ *  entschiedene nach Zeitpunkt absteigend. Eine entschiedene Karte entfällt,
+ *  wenn derselbe Satz noch als offene Karte dasteht. */
+function mergeProposalCards(open, decided) {
+  const openKeys = new Set(open.map((card) => `${card.kind}\u0000${card.ticket}\u0000${card.sentence}`));
+  const kept = decided.filter((card) => !openKeys.has(`${card.kind}\u0000${card.ticket}\u0000${card.sentence}`));
+  const rank = (card) => {
+    if (card.status === "open") return card.kind === "decision" ? 0 : 1;
+    return 2;
+  };
+  return [...open, ...kept].sort((a, b) => {
+    const byRank = rank(a) - rank(b);
+    if (byRank !== 0) return byRank;
+    if (a.status !== "open" && b.status !== "open") return (b.decidedAt ?? 0) - (a.decidedAt ?? 0);
+    return 0;
+  });
+}
+
+/** Karten eines Tickets: offene Vorschläge und bereits entschiedene Sätze. */
+export function ticketCards(ticket, events = []) {
+  const ticketId = String(ticket?.id ?? "").trim();
+  const open = [];
+  for (const kind of ["decision", "lesson"]) {
+    const list = kind === "decision" ? ticket?.decision_proposals : ticket?.lesson_proposals;
+    if (!Array.isArray(list)) continue;
+    list.forEach((proposal, index) => {
+      if (!proposal || typeof proposal !== "object") return;
+      open.push(openProposalCard(kind, ticketId, proposal, index));
+    });
+  }
+  return mergeProposalCards(open, decidedProposalCards(events, ticketId));
+}
+
+/** Karten aus dem Posteingang: offene Vorschläge und entschiedene Ereignisse. */
+export function inboxCards(entries, events = []) {
+  const open = [];
+  if (Array.isArray(entries)) {
+    entries.forEach((entry, index) => {
+      if (!entry || typeof entry !== "object") return;
+      if (entry.kind !== "decision" && entry.kind !== "lesson") return;
+      const ticket = String(entry.ticket ?? "").trim();
+      const id = String(entry.proposal ?? "").trim();
+      if (!ticket || !id) return;
+      open.push(openProposalCard(entry.kind, ticket, {
+        id,
+        text: entry.text,
+        reason: entry.reason,
+        by: entry.from,
+      }, index));
+    });
+  }
+  return mergeProposalCards(open, decidedProposalCards(events, null));
+}
+
+/** Hinweis zu einem Kommentar: gleicher Satz wie eine Karte? */
+export function commentDecisionHint(comment, cards = []) {
+  const sentence = decisionSentence(comment?.text);
+  if (!sentence || !Array.isArray(cards)) return null;
+  const card = cards.find((item) => item && item.sentence === sentence);
+  if (!card) return null;
+  if (card.status === "open") {
+    return { state: "open", text: `${card.kindWord} offen → oben`, decidedAt: null };
+  }
+  return {
+    state: card.status,
+    text: `${card.kindWord} ${card.statusWord} von ${card.decidedBy || "—"}`,
+    decidedAt: card.decidedAt,
+  };
 }
 
 /** Kontextvorschau als Anzeigewerte: Text, Zeichen, Obergrenze und die Zeile
@@ -1367,19 +1502,6 @@ export function inboxRetry(entry) {
 /** `fab lesson`-Argumente für „Bestätigen“ und „Verwerfen“. */
 export function lessonArgs(id, action, value, from = "mensch") {
   return ["lesson", action, id, value, `--from=${from}`];
-}
-
-/** Offener Lehren-Vorschlag: Argumente für „Bestätigen“ und „Verwerfen“. */
-export function inboxLesson(entry) {
-  if (entry?.kind !== "lesson") return null;
-  const ticket = entry?.ticket;
-  const proposal = entry?.proposal;
-  if (typeof ticket !== "string" || !ticket) return null;
-  if (typeof proposal !== "string" || !proposal) return null;
-  return {
-    confirm: lessonArgs(ticket, "confirm", proposal),
-    discard: lessonArgs(ticket, "discard", proposal),
-  };
 }
 
 // ---------- Benachrichtigungen ----------

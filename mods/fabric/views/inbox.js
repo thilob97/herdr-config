@@ -12,7 +12,6 @@ function inboxRow(app, cx, t, entry, index) {
   const kind = model.INBOX_WORDS[entry.kind] ?? entry.kind ?? "Hinweis";
   const color = ui.inboxColor(t, entry.kind);
   const retry = model.inboxRetry(entry);
-  const lesson = model.inboxLesson(entry);
   return v_flex()
     .id(`fabric-inbox-${entry.ticket}-${index}`)
     .w_full()
@@ -50,23 +49,6 @@ function inboxRow(app, cx, t, entry, index) {
           onClick: (cx) => app.retryAgent(entry, cx),
         }))),
     )
-    .when(Boolean(lesson), (el) => el.child(h_flex().gap(S.xs)
-      .child(ui.button(t, {
-        id: `fabric-inbox-lesson-confirm-${entry.ticket}-${index}`,
-        label: "Bestätigen",
-        icon: "check",
-        small: true,
-        tooltip: "Diesen Lehren-Vorschlag bestätigen",
-        onClick: (cx) => app.confirmLesson(entry, cx),
-      }))
-      .child(ui.button(t, {
-        id: `fabric-inbox-lesson-discard-${entry.ticket}-${index}`,
-        label: "Verwerfen",
-        icon: "close",
-        small: true,
-        tooltip: "Diesen Lehren-Vorschlag verwerfen",
-        onClick: (cx) => app.discardLesson(entry, cx),
-      }))))
     .when(Boolean(retry), (el) => el.child(
       div().text_size(T.xs).text_color(t.muted)
         .child(`${entry.agent} · ${model.oneLine(entry.reason || "Grund unbekannt", 120)}`),
@@ -75,6 +57,9 @@ function inboxRow(app, cx, t, entry, index) {
 
 export function renderInboxPanel(app, cx, t) {
   const inbox = model.sortInbox(app.index?.inbox);
+  const cards = model.inboxCards(app.index?.inbox ?? [], app.events);
+  const openCount = cards.filter((card) => card.status === "open").length;
+  const rest = inbox.filter((entry) => entry.kind !== "decision" && entry.kind !== "lesson");
   const rows = [
     ui.header(t, model.pageWord("inbox"), [
       ui.badge(t, inbox.length, inbox.length ? t.accent : t.dim),
@@ -105,7 +90,7 @@ export function renderInboxPanel(app, cx, t) {
         compact: true,
       }));
     }
-  } else if (!inbox.length) {
+  } else if (!cards.length && !rest.length) {
     rows.push(ui.emptyState(t, {
       title: "Nichts zu tun",
       text: "Fragen, Prüfungen und Aufmerksamkeit erscheinen hier.",
@@ -120,7 +105,20 @@ export function renderInboxPanel(app, cx, t) {
   } else {
     rows.push(
       v_flex().flex_1().min_h(0).overflow_y_scrollbar().py(S.xs)
-        .children(inbox.map((entry, index) => inboxRow(app, cx, t, entry, index))),
+        .when(cards.length, (el) => el.child(
+          v_flex().w_full().px(S.s).pb(S.xs).gap(S.s)
+            .child(ui.sectionTitle(t, "Zu entscheiden", [
+              ui.badge(t, openCount, openCount ? t.working : t.dim),
+            ]))
+            .children(cards.map((card) => ui.proposalCard(t, card, {
+              compact: false,
+              busy: app.busy === "proposal",
+              onAccept: (cx) => app.applyProposal(card, "accept", cx),
+              onReject: (cx) => app.applyProposal(card, "reject", cx),
+              onOpenTicket: (cx) => app.openInWindow({ page: "ticket", id: card.ticket }, cx),
+            }))),
+        ))
+        .children(rest.map((entry, index) => inboxRow(app, cx, t, entry, index))),
     );
   }
   return ui.page(t, rows);

@@ -8,13 +8,15 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
-  groupByStage, mentionSegments, sortInbox, inboxRetry, inboxLesson, lessonArgs, timelineFeed, eventSummary, relativeTime,
+  groupByStage, mentionSegments, sortInbox, inboxRetry, lessonArgs, timelineFeed, eventSummary, relativeTime,
   PAGE_WORDS, pageWord, roleLabel, promptKindWord, actorLabel,
   STAGES, STATUS_WORDS, INBOX_WORDS, EVENT_WORDS,
   stallLabel, stallReason,
   wakeLine, sessionChips, sessionStatus, childrenOf, childProgress,
   teamForTicket, teamAgents,
-  decisionSentence, decideArgs, decideConfirmArgs, decideRejectArgs, decisionComment, decisionProposals, contextDisplay,
+  decisionSentence, decideConfirmArgs, decideRejectArgs, contextDisplay,
+  PROPOSAL_WORDS, proposalQuestion, proposalConsequences, proposalStatusWord,
+  ticketCards, inboxCards, commentDecisionHint,
   NOTIFY_SETTINGS_KEY, NOTIFY_SEEN_KEY, NOTIFY_DEFAULTS, normalizeNotifySettings, inQuietHours, minuteOfDay,
   INBOX_LEVELS, inboxNotifyLevel, inboxNotifySound, inboxEntryId, inboxNotifications,
   formatCost, formatDuration, ticketCost, costTotals,
@@ -113,24 +115,6 @@ test("Inbox: „Erneut starten“ nur mit Ticket und Agent", () => {
     agent: "ada",
     args: ["wake", "T-28", "ada", "--from=mensch", "--", "Erneut starten"],
   });
-});
-
-test("Inbox: Lehren-Vorschlag liefert Bestätigen und Verwerfen", () => {
-  assert.equal(inboxLesson(null), null);
-  assert.equal(inboxLesson({}), null);
-  assert.equal(inboxLesson({ kind: "question", ticket: "T-1", proposal: "L1" }), null);
-  assert.equal(inboxLesson({ kind: "lesson", ticket: "T-1" }), null);
-  assert.equal(inboxLesson({ kind: "lesson", proposal: "L1" }), null);
-  assert.equal(inboxLesson({ kind: "lesson", ticket: "", proposal: "L1" }), null);
-  assert.equal(inboxLesson({ kind: "lesson", ticket: "T-1", proposal: "" }), null);
-
-  assert.deepEqual(inboxLesson({ kind: "lesson", ticket: "T-1", proposal: "L1" }), {
-    confirm: ["lesson", "confirm", "T-1", "L1", "--from=mensch"],
-    discard: ["lesson", "discard", "T-1", "L1", "--from=mensch"],
-  });
-  assert.deepEqual(lessonArgs("T-2", "confirm", "L3", "ada"), [
-    "lesson", "confirm", "T-2", "L3", "--from=ada",
-  ]);
 });
 
 test("Zeitverlauf: neueste zuerst, nach Tagen gruppiert, Filter je Ticket", () => {
@@ -1068,56 +1052,208 @@ test("decisionSentence faltet Leerraum zu einem Satz", async () => {
   assert.equal(decisionSentence(undefined), "");
 });
 
-test("decisionComment faltet den Kommentar und sperrt leere oder ticketlose Fälle", async () => {
-  const { decisionComment } = await import("../model.js");
-  assert.deepEqual(decisionComment({ id: "T-7" }, { text: " Erste\nzweite " }), {
-    sentence: "Erste zweite",
-    disabled: false,
-    args: ["decide", "T-7", "--from=mensch", "--", "Erste zweite"],
+test("Vorschlagsfragen, Folgen, Statuswörter und Wortpaare", async () => {
+  const { proposalQuestion, proposalConsequences, proposalStatusWord, PROPOSAL_WORDS } = await import("../model.js");
+  assert.equal(proposalQuestion("SQLite statt JSON"), "Soll „SQLite statt JSON“ gelten?");
+  assert.equal(proposalQuestion("SQLite statt JSON."), "Soll „SQLite statt JSON“ gelten?");
+  assert.equal(proposalQuestion("Bleibt das so?"), "Bleibt das so?");
+  assert.equal(proposalQuestion("   "), "");
+  assert.equal(proposalQuestion(null), "");
+
+  assert.deepEqual(proposalConsequences("decision"), {
+    accept: "Die Entscheidung landet in .fabric/decisions.md.",
+    reject: "Die Entscheidung wird verworfen und nicht festgehalten.",
   });
-  const empty = decisionComment({ id: "T-7" }, { text: "   " });
-  assert.equal(empty.disabled, true);
-  assert.equal(empty.args, null);
-  const noTicket = decisionComment(null, { text: "Satz" });
-  assert.equal(noTicket.disabled, true);
-  assert.equal(noTicket.args, null);
+  assert.deepEqual(proposalConsequences("lesson"), {
+    accept: "Die Lehre landet in .fabric/lessons.md.",
+    reject: "Die Lehre wird verworfen und nicht festgehalten.",
+  });
+
+  assert.equal(proposalStatusWord("open"), "offen");
+  assert.equal(proposalStatusWord("accepted"), "übernommen");
+  assert.equal(proposalStatusWord("rejected"), "abgelehnt");
+  assert.equal(proposalStatusWord("anderes"), "");
+  assert.deepEqual(PROPOSAL_WORDS, { decision: "Entscheidung", lesson: "Lehre" });
 });
 
-test("decide-Argumente halten den Satz hinter -- und bestätigen oder verwerfen exakt", async () => {
-  const { decideArgs, decideConfirmArgs, decideRejectArgs } = await import("../model.js");
-  const args = decideArgs("T-1", "-wichtig");
-  assert.deepEqual(args, ["decide", "T-1", "--from=mensch", "--", "-wichtig"]);
-  assert.equal(args.indexOf("--"), args.length - 2);
-  assert.deepEqual(decideArgs("T-1", "Satz", "ada"), ["decide", "T-1", "--from=ada", "--", "Satz"]);
+test("ticketCards: offene Vorschläge und entschiedene Sätze in fester Reihenfolge", async () => {
+  const { ticketCards } = await import("../model.js");
+  const ticket = {
+    id: "T-9",
+    decision_proposals: [
+      { id: "D1", text: "SQLite", reason: "Ein File", by: "orchestrator" },
+    ],
+    lesson_proposals: [{ id: "L1", text: "Tests zuerst", by: "ada" }],
+  };
+  const events = [
+    { kind: "decision", ticket: "T-9", actor: "mensch", at: 500, text: "bestätigt: Anderer Satz" },
+    { kind: "lesson", ticket: "T-9", actor: "ada", at: 600, text: "verworfen: Noch ein Satz" },
+    { kind: "decision", ticket: "T-9", actor: "zap", at: 700, text: "bestätigt: SQLite" },
+    { kind: "comment", ticket: "T-9", text: "bestätigt: egal" },
+    { kind: "decision", ticket: "T-1", text: "verworfen: Fremd" },
+    { kind: "lesson", ticket: "T-9", text: "ohne Präfix" },
+    null,
+  ];
+  const cards = ticketCards(ticket, events);
+  assert.deepEqual(cards.map((card) => [card.kind, card.status]), [
+    ["decision", "open"],
+    ["lesson", "open"],
+    ["lesson", "rejected"],
+    ["decision", "accepted"],
+  ], "offene vor entschiedenen, offene Entscheidung vor Lehre, entschiedene nach Zeit");
+
+  const decision = cards[0];
+  assert.equal(decision.id, "D1");
+  assert.equal(decision.kindWord, "Entscheidung");
+  assert.equal(decision.ticket, "T-9");
+  assert.equal(decision.sentence, "SQLite");
+  assert.equal(decision.question, "Soll „SQLite“ gelten?");
+  assert.equal(decision.context.text, "Vorschlag von orchestrator · Begründung: Ein File · Ticket T-9");
+  assert.deepEqual(decision.consequences, {
+    accept: "Die Entscheidung landet in .fabric/decisions.md.",
+    reject: "Die Entscheidung wird verworfen und nicht festgehalten.",
+  });
+  assert.equal(decision.status, "open");
+  assert.equal(decision.statusWord, "offen");
+  assert.equal(decision.decidedBy, "");
+  assert.equal(decision.decidedAt, null);
+  assert.deepEqual(decision.acceptArgs, ["decide", "confirm", "T-9", "D1", "--from=mensch"]);
+  assert.deepEqual(decision.rejectArgs, ["decide", "reject", "T-9", "D1", "--from=mensch"]);
+
+  const lesson = cards[1];
+  assert.equal(lesson.kindWord, "Lehre");
+  assert.equal(lesson.question, "Soll „Tests zuerst“ gelten?");
+  assert.equal(lesson.context.text, "Vorschlag von ada · Ticket T-9");
+  assert.deepEqual(lesson.consequences, {
+    accept: "Die Lehre landet in .fabric/lessons.md.",
+    reject: "Die Lehre wird verworfen und nicht festgehalten.",
+  });
+  assert.equal(lesson.statusWord, "offen");
+  assert.deepEqual(lesson.acceptArgs, ["lesson", "confirm", "T-9", "L1", "--from=mensch"]);
+  assert.deepEqual(lesson.rejectArgs, ["lesson", "discard", "T-9", "L1", "--from=mensch"]);
+
+  const rejected = cards[2];
+  assert.equal(rejected.id, "");
+  assert.equal(rejected.sentence, "Noch ein Satz");
+  assert.equal(rejected.status, "rejected");
+  assert.equal(rejected.statusWord, "abgelehnt");
+  assert.equal(rejected.decidedBy, "ada");
+  assert.equal(rejected.decidedAt, 600);
+  assert.equal(rejected.acceptArgs, null);
+  assert.equal(rejected.rejectArgs, null);
+  assert.equal(rejected.context.text, "Ticket T-9");
+
+  const accepted = cards[3];
+  assert.equal(accepted.sentence, "Anderer Satz");
+  assert.equal(accepted.status, "accepted");
+  assert.equal(accepted.statusWord, "übernommen");
+  assert.equal(accepted.decidedBy, "mensch");
+  assert.equal(accepted.decidedAt, 500);
+  assert.equal(accepted.acceptArgs, null);
+  assert.equal(accepted.rejectArgs, null);
+
+  assert.deepEqual(ticketCards(null), []);
+  assert.deepEqual(ticketCards({}, null), []);
+  const robust = ticketCards({
+    id: "T-1",
+    decision_proposals: [null, "kaputt", {}, { id: "D2" }],
+  }, [{}]);
+  assert.equal(robust.length, 2, "Nicht-Objekte fallen weg, fehlende IDs bleiben ohne Argumente");
+  assert.equal(robust[0].question, "");
+  assert.equal(robust[0].acceptArgs, null);
+  assert.equal(robust[0].rejectArgs, null);
+  assert.equal(robust[1].id, "D2");
+  assert.deepEqual(robust[1].acceptArgs, ["decide", "confirm", "T-1", "D2", "--from=mensch"]);
+});
+
+test("inboxCards: offene Vorschläge, Duplikate und entschiedene ohne offene Karte", async () => {
+  const { inboxCards } = await import("../model.js");
+  const entries = [
+    { kind: "decision", ticket: "T-9", proposal: "D1", text: "SQLite", from: "orchestrator", reason: "Ein File", at: 10 },
+    { kind: "lesson", ticket: "T-9", proposal: "L1", text: "Tests zuerst", from: "ada", at: 11 },
+    { kind: "question", ticket: "T-9", proposal: "Q1", text: "Was?" },
+    { kind: "decision", ticket: "T-9", text: "ohne Vorschlag" },
+    null,
+  ];
+  const events = [
+    { kind: "decision", ticket: "T-9", actor: "mensch", at: 20, text: "bestätigt: SQLite" },
+    { kind: "decision", ticket: "T-7", actor: "zap", at: 30, text: "verworfen: Alt" },
+  ];
+  const cards = inboxCards(entries, events);
+  assert.deepEqual(cards.map((card) => [card.kind, card.status]), [
+    ["decision", "open"],
+    ["lesson", "open"],
+    ["decision", "rejected"],
+  ], "gleicher Satz offen und entschieden erscheint nur offen, Fremdes bleibt entschieden");
+
+  assert.equal(cards[0].id, "D1");
+  assert.equal(cards[0].question, "Soll „SQLite“ gelten?");
+  assert.equal(cards[0].context.text, "Vorschlag von orchestrator · Begründung: Ein File · Ticket T-9");
+  assert.deepEqual(cards[0].acceptArgs, ["decide", "confirm", "T-9", "D1", "--from=mensch"]);
+  assert.deepEqual(cards[0].rejectArgs, ["decide", "reject", "T-9", "D1", "--from=mensch"]);
+
+  assert.equal(cards[1].id, "L1");
+  assert.equal(cards[1].context.text, "Vorschlag von ada · Ticket T-9");
+  assert.deepEqual(cards[1].acceptArgs, ["lesson", "confirm", "T-9", "L1", "--from=mensch"]);
+  assert.deepEqual(cards[1].rejectArgs, ["lesson", "discard", "T-9", "L1", "--from=mensch"]);
+
+  assert.equal(cards[2].ticket, "T-7");
+  assert.equal(cards[2].sentence, "Alt");
+  assert.equal(cards[2].decidedBy, "zap");
+  assert.equal(cards[2].decidedAt, 30);
+  assert.equal(cards[2].context.text, "Ticket T-7");
+
+  assert.deepEqual(inboxCards(null), []);
+  assert.deepEqual(inboxCards({}, null), []);
+});
+
+test("commentDecisionHint: gleicher Satz zeigt offen oder entschieden, sonst nichts", async () => {
+  const { ticketCards, commentDecisionHint } = await import("../model.js");
+  const cards = ticketCards({
+    id: "T-9",
+    decision_proposals: [{ id: "D1", text: "SQLite", by: "orchestrator" }],
+    lesson_proposals: [{ id: "L1", text: "Tests zuerst", by: "ada" }],
+  }, [
+    { kind: "decision", ticket: "T-9", actor: "mensch", at: 500, text: "bestätigt: Anderer Satz" },
+    { kind: "lesson", ticket: "T-9", actor: "ada", at: 600, text: "verworfen: Noch ein Satz" },
+  ]);
+
+  assert.deepEqual(commentDecisionHint({ text: " SQLite " }, cards), {
+    state: "open",
+    text: "Entscheidung offen → oben",
+    decidedAt: null,
+  });
+  assert.deepEqual(commentDecisionHint({ text: "Tests zuerst" }, cards), {
+    state: "open",
+    text: "Lehre offen → oben",
+    decidedAt: null,
+  });
+  assert.deepEqual(commentDecisionHint({ text: "Anderer Satz" }, cards), {
+    state: "accepted",
+    text: "Entscheidung übernommen von mensch",
+    decidedAt: 500,
+  });
+  assert.deepEqual(commentDecisionHint({ text: "Noch ein Satz" }, cards), {
+    state: "rejected",
+    text: "Lehre abgelehnt von ada",
+    decidedAt: 600,
+  });
+  assert.equal(commentDecisionHint({ text: "Unbekannt" }, cards), null);
+  assert.equal(commentDecisionHint(null, cards), null);
+  assert.equal(commentDecisionHint({ text: "SQLite" }, null), null);
+});
+
+test("decide- und lesson-Argumente bestätigen oder verwerfen exakt", async () => {
+  const { decideConfirmArgs, decideRejectArgs, lessonArgs } = await import("../model.js");
   assert.deepEqual(decideConfirmArgs("T-1", "D1"), ["decide", "confirm", "T-1", "D1", "--from=mensch"]);
   assert.deepEqual(decideRejectArgs("T-1", "D1"), ["decide", "reject", "T-1", "D1", "--from=mensch"]);
   assert.deepEqual(decideConfirmArgs("T-1", "D1", "ada"), ["decide", "confirm", "T-1", "D1", "--from=ada"]);
   assert.deepEqual(decideRejectArgs("T-1", "D1", "ada"), ["decide", "reject", "T-1", "D1", "--from=ada"]);
-});
-
-test("decisionProposals leitet Knopfzustand und Argumente aus den Ticketdaten ab", async () => {
-  const { decisionProposals } = await import("../model.js");
-  const rows = decisionProposals({
-    id: "T-9",
-    decision_proposals: [
-      { id: "D1", text: "SQLite", reason: "Ein File", by: "orchestrator" },
-      { id: " ", text: "ohne ID" },
-      "kaputt",
-    ],
-  });
-  assert.equal(rows.length, 2);
-  assert.deepEqual(rows[0], {
-    key: "D1-0", id: "D1", text: "SQLite", reason: "Ein File", by: "orchestrator",
-    confirm: { disabled: false, args: ["decide", "confirm", "T-9", "D1", "--from=mensch"] },
-    reject: { disabled: false, args: ["decide", "reject", "T-9", "D1", "--from=mensch"] },
-  });
-  assert.equal(rows[1].confirm.disabled, true);
-  assert.equal(rows[1].confirm.args, null);
-  assert.equal(rows[1].reject.disabled, true);
-  assert.deepEqual(decisionProposals({ id: "T-9", decision_proposals: [] }), []);
-  assert.deepEqual(decisionProposals(null), []);
-  const withoutTicket = decisionProposals({ decision_proposals: [{ id: "D1" }] });
-  assert.equal(withoutTicket[0].confirm.disabled, true, "ohne Ticket-ID gibt es kein fab decide");
+  assert.deepEqual(lessonArgs("T-9", "confirm", "L1"), ["lesson", "confirm", "T-9", "L1", "--from=mensch"]);
+  assert.deepEqual(lessonArgs("T-9", "discard", "L1"), ["lesson", "discard", "T-9", "L1", "--from=mensch"]);
+  assert.deepEqual(lessonArgs("T-2", "confirm", "L3", "ada"), [
+    "lesson", "confirm", "T-2", "L3", "--from=ada",
+  ]);
 });
 
 test("contextDisplay: normale Zeile, leerer Text und gekürzter Text", async () => {

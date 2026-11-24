@@ -578,6 +578,86 @@ export function card(t, children, { padding = SPACE.m, gap = SPACE.s, hover = fa
   return el.children(children);
 }
 
+/** Der Karten-Baustein selbst, unter eigenem Namen für `proposalCard`,
+ *  deren Parameter ebenfalls `card` heißt. */
+const proposalSurface = card;
+
+/** Karte für einen Vorschlag „Entscheidung“ oder „Lehre“ samt Status.
+ *  Offene Karten zeigen Folgen und Knöpfe; entschiedene nur das Ergebnis. */
+export function proposalCard(t, card, {
+  compact = false, busy = false,
+  onAccept = null, onReject = null, onOpenTicket = null,
+} = {}) {
+  const padding = compact ? SPACE.s : SPACE.m;
+  const gap = compact ? SPACE.xs : SPACE.s;
+  const open = card.status === "open";
+  const statusTint = card.status === "accepted" ? t.done
+    : card.status === "rejected" ? t.blocked
+      : t.working;
+  const kind = card.kind === "lesson" ? "lesson" : "decision";
+  const command = kind === "lesson" ? "fab lesson" : "fab decide";
+
+  const head = h_flex().w_full().flex_wrap().gap(SPACE.xs).items_center()
+    .child(chip(t, card.kindWord, inboxColor(t, card.kind)))
+    .when(Boolean(card.id), (el) => el.child(chip(t, card.id, t.accent)))
+    .when(Boolean(card.statusWord), (el) => el.child(chip(t, card.statusWord, statusTint)))
+    .child(div().flex_1())
+    .child(chip(t, card.ticket, t.accent, `fabric-proposal-ticket-${card.key}`, {
+      tooltip: onOpenTicket ? "Ticket öffnen" : null,
+      onClick: onOpenTicket ? (cx) => { cx.stop_propagation(); onOpenTicket(cx); } : null,
+    }));
+
+  const rows = [
+    head,
+    div().w_full().text_size(FONT.m).font_semibold().text_color(t.foreground)
+      .whitespace_normal().child(card.question),
+    div().w_full().text_size(FONT.xs).text_color(t.dim)
+      .whitespace_normal().child(card.context.text),
+  ];
+
+  if (open) {
+    rows.push(
+      div().w_full().text_size(FONT.xs).text_color(t.muted).whitespace_normal()
+        .child(`Übernehmen: ${card.consequences.accept}`),
+      div().w_full().text_size(FONT.xs).text_color(t.muted).whitespace_normal()
+        .child(`Ablehnen: ${card.consequences.reject}`),
+      h_flex().w_full().gap(SPACE.xs).items_center()
+        .child(div().flex_1())
+        .child(button(t, {
+          id: `fabric-proposal-accept-${card.key}`,
+          label: "Übernehmen",
+          icon: "check",
+          small: true,
+          primary: true,
+          disabled: busy || !card.acceptArgs,
+          reason: card.acceptArgs ? "" : "Vorschlag ohne Ticket oder ID",
+          tooltip: `${card.kindWord} übernehmen (${command})`,
+          onClick: onAccept,
+        }))
+        .child(button(t, {
+          id: `fabric-proposal-reject-${card.key}`,
+          label: "Ablehnen",
+          icon: "close",
+          small: true,
+          danger: true,
+          disabled: busy || !card.rejectArgs,
+          reason: card.rejectArgs ? "" : "Vorschlag ohne Ticket oder ID",
+          tooltip: `${card.kindWord} ablehnen (${command})`,
+          onClick: onReject,
+        })),
+    );
+  } else {
+    const ago = model.relativeTime(card.decidedAt);
+    const stamp = model.absoluteTime(card.decidedAt);
+    const line = `${card.statusWord} von ${card.decidedBy || "—"}${ago ? ` · ${ago}` : ""}`;
+    let result = div().text_size(FONT.xs).text_color(statusTint).whitespace_normal().child(line);
+    if (stamp) result = result.tooltip(stamp);
+    rows.push(h_flex().w_full().items_center().child(result));
+  }
+
+  return proposalSurface(t, rows, { padding, gap, id: `fabric-proposal-${card.key}` });
+}
+
 // ---------- Filterleiste ----------
 
 export function filterBar(t, {
