@@ -14,3 +14,5 @@
 - Gehe vor jeder erneuten Übergabe jedes Abnahmekriterium einzeln mit seinem Prüfbefehl durch, auch die schon einmal bemängelten, und übergib erst, wenn keins mehr offen ist.
 - Wenn du einen Ablauf in wiederaufnehmbare Schritte zerlegst, behalte jede bestehende Prüfung wie den Abgleich von verdict.head mit dem Worktree-HEAD in jedem Einstieg, auch im PR-Weg, und teste die Wiederaufnahme ab jedem gespeicherten Schritt, auch bei bereits gemergtem PR und rotem Check.
 - Behebe jeden Audit-Befund in einem eigenen Commit mit der Befund-ID, setze seinen Detailabschnitt im Audit auf erledigt und lege zu jedem Vorher-Screenshot ein Nachher-Bild an, bevor du übergibst.
+- Prüfe vor jedem Rebase auf main, ob ein dort neuer Commit wie ein Revert auch auf origin/main liegt, rebase nur auf origin/main und nimm keinen lokalen Revert eines Vorgängertickets in den Ticket-Branch auf.
+- Baue einen neuen festen Bereich nie außerhalb des Scrollbereichs ein, sondern prüfe per Vorschau-Shot bei normaler Fensterhöhe, dass Beschreibung und Verlauf sichtbar bleiben, bevor du übergibst.

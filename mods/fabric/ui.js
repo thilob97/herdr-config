@@ -19,6 +19,11 @@ export const SIZE = {
   rowTall: 44,
   header: 46,
   button: 28,
+  buttonSmall: 24,
+  icon: 18,
+  iconSmall: 13,
+  bullet: 6,
+  hairline: 1,
   input: 30,
   chip: 20,
   lane: 30,
@@ -354,7 +359,7 @@ export function notice(t, message, level = "error", { actions = [], id = null } 
     .bg(color + ALPHA.soft)
     .border_b(1)
     .border_color(t.border)
-    .child(div().flex_none().mt(1).size(6).rounded(3).bg(color))
+    .child(div().flex_none().mt(SIZE.hairline).size(SIZE.bullet).rounded(SIZE.bullet / 2).bg(color))
     .child(div().flex_1().min_w(0).whitespace_normal().text_size(FONT.s).text_color(color).child(message))
     .when(actions.length > 0, (node) => node.child(
       h_flex().flex_none().gap(SPACE.xs).items_center().children(actions),
@@ -370,7 +375,7 @@ export function button(t, {
   let el = h_flex()
     .id(id)
     .flex_none()
-    .h(small ? 24 : SIZE.button)
+    .h(small ? SIZE.buttonSmall : SIZE.button)
     .px(small ? 8 : 10)
     .gap(5)
     .items_center()
