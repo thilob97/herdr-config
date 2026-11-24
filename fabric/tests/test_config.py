@@ -455,7 +455,7 @@ class OrchestratorTests(ConfigCase):
             payload,
             {"team": "herdr-app", "live": False,
              "name": "fab-herdr-app-orchestrator", "terminal": None,
-             "status": None, "started_at": None},
+             "status": None, "started_at": None, "start": None},
         )
         self.assertIn("läuft nicht", self.ok("orchestrator", "status").stdout)
 
