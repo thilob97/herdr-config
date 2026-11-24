@@ -24,6 +24,11 @@ STEPS_FILE = ".fabric/pipeline.json"
 VERIFY_SCRIPT = ".fabric/verify.sh"
 TRIGGERS = ("verify", "main", "repo-test", "autopilot")
 
+# T-127: Ein Abbruch (Signal, Zeitlimit, verwaister Lauf) bekommt einen
+# gespeicherten Grund. `run_parallel.py` beendet sich bei einem von außen
+# getöteten Testprozess mit `ABORT_EXIT` und schreibt `Abbruch: Signal …`.
+ABORT_EXIT = 3
+ABORT_PREFIX = "Abbruch: "
 TAIL_LINES = 20
 
 
@@ -101,6 +106,25 @@ def _tail(parts, limit=TAIL_LINES):
     return "\n".join(text.splitlines()[-limit:])
 
 
+def _abort_reason(name, code, out, err, timeout):
+    """Grund für einen Abbruch dieses Schritts; "" bei gewöhnlichem Rot (T-127).
+
+    Erkannt werden drei Arten, die kein Testfehler sind: das Zeitlimit des
+    Schritts (124 mit Hinweis), ein per Signal beendeter Schrittprozess
+    (negativer Rückgabewert) und ein von `run_parallel.py` gemeldeter
+    Signalabbruch (`ABORT_EXIT` mit `Abbruch: `-Zeile).
+    """
+    if code < 0:
+        return f"{ABORT_PREFIX}Signal {-code} im Schritt {name}"
+    if code == 124 and f"Timeout nach {timeout} s" in (err or ""):
+        return f"{ABORT_PREFIX}Zeitlimit nach {timeout} s im Schritt {name}"
+    if code == ABORT_EXIT:
+        for line in (out or "").splitlines() + (err or "").splitlines():
+            if line.startswith(ABORT_PREFIX):
+                return line.strip()
+    return ""
+
+
 def _reap_abandoned():
     """Läufe ohne lebenden Besitzer auf einen Endstatus setzen (T-113).
 
@@ -132,7 +156,10 @@ def _reap_abandoned():
                     )
             started = row.get("started_at") or store.now_ms()
             store.pipeline_run_finish_if_open(
-                row["id"], "fail", max(0, store.now_ms() - started)
+                row["id"],
+                "fail",
+                max(0, store.now_ms() - started),
+                f"{ABORT_PREFIX}verwaister Lauf (Besitzer ohne Endstatus beendet)",
             )
         except Exception as error:  # noqa: BLE001 - Aufräumen darf nichts klemmen
             print(
@@ -173,6 +200,7 @@ def run(
     combined = []
     first_code = None
     failed = False
+    reason = ""
     slot = None
     owner = None
     run_id = None
@@ -260,12 +288,15 @@ def run(
             if code != 0:
                 failed = True
                 first_code = code
+                reason = _abort_reason(name, code, out, err, step_timeout)
     except BaseException as exc:
         # Jeder Aufräumschritt zählt einzeln: Ein Fehler beim Speichern darf
         # weder den Lauf auf `running` lassen noch die ursprüngliche Ausnahme
         # verdecken. Aufräumfehler gehen an stderr und als `__cause__` mit.
         if run_id is None:
             raise
+        if not reason:
+            reason = f"{ABORT_PREFIX}unterbrochen ({type(exc).__name__})"
         cleanup_errors = []
 
         def attempt(label, action):
@@ -302,7 +333,7 @@ def run(
         attempt(
             "Lauf auf fail",
             lambda: store.pipeline_run_finish(
-                run_id, "fail", store.now_ms() - start
+                run_id, "fail", store.now_ms() - start, reason
             ),
         )
         if cleanup_errors:
@@ -312,7 +343,7 @@ def run(
         # Endstatus vor dem Freigeben des Besitzes: Solange der Lauf offen ist,
         # hält dieser Prozess seine Besitzdatei, und kein Aufräumen greift ein.
         store.pipeline_run_finish(
-            run_id, "fail" if failed else "pass", store.now_ms() - start
+            run_id, "fail" if failed else "pass", store.now_ms() - start, reason
         )
     finally:
         if owner is not None:
@@ -325,6 +356,7 @@ def run(
         "head": head_before,
         "tail": _tail(combined, tail_lines),
         "code": first_code if failed else 0,
+        "reason": reason,
         "run_id": run_id,
         "stdout": "".join(out_parts),
         "stderr": "".join(err_parts),

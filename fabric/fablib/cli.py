@@ -3404,6 +3404,8 @@ def cmd_run(args):
         print(json.dumps({"run": run, "steps": steps}, ensure_ascii=False, indent=2))
         return 0
     print(_run_line(run))
+    if run.get("reason"):
+        print(f"Grund: {run['reason']}")
     for step in steps:
         print(
             f"[{step['position'] + 1}] {step['name']} · {step['state']} · "

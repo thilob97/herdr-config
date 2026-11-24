@@ -5,6 +5,10 @@ Jeder Lauf bekommt ein eigenes ``HOME``, ``FAB_HOME`` und ``TMPDIR``, damit
 Store, Sperre und Temp-Dateien der Testdateien nicht kollidieren. Der
 Exit-Code ist 0 nur, wenn jede Datei grün war; sonst werden die betroffenen
 Dateien mit ihrer vollständigen Ausgabe (inklusive Traceback) gezeigt.
+Endet ein Arbeitsprozess durch ein Signal (etwa SIGTERM von außen) oder
+scheitert ein Test an einem per Signal beendeten Unterprozess, wird die Datei
+genau einmal in einem frischen Prozess wiederholt. Bleibt es beim Signal, gilt
+sie als abgebrochen: ``Abbruch: Signal <n> in <Datei>`` und Exit-Code 3.
 
 Aufruf ohne Dateien lädt alle ``fabric/tests/test_*.py``. Explizite Dateien
 sind für Tests des Läufers selbst gedacht. Die Prozesszahl ist standardmäßig
@@ -23,6 +27,14 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 RAN_RE = re.compile(r"^Ran (\d+) tests? in ", re.MULTILINE)
+# Ein unittest-Fehler, dessen Ursache ein per Signal beendeter Unterprozess
+# ist: `assertEqual(r.returncode, 0)` zeigt `-15 != 0`, ein nicht geprüfter
+# Rückgabewert erscheint als `returned non-zero exit status -15`.
+SIGNAL_DEATH_RE = re.compile(
+    r"-(\d+) != 0\b|returned non-zero exit status -(\d+)"
+)
+# Exit-Code, wenn mindestens eine Testdatei zweimal durch ein Signal endete.
+ABORT_EXIT = 3
 
 
 def discover():
@@ -58,6 +70,11 @@ class Result:
     @property
     def ok(self):
         return self.code == 0
+
+    @property
+    def signal(self):
+        """Signalnummer, wenn der Arbeitsprozess durch ein Signal endete."""
+        return -self.code if self.code < 0 else None
 
     @property
     def name(self):
@@ -96,6 +113,23 @@ def display(path):
         return path
 
 
+def signal_of(result):
+    """Signalnummer, wenn der Lauf an einem per Signal beendeten Prozess scheitert.
+
+    Zwei Fälle zählen als Abbruch: Der Testdatei-Prozess selbst wurde beendet
+    (negativer Rückgabewert), oder ein Test scheitert an einem Unterprozess,
+    den ein Signal beendet hat (`-15 != 0` im Traceback). Alles andere bleibt
+    ein gewöhnlicher roter Test.
+    """
+    if result.signal is not None:
+        return result.signal
+    if result.code > 0:
+        match = SIGNAL_DEATH_RE.search(result.output or "")
+        if match:
+            return int(match.group(1) or match.group(2))
+    return None
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
@@ -128,6 +162,7 @@ def main(argv=None):
     session = tempfile.mkdtemp(prefix="fbpar-", dir=base)
     try:
         results = []
+        first_signals = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
             futures = {
                 pool.submit(run_one, path, session, index): path
@@ -135,6 +170,25 @@ def main(argv=None):
             }
             for future in concurrent.futures.as_completed(futures):
                 result = future.result()
+                signal_number = signal_of(result)
+                if signal_number is not None:
+                    # Der Testprozess selbst oder ein Unterprozess eines Tests
+                    # wurde von außen beendet: nicht als ROT zählen, sondern
+                    # genau einmal wiederholen.
+                    detail = " im Unterprozess" if result.code > 0 else ""
+                    print(
+                        "SIG %s (%d Tests, %.1fs, Signal %d%s, Wiederholung)"
+                        % (
+                            display(result.path),
+                            result.tests,
+                            result.seconds,
+                            signal_number,
+                            detail,
+                        ),
+                        flush=True,
+                    )
+                    first_signals.append((result.path, signal_number))
+                    continue
                 results.append(result)
                 status = "ok" if result.ok else "ROT"
                 print(
@@ -142,10 +196,58 @@ def main(argv=None):
                     % (status, display(result.path), result.tests, result.seconds),
                     flush=True,
                 )
+
+        # Wiederholung in einem frischen Prozess; bleibt es beim Signal, gilt
+        # die Datei als abgebrochen (Exit 3).
+        aborted = []
+        aborted_results = []
+        if first_signals:
+            first_signals.sort(key=lambda item: os.path.basename(item[0]))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
+                futures = {
+                    pool.submit(
+                        run_one, path, session, len(files) + offset
+                    ): (path, signal_number)
+                    for offset, (path, signal_number) in enumerate(first_signals)
+                }
+                for future in concurrent.futures.as_completed(futures):
+                    result = future.result()
+                    first_signal = futures[future][1]
+                    signal_number = signal_of(result)
+                    results.append(result)
+                    if signal_number is not None:
+                        aborted.append((signal_number, result.path))
+                        aborted_results.append(result)
+                        continue
+                    if result.ok:
+                        print(
+                            "ok %s (%d Tests, %.1fs, Wiederholung nach Signal %d)"
+                            % (
+                                display(result.path),
+                                result.tests,
+                                result.seconds,
+                                first_signal,
+                            ),
+                            flush=True,
+                        )
+                    else:
+                        print(
+                            "ROT %s (%d Tests, %.1fs)"
+                            % (
+                                display(result.path),
+                                result.tests,
+                                result.seconds,
+                            ),
+                            flush=True,
+                        )
     finally:
         shutil.rmtree(session, ignore_errors=True)
 
-    failed = [result for result in results if not result.ok]
+    failed = [
+        result
+        for result in results
+        if not result.ok and result not in aborted_results
+    ]
     total = sum(result.tests for result in results)
     print()
     for result in sorted(failed, key=lambda item: item.name):
@@ -154,10 +256,26 @@ def main(argv=None):
         print("=" * 70)
         print(result.output.rstrip())
         print()
+    # Auch ein Abbruch kann einen echten Fehlschlag enthalten: Ausgabe zeigen,
+    # damit er nicht hinter der Abbruchzeile verschwindet.
+    for result in sorted(aborted_results, key=lambda item: item.name):
+        print("=" * 70)
+        print(
+            "ABBRUCH in %s (Signal %d)"
+            % (display(result.path), signal_of(result) or 0)
+        )
+        print("=" * 70)
+        if result.output.strip():
+            print(result.output.rstrip())
+        print()
     print(
         "%d Tests in %d Dateien, %d rot"
-        % (total, len(results), len(failed))
+        % (total, len(files), len(failed))
     )
+    for signal, path in sorted(aborted, key=lambda item: os.path.basename(item[1])):
+        print("Abbruch: Signal %d in %s" % (signal, display(path)))
+    if aborted:
+        return ABORT_EXIT
     return 0 if not failed else 1
 
 
