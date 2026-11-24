@@ -183,6 +183,7 @@ def _orchestrator_wake(roster, text, team_entry=None, actor="fab"):
         started = agents.start_orchestrator(roster, team_name)
     except (FabError, HcError) as exc:
         return START_FAILED, None, str(exc)
+    orchestrator.clear_start(entry)
     ok, detail = hc.send_detail(
         started.get("terminal") or started["name"], text
     )
@@ -208,6 +209,7 @@ def _notify_orchestrator(roster, text, team_entry=None):
         started = agents.start_orchestrator(roster, team_name)
     except (FabError, HcError):
         return False
+    orchestrator.clear_start(entry)
     return hc.send(started["name"], text)
 
 

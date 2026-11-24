@@ -14,7 +14,7 @@ from .errors import FabError
 ACK_KEY = "alarm_ack"
 ACK_LIMIT = 100
 _TICKET = re.compile(r"T-\d+")
-_ORDER = {"main": 0, "pause": 1, "tick": 2}
+_ORDER = {"main": 0, "pause": 1, "orchestrator": 2, "tick": 3}
 
 
 def _now(now=None):
@@ -193,6 +193,43 @@ def _tick_alarm(now):
     }
 
 
+def _orchestrator_alarms():
+    """Alarme für Orchestrator-Starts, die ohne Turn endgültig scheiterten."""
+    from . import agents, orchestrator
+
+    roster = agents.load(required=False)
+    if not roster:
+        return []
+    alarms = []
+    for entry in roster.get("teams") or []:
+        if not isinstance(entry, dict) or not entry.get("name"):
+            continue
+        state = orchestrator.start_state(entry)
+        if not state or state.get("state") != "failed":
+            continue
+        team = str(entry.get("name") or "")
+        at = int(state.get("failed_at") or state.get("at") or 0)
+        attempt = int(state.get("attempt") or 1)
+        alarms.append({
+            "id": f"orchestrator:{team}:{at}",
+            "kind": "orchestrator",
+            "at": at,
+            "since": at,
+            "ticket": "",
+            "run": None,
+            "step": "",
+            "reverted": False,
+            "paused": False,
+            "reason": "Start ohne Antwort",
+            "text": (
+                f"Orchestrator {team}: Start ohne Antwort nach {attempt} "
+                "Versuchen – Terminal prüfen"
+            ),
+            "actions": ["ack"],
+        })
+    return alarms
+
+
 def _derive(now):
     """Alle aktuell abgeleiteten Alarme, auch die von main unterdrückte Pause."""
     alarms = []
@@ -204,6 +241,7 @@ def _derive(now):
         alarms.append(main)
     if paused:
         alarms.append(_pause_alarm(paused_state))
+    alarms.extend(_orchestrator_alarms())
     tick = _tick_alarm(now)
     if tick is not None:
         alarms.append(tick)
