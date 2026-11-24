@@ -4439,12 +4439,19 @@ export default class Fabric extends View {
       .child(
         div()
           .relative()
+          // Der Drawer-Host muss selbst ein Flex-Container sein: sonst kann die
+          // innere Zeile (.flex_1) die Höhe nicht füllen, und .overflow_hidden
+          // schneidet die Seite auf ihre Eigenhöhe ab (T-122).
+          .flex()
           .flex_1()
           .min_w(0)
           .min_h(0)
           .child(
             h_flex()
               .flex_1()
+              // Auch waagerecht schrumpfen lassen: sonst schiebt die
+              // min-content-Breite der Seite den rechten Rand aus dem Fenster.
+              .min_w(0)
               .min_h(0)
               .items_stretch()
               .when(!this.compact, (el) => el.child(nav))
