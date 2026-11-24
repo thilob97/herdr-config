@@ -177,3 +177,47 @@ class RunParallelSignalTests(unittest.TestCase):
             result = self.run_runner(path)
         self.assertEqual(result.returncode, 3, result.stderr)
         self.assertIn("Abbruch: Signal 15 in", result.stdout)
+
+# Beide Versuche: ein echter Fehlschlag und ein per SIGTERM beendeter
+# Unterprozess. Der echte Fehlschlag darf hinter dem Abbruch nicht verschwinden.
+UNTERPROZESS_SIGTERM_MIT_ROT = '''"""Signal-Unterprozess plus echter Fehlschlag."""
+import subprocess
+import sys
+import unittest
+
+
+class Gemischt(unittest.TestCase):
+    def test_unterprozess(self):
+        code = subprocess.run(
+            [sys.executable, "-c",
+             "import os, signal; os.kill(os.getpid(), signal.SIGTERM)"],
+        ).returncode
+        self.assertEqual(code, 0, "")
+
+    def test_echt_rot(self):
+        self.fail("echt rot")
+'''
+
+
+class RunParallelAbbruchTests(unittest.TestCase):
+    def write(self, folder, name, text):
+        path = os.path.join(folder, name)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        return path
+
+    def test_abbruchdatei_zeigt_ihre_ausgabe(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = self.write(
+                folder, "test_gemischt.py", UNTERPROZESS_SIGTERM_MIT_ROT
+            )
+            result = subprocess.run(
+                [sys.executable, RUNNER, "--jobs", "1", path],
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(result.returncode, 3, result.stderr)
+        output = result.stdout + result.stderr
+        self.assertIn("Abbruch: Signal 15 in", output)
+        self.assertIn("ABBRUCH in", output)
+        self.assertIn("echt rot", output)

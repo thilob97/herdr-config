@@ -256,6 +256,18 @@ def main(argv=None):
         print("=" * 70)
         print(result.output.rstrip())
         print()
+    # Auch ein Abbruch kann einen echten Fehlschlag enthalten: Ausgabe zeigen,
+    # damit er nicht hinter der Abbruchzeile verschwindet.
+    for result in sorted(aborted_results, key=lambda item: item.name):
+        print("=" * 70)
+        print(
+            "ABBRUCH in %s (Signal %d)"
+            % (display(result.path), signal_of(result) or 0)
+        )
+        print("=" * 70)
+        if result.output.strip():
+            print(result.output.rstrip())
+        print()
     print(
         "%d Tests in %d Dateien, %d rot"
         % (total, len(files), len(failed))
