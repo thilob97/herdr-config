@@ -144,18 +144,20 @@ function card(app, cx, t, ticket) {
     .child(
       h_flex().w_full().gap(S.s).items_center()
         .child(div().flex_none().text_size(T.xs).text_color(t.dim).child(ticket.id))
-        .when(Boolean(waiting), (el) => el.child(ui.chip(t, "wartet auf dich", t.accent, null, {
-          tooltip: "wartet auf dich",
-          shrink: true,
-        })))
-        .when(Boolean(ticket.stall), (el) => el.child(
-          ui.chip(t, model.stallLabel(ticket.stall), t.accent, `fabric-card-stall-${ticket.id}`, {
-            tooltip: model.stallReason(ticket.stall),
-            shrink: true,
-          })))
         .child(div().flex_1().min_w(0))
         .child(div().flex_none().child(cardMenu(app, cx, t, ticket))),
     )
+    // Hinweis-Chips in eigener Zeile, die umbricht: In der Kopfzeile kürzten
+    // sie sich auf „sto…“, obwohl Platz frei war (abgeschnittener Text misst
+    // in der Flex-Zeile keine Eigenbreite).
+    .when(Boolean(waiting) || Boolean(ticket.stall), (el) => el.child(
+      h_flex().w_full().gap(S.xs).items_center().flex_wrap()
+        .when(Boolean(waiting), (row) => row.child(ui.chip(t, "wartet auf dich", t.accent)))
+        .when(Boolean(ticket.stall), (row) => row.child(
+          ui.chip(t, model.stallLabel(ticket.stall), t.accent, `fabric-card-stall-${ticket.id}`, {
+            tooltip: model.stallReason(ticket.stall),
+          }))),
+    ))
     .child(titleBlock(app, t, ticket))
     .child(
       h_flex().w_full().gap(S.s).items_center()

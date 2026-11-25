@@ -212,6 +212,11 @@ export default class Fabric extends View {
     this.pipelineOpen = {};
     this.pipelineFilter = null;
     this.pipelineLimit = model.PIPELINE_PAGE;
+    this.inboxDiff = {};
+    this.inboxRejectFor = null;
+    this.inboxReject = InputState.new({ placeholder: "Feedback für den Umsetzer…" });
+    this.inboxReject.on("change", (_event, cx) => { this.notifyNow(); });
+    this.track(this.inboxReject);
     this.pipelineSearch = InputState.new({ placeholder: "Log durchsuchen…" });
     this.pipelineSearch.on("change", (_event, cx) => { this.notifyNow(); });
     this.track(this.pipelineSearch);
@@ -1081,6 +1086,55 @@ export default class Fabric extends View {
       success: on ? "Fabric pausiert." : "Fabric läuft wieder.",
       timeout: 180000,
     });
+  }
+
+  /** Änderungen eines Prüfungs-Eintrags im Posteingang laden bzw. zuklappen. */
+  async toggleInboxDiff(id) {
+    if (this.inboxDiff[id]?.open) {
+      this.inboxDiff = { ...this.inboxDiff, [id]: { ...this.inboxDiff[id], open: false } };
+      this.notifyNow();
+      return;
+    }
+    this.inboxDiff = { ...this.inboxDiff, [id]: { open: true, loading: true } };
+    this.notifyNow();
+    let entry;
+    try {
+      const result = await this.execFab(model.diffArgs(id), { timeout: 30000 });
+      const data = result.code === 0 ? parseJson(result.stdout, null) : null;
+      entry = data?.head
+        ? { open: true, data }
+        : { open: true, error: (result.stderr || "").trim() || "fab diff lieferte keine Änderungen." };
+    } catch (error) {
+      entry = { open: true, error: `Änderungen nicht ladbar: ${message(error)}` };
+    }
+    this.inboxDiff = { ...this.inboxDiff, [id]: entry };
+    this.notifyNow();
+  }
+
+  /** Abnahme aus dem Posteingang; erst nach angesehenen Änderungen (wie im Ticket). */
+  async acceptFromInbox(id) {
+    if (!this.inboxDiff[id]?.data?.head) return;
+    await this.action("accept", model.acceptArgs(id), {
+      success: `${id} abgenommen.`,
+      timeout: 180000,
+    });
+  }
+
+  async rejectFromInbox(id) {
+    const text = this.inboxReject.value().trim();
+    if (!text) {
+      this.setError("reject", "Bitte Feedback eingeben.");
+      this.notifyNow();
+      return;
+    }
+    const result = await this.action("reject", model.rejectArgs(id, text), {
+      success: `${id} zurückgewiesen.`,
+    });
+    if (result.ok) {
+      this.inboxRejectFor = null;
+      this.inboxReject.set_value("");
+      this.notifyNow();
+    }
   }
 
   setNotify(patch, cx) {

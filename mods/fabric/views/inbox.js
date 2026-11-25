@@ -126,6 +126,52 @@ export function renderInboxPanel(app, cx, t) {
 
 // ---------- Seite im Fabric-Fenster ----------
 
+function reviewPanel(app, cx, t, id) {
+  const state = app.inboxDiff[id] ?? {};
+  const files = state.data?.files ?? [];
+  const rejecting = app.inboxRejectFor === id;
+  const stop = (el) => el.on_click((_event, cx) => cx.stop_propagation());
+  if (state.loading) return ui.loading(t, "Änderungen werden geladen …");
+  if (state.error) return ui.notice(t, state.error);
+  return stop(v_flex().id(`fabric-inbox-review-${id}`).w_full().gap(S.s).p(S.s).rounded(ui.RADIUS.m).bg(t.surface)
+    .child(div().text_size(T.xs).text_color(t.dim)
+      .child(`${files.length} Datei${files.length === 1 ? "" : "en"} · HEAD ${String(state.data?.head ?? "").slice(0, 7)}`))
+    .children(files.slice(0, 12).map((file) => h_flex().w_full().gap(S.s).text_size(T.xs)
+      .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(file.path))
+      .child(div().flex_none().text_color(file.binary ? t.dim : t.done).child(file.binary ? "binär" : `+${file.added ?? 0}`))
+      .child(div().flex_none().text_color(file.binary ? t.dim : t.blocked).child(file.binary ? "" : `−${file.deleted ?? 0}`))))
+    .when(files.length > 12, (el) => el.child(div().text_size(T.xs).text_color(t.dim)
+      .child(`… ${files.length - 12} weitere; alle im Ticket`)))
+    .when(rejecting, (el) => el.child(ui.input(t, app.inboxReject, {})))
+    .when(Boolean(app.errorFor("reject")) && rejecting, (el) => el.child(
+      ui.notice(t, app.errorFor("reject").text, app.errorFor("reject").level)))
+    .when(Boolean(app.errorFor("accept")), (el) => el.child(
+      ui.notice(t, app.errorFor("accept").text, app.errorFor("accept").level)))
+    .child(h_flex().gap(S.s).justify_end()
+      .child(ui.button(t, {
+        id: `fabric-inbox-reject-${id}`,
+        label: rejecting ? "Zurückweisen senden" : "Zurückweisen…",
+        small: true,
+        danger: true,
+        busy: app.busy === "reject",
+        disabled: Boolean(app.busy),
+        onClick: (cx) => {
+          if (!rejecting) { app.inboxRejectFor = id; app.notifyNow(); return; }
+          cx.spawn(async () => { await app.rejectFromInbox(id); });
+        },
+      }))
+      .child(ui.button(t, {
+        id: `fabric-inbox-accept-${id}`,
+        label: "Abnehmen",
+        small: true,
+        primary: true,
+        busy: app.busy === "accept",
+        disabled: Boolean(app.busy) || !state.data?.head,
+        tooltip: "fab accept: mergen, aufräumen, done",
+        onClick: (cx) => cx.spawn(async () => { await app.acceptFromInbox(id); }),
+      }))));
+}
+
 function pageRow(app, cx, t, entry, index) {
   const kind = model.INBOX_WORDS[entry.kind] ?? entry.kind ?? "Hinweis";
   const color = ui.inboxColor(t, entry.kind);
@@ -164,6 +210,9 @@ function pageRow(app, cx, t, entry, index) {
         .when(Boolean(retry), (el) => el.child(
           div().text_size(T.xs).text_color(t.dim)
             .child(`${entry.agent} · ${model.oneLine(entry.reason || "Grund unbekannt", 160)}`),
+        ))
+        .when(entry.kind === "review" && Boolean(app.inboxDiff[entry.ticket]?.open), (el) => el.child(
+          reviewPanel(app, cx, t, entry.ticket),
         )),
     )
     .child(
@@ -172,6 +221,13 @@ function pageRow(app, cx, t, entry, index) {
           .child(`${entry.from ?? "fab"} · ${model.relativeTime(entry.at)}`)
           .tooltip(model.absoluteTime(entry.at)))
         .child(h_flex().gap(S.xs)
+          .when(entry.kind === "review", (el) => el.child(ui.button(t, {
+            id: `fabric-inbox-page-diff-${entry.ticket}-${index}`,
+            label: app.inboxDiff[entry.ticket]?.open ? "Änderungen ▴" : "Änderungen",
+            small: true,
+            tooltip: "Geänderte Dateien zeigen; danach lässt sich hier abnehmen",
+            onClick: (cx) => cx.spawn(async () => { await app.toggleInboxDiff(entry.ticket); }),
+          })))
           .when(Boolean(retry), (el) => el.child(ui.button(t, {
             id: `fabric-inbox-page-retry-${entry.ticket}-${index}`,
             label: "Erneut starten",
