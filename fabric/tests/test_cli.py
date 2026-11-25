@@ -2,6 +2,7 @@
 import json
 import os
 import subprocess
+import unittest
 
 from fabric.tests.support import FAB, FabricCase
 
@@ -583,3 +584,45 @@ class CliTests(FabricCase):
         self.assertEqual(ticket["status"], "review")
         self.assertEqual(ticket["verdict"]["head"], old)
         self.assertTrue(os.path.isdir(worktree))
+
+
+class CommandCatalogTests(unittest.TestCase):
+    def test_katalog_enthaelt_alle_oeffentlichen_befehle(self):
+        from fabric.fablib import cli
+
+        parser = cli.build_parser()
+        sub = next(a for a in parser._actions if isinstance(a, cli.argparse._SubParsersAction))
+        top = {name for name in sub.choices if not name.startswith("_")}
+        catalog = cli.command_catalog(parser)
+        self.assertEqual({entry["path"][0] for entry in catalog}, top)
+        paths = {tuple(entry["path"]) for entry in catalog}
+        self.assertIn(("team", "add"), paths)
+        self.assertNotIn(("autopilot", "run"), paths, "interne Aktion fehlt")
+
+    def test_jeder_befehl_parst_mit_der_argv_form_des_fensters(self):
+        # Gleiche Form wie model.commandArgv im Fenster: Pfad, Optionen, `--`,
+        # Positionsargumente. Jeder Befehl muss so parsbar sein.
+        from fabric.fablib import cli
+
+        parser = cli.build_parser()
+        for entry in cli.command_catalog(parser):
+            options, positionals, groups = [], [], set()
+            for arg in entry["args"]:
+                value = (arg["choices"] or ["1"])[0]
+                needed = arg["required"] or (
+                    arg["group_required"] and arg["group"] not in groups
+                )
+                if arg["group"] and needed:
+                    groups.add(arg["group"])
+                if arg["kind"] == "flag":
+                    if needed:
+                        options.append(arg["flag"])
+                    continue
+                if arg["kind"] == "option":
+                    if needed:
+                        options += [arg["flag"], value]
+                elif arg["required"]:
+                    positionals.append(value)
+            argv = [*entry["path"], *options, *(["--", *positionals] if positionals else [])]
+            with self.subTest(argv=argv):
+                parser.parse_args(cli._normalize_argv(list(argv)))

@@ -4007,6 +4007,91 @@ _TRANSLATIONS = (
 )
 
 
+# Befehle, die Daten verwerfen, abschließen oder den Betrieb stoppen: Das
+# Fenster verlangt dafür einen zweiten Klick.
+DANGEROUS_COMMANDS = {
+    ("accept",), ("close",), ("drop",), ("reject",), ("migrate",), ("pause",),
+    ("agent", "rm"), ("blueprint", "rm"), ("team", "rm"), ("flow", "rm"),
+    ("flow", "cancel"), ("knowledge", "rm"), ("autopilot", "stop"),
+}
+
+
+def command_catalog(parser=None):
+    """Alle Befehle mit ihren Argumenten aus dem argparse-Baum (für das Fenster).
+
+    Interne Befehle (Name mit `_`, Hilfe „(intern)“ oder unterdrückt) fehlen.
+    Je Befehl: `path` (z. B. ["team", "add"]), `help`, `danger` und `args` mit
+    `dest`, `flag` (längste Option, None bei Positionsargumenten), `metavar`,
+    `help`, `kind` (positional/option/flag), `required`, `choices`, `multiple`
+    sowie `group`/`group_required` für Gruppen, aus denen genau eins gilt.
+    """
+    parser = parser or build_parser()
+    catalog = []
+
+    def walk(node, path, help_text):
+        sub = next(
+            (a for a in node._actions if isinstance(a, argparse._SubParsersAction)),
+            None,
+        )
+        if sub is not None:
+            helps = {choice.dest: choice.help for choice in sub._choices_actions}
+            for name, child in sub.choices.items():
+                text = helps.get(name)
+                if name.startswith("_") or text in (None, argparse.SUPPRESS):
+                    continue
+                if "(intern)" in str(text):
+                    continue
+                walk(child, path + [name], str(text))
+            return
+        groups = {}
+        for index, group in enumerate(node._mutually_exclusive_groups):
+            for member in group._group_actions:
+                groups[id(member)] = (f"g{index}", bool(group.required))
+        args = []
+        for action in node._actions:
+            if isinstance(action, argparse._HelpAction) or action.help == argparse.SUPPRESS:
+                continue
+            flag = max(action.option_strings, key=len) if action.option_strings else None
+            if flag is None:
+                kind = "positional"
+                required = action.nargs not in ("?", "*")
+            elif action.nargs == 0:
+                kind, required = "flag", False
+            else:
+                kind, required = "option", bool(action.required)
+            args.append({
+                "dest": action.dest,
+                "flag": flag,
+                "metavar": action.metavar if isinstance(action.metavar, str) else action.dest.upper(),
+                "help": action.help or "",
+                "kind": kind,
+                "required": required,
+                "choices": [str(c) for c in action.choices] if action.choices else None,
+                "multiple": action.nargs in ("*", "+"),
+                "group": groups.get(id(action), (None, False))[0],
+                "group_required": groups.get(id(action), (None, False))[1],
+            })
+        catalog.append({
+            "path": path,
+            "help": help_text,
+            "danger": tuple(path) in DANGEROUS_COMMANDS,
+            "args": args,
+        })
+
+    walk(parser, [], "")
+    return catalog
+
+
+def cmd_commands(args):
+    catalog = command_catalog()
+    if args.json:
+        print(json.dumps(catalog, ensure_ascii=False))
+        return 0
+    for entry in catalog:
+        print(f"fab {' '.join(entry['path'])}  –  {entry['help']}")
+    return 0
+
+
 class GermanParser(argparse.ArgumentParser):
     def error(self, message):
         text = message
@@ -4623,6 +4708,9 @@ def build_parser():
     )
     alarm_ack.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe")
     command("version", "Version und Git-HEAD des Fabric-Codes", cmd_version)
+
+    item = command("commands", "Alle Befehle mit Argumenten auflisten (für das Fenster)", cmd_commands)
+    item.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe")
     command("index", "index.json neu erzeugen", cmd_index)
     item = command("migrate", "Altdaten in die SQLite-Datenbank übernehmen", cmd_migrate)
     item.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe")
