@@ -139,13 +139,26 @@ export const FORMULATE_COMMENT = "@orchestrator bitte ausformulieren und verteil
 
 const hasCriteriaSection = (body) => /^##\s+Abnahmekriterien\s*$/m.test(String(body ?? ""));
 
+/** Blocker-Zeilen eines Tickets in Eintragsreihenfolge.
+ *  Unbekannte IDs gelten wie in `openBlockers` als offen. */
+export function blockerEntries(ticket, tickets) {
+  const byId = new Map((tickets ?? []).map((row) => [row?.id, row]));
+  return (ticket?.blocked_by ?? []).map((id) => {
+    const blocker = byId.get(id);
+    const status = blocker?.status ?? null;
+    return {
+      id,
+      status,
+      open: !blocker || (status !== "done" && status !== "dropped"),
+    };
+  });
+}
+
 /** Offene Abhängigkeiten eines Tickets (nicht done/dropped). */
 export function openBlockers(ticket, tickets) {
-  const byId = new Map((tickets ?? []).map((row) => [row?.id, row]));
-  return (ticket?.blocked_by ?? []).filter((id) => {
-    const blocker = byId.get(id);
-    return !blocker || (blocker.status !== "done" && blocker.status !== "dropped");
-  });
+  return blockerEntries(ticket, tickets)
+    .filter((entry) => entry.open)
+    .map((entry) => entry.id);
 }
 
 /** Was fehlt für `fab dispatch`? Leer heißt: bereit. */
