@@ -1050,9 +1050,15 @@ class TickCase(FabricCase):
         self.assertTrue(os.path.isfile(plist))
         self.ok("tick", "--uninstall", env=env)
         self.assertFalse(os.path.exists(plist))
-        # Der nächste Aufruf legt den Auftrag nicht wieder an.
+        # Der nächste Aufruf legt den Auftrag nicht wieder an, und `fab tick`
+        # (auch aus dem Takt des Fabric-Fensters) weckt nichts.
         self.ok("version", env=env)
         self.assertFalse(os.path.exists(plist))
+        self.clear_log()
+        result = self.ok("tick", env=env)
+        self.assertIn("Wächter aus", result.stdout)
+        self.assertEqual(self.hc_calls("run"), [])
+        self.assertEqual(self.hc_calls("send"), [])
         self.ok("tick", "--install", env=env)
         self.assertTrue(os.path.isfile(plist))
         self.ok("tick", "--uninstall", env=env)

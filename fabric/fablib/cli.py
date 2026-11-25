@@ -2455,8 +2455,17 @@ def cmd_tick(args):
         else:
             path, ok, detail = tick.uninstall()
             print(f"launchd-Auftrag entfernt: {path}")
+            print(
+                "Wächter aus: fab tick weckt und startet nichts mehr, auch nicht "
+                "aus dem Fabric-Fenster; fab tick --install schaltet ihn wieder ein."
+            )
             if not ok:
                 print(f"Hinweis: launchctl bootout: {detail}")
+        return 0
+    if store.tick_disabled():
+        # Abgeschaltet heißt abgeschaltet: Auch der Takt des Fabric-Fensters
+        # (mods/fabric/main.js) ruft `fab tick`; er darf nichts wecken.
+        print("Wächter aus (fab tick --uninstall); fab tick --install schaltet ihn ein.")
         return 0
     roster = agents.load(required=False)
     with store.locked():
