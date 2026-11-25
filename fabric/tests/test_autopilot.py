@@ -1161,13 +1161,20 @@ test at fail.mjs:3:1
                 item for item in alarm.status()["alarms"] if item["kind"] == "skip"
             ]
 
+        def round_():
+            """Eine Runde mit drei abnahmebereiten Tickets."""
+            autopilot.begin_round()
+            for _ in range(3):
+                self.assertFalse(autopilot.ensure_clean_main(repo))
+            return autopilot.end_round()
+
         with mock.patch.object(autopilot, "_wake_orchestrator") as wake:
-            self.assertFalse(autopilot.ensure_clean_main(repo))
-            self.assertFalse(autopilot.ensure_clean_main(repo))
+            self.assertEqual(round_(), 1)
+            self.assertEqual(round_(), 2)
             self.assertEqual(skip_alarms(), [])
             wake.assert_not_called()
 
-            self.assertFalse(autopilot.ensure_clean_main(repo))
+            self.assertEqual(round_(), 3)
             alarms = skip_alarms()
             self.assertEqual(len(alarms), 1)
             self.assertEqual(alarms[0]["id"], f"skip:{since}")
@@ -1175,14 +1182,36 @@ test at fail.mjs:3:1
             self.assertIn("3", alarms[0]["text"])
             wake.assert_called_once()
 
-            self.assertFalse(autopilot.ensure_clean_main(repo))
+            self.assertEqual(round_(), 4)
             self.assertEqual([item["id"] for item in skip_alarms()], [f"skip:{since}"])
             wake.assert_called_once()
 
+            # Ohne Bereinigung bleibt der Alarm; refresh_skip hebt nichts auf.
+            self.assertFalse(autopilot.refresh_skip())
+            self.assertEqual([item["id"] for item in skip_alarms()], [f"skip:{since}"])
+
         self.git_out(repo, "checkout", "--", "README.md")
-        self.assertTrue(autopilot.ensure_clean_main(repo))
+        self.assertTrue(autopilot.refresh_skip())
         self.assertEqual(skip_alarms(), [])
         self.assertEqual(autopilot.skip_state()["paths"], [])
+        self.assertTrue(autopilot.ensure_clean_main(repo))
+
+    def test_three_calls_in_one_round_count_one_skip(self):
+        repo = self.app_repo("app-rounds")
+        self.set_now(datetime.datetime(2026, 1, 2, 12, 0))
+        self.write_file(os.path.join(repo, "README.md"), "blockiert\n")
+
+        with mock.patch.object(autopilot, "_wake_orchestrator"):
+            autopilot.begin_round()
+            for _ in range(3):
+                self.assertFalse(autopilot.ensure_clean_main(repo))
+            self.assertEqual(autopilot.skip_state()["count"], 0)
+            self.assertEqual(autopilot.end_round(), 1)
+            self.assertEqual(autopilot.skip_state()["count"], 1)
+
+            # Außerhalb einer Runde zählt ein Aufruf sofort als eigene Runde.
+            self.assertFalse(autopilot.ensure_clean_main(repo))
+            self.assertEqual(autopilot.skip_state()["count"], 2)
 
     def test_settings_commit_clears_skip_state(self):
         repo = self.app_repo("app-clear")

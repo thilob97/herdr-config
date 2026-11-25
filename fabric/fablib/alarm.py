@@ -180,7 +180,7 @@ def _skip_alarm():
     paths = ", ".join(state["paths"])
     text = (
         f"Autopilot: main seit {_clock(since)} nicht sauber – {paths} "
-        f"({state['count']} Abnahmeversuche übersprungen)"
+        f"({state['count']} Runden übersprungen)"
     )
     return {
         "id": f"skip:{since}",
