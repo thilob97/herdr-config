@@ -112,7 +112,7 @@ Im Hauptfenster tragen Board und Tickets keinen Knopf „Im Fenster öffnen“; 
   - Prüfskript `.fabric/verify.sh` (Editor, „Speichern“, „Jetzt testen“ mit Ausgabe und Exit-Code; „Fehlt – anlegen“ mit Vorlage);
   - Lernnotizen `.fabric/lessons.md` (Editor).
 
-**Einstellungen**: Datenordner, Anzahl der Tickets und Ereignisse, Version von `fab`, Pfad des Rosters und Hinweise zu den Tasten. Die Karte **Betrieb** schaltet „Fabric pausieren“ (`fab pause` / `fab resume`); solange die Fabric pausiert ist, steht oben im Fenster ein Hinweis mit **Fortsetzen**.
+**Einstellungen**: Datenordner, Anzahl der Tickets und Ereignisse, Version von `fab`, Pfad des Rosters und Hinweise zu den Tasten. Die Karte **Kosten** zeigt Gesamt, heute, je Team und je Agent (aus den Sessions der Tickets, `cost.agents` im Index) mit Anteil an den Gesamtkosten. Die Karte **Betrieb** schaltet „Fabric pausieren“ (`fab pause` / `fab resume`); solange die Fabric pausiert ist, steht oben im Fenster ein Hinweis mit **Fortsetzen**.
 
 ## 3. Qualitätsmaßstab
 

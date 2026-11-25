@@ -3149,3 +3149,17 @@ test("Platzhalter: Fenster kennt dieselben wie fab (prompts.KNOWN)", async () =>
   assert.deepEqual(Object.keys(PLACEHOLDERS).sort(), [...known].sort());
   assert.deepEqual(unknownPlaceholders("{lessons} {context} {foo}"), ["foo"]);
 });
+
+test("Kosten je Agent: Summe über Tickets, teuerster zuerst", async () => {
+  const { costByAgent, costTotals } = await import("../model.js");
+  const tickets = [
+    { id: "T-1", cost: { total: 3, today: 0, agents: { ada: 2.5, zap: 0.5 } } },
+    { id: "T-2", cost: { total: 1, today: 1, agents: { zap: 1 } } },
+    { id: "T-3", cost: { total: 0, today: 0 } },
+  ];
+  assert.deepEqual(costByAgent(tickets), [
+    { name: "ada", total: 2.5, tickets: 1 },
+    { name: "zap", total: 1.5, tickets: 2 },
+  ]);
+  assert.equal(costTotals(tickets).agents.length, 2);
+});

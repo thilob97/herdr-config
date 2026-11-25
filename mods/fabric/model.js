@@ -1499,8 +1499,27 @@ export function costTotals(tickets) {
     total,
     today,
     teams: [...teams.values()].sort((a, b) => a.name.localeCompare(b.name)),
+    agents: costByAgent(tickets),
     overLimit,
   };
+}
+
+/** Kosten je Agent über alle Tickets (aus `cost.agents` im Index), teuerster zuerst. */
+export function costByAgent(tickets) {
+  const agents = new Map();
+  for (const ticket of tickets ?? []) {
+    const byAgent = ticket?.cost?.agents;
+    if (!byAgent || typeof byAgent !== "object") continue;
+    for (const [name, value] of Object.entries(byAgent)) {
+      const amount = Number(value);
+      if (!Number.isFinite(amount) || amount <= 0) continue;
+      const row = agents.get(name) ?? { name, total: 0, tickets: 0 };
+      row.total += amount;
+      row.tickets += 1;
+      agents.set(name, row);
+    }
+  }
+  return [...agents.values()].sort((a, b) => b.total - a.total || a.name.localeCompare(b.name));
 }
 
 /** Eine Zeile aus mehrzeiligem Text, gekürzt für Listen. */

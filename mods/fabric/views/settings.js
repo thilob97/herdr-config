@@ -79,6 +79,8 @@ function metricsCard(app, t) {
     infoRow(app, t, "Heute", model.formatCost(totals.today)),
     ...totals.teams.map((team) => infoRow(app, t, team.name,
       `${model.formatCost(team.total)} · heute ${model.formatCost(team.today)} · ${team.tickets} Ticket${team.tickets === 1 ? "" : "s"}`)),
+    ...totals.agents.map((agent) => infoRow(app, t, `· ${agent.name}`,
+      `${model.formatCost(agent.total)} · ${agent.tickets} Ticket${agent.tickets === 1 ? "" : "s"} · ${totals.total > 0 ? Math.round((agent.total / totals.total) * 100) : 0} %`)),
     ...(limitHint ? [div().text_size(T.xs).text_color(t.blocked).whitespace_normal().child(limitHint)] : []),
   ], { id: "fabric-settings-cost", padding: S.m, gap: S.xs });
 }

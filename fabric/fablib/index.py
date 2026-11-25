@@ -15,10 +15,25 @@ def _cost_snapshot(ticket):
     raw = ticket.get("cost")
     if not isinstance(raw, dict):
         raw = {}
+    # Kosten je Agent aus den Sessions: macht sichtbar, wer was kostet
+    # (etwa erneute Prüfungen der Prüferin).
+    by_agent = {}
+    for session in raw.get("sessions") or []:
+        if not isinstance(session, dict):
+            continue
+        name = str(session.get("agent") or "").strip()
+        if not name:
+            continue
+        try:
+            value = float(session.get("cost") or 0)
+        except (TypeError, ValueError):
+            continue
+        by_agent[name] = round(by_agent.get(name, 0.0) + value, 6)
     return {
         "currency": str(raw.get("currency") or "USD"),
         "total": float(raw.get("total") or 0),
         "today": float(raw.get("today") or 0),
+        "agents": by_agent,
     }
 
 
