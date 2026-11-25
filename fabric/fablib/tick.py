@@ -1005,7 +1005,7 @@ def uninstall(keep_off=True):
         os.remove(target)
     except FileNotFoundError:
         pass
-    if keep_off and not _home_deviation():
+    if keep_off:
         store.atomic_write(store.tick_off_path(), "fab tick --uninstall\n")
     return target, ok, detail
 

@@ -2514,6 +2514,81 @@ def cmd_wake(args):
     return 0
 
 
+def _team_entries(roster):
+    return [
+        entry
+        for entry in (roster or {}).get("teams") or []
+        if isinstance(entry, dict) and entry.get("name")
+    ]
+
+
+def cmd_pause(args):
+    """Fabric anhalten: Wächter aus, Autopilot und Orchestratoren beenden,
+    Agenten-Sessions offener Tickets beenden; Wecken bleibt gesperrt."""
+    actor = _actor(args) or "mensch"
+    roster = agents.load(required=False)
+    lines = []
+    _path, _ok, _detail = tick.uninstall()
+    lines.append("Wächter aus (kein fab tick, kein Wecken)")
+    if autopilot.TERMINAL in hc.live():
+        autopilot.stop()
+        lines.append("Autopilot gestoppt")
+    for entry in _team_entries(roster):
+        team_name = str(entry["name"])
+        live_name, _row = agents.live_orchestrator(roster, team_name)
+        if live_name:
+            hc.kill(live_name)
+            orchestrator.clear_start(entry)
+            lines.append(f"Orchestrator {team_name} beendet")
+    ended = []
+    with store.locked():
+        for ticket in store.all_tickets():
+            if ticket.get("status") in ("done", "dropped"):
+                continue
+            names = _end_sessions(ticket)
+            if names:
+                ended.extend(names)
+                store.save(ticket, touch=False)
+        events.append("config", "", actor, "", "Fabric pausiert")
+        index.rebuild()
+    if ended:
+        lines.append(f"{len(ended)} Agenten-Session(s) beendet")
+    for line in lines:
+        print(line)
+    print("Fabric pausiert. Fortsetzen mit fab resume.")
+    return 0
+
+
+def cmd_resume(args):
+    """Fabric fortsetzen: Wächter an, Orchestratoren starten. Den Autopiloten
+    startet `fab autopilot start` bewusst getrennt."""
+    actor = _actor(args) or "mensch"
+    roster = agents.load(required=False)
+    try:
+        os.remove(store.tick_off_path())
+    except FileNotFoundError:
+        pass
+    print("Wächter an")
+    path, ok, detail = tick.install()
+    if path is None:
+        print(f"Hinweis: launchd-Auftrag nicht angelegt: {detail}")
+    elif not ok:
+        print(f"Hinweis: launchctl bootstrap: {detail}")
+    for entry in _team_entries(roster):
+        team_name = str(entry["name"])
+        live_name, _row = agents.live_orchestrator(roster, team_name)
+        if live_name:
+            continue
+        started = agents.start_orchestrator(roster, team_name)
+        events.append("orchestrator", "", "fab", team_name, "gestartet")
+        print(f"Orchestrator {team_name} gestartet ({started['name']})")
+    with store.locked():
+        events.append("config", "", actor, "", "Fabric fortgesetzt")
+        index.rebuild()
+    print("Fabric läuft. Autopilot bei Bedarf: fab autopilot start --until done")
+    return 0
+
+
 def cmd_tick(args):
     if args.install or args.uninstall:
         if args.dry_run:
@@ -4167,6 +4242,12 @@ def build_parser():
     cancel_item.add_argument("run", metavar="LAUF")
     cancel_item.add_argument("--from", dest="from_", metavar="NAME", default="mensch",
                              help="Autor (Standard: mensch)")
+
+    item = command("pause", "Fabric anhalten: Wächter, Autopilot, Orchestrator und Agenten aus", cmd_pause)
+    item.add_argument("--from", dest="from_", metavar="NAME", help="wer pausiert (Standard: mensch)")
+
+    item = command("resume", "Fabric fortsetzen: Wächter an, Orchestrator starten", cmd_resume)
+    item.add_argument("--from", dest="from_", metavar="NAME", help="wer fortsetzt (Standard: mensch)")
 
     item = command("tick", "Stillstand prüfen, wecken oder melden", cmd_tick)
     item.add_argument("--dry-run", action="store_true",

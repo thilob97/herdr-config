@@ -325,6 +325,7 @@ def build():
         "version": 1,
         "generated_at": store.now_ms(),
         "tick": store.tick_alarm(),
+        "paused": store.tick_disabled(),
         "alarm": alarm_state,
         "tickets": entries,
         "inbox": inbox,

@@ -153,6 +153,25 @@ function notifyCard(app, cx, t, settings) {
   ], { id: "fabric-settings-notify", padding: S.m, gap: S.xs });
 }
 
+function pauseCard(app, cx, t) {
+  const paused = Boolean(app.index?.paused);
+  return ui.card(t, [
+    ui.sectionTitle(t, "Betrieb", [
+      ui.chip(t, paused ? "pausiert" : "läuft", paused ? t.working : t.done),
+    ], "Pausiert weckt und startet die Fabric niemanden: kein fab tick, kein Autopilot, kein Orchestrator, keine Agenten."),
+    ui.switchRow(t, {
+      id: "fabric-paused",
+      checked: paused,
+      label: "Fabric pausieren",
+      detail: paused
+        ? "Ausschalten startet Wächter und Orchestrator wieder (fab resume); den Autopiloten startest du getrennt."
+        : "Einschalten beendet Autopilot, Orchestrator und laufende Agenten-Sessions (fab pause).",
+      disabled: Boolean(app.busy),
+      onChange: (on) => app.setPaused(on, cx),
+    }),
+  ], { id: "fabric-settings-pause", padding: S.m, gap: S.xs });
+}
+
 export function renderSettings(app, cx, t) {
   const settings = model.normalizeNotifySettings(shared(model.NOTIFY_SETTINGS_KEY));
   return v_flex()
@@ -176,6 +195,7 @@ export function renderSettings(app, cx, t) {
             .child(div().flex_1().min_w(280).child(dataCard(app, cx, t)))
             .child(div().flex_1().min_w(280).child(metricsCard(app, t)))
             .child(div().flex_1().min_w(280).child(versionCard(app, cx, t))))
+          .child(pauseCard(app, cx, t))
           .child(notifyCard(app, cx, t, settings))
           .child(keysCard(app, cx, t))),
     );

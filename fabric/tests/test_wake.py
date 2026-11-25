@@ -64,6 +64,36 @@ class WakeTests(FabricCase):
         texts = [row["text"] for row in self.wake_since(mark, tid)]
         self.assertEqual(texts, ["unterdrückt: abgeschlossen", "unterdrückt: abgeschlossen"])
 
+    def test_pause_beendet_sessions_und_sperrt_das_wecken(self):
+        tid, _worktree = self.worktree_ticket("Pause")
+        self.patch_ticket(tid, status="doing")
+        session = f"fab-zap-{tid.lower()}"
+        self.set_live({session: "t5"})
+        self.clear_log()
+
+        result = self.ok("pause")
+        self.assertIn("Fabric pausiert", result.stdout)
+        self.assertIn(session, [row[1] for row in self.hc_calls("kill")])
+        self.assertTrue(self.index()["paused"])
+
+        self.set_live({})
+        self.clear_log()
+        mark = self.mark()
+        self.ok("comment", tid, "--from", "mensch", "@zap bitte weiter")
+        self.assertEqual(self.hc_calls("run"), [])
+        self.assertEqual(self.hc_calls("send"), [])
+        self.assertEqual(
+            [row["text"] for row in self.wake_since(mark, tid)], ["unterdrückt: pausiert"]
+        )
+        self.assertIn("Wächter aus", self.ok("tick").stdout)
+
+        resumed = self.ok("resume")
+        self.assertIn("Fabric läuft", resumed.stdout)
+        self.assertFalse(self.index()["paused"])
+        self.clear_log()
+        self.ok("comment", tid, "--from", "mensch", "@zap jetzt aber")
+        self.assertEqual(len(self.hc_calls("run")), 1, "nach resume wird wieder gestartet")
+
     def test_pingpong_bremse_und_eine_orchestrator_nachricht(self):
         tid = self.new("Ping")
         self.set_live({"fab-ada-t-1": "t1", "fab-orchestrator": "t0"})

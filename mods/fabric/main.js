@@ -66,6 +66,7 @@ function normalizeIndex(raw) {
     teams: Array.isArray(raw?.teams) ? raw.teams : [],
     events: Array.isArray(raw?.events) ? raw.events : [],
     alarm: raw?.alarm ?? null,
+    paused: raw?.paused === true,
   };
 }
 
@@ -1072,6 +1073,14 @@ export default class Fabric extends View {
     if (toasts.summary) {
       notify({ title: "Fabric · Posteingang", body: toasts.summary, level: "info", timeout: 12000 });
     }
+  }
+
+  /** Fabric pausieren bzw. fortsetzen (`fab pause` / `fab resume`). */
+  async setPaused(on, cx) {
+    await this.action("pause", [on ? "pause" : "resume", "--from", "mensch"], {
+      success: on ? "Fabric pausiert." : "Fabric läuft wieder.",
+      timeout: 180000,
+    });
   }
 
   setNotify(patch, cx) {
@@ -4465,6 +4474,21 @@ export default class Fabric extends View {
       .child(
         v_flex().size_full().min_h(0)
           .when(Boolean(model.alarmActive(this.index?.alarm)), (el) => el.child(this.alarmBanner(t)))
+          .when(Boolean(this.index?.paused), (el) => el.child(ui.notice(
+            t,
+            "Fabric pausiert – niemand wird geweckt oder gestartet.",
+            "warning",
+            {
+              id: "fabric-paused-banner",
+              actions: [ui.button(t, {
+                id: "fabric-paused-resume",
+                label: "Fortsetzen",
+                small: true,
+                disabled: Boolean(this.busy),
+                onClick: (clickCx) => clickCx.spawn(async (clickCx) => { await this.setPaused(false, clickCx); }),
+              })],
+            },
+          )))
           .child(
             h_flex().flex_none().w_full().child(
               div().flex_1().min_w(0).child(

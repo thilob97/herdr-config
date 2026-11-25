@@ -265,6 +265,10 @@ def _one(ticket, name, author, text, roster, no_wake, message_for, send_text=Non
         return "unterdrückt: mensch", "unterdrückt: mensch", None, ""
     if ticket.get("status") in ("done", "dropped") and not allow_closed:
         return "unterdrückt: abgeschlossen", "unterdrückt: abgeschlossen", None, ""
+    if store.tick_disabled():
+        # Pausierte Fabric (`fab pause`): niemand wird gestartet oder geweckt;
+        # nach `fab resume` greift der Wächter liegengebliebene Fälle auf.
+        return "unterdrückt: pausiert", "unterdrückt: pausiert", None, ""
 
     now = store.now_ms()
     if events.count_wakes(ticket["id"], name, now - PING_WINDOW_MS) > PING_LIMIT:
