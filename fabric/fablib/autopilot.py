@@ -826,7 +826,11 @@ def try_accept(ticket):
         return False
     if _conflict_sent.get(tid) == current:
         return False
-    code, out = _sh("fab", "accept", tid)
+    # Kein Gesamtlimit um `fab accept` (T-142): Es schlösse die Wartezeit des
+    # Merge-Stand-Laufs auf einen Prüfplatz ein. Die eigentliche Prüfung ist
+    # je Schritt begrenzt (`pipeline.DEFAULT_TIMEOUT`), das Warten über
+    # `verifyslots.wait_timeout()`, git/gh über `git.PUSH_TIMEOUT`.
+    code, out = _sh("fab", "accept", tid, timeout=None)
     log(f"accept {tid}: exit {code}: {out[-300:]}")
     if code != 0:
         lowered = out.lower()

@@ -441,6 +441,37 @@ class AutopilotCase(FabricCase):
                 self.assertFalse(autopilot.try_accept(changed))
             self.assertEqual(self.called(calls, "fab", "accept"), [])
 
+    def test_accept_wartet_ohne_gesamtlimit_auf_pruefplatz(self):
+        """T-142: Wartet der Merge-Stand-Lauf länger als ein Gesamtlimit auf
+        einen Prüfplatz, endet die Abnahme trotzdem grün statt mit Exit 124."""
+        real_run = autopilot.subprocess.run
+        seen = []
+
+        def slow_accept(args, **kwargs):
+            if list(args[:2]) != ["fab", "accept"]:
+                return real_run(args, **kwargs)
+            seen.append(kwargs.get("timeout"))
+            # Simuliert einen Lauf, der lange in der Warteschlange stand: jedes
+            # Gesamtlimit um den Aufruf liefe vor dem Ende ab.
+            if kwargs.get("timeout") is not None:
+                raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+            return subprocess.CompletedProcess(
+                args, 0, stdout="T-1: angenommen\n", stderr=""
+            )
+
+        with mock.patch.object(autopilot, "head", return_value=HEAD), \
+                mock.patch.object(autopilot, "ensure_clean_main", return_value=True), \
+                mock.patch.object(
+                    autopilot, "check_main", return_value=(True, "grün", "", 1, "")
+                ), \
+                mock.patch.object(autopilot.subprocess, "run", side_effect=slow_accept):
+            self.assertTrue(autopilot.try_accept(self.ticket()))
+        self.assertEqual(seen, [None])
+        with open(autopilot.log_path(), encoding="utf-8") as handle:
+            text = handle.read()
+        self.assertIn("accept T-1: exit 0", text)
+        self.assertNotIn("Timeout", text)
+
     def test_stored_no_change_with_new_commits_checks_live(self):
         fake, calls = self.shell()
         ticket = self.ticket(
