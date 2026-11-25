@@ -35,6 +35,8 @@ STACK_FRAME = re.compile(r"^at .*:\d+:\d+\)?\s*\{?$")
 QUOTE_MAX_LINES = 20     # Obergrenze für das Zitat
 QUOTE_MAX_CHARS = 1200
 TAIL_CHARS = 600
+SKIP_ALARM_ROUNDS = 3      # so viele Runden mit übersprungenen Abnahmen bis zum Alarm
+SKIP_META_KEY = "autopilot_skip"
 DECIDE = ("@orchestrator Autopilot heute: Der Mensch ist den ganzen Tag nicht da. "
           "Triff die offene Entscheidung selbst – die vorsichtigste, umkehrbare Option –, "
           "begründe sie hier im Ticket und mach weiter. Warten nur bei Löschen außerhalb "
@@ -48,6 +50,9 @@ _last_dispatch_nudge = 0.0
 _last_action = ""
 _end = None
 _end_text = ""
+_round_active = False
+_round_paths = []
+_round_repo = ""
 
 
 # ---------------------------------------------------------------- Pfade
@@ -183,6 +188,7 @@ def _clear_pause():
 def reset():
     """Laufzeitgedächtnis leeren (Tests und frischer Lauf)."""
     global _paused, _last_dispatch_nudge, _last_action, _end, _end_text
+    global _round_active, _round_paths, _round_repo
     _paused = False
     _forwarded.clear()
     _nudges.clear()
@@ -191,6 +197,9 @@ def reset():
     _last_action = ""
     _end = None
     _end_text = ""
+    _round_active = False
+    _round_paths = []
+    _round_repo = ""
 
 
 # ---------------------------------------------------------------- Befehle
@@ -279,20 +288,166 @@ def _repo_root(cwd=None):
     return git.main_toplevel(folder) or folder
 
 
+def begin_round():
+    """Eine Autopilot-Runde beginnen: Beobachtungen dieser Runde sammeln."""
+    global _round_active, _round_paths, _round_repo
+    _round_active = True
+    _round_paths = []
+    _round_repo = ""
+
+
+def end_round():
+    """Runde abschließen; nichtleere Beobachtung zählt genau einen Skip."""
+    global _round_active, _round_paths, _round_repo
+    paths = _round_paths
+    repo = _round_repo
+    _round_active = False
+    _round_paths = []
+    _round_repo = ""
+    if paths:
+        _record_skip(paths, repo)
+    return skip_state()["count"]
+
+
+def skip_state():
+    """Übersprungene Runden: `count`, `paths`, `since`, `notified`, `repo`."""
+    raw = store.meta_get(SKIP_META_KEY)
+    data = {}
+    if raw:
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            parsed = {}
+        if isinstance(parsed, dict):
+            data = parsed
+    try:
+        count = int(data.get("count") or 0)
+    except (TypeError, ValueError):
+        count = 0
+    paths = data.get("paths")
+    if not isinstance(paths, list):
+        paths = []
+    paths = [str(item) for item in paths if isinstance(item, str)]
+    try:
+        since = int(data.get("since") or 0)
+    except (TypeError, ValueError):
+        since = 0
+    repo = data.get("repo")
+    return {
+        "count": count,
+        "paths": paths,
+        "since": since,
+        "notified": bool(data.get("notified")),
+        "repo": repo if isinstance(repo, str) else "",
+    }
+
+
+def _save_skip(count, paths, since, notified, repo):
+    store.meta_set(SKIP_META_KEY, json.dumps({
+        "count": int(count),
+        "paths": list(paths),
+        "since": int(since),
+        "notified": bool(notified),
+        "repo": str(repo or ""),
+    }))
+
+
+def _clear_skip():
+    """Skip-Zustand löschen; nach einem Alarm auch das Lesemodell erneuern."""
+    global _round_paths, _round_repo
+    _round_paths = []
+    _round_repo = ""
+    state = skip_state()
+    if not state["count"] and not state["paths"]:
+        return
+    store.meta_set(SKIP_META_KEY, "")
+    if state["count"] >= SKIP_ALARM_ROUNDS:
+        _rebuild_index()
+
+
+def _record_skip(paths, repo=""):
+    """Einen Skip zählen; ab `SKIP_ALARM_ROUNDS` einmalig alarmieren."""
+    previous = skip_state()
+    count = previous["count"] + 1
+    since = previous["since"] or int(epoch() * 1000)
+    notified = previous["notified"]
+    if count >= SKIP_ALARM_ROUNDS and not notified:
+        notified = True
+        _save_skip(count, paths, since, notified, repo)
+        _rebuild_index()
+        text = (
+            f"Autopilot: main ist seit {count} Runden nicht sauber "
+            f"(blockierend: {', '.join(paths)})."
+        )
+        log(f"Alarm: main nicht sauber, Orchestrator geweckt: {paths}")
+        _wake_orchestrator(text)
+    else:
+        _save_skip(count, paths, since, notified, repo)
+    log(f"main nicht sauber, Abnahme übersprungen ({count}): {paths}")
+
+
+def refresh_skip():
+    """Alarm aufheben, sobald main ohne wartendes review-Ticket sauber ist."""
+    state = skip_state()
+    if not state["count"]:
+        return False
+    repo = state["repo"]
+    if not repo or not os.path.isdir(repo):
+        return False
+    if git.pending_paths(repo):
+        return False
+    _clear_skip()
+    return True
+
+
+def _wake_orchestrator(text):
+    """Orchestrator einmalig wecken; ein Fehler darf die Abnahme nicht kippen."""
+    try:
+        from . import agents, wake
+
+        roster = agents.load(required=False)
+        if roster:
+            wake.notify_orchestrator(roster, text)
+    except (FabError, HcError) as exc:
+        log(f"Orchestrator-Weckung fehlgeschlagen: {exc}")
+
+
 def ensure_clean_main(repo=None):
-    """main darf nur Konfigurationsdateien als Änderung tragen."""
+    """main darf nur App-Konfiguration als Änderung tragen.
+
+    Reine Konfigurationsänderungen werden committet. Alles andere blockiert die
+    Abnahme; innerhalb einer Runde zählt das einmal, sonst sofort, und nach
+    `SKIP_ALARM_ROUNDS` Runden löst genau ein Alarm samt Weckung aus.
+    """
+    global _round_repo
     repo = repo or _repo_root()
     dirty = git.pending_paths(repo)
     if not dirty:
+        _clear_skip()
         return True
-    if all(path.startswith(managed.CONFIG_PATHS) for path in dirty):
+    if all(managed.is_config_path(path) for path in dirty):
         git.git(["add", "--", *dirty], repo)
         commit = git.git(
             ["commit", "-m", "chore: UI-Konfiguration (Autopilot)"], repo
         )
         log(f"Konfiguration committet: {dirty}")
-        return commit.returncode == 0
-    log(f"main nicht sauber, Abnahme übersprungen: {dirty}")
+        if commit.returncode == 0:
+            _clear_skip()
+            return True
+        return False
+    if _round_active:
+        _round_repo = _round_repo or repo
+        for path in dirty:
+            if path not in _round_paths:
+                _round_paths.append(path)
+        paths = list(_round_paths)
+    else:
+        _record_skip(dirty, repo)
+        paths = dirty
+    log(
+        f"main nicht sauber, Abnahme übersprungen "
+        f"({skip_state()['count']}): {paths}"
+    )
     return False
 
 
@@ -759,23 +914,28 @@ def _beat():
 
 def once():
     """Ein Durchlauf; False, wenn nichts mehr offen ist."""
-    live = live_sessions()
-    tickets = []
-    for tid in ticket_ids():
-        ticket = fab_json("show", tid)
-        if not ticket or ticket.get("status") in ("done", "dropped"):
-            continue
-        tickets.append(ticket)
-        if ticket.get("status") == "review":
-            try_accept(ticket)
-        forward_question(ticket)
-        nudge(ticket, live)
-    nudge_dispatch(tickets, live)
-    if _finished(tickets):
-        log("Nichts mehr offen – Autopilot fertig")
-        write_state("stopped", "nichts mehr offen", end=_end_text)
-        return False
-    return True
+    refresh_skip()
+    begin_round()
+    try:
+        live = live_sessions()
+        tickets = []
+        for tid in ticket_ids():
+            ticket = fab_json("show", tid)
+            if not ticket or ticket.get("status") in ("done", "dropped"):
+                continue
+            tickets.append(ticket)
+            if ticket.get("status") == "review":
+                try_accept(ticket)
+            forward_question(ticket)
+            nudge(ticket, live)
+        nudge_dispatch(tickets, live)
+        if _finished(tickets):
+            log("Nichts mehr offen – Autopilot fertig")
+            write_state("stopped", "nichts mehr offen", end=_end_text)
+            return False
+        return True
+    finally:
+        end_round()
 
 
 def run(until="done"):

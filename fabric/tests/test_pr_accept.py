@@ -1003,14 +1003,14 @@ class PrAcceptTests(FabricCase):
             0,
         )
 
-    def accept_mit_fab_commit(self, *paths):
+    def accept_mit_fab_commit(self, *paths, message="chore: fab-Konfiguration"):
         """Ein fab-eigener Commit lokal auf main, dann der volle Abnahmeweg."""
         repo, tid, worktree = self.ready_ticket()
         bare = self.setup_origin(repo)
         for name in paths:
             self.write_file(os.path.join(repo, name), "lokal\n")
             self.git_out(repo, "add", name)
-        self.git_out(repo, "commit", "-qm", "chore: fab-Konfiguration")
+        self.git_out(repo, "commit", "-qm", message)
         self.commit_in(worktree, "aenderung.txt", "wert\n")
         self.passing_verify(worktree)
         self.ok("verify", tid)
@@ -1066,6 +1066,27 @@ class PrAcceptTests(FabricCase):
         self.assertIn(URL, result.stdout + result.stderr)
         self.assertEqual(self.ticket(tid)["status"], "done")
         for name in (template, "aenderung.txt"):
+            self.assertEqual(
+                self.git(
+                    bare, "cat-file", "-e", f"refs/heads/main:{name}"
+                ).returncode,
+                0,
+                name,
+            )
+
+    def test_app_konfiguration_commit_wird_rebased_und_die_basis_gepusht(self):
+        # Der Autopilot legt App-Konfiguration wie settings.json selbst als
+        # Commit auf main ab (`ensure_clean_main`); `fab accept` nimmt ihn mit.
+        app_config = "settings.json"
+        repo, tid, worktree, bare = self.accept_mit_fab_commit(
+            app_config, message="chore: UI-Konfiguration (Autopilot)"
+        )
+
+        result = self.ok("accept", tid, env=self.gh_env(bare, GH_MERGE_COMMIT="1"))
+
+        self.assertIn(URL, result.stdout + result.stderr)
+        self.assertEqual(self.ticket(tid)["status"], "done")
+        for name in (app_config, "aenderung.txt"):
             self.assertEqual(
                 self.git(
                     bare, "cat-file", "-e", f"refs/heads/main:{name}"

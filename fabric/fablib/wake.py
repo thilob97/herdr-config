@@ -192,8 +192,12 @@ def _orchestrator_wake(roster, text, team_entry=None, actor="fab"):
     return START_FAILED, None, detail
 
 
-def _notify_orchestrator(roster, text, team_entry=None):
-    """Eine Nachricht an den Team-Orchestrator, ohne Weckereignis (Ping-Pong-Bremse)."""
+def notify_orchestrator(roster, text, team_entry=None):
+    """Eine Nachricht an den Team-Orchestrator ohne Weckereignis.
+
+    Genutzt von der Ping-Pong-Bremse und für globale Autopilot-Alarme, die kein
+    Ticket haben; startet den Orchestrator, wenn keiner läuft.
+    """
     entry = team_entry if isinstance(team_entry, dict) else teams.first_team(roster)
     if not entry:
         return False
@@ -222,7 +226,7 @@ def _pingpong_notice(ticket, name, author, roster):
         f"{PING_LIMIT} Weckungen in 10 Minuten. Bitte im Ticket klären "
         f"(`fab show {ticket['id']}`)."
     )
-    _notify_orchestrator(roster, text, _ticket_team(roster, ticket))
+    notify_orchestrator(roster, text, _ticket_team(roster, ticket))
 
 
 def _one(ticket, name, author, text, roster, no_wake, message_for, send_text=None,
