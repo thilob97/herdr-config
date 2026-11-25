@@ -3,6 +3,7 @@ import json
 import os
 import re
 import subprocess
+import time
 
 from .errors import FabError
 
@@ -387,6 +388,52 @@ def remove_worktree(repo_top, folder):
             detail = (result.stderr or result.stdout).strip()
             raise FabError(f"Worktree {folder} konnte nicht entfernt werden: {detail}")
     git(["worktree", "prune"], repo_top)
+
+
+_MERGE_WORKTREE = re.compile(r"^fab-merge-.+-(\d+)-(\d+)$")
+MERGE_WORKTREE_MAX_AGE = 12 * 3600
+
+
+def _pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def prune_merge_worktrees(repo_top, now=None):
+    """Liegengebliebene Merge-Stand-Worktrees (`fab-merge-…`) entfernen.
+
+    `_verify_merge_state` räumt im `finally` auf; wird der Prozess aber per
+    Signal beendet (Zeitlimit des Aufrufers, gekillter Agent), bleibt der
+    temporäre Worktree samt Eintrag in `git worktree list` liegen. Der Name
+    trägt PID und Anlegezeit (ns) des Erzeugers: Ist die PID tot oder der
+    Worktree älter als `MERGE_WORKTREE_MAX_AGE` (eine wiedervergebene PID),
+    ist er Abfall. Rückgabe: Anzahl der entfernten Worktrees.
+    """
+    now = time.time() if now is None else now
+    result = git(["worktree", "list", "--porcelain"], repo_top)
+    if result.returncode != 0:
+        return 0
+    removed = 0
+    for line in result.stdout.splitlines():
+        if not line.startswith("worktree "):
+            continue
+        path = line[len("worktree "):].strip()
+        match = _MERGE_WORKTREE.match(os.path.basename(path))
+        if not match:
+            continue
+        age = now - int(match.group(2)) / 1e9
+        if _pid_alive(int(match.group(1))) and age < MERGE_WORKTREE_MAX_AGE:
+            continue
+        git(["worktree", "remove", "--force", path], repo_top)
+        removed += 1
+    if removed:
+        git(["worktree", "prune"], repo_top)
+    return removed
 
 
 def delete_branch(repo_top, branch_name):

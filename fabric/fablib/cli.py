@@ -1383,8 +1383,13 @@ def cmd_verdict(args):
 
 
 def _verify_merge_state(ticket, ref, tree, head):
-    """Checks auf dem Merge-Stand in einem temporären Worktree; räumt immer auf."""
+    """Checks auf dem Merge-Stand in einem temporären Worktree; räumt immer auf.
+
+    Vorher verschwinden Merge-Stand-Worktrees toter Vorgänger, die ein Signal
+    vor ihrem `finally` beendet hat.
+    """
     repo = ticket["repo"]
+    git.prune_merge_worktrees(repo)
     commit = git.merge_commit(
         repo, tree, ref, head, f"fab: Merge-Stand {ticket['id']} prüfen"
     )

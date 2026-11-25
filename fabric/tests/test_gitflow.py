@@ -6,6 +6,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import time
 
 from fabric.fablib import store
 from fabric.tests.support import FAB, FabricCase
@@ -674,3 +675,36 @@ class GitflowTests(FabricCase):
         wakes = self.wake_since(mark, tid)
         self.assertEqual([row["target"] for row in wakes], ["zap"])
         self.assertEqual(wakes[-1]["text"], "geweckt")
+
+
+class MergeWorktreePruneTests(FabricCase):
+    def test_verwaiste_merge_worktrees_toter_prozesse_verschwinden(self):
+        from fabric.fablib import git
+
+        repo = self.make_repo("prune-repo")
+        dead = subprocess.Popen([sys.executable, "-c", "pass"])
+        dead.wait()
+        parent = os.path.join(self.tmp, "merge-tmp")
+        now_ns = time.time_ns()
+        stale = os.path.join(parent, f"fab-merge-T-9-{dead.pid}-{now_ns}")
+        alive = os.path.join(parent, f"fab-merge-T-9-{os.getpid()}-{now_ns}")
+        # Lebende, aber wiedervergebene PID: älter als die Höchstdauer.
+        old = os.path.join(parent, f"fab-merge-T-9-{os.getpid()}-1")
+        other = os.path.join(parent, "anderer-worktree")
+        for path in (stale, alive, old, other):
+            git.create_detached_worktree(repo, path, "HEAD")
+
+        removed = git.prune_merge_worktrees(repo)
+
+        listing = {
+            line[len("worktree "):]
+            for line in self.git_out(repo, "worktree", "list", "--porcelain").splitlines()
+            if line.startswith("worktree ")
+        }
+        self.assertEqual(removed, 2)
+        for gone in (stale, old):
+            self.assertFalse(os.path.exists(gone))
+            self.assertNotIn(os.path.realpath(gone), listing)
+        # Ein laufender Prozess und fremde Worktrees bleiben unberührt.
+        self.assertIn(os.path.realpath(alive), listing)
+        self.assertIn(os.path.realpath(other), listing)
