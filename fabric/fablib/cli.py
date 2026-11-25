@@ -3,6 +3,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import time
@@ -33,6 +34,7 @@ from . import (
     templates,
     testpolicy,
     tick,
+    verifyslots,
     wake,
 )
 from .errors import FabError, HcError
@@ -1065,22 +1067,32 @@ def cmd_dispatch(args):
     return 0
 
 
-def cmd_verify(args):
-    ticket = store.load(args.id)
-    worktree = ticket.get("worktree")
-    if not worktree or not os.path.isdir(worktree):
-        raise FabError(
-            f"{ticket['id']}: Worktree fehlt ({worktree or 'kein Pfad'}); fab dispatch legt ihn an"
-        )
-    actor = _actor(args) or ticket.get("assignee") or ""
-    result = git.run_verify(
-        worktree,
-        trigger="verify",
-        ticket=args.id,
-        repo=ticket.get("repo") or "",
-    )
+FAB_SCRIPT = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "fab"
+)
+
+
+class _VerifyWorker:
+    """Ein gelöster Prüflauf: Kindprozess, Logdatei und Lauf-Id (T-143)."""
+
+    def __init__(self, proc, log_path, run_id):
+        self.proc = proc
+        self.log_path = log_path
+        self.run_id = run_id
+
+
+def _record_verify(ticket_id, actor, result):
+    """Checks und `verify`-Ereignis genau einmal je Lauf schreiben (T-143).
+
+    Der gelöste Lauf schreibt sein Ergebnis selbst; der Aufrufer oder ein
+    zweiter `fab verify` kann schneller sein. Die Lauf-Id entscheidet, wer
+    schreibt – ein doppeltes Ereignis entsteht nicht.
+    """
     with store.locked():
-        fresh = store.load(args.id)
+        fresh = store.load(ticket_id)
+        current = fresh.get("checks") or {}
+        if current.get("run_id") == result.get("run_id"):
+            return fresh
         fresh["checks"] = {
             "state": result["state"],
             "head": result["head"],
@@ -1091,12 +1103,183 @@ def cmd_verify(args):
         events.append("verify", fresh["id"], actor, "", result["state"])
         store.save(fresh)
         index.rebuild()
+    return fresh
+
+
+def _await_run_file(proc, run_file, log_path, timeout=60.0):
+    """Auf die Lauf-Id des gelösten Kindes warten; sie steht erst nach dem Besitz."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            with open(run_file, encoding="ascii") as handle:
+                text = handle.read().strip()
+        except OSError:
+            text = ""
+        if text.isdigit():
+            return int(text)
+        if proc.poll() is not None:
+            raise FabError(
+                f"Prüflauf startete nicht (Kind endete mit {proc.returncode}); "
+                f"Log: {log_path}"
+            )
+        if time.monotonic() >= deadline:
+            raise FabError(
+                f"Prüflauf startete nicht innerhalb von {timeout:.0f} s; "
+                f"Log: {log_path}"
+            )
+        time.sleep(0.02)
+
+
+def _start_detached_verify(ticket, worktree, actor):
+    """Prüflauf in eigener Session starten und seine Id zurückgeben (T-143).
+
+    Das Kind ist mit `start_new_session=True` aus der Prozessgruppe des
+    Aufrufers gelöst und schreibt nach einer Datei statt in dessen Pipes. Ein
+    SIGTERM an den Aufrufer beendet damit nur den Wartenden; der Lauf besitzt
+    seine Besitzdatei weiter und schreibt seinen Endstatus selbst.
+    """
+    run_file = os.path.join(
+        verifyslots.run_dir(),
+        f"start-{ticket['id']}-{os.getpid()}-{time.time_ns()}.run",
+    )
+    log_path = os.path.join(
+        verifyslots.run_dir(),
+        f"start-{ticket['id']}-{os.getpid()}-{time.time_ns()}.log",
+    )
+    command = [
+        sys.executable,
+        FAB_SCRIPT,
+        "_verify-worker",
+        ticket["id"],
+        "--run-file",
+        run_file,
+    ]
+    if actor:
+        command += ["--from", actor]
+    with open(log_path, "w", encoding="utf-8") as log:
+        proc = subprocess.Popen(
+            command,
+            cwd=worktree,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+            env=dict(os.environ),
+        )
+    run_id = _await_run_file(proc, run_file, log_path)
+    try:
+        os.remove(run_file)
+    except OSError:
+        pass
+    final_log = os.path.join(verifyslots.run_dir(), f"run-{run_id}.log")
+    try:
+        os.replace(log_path, final_log)
+    except OSError:
+        final_log = log_path
+    return _VerifyWorker(proc, final_log, run_id)
+
+
+def _worker_error(path):
+    """Die `Fehler:`-Zeile aus dem Log eines gelösten Laufs, sonst ""."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            lines = handle.read().splitlines()
+    except OSError:
+        return ""
+    for line in reversed(lines):
+        if line.startswith("Fehler: "):
+            return line[len("Fehler: "):]
+    return ""
+
+
+def cmd_verify(args):
+    ticket = store.load(args.id)
+    worktree = ticket.get("worktree")
+    if not worktree or not os.path.isdir(worktree):
+        raise FabError(
+            f"{ticket['id']}: Worktree fehlt ({worktree or 'kein Pfad'}); fab dispatch legt ihn an"
+        )
+    actor = _actor(args) or ticket.get("assignee") or ""
+    # Eine fehlende Pipeline meldet der Aufrufer selbst: Dann entsteht kein
+    # Lauf und die Meldung mit beiden Pfaden bleibt wie bisher.
+    pipeline.load_steps(worktree)
+    head = git.head(worktree)
+    worker = None
+    with verifyslots.start_claim(ticket["id"], head):
+        waiting = pipeline.open_run(ticket["id"], head)
+        if waiting is not None:
+            run_id = waiting["id"]
+            print(
+                f"Lauf #{run_id}: läuft bereits auf HEAD {_short(head)}; "
+                f"sein Ergebnis wird abgewartet",
+                file=sys.stderr,
+                flush=True,
+            )
+        else:
+            worker = _start_detached_verify(ticket, worktree, actor)
+            run_id = worker.run_id
+    capacity = verifyslots.limit()
+    result = pipeline.wait_run(
+        run_id,
+        on_queue=lambda row: print(
+            f"Lauf #{row['id']}: in der Warteschlange "
+            f"(max. {capacity} gleichzeitig)",
+            file=sys.stderr,
+            flush=True,
+        ),
+    )
+    if worker is not None:
+        # Ein FabError im Kind (etwa das Warte-Zeitlimit) bleibt ein Fehler des
+        # Aufrufs: keine Checks, sondern die Meldung wie bisher.
+        try:
+            worker.proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            pass
+        if worker.proc.returncode == 2:
+            message = _worker_error(worker.log_path)
+            if message:
+                raise FabError(message)
+    fresh = _record_verify(args.id, actor, result)
     print(
         f"{fresh['id']}: checks {result['state']} auf HEAD {_short(result['head'])} "
         f"(Exit {result['code']}) · Lauf #{result['run_id']}"
     )
     if result["tail"]:
         print(result["tail"])
+    return 0 if result["state"] == "pass" else 1
+
+
+def cmd_verify_worker(args):
+    """Innerer Teil von `fab verify`: der eigentliche Lauf im gelösten Kind."""
+    ticket = store.load(args.id)
+    worktree = ticket.get("worktree")
+    if not worktree or not os.path.isdir(worktree):
+        raise FabError(
+            f"{ticket['id']}: Worktree fehlt ({worktree or 'kein Pfad'}); fab dispatch legt ihn an"
+        )
+    actor = _actor(args) or ticket.get("assignee") or ""
+
+    def announce(run_id):
+        try:
+            with open(args.run_file, "w", encoding="ascii") as handle:
+                handle.write(str(run_id))
+                handle.flush()
+                os.fsync(handle.fileno())
+        except OSError:
+            pass
+
+    try:
+        result = git.run_verify(
+            worktree,
+            trigger="verify",
+            ticket=args.id,
+            repo=ticket.get("repo") or "",
+            on_start=announce,
+        )
+    except FabError as exc:
+        print(f"Fehler: {exc}", file=sys.stderr)
+        return 2
+    _record_verify(args.id, actor, result)
     return 0 if result["state"] == "pass" else 1
 
 
@@ -3693,6 +3876,14 @@ def build_parser():
     item.add_argument("id", metavar="ID")
     item.add_argument("--from", dest="from_", metavar="NAME",
                       help="Akteur des Ereignisses, Standard: Zuständiger")
+
+    # Intern: `fab verify` startet den Lauf damit in einer eigenen Session
+    # (T-143). Nicht für Menschen gedacht, deshalb ohne Hilfe-Eintrag.
+    item = command("_verify-worker", argparse.SUPPRESS, cmd_verify_worker)
+    item.add_argument("id", metavar="ID")
+    item.add_argument("--from", dest="from_", metavar="NAME")
+    item.add_argument("--run-file", metavar="PFAD", required=True,
+                      help="Datei, in die das Kind seine Lauf-Id schreibt")
 
     item = command("verdict", "Urteil des Prüfers auf den HEAD schreiben", cmd_verdict)
     item.add_argument("id", metavar="ID")

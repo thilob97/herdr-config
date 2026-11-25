@@ -15,6 +15,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 from . import git, store, verifyslots
 from .errors import FabError
@@ -23,6 +24,7 @@ DEFAULT_TIMEOUT = 1200
 STEPS_FILE = ".fabric/pipeline.json"
 VERIFY_SCRIPT = ".fabric/verify.sh"
 TRIGGERS = ("verify", "main", "repo-test", "autopilot")
+OPEN_STATES = ("queued", "running")
 
 # T-127: Ein Abbruch (Signal, Zeitlimit, verwaister Lauf) bekommt einen
 # gespeicherten Grund. `run_parallel.py` beendet sich bei einem von außen
@@ -169,6 +171,11 @@ def _reap_abandoned():
             )
 
 
+def reap_abandoned():
+    """Öffentlicher Einstieg für Wartende, die einen toten Besitzer erkennen (T-143)."""
+    _reap_abandoned()
+
+
 def run(
     worktree,
     trigger="verify",
@@ -179,8 +186,15 @@ def run(
     head="",
     timeout=None,
     tail_lines=TAIL_LINES,
+    on_start=None,
 ):
-    """Alle Schritte ausführen und den Lauf speichern."""
+    """Alle Schritte ausführen und den Lauf speichern.
+
+    `on_start` bekommt die Lauf-Id, sobald der Lauf samt Besitzdatei steht
+    (T-143). `fab verify` startet den Lauf in einem gelösten Kind und reicht
+    die Id damit an den Aufrufer weiter; der Aufrufer kann sterben, ohne den
+    Lauf zu verlieren.
+    """
     if trigger not in TRIGGERS:
         raise FabError(
             f"Unbekannter Auslöser {trigger!r}; erlaubt: {', '.join(TRIGGERS)}"
@@ -221,6 +235,8 @@ def run(
         # Start genau dieses Fenster ab, schreibt dieser Lauf seinen Zustand
         # danach ohnehin selbst.
         owner = verifyslots.claim_run(run_id)
+        if on_start is not None:
+            on_start(run_id)
         for position, step in enumerate(steps):
             store.pipeline_step_add(
                 run_id, position, step["name"], step["run"], "pending"
@@ -382,3 +398,87 @@ def rerun(run_id, timeout=None):
         branch=row["branch"],
         timeout=timeout,
     )
+
+
+def open_run(ticket, head):
+    """Jüngster offener Lauf für Ticket und HEAD; sonst None (T-143).
+
+    `fab verify` nimmt so einen laufenden oder wartenden Lauf wieder auf,
+    statt einen zweiten für denselben Stand zu starten.
+    """
+    for row in reversed(store.pipeline_run_list(ticket)):
+        if row["state"] in OPEN_STATES and (row.get("head") or "") == (head or ""):
+            return row
+    return None
+
+
+def result_of(run_id):
+    """Gespeichertes Laufergebnis in der Form von `run()` (T-143).
+
+    Der gelöste Lauf schreibt Schritte und Endstatus in die Ablage; der
+    Aufrufer liest das Ergebnis daraus, auch wenn er den Lauf nicht selbst
+    ausgeführt hat.
+    """
+    row = store.pipeline_run_load(run_id)
+    if row is None:
+        raise FabError(f"Pipeline-Lauf {run_id} existiert nicht")
+    steps = store.pipeline_steps(run_id)
+    out_parts = [step.get("stdout") or "" for step in steps]
+    err_parts = [step.get("stderr") or "" for step in steps]
+    combined = []
+    for out, err in zip(out_parts, err_parts):
+        combined.append(out)
+        combined.append(err)
+    code = 0
+    for step in steps:
+        if step["state"] == "fail":
+            code = step.get("exit_code")
+            code = 1 if code is None else code
+            break
+    return {
+        "state": row["state"],
+        "head": row.get("head") or "",
+        "tail": _tail(combined),
+        "code": code if row["state"] == "fail" else 0,
+        "reason": row.get("reason") or "",
+        "run_id": run_id,
+        "stdout": "".join(out_parts),
+        "stderr": "".join(err_parts),
+        "steps": [
+            {
+                "position": step["position"],
+                "name": step["name"],
+                "command": step["command"],
+                "state": step["state"],
+                "duration_ms": step["duration_ms"],
+                "exit_code": step["exit_code"],
+                "stdout": step.get("stdout") or "",
+                "stderr": step.get("stderr") or "",
+            }
+            for step in steps
+        ],
+    }
+
+
+def wait_run(run_id, poll=0.05, on_queue=None):
+    """Warten, bis der Lauf einen Endstatus hat, und ihn zurückgeben (T-143).
+
+    Der Aufrufer ist nicht der Besitzer; lebt der Besitzer nicht mehr, wird der
+    Lauf wie beim nächsten Start aufgeräumt (`reap_abandoned`) und endet als
+    Abbruch mit Grund. `on_queue` läuft genau einmal, sobald der Lauf in der
+    Warteschlange steht.
+    """
+    announced = False
+    while True:
+        row = store.pipeline_run_load(run_id)
+        if row is None:
+            raise FabError(f"Pipeline-Lauf {run_id} existiert nicht")
+        if row["state"] not in OPEN_STATES:
+            return result_of(run_id)
+        if row["state"] == "queued" and on_queue is not None and not announced:
+            announced = True
+            on_queue(row)
+        if verifyslots.abandoned(run_id):
+            _reap_abandoned()
+        time.sleep(poll)
+

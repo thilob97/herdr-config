@@ -17,7 +17,9 @@ Kernel: Ein später startender Lauf erkennt daran, dass der Besitzer eines
 import errno
 import fcntl
 import os
+import re
 import time
+from contextlib import contextmanager
 
 from . import agents, store, teams
 from .errors import FabError
@@ -62,6 +64,47 @@ def run_dir():
 
 def run_path(run_id):
     return os.path.join(run_dir(), f"run-{int(run_id)}.lock")
+
+
+def start_dir():
+    path = os.path.join(store.home(), "verify-starts")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def start_path(ticket, head):
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", f"{ticket}-{head or 'ohne-head'}")
+    return os.path.join(start_dir(), f"{safe}.lock")
+
+
+@contextmanager
+def start_claim(ticket, head):
+    """Startfenster für Ticket und HEAD serialisieren (T-143).
+
+    Zwischen „kein offener Lauf“ und „Lauf samt Besitzdatei angelegt“ darf kein
+    zweiter Aufrufer einen zweiten Lauf für denselben Stand starten. Die Sperre
+    hält nur dieses kurze Fenster, nicht den Lauf; den hält seine Besitzdatei.
+    Wie die Slotdateien wird sie nie gelöscht: Ein Unlink mit Neuanlegen würde
+    zwei Sperren auf zwei Dateien erlauben.
+    """
+    fd = os.open(start_path(ticket, head), os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            os.ftruncate(fd, 0)
+            os.write(fd, str(os.getpid()).encode("ascii"))
+        except OSError:
+            pass
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        try:
+            os.close(fd)
+        except OSError:
+            pass
 
 
 class _LockFile:
