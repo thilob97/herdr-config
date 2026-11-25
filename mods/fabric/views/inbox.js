@@ -22,7 +22,8 @@ function inboxRow(app, cx, t, entry, index) {
     .hover((style) => style.bg(t.hover))
     .on_click((_event, cx) => {
       cx.stop_propagation();
-      app.openInWindow({ page: "ticket", id: entry.ticket }, cx);
+      // Alarme ohne Ticket öffnen den Posteingang statt eines leeren Tickets.
+      app.openInWindow(entry.ticket ? { page: "ticket", id: entry.ticket } : { page: "inbox" }, cx);
     })
     .child(
       h_flex().gap(S.s).items_center()
@@ -57,8 +58,11 @@ function inboxRow(app, cx, t, entry, index) {
 
 export function renderInboxPanel(app, cx, t) {
   const inbox = model.sortInbox(app.index?.inbox);
-  const cards = model.inboxCards(app.index?.inbox ?? [], app.events);
-  const openCount = cards.filter((card) => card.status === "open").length;
+  // Posteingang = was auf dich wartet: entschiedene Karten stehen im Ticket,
+  // nicht hier.
+  const cards = model.inboxCards(app.index?.inbox ?? [], app.events)
+    .filter((card) => card.status === "open");
+  const openCount = cards.length;
   const rest = inbox.filter((entry) => entry.kind !== "decision" && entry.kind !== "lesson");
   const rows = [
     ui.header(t, model.pageWord("inbox"), [
@@ -176,8 +180,11 @@ function pageRow(app, cx, t, entry, index) {
   const kind = model.INBOX_WORDS[entry.kind] ?? entry.kind ?? "Hinweis";
   const color = ui.inboxColor(t, entry.kind);
   const retry = model.inboxRetry(entry);
-  const title = model.ticketTitle(app.tickets, entry.ticket);
-  const open = (cx) => app.navigate("ticket", { id: entry.ticket }, cx);
+  // Einträge ohne Ticket sind Alarme (main rot, Pause, Wächter): Sie lassen
+  // sich quittieren, aber nicht als Ticket öffnen.
+  const alarm = !entry.ticket;
+  const title = alarm ? "Alarm" : model.ticketTitle(app.tickets, entry.ticket);
+  const open = (cx) => { if (!alarm) app.navigate("ticket", { id: entry.ticket }, cx); };
   return h_flex()
     .id(`fabric-inbox-page-${entry.ticket}-${index}`)
     .flex_none()
@@ -235,20 +242,30 @@ function pageRow(app, cx, t, entry, index) {
             tooltip: "Den Agenten erneut starten und den Hinweis bei Erfolg entfernen",
             onClick: (cx) => app.retryAgent(entry, cx),
           })))
-          .child(ui.button(t, {
-            id: `fabric-inbox-page-open-${entry.ticket}-${index}`,
-            label: entry.kind === "review" ? "Prüfen" : "Öffnen",
-            small: true,
-            primary: entry.kind === "review",
-            onClick: open,
-          }))),
+          .child(alarm
+            ? ui.button(t, {
+              id: `fabric-inbox-page-ack-${index}`,
+              label: "Quittieren",
+              small: true,
+              tooltip: "fab alarm ack",
+              onClick: (cx) => cx.spawn(async () => { await app.ackAlarms(); }),
+            })
+            : ui.button(t, {
+              id: `fabric-inbox-page-open-${entry.ticket}-${index}`,
+              label: entry.kind === "review" ? "Prüfen" : "Öffnen",
+              small: true,
+              primary: entry.kind === "review",
+              onClick: open,
+            }))),
     );
 }
 
 export function renderInboxPage(app, cx, t) {
   const view = model.inboxPage(app.index?.inbox, app.inboxFilter);
-  const cards = view.showCards ? model.inboxCards(app.index?.inbox ?? [], app.events) : [];
-  const openCards = cards.filter((card) => card.status === "open").length;
+  const cards = view.showCards
+    ? model.inboxCards(app.index?.inbox ?? [], app.events).filter((card) => card.status === "open")
+    : [];
+  const openCards = cards.length;
   const total = view.filters[0].count;
 
   const filterBar = h_flex()

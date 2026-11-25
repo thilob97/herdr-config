@@ -124,7 +124,10 @@ function card(app, cx, t, ticket) {
   const waiting = ticket.waiting?.includes("mensch") || ticket.status === "review";
   const selected = app.cursorId === ticket.id;
   const meta = metaLine(t, ticket);
-  const badge = model.pipelineBadge(app.pipelineRuns ?? [], ticket.id);
+  // Abgeschlossene Tickets: der letzte Lauf ist Geschichte (oft ein abgebrochener
+  // Prüflauf nach der Abnahme) und keine Handlungsaufforderung.
+  const closed = ticket.status === "done" || ticket.status === "dropped";
+  const badge = closed ? null : model.pipelineBadge(app.pipelineRuns ?? [], ticket.id);
   return v_flex()
     .id(`fabric-card-${ticket.id}`)
     .w_full()

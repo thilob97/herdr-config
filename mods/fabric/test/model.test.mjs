@@ -3141,3 +3141,11 @@ test("Befehle: Gruppen, Vorbelegung und argv in der Form, die fab parst", async 
   assert.deepEqual(commandArgv(link, { id: "T-1", from_: "mensch", blocked_by: "T-2  T-3" }).argv,
     ["link", "--blocked-by", "T-2", "T-3", "--from", "mensch", "--", "T-1"]);
 });
+
+test("Platzhalter: Fenster kennt dieselben wie fab (prompts.KNOWN)", async () => {
+  const { PLACEHOLDERS, unknownPlaceholders } = await import("../model.js");
+  const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "fabric", "fablib", "prompts.py"), "utf8");
+  const known = source.match(/^KNOWN = \(([\s\S]*?)\)/m)[1].match(/"([a-z_]+)"/g).map((item) => item.slice(1, -1));
+  assert.deepEqual(Object.keys(PLACEHOLDERS).sort(), [...known].sort());
+  assert.deepEqual(unknownPlaceholders("{lessons} {context} {foo}"), ["foo"]);
+});

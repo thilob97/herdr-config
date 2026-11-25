@@ -1868,9 +1868,12 @@ export const PLACEHOLDERS = {
   branch: "Branch des Tickets",
   base: "Basis-Branch",
   reviewer: "Prüferin oder Prüfer",
+  lessons: "Lehren des Repos (.fabric/lessons.md)",
+  context: "Steckbrief und Team-Brief",
 };
 
-/** Unbekannte Platzhalter im Text, ohne Doppelte. */
+/** Unbekannte Platzhalter im Text, ohne Doppelte. Gleiche Liste wie KNOWN in
+ *  fabric/fablib/prompts.py. */
 export function unknownPlaceholders(text, allowed = Object.keys(PLACEHOLDERS)) {
   const known = new Set(allowed);
   const found = new Set();
