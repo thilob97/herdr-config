@@ -1538,6 +1538,43 @@ export function sortInbox(inbox) {
     .sort((a, b) => (b.at ?? 0) - (a.at ?? 0));
 }
 
+/** Filter der Posteingang-Seite; `decide` fasst Entscheidungen und Lehren zusammen. */
+export const INBOX_FILTERS = [
+  { key: "all", label: "Alle", kinds: null },
+  { key: "review", label: "Prüfung", kinds: ["review"] },
+  { key: "question", label: "Fragen", kinds: ["question"] },
+  { key: "attention", label: "Aufmerksamkeit", kinds: ["attention"] },
+  { key: "decide", label: "Zu entscheiden", kinds: ["decision", "lesson"] },
+];
+
+/** Posteingang-Seite: Filter mit Anzahl und die Einträge des gewählten Filters
+ *  (neueste zuerst). Entscheidungen und Lehren kommen als Karten, nicht als Zeilen;
+ *  `showCards` sagt, ob der Filter sie zeigt. Unbekannte Filter fallen auf „Alle“. */
+export function inboxPage(inbox, filter = "all") {
+  const sorted = sortInbox(inbox);
+  const active = INBOX_FILTERS.find((item) => item.key === filter) ?? INBOX_FILTERS[0];
+  const matches = (item, entry) => !item.kinds || item.kinds.includes(entry.kind);
+  const filters = INBOX_FILTERS.map((item) => ({
+    key: item.key,
+    label: item.label,
+    count: sorted.filter((entry) => matches(item, entry)).length,
+  }));
+  const entries = sorted.filter((entry) => matches(active, entry)
+    && entry.kind !== "decision" && entry.kind !== "lesson");
+  return {
+    filter: active.key,
+    filters,
+    entries,
+    showCards: active.key === "all" || active.key === "decide",
+  };
+}
+
+/** Titel eines Tickets aus der Liste; leer, wenn unbekannt. */
+export function ticketTitle(tickets, id) {
+  if (!id || !Array.isArray(tickets)) return "";
+  return String(tickets.find((ticket) => ticket?.id === id)?.title ?? "");
+}
+
 /** Fehlgeschlagener Agentenstart: Agent und `wake`-Argumente für „Erneut starten“. */
 export function inboxRetry(entry) {
   const ticket = entry?.ticket;

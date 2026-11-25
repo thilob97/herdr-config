@@ -21,14 +21,15 @@ import { renderWorkflowsPage } from "./views/workflows.js";
 import { renderPipelinesPage } from "./views/pipelines.js";
 import { renderSettings } from "./views/settings.js";
 import { renderTicketsPanel } from "./views/tickets.js";
-import { renderInboxPanel as renderPosteingangPanel } from "./views/inbox.js";
+import { renderInboxPanel as renderPosteingangPanel, renderInboxPage } from "./views/inbox.js";
 import { renderTimelinePanel } from "./views/timeline.js";
 import { renderSwitcher } from "./views/switcher.js";
 import { renderDialogs, renderBlueprintDrawer } from "./views/dialogs.js";
 import { renderContextPreview } from "./views/context.js";
 
-const VIEWS = ["board", "tickets", "ticket", "team", "workflows", "pipelines", "prompts", "templates", "repos", "settings"];
+const VIEWS = ["inbox", "board", "tickets", "ticket", "team", "workflows", "pipelines", "prompts", "templates", "repos", "settings"];
 const NAV = [
+  { page: "inbox", icon: "inbox" },
   { page: "board", icon: "board" },
   { page: "tickets", icon: "tickets" },
   { page: "workflows", icon: "play" },
@@ -95,7 +96,7 @@ export default class Fabric extends View {
     this.modal = null;
     this.imageOpen = null;
     this.newOpen = false;
-    this.inboxOpen = false;
+    this.inboxFilter = "all";
     this.autopilotOpen = false;
     this.autopilotSource = null;
     this.autopilotText = null;
@@ -1130,7 +1131,6 @@ export default class Fabric extends View {
     const target = { page, ...extra };
     const go = () => {
       this.menu = null;
-      this.inboxOpen = false;
       this.autopilotOpen = false;
       this.modal = null;
       if (page !== "team") {
@@ -1388,7 +1388,6 @@ export default class Fabric extends View {
     if (keystroke === "escape") {
       cx.stop_propagation();
       if (this.menu) { this.menu = null; this.notifyNow(); return; }
-      if (this.inboxOpen) { this.inboxOpen = false; this.notifyNow(); return; }
       if (this.autopilotOpen) { this.autopilotOpen = false; this.notifyNow(); return; }
       if (this.newTeamOpen) { this.closeNewTeam(cx); return; }
       if (this.newOpen) { this.newOpen = false; this.clearMentions(this.lastCx); this.notifyNow(); return; }
@@ -2709,10 +2708,7 @@ export default class Fabric extends View {
       success: `${kindWord} ${reject ? "abgelehnt" : "übernommen"}.`,
       after: async () => { await this.loadTicket(); },
     });
-    if (result.ok) {
-      this.inboxOpen = false;
-      this.notifyNow();
-    }
+    if (result.ok) this.notifyNow();
   }
 
 
@@ -3159,10 +3155,7 @@ export default class Fabric extends View {
         return `${retry.agent === "orchestrator" ? "Team-Orchestrator" : retry.agent} erneut gestartet.`;
       },
     });
-    if (result.ok) {
-      this.inboxOpen = false;
-      this.notifyNow();
-    }
+    if (result.ok) this.notifyNow();
   }
 
   async openAcceptModal(cx) {
@@ -4250,7 +4243,8 @@ export default class Fabric extends View {
   renderWindow(cx, t) {
     const route = this.currentRoute();
     const page = route.page;
-    const content = page === "board" ? renderBoard(this, cx, t)
+    const content = page === "inbox" ? renderInboxPage(this, cx, t)
+      : page === "board" ? renderBoard(this, cx, t)
       : page === "tickets" ? renderTicketsPage(this, cx, t)
         : page === "ticket" ? renderTicket(this, cx, t)
           : page === "team" ? renderTeam(this, cx, t)
@@ -4297,7 +4291,7 @@ export default class Fabric extends View {
         label: model.pageWord(item.page),
         active: page === item.page || (page === "ticket" && item.page === "tickets"),
         onClick: (cx) => this.navigate(item.page, {}, cx),
-        badge: null,
+        badge: this.navBadge(t, item.page),
       })))
       .child(div().flex_1())
       .child(
@@ -4331,7 +4325,7 @@ export default class Fabric extends View {
         label: model.pageWord(item.page),
         active: page === item.page || (page === "ticket" && item.page === "tickets"),
         onClick: (cx) => this.navigate(item.page, {}, cx),
-        badge: null,
+        badge: this.navBadge(t, item.page),
         compact: true,
       }))))
       .child(
@@ -4436,12 +4430,11 @@ export default class Fabric extends View {
       );
 
     const overlay = [];
-    if (this.menu || this.inboxOpen || this.autopilotOpen) {
+    if (this.menu || this.autopilotOpen) {
       overlay.push(ui.backdrop(t, {
         dim: false,
         onClick: (cx) => {
           this.menu = null;
-          this.inboxOpen = false;
           this.autopilotOpen = false;
           this.notifyNow();
         },
@@ -4567,7 +4560,6 @@ export default class Fabric extends View {
         cx.stop_propagation();
         this.autopilotOpen = !this.autopilotOpen;
         this.autopilotSource = this.autopilotOpen ? popupId : null;
-        this.inboxOpen = false;
         this.menu = null;
         if (this.autopilotOpen) cx.spawn(async () => { await this.loadAutopilotLog(); });
         this.notifyNow();
@@ -4761,8 +4753,10 @@ export default class Fabric extends View {
     this.notifyNow();
   }
 
+  /** Kopf-Knopf „Posteingang“: führt zur Posteingang-Seite (kein Popover mehr). */
   inboxButton(t, cx, compact = false) {
-    const trigger = h_flex()
+    const active = this.currentRoute().page === "inbox";
+    return h_flex()
       .id("fabric-inbox-button")
       .flex_none()
       .h(ui.SIZE.button)
@@ -4771,110 +4765,26 @@ export default class Fabric extends View {
       .items_center()
       .rounded(ui.RADIUS.m)
       .border_1()
-      .border_color(this.inboxOpen ? t.accent : t.input)
-      .bg(this.inboxOpen ? t.selected : t.raised)
+      .border_color(active ? t.accent : t.input)
+      .bg(active ? t.selected : t.raised)
       .cursor_pointer()
       .hover((s) => s.opacity(0.86))
-      .on_mouse_down("left", (_event, cx) => cx.stop_propagation())
       .on_click((_event, cx) => {
         cx.stop_propagation();
-        this.inboxOpen = !this.inboxOpen;
-        this.menu = null;
-        this.autopilotOpen = false;
-        this.notifyNow();
+        this.navigate("inbox", {}, cx);
       })
       .child(div().flex_none().text_color(t.muted).child(ui.icon("inbox", 14)))
       .when(!compact, (el) => el.child(div().text_size(ui.FONT.s).text_color(t.muted).child("Posteingang")))
       .child(ui.badge(t, this.inbox.length, this.inbox.length ? t.accent : t.dim))
-      .tooltip("Posteingang");
-
-    const cards = model.inboxCards(this.inbox, this.events);
-    const openCount = cards.filter((card) => card.status === "open").length;
-    const rest = model.sortInbox(this.inbox)
-      .filter((entry) => entry.kind !== "decision" && entry.kind !== "lesson");
-
-    const cardSection = cards.length
-      ? [
-        div().flex_none().w_full().px(ui.SPACE.m).pt(ui.SPACE.s).pb(ui.SPACE.xs)
-          .child(ui.sectionTitle(t, "Zu entscheiden", [
-            ui.badge(t, openCount, openCount ? t.working : t.dim),
-          ])),
-        v_flex().w_full().px(ui.SPACE.s).pb(ui.SPACE.xs).gap(ui.SPACE.s)
-          .children(cards.map((card) => ui.proposalCard(t, card, {
-            compact: true,
-            busy: this.busy === "proposal",
-            onAccept: (cx) => this.applyProposal(card, "accept", cx),
-            onReject: (cx) => this.applyProposal(card, "reject", cx),
-            onOpenTicket: (cx) => {
-              this.inboxOpen = false;
-              this.openInWindow({ page: "ticket", id: card.ticket }, cx);
-            },
-          })))
-          .when(Boolean(this.errorFor("proposal")), (el) => el.child(
-            ui.notice(t, this.errorFor("proposal").text, this.errorFor("proposal").level))),
-      ]
-      : [];
-
-    const panel = ui.popoverPanel(t, [
-      h_flex().flex_none().w_full().px(ui.SPACE.m).h(38).items_center().border_b(1).border_color(t.border)
-        .child(div().flex_1().text_size(ui.FONT.s).font_semibold().child("Posteingang"))
-        .child(ui.badge(t, this.inbox.length, t.accent)),
-      ...cardSection,
-      rest.length
-        ? v_flex().w_full().children(rest.map((entry, index) => {
-          const retry = model.inboxRetry(entry);
-          return h_flex()
-            .id(`fabric-inbox-pop-${entry.ticket}-${index}`)
-            .w_full()
-            .px(ui.SPACE.m)
-            .py(ui.SPACE.s)
-            .gap(ui.SPACE.s)
-            .items_start()
-            .border_b(1)
-            .border_color(t.border)
-            .cursor_pointer()
-            .hover((s) => s.bg(t.hover))
-            .on_click((_event, cx) => {
-              cx.stop_propagation();
-              this.inboxOpen = false;
-              this.openInWindow({ page: "ticket", id: entry.ticket }, cx);
-            })
-            .child(ui.chip(t, model.INBOX_WORDS[entry.kind] ?? entry.kind, ui.inboxColor(t, entry.kind)))
-            .child(v_flex().flex_1().min_w(0).gap(ui.SPACE.xs)
-              .child(h_flex().gap(ui.SPACE.s).text_size(ui.FONT.xs).text_color(t.dim)
-                .child(entry.ticket ?? "")
-                .child(`· ${entry.from ?? "fab"}`)
-                .child(`· ${model.relativeTime(entry.at)}`))
-              .child(div().text_size(ui.FONT.s).text_color(t.foreground).truncate()
-                .child(TextView.markdown(
-                  `fabric-inbox-pop-text-${entry.ticket}-${index}`,
-                  model.plainMentionMarkdown(model.oneLine(entry.text, 120)),
-                ).text_size(ui.FONT.s).text_color(t.foreground).whitespace_nowrap()))
-              .when(Boolean(retry), (el) => el.child(
-                div().text_size(ui.FONT.xs).text_color(t.dim)
-                  .child(`${entry.agent} · ${model.oneLine(entry.reason || "Grund unbekannt", 120)}`),
-              ))
-              .when(Boolean(retry), (el) => el.child(h_flex().w_full().child(ui.button(t, {
-                id: `fabric-inbox-pop-retry-${entry.ticket}-${index}`,
-                label: "Erneut starten",
-                small: true,
-                tooltip: "Den Agenten erneut starten und den Hinweis bei Erfolg entfernen",
-                onClick: (cx) => this.retryAgent(entry, cx),
-              })))))
-        }))
-        : null,
-      !cards.length && !rest.length
-        ? ui.emptyState(t, { title: "Nichts zu tun", text: "Der Posteingang ist leer." })
-        : null,
-    ].filter(Boolean), 360, 360);
-
-    return PopupWrapper(t, "fabric-inbox-panel", trigger, this.inboxOpen, panel);
+      .tooltip("Posteingang öffnen");
   }
 
-}
+  /** Zähler in der Navigation; nur der Posteingang trägt einen. */
+  navBadge(t, page) {
+    if (page !== "inbox" || !this.inbox.length) return null;
+    return ui.badge(t, this.inbox.length, t.accent);
+  }
 
-function PopupWrapper(t, id, trigger, open, content) {
-  return Popup.new(id, trigger).anchor("bottom_right").when(open, (el) => el.content(content));
 }
 
 async function knownAgentsSafe() {

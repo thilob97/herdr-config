@@ -3074,3 +3074,36 @@ test("Views: die Kürzel S und T sind in jeder Datei definiert, die sie nutzt", 
     }
   }
 });
+
+test("Posteingang-Seite: Filter zählen je Art, Zeilen ohne Entscheidungskarten", async () => {
+  const { inboxPage, ticketTitle } = await import("../model.js");
+  const inbox = [
+    { id: "r1", kind: "review", ticket: "T-1", at: 1 },
+    { id: "q1", kind: "question", ticket: "T-2", at: 5 },
+    { id: "a1", kind: "attention", ticket: "T-3", at: 3 },
+    { id: "d1", kind: "decision", ticket: "T-4", at: 4, proposal: "D1" },
+    { id: "l1", kind: "lesson", ticket: "T-5", at: 2, proposal: "L1" },
+  ];
+
+  const all = inboxPage(inbox);
+  assert.equal(all.filter, "all");
+  assert.deepEqual(all.filters.map((item) => [item.key, item.count]), [
+    ["all", 5], ["review", 1], ["question", 1], ["attention", 1], ["decide", 2],
+  ]);
+  assert.deepEqual(all.entries.map((entry) => entry.id), ["q1", "a1", "r1"], "neueste zuerst, ohne Karten");
+  assert.equal(all.showCards, true);
+
+  const review = inboxPage(inbox, "review");
+  assert.deepEqual(review.entries.map((entry) => entry.id), ["r1"]);
+  assert.equal(review.showCards, false, "der Prüfungs-Filter zeigt keine Entscheidungskarten");
+
+  const decide = inboxPage(inbox, "decide");
+  assert.deepEqual(decide.entries, [], "Entscheidungen und Lehren erscheinen nur als Karten");
+  assert.equal(decide.showCards, true);
+
+  assert.equal(inboxPage(inbox, "kaputt").filter, "all", "unbekannter Filter fällt auf Alle");
+  assert.deepEqual(inboxPage(undefined).filters.map((item) => item.count), [0, 0, 0, 0, 0]);
+
+  assert.equal(ticketTitle([{ id: "T-1", title: "Erstes" }], "T-1"), "Erstes");
+  assert.equal(ticketTitle([{ id: "T-1", title: "Erstes" }], "T-9"), "");
+});
