@@ -176,12 +176,30 @@ def _tick_orchestrator(roster, team_entry, live, lines, dry):
             break
     state = orchestrator.start_state(team_entry)
     if state:
-        action = orchestrator.start_action(roster, team_entry, row, state)
+        now = store.now_ms()
+        action = orchestrator.start_action(
+            roster, team_entry, row, state, now
+        )
         if action == "answered":
             if not dry:
                 orchestrator.clear_start(team_entry)
             lines.append(f"{team_name}: Orchestrator antwortet wieder")
             return False
+        if state.get("state") == "pending" and orchestrator.sleep_gap(
+            team_entry, now
+        ):
+            if dry:
+                lines.append(
+                    f"{team_name}: geplant: Schlafzeit – Startfrist beginnt neu"
+                )
+                return False
+            orchestrator.renew_start(team_entry, now)
+            orchestrator.reset_idle(team_entry, now)
+            lines.append(
+                f"{team_name}: Schlafzeit seit dem letzten tick – "
+                "Startfrist beginnt neu"
+            )
+            return True
         if action == "wait":
             return False
         if action == "retry":
