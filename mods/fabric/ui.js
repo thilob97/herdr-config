@@ -264,9 +264,10 @@ export function pill(t, { label, color, tooltip = null, onClick = null, id = nul
   return id ? el.id(id) : el;
 }
 
-export function chip(t, text, color = null, id = null, { tooltip = null, onClick = null } = {}) {
-  let el = h_flex()
-    .flex_none()
+/** Chip; mit `shrink` darf er in einer engen Zeile schrumpfen und kürzt
+ *  seine Beschriftung mit Ellipse, statt Nachbarn aus dem Rahmen zu schieben. */
+export function chip(t, text, color = null, id = null, { tooltip = null, onClick = null, shrink = false } = {}) {
+  const base = h_flex()
     .px(6)
     .h(SIZE.chip)
     .gap(4)
@@ -276,7 +277,8 @@ export function chip(t, text, color = null, id = null, { tooltip = null, onClick
     .text_size(FONT.xs)
     .text_color(color ?? t.muted)
     .whitespace_nowrap()
-    .child(text);
+    .child(shrink ? div().min_w(0).truncate().child(text) : text);
+  let el = shrink ? base.flex_shrink(1).min_w(0) : base.flex_none();
   if (tooltip) el = el.tooltip(tooltip);
   if (onClick) {
     el = still(el).cursor_pointer().hover((s) => s.opacity(0.8))

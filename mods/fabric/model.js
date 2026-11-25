@@ -353,15 +353,50 @@ export function boardColumns(tickets, filters = {}) {
   if (includeDropped) stages.push({ key: "dropped", label: STATUS_WORDS.dropped });
   return stages.map((stage) => {
     let rows = filtered.filter((ticket) => ticket.status === stage.key).sort(byUpdated);
+    const total = rows.length;
     if (stage.key === "done") rows = rows.slice(0, doneLimit);
     return {
       key: stage.key,
       label: stage.label,
       tickets: rows,
       count: rows.length,
+      total,
       attention: stage.key === "review" && rows.length > 0,
     };
   });
+}
+
+/** Bricht einen Kartentitel für die zwei Zeilen des Boards. Die Breite ist
+ *  die gemessene Innenbreite der Karte in logischen Pixeln; geschätzt wird
+ *  mit einer mittleren Zeichenbreite, damit jede Zeile mit `.truncate()`
+ *  notfalls trotzdem eine Ellipse bekommt. */
+export function titleLines(title, width) {
+  const value = String(title ?? "").replace(/\s+/g, " ").trim() || "Ohne Titel";
+  const numeric = Number(width);
+  if (!Number.isFinite(numeric) || numeric <= 0) return { lines: [value], clipped: false };
+  const perLine = Math.max(8, Math.floor(numeric / 6.8));
+  const lines = [];
+  let line = "";
+  for (const piece of value.split(" ")) {
+    let word = piece;
+    if (line && line.length + 1 + word.length <= perLine) {
+      line += ` ${word}`;
+      continue;
+    }
+    if (line) {
+      lines.push(line);
+      line = "";
+    }
+    while (word.length > perLine) {
+      lines.push(word.slice(0, perLine));
+      word = word.slice(perLine);
+    }
+    line = word;
+  }
+  if (line) lines.push(line);
+  if (lines.length <= 2) return { lines, clipped: false };
+  const second = lines[1].slice(0, Math.max(1, perLine - 1)).trimEnd();
+  return { lines: [lines[0], `${second}…`], clipped: true };
 }
 
 /** Alle Zuständigen und Repos für die Filterleiste. */
