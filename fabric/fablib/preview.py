@@ -3,6 +3,7 @@
 Die Vorschau läuft unter `/tmp/fab-preview/<ID>` und sieht weder das Fenster
 noch die echten Ticketdaten des Menschen.
 """
+import hashlib
 import json
 import os
 import re
@@ -33,7 +34,24 @@ def root(ticket_id):
     # Bewusst /tmp statt tempfile: unter macOS liegt TMPDIR so tief, dass der
     # Core-Socket-Pfad der Vorschau das Systemlimit überschreitet.
     base = os.environ.get("FAB_PREVIEW_ROOT") or os.path.join("/tmp", "fab-preview")
-    return os.path.join(base, str(ticket_id))
+    return os.path.join(base, _short_id(ticket_id, ROOT_MAX))
+
+
+ROOT_MAX = 8
+
+
+def _short_id(ticket_id, limit, prefix=""):
+    """Lesbare ID bis `limit` Zeichen, sonst ein stabiler Kurzhash gleicher Länge.
+
+    Ordnername und Sessionname gehen beide in den Socket-Pfad des Vorschau-Cores
+    ein (/tmp/fab-preview/<ID>/userhome/…/<Session>); zusammen dürfen sie das
+    macOS-Limit von 103 Bytes nicht sprengen.
+    """
+    text = prefix + str(ticket_id)
+    if len(text) <= limit:
+        return text
+    digest = hashlib.sha1(str(ticket_id).encode("utf-8")).hexdigest()
+    return (prefix or "p") + digest[: limit - len(prefix or "p")]
 
 
 def home(ticket_id):
@@ -234,10 +252,22 @@ def environment(state):
     return env
 
 
+SESSION_MAX = 10
+
+
 def _session_name(ticket_id):
-    # Kurz halten: HC_SESSION steckt im Unix-Socket-Pfad, der auf macOS
-    # höchstens 103 Bytes lang sein darf.
-    return "fabp-" + re.sub(r"[^a-z0-9]", "-", str(ticket_id).lower())
+    """Kurzer HC_SESSION-Name der Vorschau.
+
+    HC_SESSION steckt im Unix-Socket-Pfad, der auf macOS höchstens 103 Bytes
+    lang sein darf; mehr als 10 Zeichen sprengen das (z. B. „fabp-qa-inbox“
+    mit 107 Bytes). Längere IDs (ab T-1000) bekommen deshalb einen stabilen
+    Kurzhash statt des lesbaren Namens.
+    """
+    readable = "fabp-" + re.sub(r"[^a-z0-9]", "-", str(ticket_id).lower())
+    if len(readable) <= SESSION_MAX:
+        return readable
+    digest = hashlib.sha1(str(ticket_id).encode("utf-8")).hexdigest()
+    return "fabp" + digest[: SESSION_MAX - 4]
 
 
 def _detail(result):

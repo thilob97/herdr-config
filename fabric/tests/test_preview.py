@@ -4,6 +4,7 @@ import io
 import json
 import os
 import shutil
+import unittest
 import signal
 import subprocess
 import sys
@@ -431,3 +432,23 @@ class PreviewTests(FabricCase):
             name for name in os.listdir(folder) if not name.startswith(".")
         )
         self.assertGreaterEqual(len(files), 2)
+
+
+class SessionNameTests(unittest.TestCase):
+    def test_sessionname_bleibt_kurz_genug_fuer_den_socket(self):
+        from fabric.fablib import preview as preview_mod
+
+        self.assertEqual(preview_mod._session_name("T-146"), "fabp-t-146")
+        for tid in ("T-1000", "T-123456", "QA-INBOX", "ein-sehr-langer-name"):
+            name = preview_mod._session_name(tid)
+            self.assertLessEqual(len(name), preview_mod.SESSION_MAX, tid)
+            self.assertEqual(name, preview_mod._session_name(tid), "stabil")
+        self.assertNotEqual(
+            preview_mod._session_name("T-1000"), preview_mod._session_name("T-1001")
+        )
+        # Ordner und Session teilen sich das Socket-Budget.
+        self.assertTrue(preview_mod.root("T-146").endswith("/T-146"))
+        for tid in ("T-123456789", "QA-INBOX-LANG"):
+            folder = os.path.basename(preview_mod.root(tid))
+            self.assertLessEqual(len(folder), preview_mod.ROOT_MAX, tid)
+            self.assertLessEqual(len(folder) + len(preview_mod._session_name(tid)), 20)
