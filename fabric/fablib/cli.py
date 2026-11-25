@@ -1436,6 +1436,44 @@ def _ticket_reviewer(ticket, roster):
     return name
 
 
+def _drop_review(ticket):
+    """Ticket zurück in Arbeit: Das alte Urteil gilt nur für den alten Merge-Stand;
+    ohne neues Urteil blockiert `fab handover` wieder."""
+    ticket["status"] = "doing"
+    ticket.pop("stall", None)
+    ticket["waiting"] = [
+        waiting for waiting in ticket.get("waiting") or []
+        if waiting.lower() != "mensch"
+    ]
+    ticket.pop("verdict", None)
+
+
+def _unrelated_base_change(ticket, repo, ref, head):
+    """Dateien, in denen sich nur die Basis seit dem geprüften Merge-Stand geändert hat.
+
+    Liefert die Liste nur, wenn der Branch-HEAD noch der geprüfte ist und keine
+    dieser Dateien zu den Änderungen des Tickets gehört; sonst None. Dann ist
+    eine neue Bewertung durch die Prüferin nötig.
+    """
+    merge = ticket.get("merge") or {}
+    old_base = merge.get("base") or ""
+    checked = merge.get("branch") or ""
+    if not old_base or not checked or not head:
+        return None
+    if not (checked.startswith(head) or head.startswith(checked)):
+        return None
+    try:
+        new_base = git.rev_parse(repo, ref)
+        base_files = git.diff_range_paths(repo, old_base, new_base)
+        fork = git.merge_base(repo, new_base, ticket["branch"])
+        own_files = git.diff_range_paths(repo, fork, ticket["branch"])
+    except FabError:
+        return None
+    if not base_files or set(base_files) & set(own_files):
+        return None
+    return base_files
+
+
 def _accept_merge_changed(ticket, roster, repo, ref, head):
     """Merge-Stand neu prüfen, weil er vom abgelegten Tree abweicht.
 
@@ -1446,15 +1484,24 @@ def _accept_merge_changed(ticket, roster, repo, ref, head):
     """
     base = ticket["base"]
     tree, files = git.merge_state(repo, ref, ticket["branch"])
-    ticket["status"] = "doing"
-    ticket.pop("stall", None)
-    ticket["waiting"] = [
-        waiting for waiting in ticket.get("waiting") or []
-        if waiting.lower() != "mensch"
-    ]
-    # Das alte Urteil gilt nur für den alten Merge-Stand; ohne neues Urteil
-    # blockiert `fab handover` wieder.
-    ticket.pop("verdict", None)
+    unrelated = None if files else _unrelated_base_change(ticket, repo, ref, head)
+    if unrelated is not None:
+        # Nur main hat sich bewegt, und zwar ausschließlich in Dateien, die
+        # das Ticket nicht ändert: Ist der neue Merge-Stand grün, bleibt das
+        # Urteil gültig und die Abnahme läuft weiter.
+        report = _verify_merge_state(ticket, ref, tree, head)
+        merge = _merge_record(ticket, ref, tree, head, report)
+        if report["state"] == "pass":
+            ticket["merge"] = merge
+            shown = ", ".join(unrelated[:5]) + (" …" if len(unrelated) > 5 else "")
+            text = (
+                f"Merge-Stand mit {base} hat sich geändert (Tree {_short(tree)}), "
+                f"aber nur in Dateien, die {ticket['id']} nicht berührt ({shown}). "
+                f"Neu geprüft und grün; das Urteil bleibt gültig."
+            )
+            wake.add_comment(ticket, "mensch", text, roster)
+            return merge, text, None, True
+    _drop_review(ticket)
     if files:
         ticket.pop("merge", None)
         text = wake.conflict_text(ticket, base, files)
@@ -1467,9 +1514,10 @@ def _accept_merge_changed(ticket, roster, repo, ref, head):
                 ticket, [assignee], "mensch", text, roster,
                 message_for=lambda name: wake.conflict_wake_text(ticket, base, files),
             )
-        return None, text, wecken
-    report = _verify_merge_state(ticket, ref, tree, head)
-    merge = _merge_record(ticket, ref, tree, head, report)
+        return None, text, wecken, False
+    if unrelated is None:
+        report = _verify_merge_state(ticket, ref, tree, head)
+        merge = _merge_record(ticket, ref, tree, head, report)
     ticket["merge"] = merge
     if report["state"] != "pass":
         assignee = ticket.get("assignee")
@@ -1487,7 +1535,7 @@ def _accept_merge_changed(ticket, roster, repo, ref, head):
                     f"erneut `fab handover {ticket['id']}`."
                 ),
             )
-        return merge, text, wecken
+        return merge, text, wecken, False
     reviewer = _ticket_reviewer(ticket, roster)
     text = (
         f"Merge-Stand mit {base} hat sich geändert: Tree {_short(tree)} "
@@ -1508,7 +1556,7 @@ def _accept_merge_changed(ticket, roster, repo, ref, head):
                 f"`fab verdict {ticket['id']} pass --from {name}` ein neues Urteil ab."
             ),
         )
-    return merge, text, wecken
+    return merge, text, wecken, False
 
 
 def _no_change(ticket, repo):
@@ -1936,16 +1984,21 @@ def _accept_merge_gate(ticket, roster, top, ref, review_head, rev):
     """Merge-Stand gegen den bei handover geprüften Tree prüfen.
 
     Weicht er ab, wird der Stand neu geprüft (Urteil verworfen, Prüferin oder
-    Zuständiger geweckt) und der Aufrufer bricht ab. Liefert die Revision nach
-    dem Commit des neuen Stands; `review_head` darf leer sein.
+    Zuständiger geweckt) und der Aufrufer bricht ab. Ausnahme: Hat sich nur die
+    Basis bewegt, und zwar in keiner Datei des Tickets, und ist der neue Stand
+    grün, bleibt das Urteil und die Abnahme läuft weiter. Liefert die Revision
+    nach dem Commit des neuen Stands; `review_head` darf leer sein.
     """
     expected = (ticket.get("merge") or {}).get("tree")
     tree, conflict_files = git.merge_state(top, ref, ticket["branch"])
     if conflict_files or not expected or tree != expected:
-        merge, text, wecken = _accept_merge_changed(
+        merge, text, wecken, kept = _accept_merge_changed(
             ticket, roster, top, ref, review_head
         )
         rev = _commit(ticket, rev)
+        if kept:
+            print(f"{ticket['id']}: {text}")
+            return rev
         _run_after_commit(ticket, rev, wecken)
         raise store.PersistError(
             f"{ticket['id']}: Merge-Stand mit {ref} weicht vom geprüften Tree "
@@ -2295,12 +2348,18 @@ def cmd_accept(args):
             else:
                 ref = base_ref
                 tree, conflict_files = git.merge_state(top, ref, branch_name)
+                kept = False
                 if conflict_files or not expected or tree != expected:
-                    merge, text, wecken = _accept_merge_changed(
+                    merge, text, wecken, kept = _accept_merge_changed(
                         ticket, roster, top, ref, review_head
                     )
                     rev = _commit(ticket, rev)
-                    _run_after_commit(ticket, rev, wecken)
+                    if kept:
+                        print(f"{ticket['id']}: {text}")
+                        expected = tree
+                    else:
+                        _run_after_commit(ticket, rev, wecken)
+                if not kept and (conflict_files or not expected or tree != expected):
                     raise store.PersistError(
                         f"{ticket['id']}: Merge-Stand mit {ref} weicht vom geprüften "
                         f"Tree {_short(expected)} ab (jetzt {_short(tree)}); nicht "

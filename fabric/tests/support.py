@@ -539,6 +539,31 @@ class FabricCase(unittest.TestCase):
         result = self.git(worktree, "commit", "-qm", f"ändere {name}")
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    LISTE = "".join(f"zeile {n}\n" for n in range(1, 9))
+
+    def shared_review_ticket(self):
+        """Ticket in review, das `liste.txt` in Zeile 1 ändert; main kann Zeile 8
+        derselben Datei ohne Konflikt ändern (überlappende Dateien)."""
+        repo, tid, worktree = self.ready_ticket()
+        self._write(os.path.join(repo, "liste.txt"), self.LISTE)
+        self.git(repo, "add", "liste.txt")
+        self.git(repo, "commit", "-qm", "liste anlegen")
+        merged = self.git(worktree, "merge", "-q", "--no-edit", "main")
+        self.assertEqual(merged.returncode, 0, merged.stderr)
+        self.commit_in(worktree, "liste.txt", self.LISTE.replace("zeile 1\n", "zeile eins\n"))
+        self.commit_in(worktree, "aenderung.txt", "wert\n")
+        self.passing_verify(worktree)
+        self.ok("verify", tid)
+        self.ok("verdict", tid, "pass", "--from", "ada", "Sieht gut aus")
+        self.ok("handover", tid, "--from", "zap", "Fertig")
+        return repo, tid, worktree
+
+    def main_changes_shared_file(self, repo):
+        """main ändert Zeile 8 von `liste.txt` – dieselbe Datei wie das Ticket."""
+        self._write(os.path.join(repo, "liste.txt"), self.LISTE.replace("zeile 8\n", "zeile acht\n"))
+        self.git(repo, "add", "liste.txt")
+        self.git(repo, "commit", "-qm", "main läuft weiter")
+
     def passing_verify(self, worktree, commit=True):
         """Grünes Prüfskript anlegen; standardmäßig committen, damit es auch im
         temporären Merge-Worktree (nur committete Dateien) vorhanden ist."""

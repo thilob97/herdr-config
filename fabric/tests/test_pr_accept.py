@@ -748,12 +748,11 @@ class PrAcceptTests(FabricCase):
         )
 
     def test_pr_accept_verweigert_neuen_merge_tree(self):
-        repo, tid, worktree = self.review_ticket()
+        repo, tid, worktree = self.shared_review_ticket()
         old_tree = self.ticket(tid)["merge"]["tree"]
         bare = self.setup_origin(repo)
-        self.write_file(os.path.join(repo, "fremd.txt"), "fremd\n")
-        self.git_out(repo, "add", "fremd.txt")
-        self.git_out(repo, "commit", "-qm", "main läuft weiter")
+        # main ändert eine Datei des Tickets (ohne Konflikt).
+        self.main_changes_shared_file(repo)
         self.git_out(repo, "push", "-q", "origin", "main")
         self.set_live({"fab-ada-t-1": "t1"})
         self.clear_log()
@@ -945,9 +944,13 @@ class PrAcceptTests(FabricCase):
         self.assert_kein_revert(repo, tid, worktree, bare, vorher)
 
     def test_origin_rueckstand_prueft_den_merge_stand_neu(self):
-        repo, tid, worktree = self.review_ticket()
+        repo, tid, worktree = self.shared_review_ticket()
         bare = self.setup_origin(repo)
-        self.push_to_origin(bare, "fremd", "fremd.txt", "fremd\n")
+        # origin ändert eine Datei des Tickets (ohne Konflikt); das Urteil gilt
+        # nicht weiter.
+        self.push_to_origin(
+            bare, "fremd", "liste.txt", self.LISTE.replace("zeile 8\n", "zeile acht\n")
+        )
         self.set_live({"fab-ada-t-1": "t1"})
         self.clear_log()
         mark = self.mark()

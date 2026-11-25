@@ -340,11 +340,11 @@ class GitflowTests(FabricCase):
         self.assertEqual(self.merge_worktrees(tid), [])
 
     def test_accept_verweigert_neuen_merge_tree_und_weckt_prueferin(self):
-        repo, tid, worktree = self.review_ticket()
+        repo, tid, worktree = self.shared_review_ticket()
         old_tree = self.ticket(tid)["merge"]["tree"]
-        self.write_file(os.path.join(repo, "fremd.txt"), "fremd\n")
-        self.git_out(repo, "add", "fremd.txt")
-        self.git_out(repo, "commit", "-qm", "main läuft weiter")
+        # main ändert eine Datei des Tickets (ohne Konflikt): Der Merge-Stand
+        # ist ein anderer, das Urteil muss neu her.
+        self.main_changes_shared_file(repo)
         self.set_live({"fab-ada-t-1": "t1"})
         self.clear_log()
         mark = self.mark()
@@ -364,12 +364,34 @@ class GitflowTests(FabricCase):
             [row["target"] for row in self.wake_since(mark, tid)], ["ada"]
         )
         self.assertEqual([row[1] for row in self.hc_calls("send")], ["t1"])
-        self.assertFalse(os.path.isfile(os.path.join(repo, "aenderung.txt")))
         self.assertEqual(self.merge_worktrees(tid), [])
         # Ohne neues Urteil darf die Übergabe nicht wieder durchgehen.
         again = self.cli("handover", tid, "--from", "zap", "nochmal")
         self.assertNotEqual(again.returncode, 0)
         self.assertIn("kein Urteil", again.stderr)
+
+    def test_fremde_main_aenderung_behaelt_das_urteil(self):
+        repo, tid, worktree = self.review_ticket()
+        verdict = self.ticket(tid)["verdict"]
+        # main bewegt sich nur in Dateien, die das Ticket nicht ändert.
+        self.write_file(os.path.join(repo, "fremd.txt"), "fremd\n")
+        self.git_out(repo, "add", "fremd.txt")
+        self.git_out(repo, "commit", "-qm", "main läuft weiter")
+        self.set_live({"fab-ada-t-1": "t1"})
+        self.clear_log()
+        mark = self.mark()
+
+        result = self.ok("accept", tid)
+
+        self.assertIn("Urteil bleibt gültig", result.stdout)
+        ticket = self.ticket(tid)
+        self.assertEqual(ticket["status"], "done")
+        self.assertEqual(ticket["verdict"], verdict)
+        self.assertEqual(self.wake_since(mark, tid), [], "die Prüferin wird nicht geweckt")
+        self.assertTrue(os.path.isfile(os.path.join(repo, "aenderung.txt")))
+        self.assertTrue(os.path.isfile(os.path.join(repo, "fremd.txt")))
+        texts = [comment["text"] for comment in ticket["comments"]]
+        self.assertTrue(any("fremd.txt" in text and "Urteil bleibt" in text for text in texts))
 
     def test_accept_weckt_bei_rotem_neuen_merge_stand_zustaendigen(self):
         repo, tid, worktree = self.ready_ticket()
