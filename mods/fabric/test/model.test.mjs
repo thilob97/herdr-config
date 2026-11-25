@@ -3056,3 +3056,21 @@ test("Pipelines: Liste zeigt die jüngsten 50, „Mehr laden“ je 50 (T-135)", 
   assert.equal(few.visible.length, 12);
   assert.equal(few.hidden, 0, "kein Knopf bei wenigen Läufen");
 });
+
+test("Views: die Kürzel S und T sind in jeder Datei definiert, die sie nutzt", () => {
+  // `herdr-app check` und die Modelltests laden die Views nicht; ein fehlendes
+  // `const S = ui.SPACE` fiel erst im Fenster auf („S is not defined“ statt der
+  // Knopfleiste oben rechts, switcher.js seit T-116).
+  const views = join(dirname(fileURLToPath(import.meta.url)), "..", "views");
+  for (const file of readdirSync(views).filter((name) => name.endsWith(".js"))) {
+    const source = readFileSync(join(views, file), "utf8");
+    for (const name of ["S", "T"]) {
+      if (!new RegExp(`(?<![\\w.$])${name}\\.[a-z]`).test(source)) continue;
+      assert.match(
+        source,
+        new RegExp(`^(?:const|let|var)\\s+${name}\\s*=|^import[^;]*\\b${name}\\b`, "m"),
+        `${file}: nutzt ${name}.… ohne Definition`,
+      );
+    }
+  }
+});

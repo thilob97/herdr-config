@@ -6,6 +6,8 @@ import { layout, run } from "herdr";
 import * as ui from "../ui.js";
 import * as model from "../model.js";
 
+const S = ui.SPACE;
+
 function state() {
   return model.panelState(layout());
 }
