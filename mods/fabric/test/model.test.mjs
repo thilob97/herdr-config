@@ -1148,6 +1148,7 @@ test("teamDraft liest die Teamkarte ohne Zusatzfelder", async () => {
     ],
     reviewer: "ada",
     max_sessions: 4,
+    orchestrator_model: "",
   });
 });
 
@@ -3162,4 +3163,24 @@ test("Kosten je Agent: Summe über Tickets, teuerster zuerst", async () => {
     { name: "zap", total: 1.5, tickets: 2 },
   ]);
   assert.equal(costTotals(tickets).agents.length, 2);
+});
+
+test("Team speichern: Orchestrator-Modell ersetzt nur --model im argv", async () => {
+  const { teamSaveArgs, teamDraft, teamDirty } = await import("../model.js");
+  const team = {
+    name: "web", repos: ["/r"], members: [{ blueprint: "ada" }], reviewer: "ada", max_sessions: 4,
+    orchestrator: { argv: ["omp", "--model=alt", "--approval-mode=yolo"], prompt: "prompts/orchestrator.md" },
+  };
+  const form = { ...teamDraft(team) };
+  assert.equal(form.orchestrator_model, "alt");
+  assert.equal(teamDirty(team, form), false);
+  assert.ok(!teamSaveArgs(team, form).args.some((arg) => arg.startsWith("--orchestrator-argv-json")));
+  const changed = { ...form, orchestrator_model: " neu " };
+  assert.equal(teamDirty(team, changed), true);
+  assert.ok(teamSaveArgs(team, changed).args.includes('--orchestrator-argv-json=["omp","--model=neu","--approval-mode=yolo"]'));
+  const cleared = teamSaveArgs(team, { ...form, orchestrator_model: "" }).args;
+  assert.ok(cleared.includes('--orchestrator-argv-json=["omp","--approval-mode=yolo"]'));
+  assert.match(teamSaveArgs({ ...team, orchestrator: { argv: [] } }, changed).error, /kein Programm/);
+  // Nach dem Speichern ist der Formularstand (ohne argv) die Vergleichsbasis.
+  assert.equal(teamDraft({ ...changed, orchestrator_model: "neu" }).orchestrator_model, "neu");
 });

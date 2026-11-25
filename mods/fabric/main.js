@@ -3565,9 +3565,17 @@ export default class Fabric extends View {
     });
     brief.on("change", (_event, cx) => cx.notify());
     this.track(brief);
+    const orchestratorModel = InputState.new({
+      value: draft.orchestrator_model,
+      placeholder: "Standard des Programms",
+    });
+    orchestratorModel.on("change", (_event, cx) => cx.notify());
+    orchestratorModel.on("submit", (_event, cx) => this.saveTeam(team.name, cx));
+    this.track(orchestratorModel);
     return {
       name,
       brief,
+      orchestratorModel,
       repos: [...draft.repos],
       reviewer: draft.reviewer,
       members: draft.members.map((member) => this.memberForm(member)),
@@ -3590,6 +3598,7 @@ export default class Fabric extends View {
       })),
       reviewer: form.reviewer,
       max_sessions: form.maxSessions.value(),
+      orchestrator_model: form.orchestratorModel.value(),
     };
   }
 

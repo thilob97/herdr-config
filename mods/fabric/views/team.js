@@ -141,6 +141,25 @@ function blueprintCard(app, cx, t) {
   ], { id: "fabric-blueprints", padding: S.m, gap: S.xs });
 }
 
+// Modell des Orchestrators: Eingabe im Teamformular, gespeichert mit dem Team
+// (fab team edit --orchestrator-argv-json); wirkt beim nächsten Start.
+function orchestratorModelRow(app, t, team, parts) {
+  const form = app.teamForms[team.name];
+  if (!form?.orchestratorModel) return definition(t, "Modell", parts.model, parts.model);
+  const changed = form.orchestratorModel.value().trim() !== parts.model;
+  return h_flex()
+    .w_full()
+    .min_h(22)
+    .gap(S.s)
+    .items_center()
+    .child(div().flex_none().w(72).text_size(T.xs).text_color(t.dim).whitespace_nowrap().child("Modell"))
+    .child(div().flex_1().min_w(120).max_w(360).id(`fabric-team-orchestrator-model-${team.name}`)
+      .child(ui.input(t, form.orchestratorModel))
+      .tooltip("Leer = Standardmodell des Programms. Speichern schreibt das Orchestrator-argv; wirkt beim nächsten (Neu-)Start."))
+    .when(changed, (el) => el.child(div().text_size(T.xs).text_color(t.dim).whitespace_nowrap()
+      .child("wirkt nach Neustart")));
+}
+
 function orchestratorBlock(app, cx, t, team) {
   const state = app.orchestratorState(team.name);
   const live = ui.orchestratorStatus(t, state);
@@ -170,7 +189,7 @@ function orchestratorBlock(app, cx, t, team) {
       .child(div().max_w(240).min_w(0).truncate().text_size(T.xs).text_color(t.dim)
         .child(state?.terminal ?? "kein Terminal").tooltip(state?.terminal ?? "kein Terminal")))
     .child(definition(t, "Programm", parts.program, parts.program))
-    .child(definition(t, "Modell", parts.model, parts.model))
+    .child(orchestratorModelRow(app, t, team, parts))
     .child(definition(t, "Prompt", team.orchestrator?.prompt, team.orchestrator?.prompt))
     .child(h_flex().w_full().gap(S.s).items_center().flex_wrap()
       .child(ui.button(t, {

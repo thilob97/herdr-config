@@ -907,6 +907,8 @@ export function teamDraft(team) {
       })),
     reviewer: String(team?.reviewer ?? ""),
     max_sessions: Number(team?.max_sessions ?? 4),
+    // Formularwerte tragen das Modell direkt, Roster-Teams im Orchestrator-argv.
+    orchestrator_model: String(team?.orchestrator_model ?? argvParts(team?.orchestrator?.argv ?? []).model),
   };
 }
 
@@ -973,6 +975,17 @@ export function teamSaveArgs(team, form, { briefFile = "" } = {}) {
     `--reviewer=${reviewer}`,
     `--max-sessions=${sessions}`,
   );
+  // Orchestrator-Modell: nur bei Änderung, Programm und Flags bleiben.
+  if (form?.orchestrator_model !== undefined) {
+    const parts = argvParts(team?.orchestrator?.argv ?? []);
+    const nextModel = String(form.orchestrator_model ?? "").trim();
+    if (nextModel !== parts.model) {
+      if (!parts.program) return { error: "Orchestrator hat kein Programm im Roster; Modell lässt sich nicht setzen." };
+      if (/\s/.test(nextModel)) return { error: "Orchestrator-Modell darf keine Leerzeichen enthalten." };
+      const argv = [parts.program, ...(nextModel ? [`--model=${nextModel}`] : []), ...parts.flags];
+      args.push(`--orchestrator-argv-json=${JSON.stringify(argv)}`);
+    }
+  }
   const brief = String(briefFile ?? "");
   if (brief) args.push(`--brief-file=${brief}`);
   args.push("--from=mensch");
@@ -1041,6 +1054,7 @@ export function teamDirty(team, form) {
     members: normalizeMembers(form.members),
     reviewer: String(form.reviewer ?? ""),
     max_sessions: sessionNumber(form.max_sessions),
+    orchestrator_model: String(form.orchestrator_model ?? base.orchestrator_model).trim(),
   };
   return JSON.stringify(base) !== JSON.stringify(next);
 }
