@@ -214,6 +214,16 @@ class AutopilotCase(FabricCase):
         self.git_out(repo, "push", "-q", "origin", "main")
         return bare
 
+    def merge_topic(self, message="Merge topic"):
+        """Echten `--no-ff`-Merge auf main legen; liefert den Merge-Commit."""
+        self.git_out(self.repo, "checkout", "-q", "-b", "topic")
+        self._write(os.path.join(self.repo, "topic.txt"), "inhalt\n")
+        self.git_out(self.repo, "add", "topic.txt")
+        self.git_out(self.repo, "commit", "-qm", "topic")
+        self.git_out(self.repo, "checkout", "-q", "main")
+        self.git_out(self.repo, "merge", "--no-ff", "-q", "-m", message, "topic")
+        return self.git_out(self.repo, "rev-parse", "HEAD")
+
     def add_git_shim(self):
         """`git branch -D` scheitert, solange GIT_FAIL_BRANCH_DELETE gesetzt ist."""
         real_git = shutil.which("git")
@@ -387,7 +397,7 @@ class AutopilotCase(FabricCase):
         with mock.patch.object(autopilot, "head", return_value=HEAD), \
                 mock.patch.object(autopilot, "ensure_clean_main", return_value=True), \
                 mock.patch.object(
-                    autopilot, "check_main", return_value=(True, "grün", "", 1)
+                    autopilot, "check_main", return_value=(True, "grün", "", 1, "")
                 ), \
                 mock.patch.object(autopilot, "_sh", side_effect=fake):
             self.assertTrue(autopilot.try_accept(self.ticket()))
@@ -405,7 +415,7 @@ class AutopilotCase(FabricCase):
             with mock.patch.object(autopilot, "head", return_value=HEAD), \
                     mock.patch.object(autopilot, "ensure_clean_main", return_value=True), \
                     mock.patch.object(
-                        autopilot, "check_main", return_value=(True, "grün", "", 1)
+                        autopilot, "check_main", return_value=(True, "grün", "", 1, "")
                     ), \
                     mock.patch.object(autopilot, "_sh", side_effect=fake):
                 self.assertFalse(autopilot.try_accept(changed))
@@ -443,7 +453,7 @@ class AutopilotCase(FabricCase):
                     autopilot, "ensure_clean_main", return_value=True
                 ) as clean, \
                 mock.patch.object(
-                    autopilot, "check_main", return_value=(True, "grün", "", 1)
+                    autopilot, "check_main", return_value=(True, "grün", "", 1, "")
                 ), \
                 mock.patch.object(autopilot, "_sh", side_effect=fake):
             self.assertTrue(autopilot.try_accept(ticket))
@@ -498,7 +508,7 @@ class AutopilotCase(FabricCase):
                     autopilot, "ensure_clean_main", return_value=True
                 ), \
                 mock.patch.object(
-                    autopilot, "check_main", return_value=(True, "", "", 0)
+                    autopilot, "check_main", return_value=(True, "", "", 0, "")
                 ), \
                 mock.patch.object(autopilot, "write_state"):
             self.assertTrue(autopilot.try_accept(self.stored(tid)))
@@ -538,38 +548,232 @@ class AutopilotCase(FabricCase):
         with mock.patch.object(autopilot.pipeline, "_execute", side_effect=fake), \
                 mock.patch.object(autopilot.time, "sleep") as sleep, \
                 mock.patch.object(autopilot.git, "git") as git_cmd:
-            ok, out, err, run_id = autopilot.check_main(self.repo)
+            ok, out, err, run_id, reason = autopilot.check_main(self.repo)
         self.assertTrue(ok)
         self.assertEqual(out, "grün")
         self.assertEqual(err, "")
         self.assertIsNotNone(run_id)
+        self.assertEqual(reason, "")
         sleep.assert_called_once_with(60)
-        self.assertNotIn(
-            mock.call(["revert", "-m", "1", "--no-edit", "HEAD"], self.repo),
+        self.assertFalse(
+            any("revert" in call.args[0] for call in git_cmd.call_args_list
+                if call.args),
             git_cmd.call_args_list,
         )
 
-    def test_second_verify_red_reverts_merge(self):
-        self._write(
-            os.path.join(self.repo, ".fabric", "verify.sh"),
-            "#!/bin/sh\nexit 1\n",
-        )
+    def test_abort_does_not_revert_but_pauses_with_reason(self):
+        """Ein Abbruch im zweiten Lauf ist kein Testfehler: kein Revert."""
+        tid = self.new("Roter main")
+        runs = [
+            {"state": "fail", "stdout": "rot", "stderr": "",
+             "run_id": 41, "reason": ""},
+            {"state": "fail", "stdout": "rot", "stderr": "",
+             "run_id": 42, "reason": "Abbruch: Signal 15 im Schritt unittest"},
+        ]
+        calls = []
 
-        def fake(command, cwd, timeout):
-            return 1, "rot", "fehler"
+        def fake_sh(*args, **kwargs):
+            calls.append(args)
+            return 0, ""
 
-        revert = mock.Mock(returncode=0, stdout="", stderr="")
-        with mock.patch.object(autopilot.pipeline, "_execute", side_effect=fake), \
+        with mock.patch.object(autopilot, "head", return_value=HEAD), \
+                mock.patch.object(autopilot, "ensure_clean_main", return_value=True), \
+                mock.patch.object(autopilot.pipeline, "run", side_effect=runs), \
+                mock.patch.object(autopilot, "_sh", side_effect=fake_sh), \
                 mock.patch.object(autopilot.time, "sleep"), \
-                mock.patch.object(autopilot.git, "git", return_value=revert) as git_cmd:
-            ok, out, err, run_id = autopilot.check_main(self.repo)
-        self.assertFalse(ok)
-        self.assertEqual(out, "rot")
-        self.assertEqual(err, "fehler")
-        self.assertIsNotNone(run_id)
-        self.assertIn(
-            mock.call(["revert", "-m", "1", "--no-edit", "HEAD"], self.repo),
+                mock.patch.object(autopilot.git, "git") as git_cmd:
+            self.assertFalse(autopilot.try_accept(dict(self.ticket(), id=tid)))
+
+        self.assertFalse(
+            any("revert" in call.args[0] for call in git_cmd.call_args_list
+                if call.args),
             git_cmd.call_args_list,
+        )
+        self.assertTrue(autopilot._paused)
+        self.assertTrue(os.path.exists(autopilot.pause_path()))
+        state = autopilot.read_state()
+        self.assertIn("Abbruch: Signal 15 im Schritt unittest", state["reason"])
+        self.assertIn("kein Revert", state["reason"])
+        alarms = alarm.status()["alarms"]
+        self.assertTrue(
+            any("Abbruch: Signal 15 im Schritt unittest" in item["text"]
+                for item in alarms),
+            alarms,
+        )
+        comments = [args[-1] for args in calls if args[:2] == ("fab", "comment")]
+        self.assertEqual(len(comments), 1)
+        self.assertIn("@orchestrator", comments[0])
+        self.assertIn("Abbruch: Signal 15 im Schritt unittest", comments[0])
+        self.assertNotIn("--no-wake", comments[0])
+
+    def test_red_main_reverts_merge_and_pushes_to_origin(self):
+        """Lehre: Revert gegen einen echten Merge-Commit, danach auf origin."""
+        verify = os.path.join(self.repo, ".fabric", "verify.sh")
+        self._write(verify, "#!/bin/sh\nexit 0\n")
+        self.git_out(self.repo, "add", ".fabric/verify.sh")
+        self.git_out(self.repo, "commit", "-qm", "verify")
+        bare = self.setup_origin(self.repo)
+        merge_head = self.merge_topic()
+
+        with mock.patch.object(autopilot.time, "sleep"):
+            ok, _out, _err, _run, reason = autopilot.check_main(self.repo)
+        self.assertTrue(ok)
+        self.assertEqual(reason, "")
+
+        # Rot ohne den Merge zu ändern: der Revert muss den Merge zurücknehmen
+        # und auf origin/main landen.
+        self._write(verify, "#!/bin/sh\nexit 1\n")
+        with mock.patch.object(autopilot.time, "sleep"):
+            ok, _out, _err, run_id, reason = autopilot.check_main(self.repo)
+        self.assertFalse(ok)
+        self.assertIsNotNone(run_id)
+        self.assertEqual(reason, "")
+
+        local = self.git_out(self.repo, "rev-parse", "HEAD")
+        remote = self.git_out(bare, "rev-parse", "refs/heads/main")
+        self.assertEqual(local, remote)
+        self.assertEqual(self.git_out(self.repo, "rev-parse", "HEAD^"), merge_head)
+        self.assertFalse(os.path.exists(os.path.join(self.repo, "topic.txt")))
+        self.assertEqual(
+            self.git_out(self.repo, "log", "-1", "--pretty=%s"),
+            'Revert "Merge topic"',
+        )
+
+    def test_foreign_local_commit_blocks_revert_and_pauses(self):
+        verify = os.path.join(self.repo, ".fabric", "verify.sh")
+        self._write(verify, "#!/bin/sh\nexit 1\n")
+        self.git_out(self.repo, "add", ".fabric/verify.sh")
+        self.git_out(self.repo, "commit", "-qm", "verify")
+        bare = self.setup_origin(self.repo)
+        origin_before = self.git_out(bare, "rev-parse", "refs/heads/main")
+        self.merge_topic()
+        self._write(os.path.join(self.repo, "fremd.txt"), "lokal\n")
+        self.git_out(self.repo, "add", "fremd.txt")
+        self.git_out(self.repo, "commit", "-qm", "fremd")
+        local_before = self.git_out(self.repo, "rev-parse", "HEAD")
+
+        tid = self.new("Roter main")
+        calls = []
+
+        def fake_sh(*args, **kwargs):
+            calls.append(args)
+            return 0, ""
+
+        with mock.patch.object(autopilot, "head", return_value=local_before), \
+                mock.patch.object(autopilot, "ensure_clean_main", return_value=True), \
+                mock.patch.object(autopilot, "_sh", side_effect=fake_sh), \
+                mock.patch.object(autopilot.time, "sleep"):
+            self.assertFalse(autopilot.try_accept(dict(
+                self.ticket(), id=tid,
+                checks={"state": "pass", "head": local_before},
+                verdict={"state": "pass", "head": local_before},
+            )))
+
+        self.assertTrue(autopilot._paused)
+        state = autopilot.read_state()
+        self.assertIn("fremde lokale Commits", state["reason"])
+        self.assertEqual(
+            self.git_out(self.repo, "rev-parse", "HEAD"), local_before
+        )
+        self.assertEqual(
+            self.git_out(bare, "rev-parse", "refs/heads/main"), origin_before
+        )
+        self.assertTrue(
+            any("fremde lokale Commits" in item["text"]
+                for item in alarm.status()["alarms"])
+        )
+        comments = [args[-1] for args in calls if args[:2] == ("fab", "comment")]
+        self.assertEqual(len(comments), 1)
+        self.assertIn("@orchestrator", comments[0])
+        self.assertIn("fremde lokale Commits", comments[0])
+
+    def test_push_failure_discards_local_revert_and_pauses(self):
+        verify = os.path.join(self.repo, ".fabric", "verify.sh")
+        self._write(verify, "#!/bin/sh\nexit 1\n")
+        self.git_out(self.repo, "add", ".fabric/verify.sh")
+        self.git_out(self.repo, "commit", "-qm", "verify")
+        bare = self.setup_origin(self.repo)
+        origin_before = self.git_out(bare, "rev-parse", "refs/heads/main")
+        merge_head = self.merge_topic()
+        hook = os.path.join(bare, "hooks", "pre-receive")
+        self._write(hook, "#!/bin/sh\nexit 1\n")
+        os.chmod(hook, 0o755)
+
+        tid = self.new("Roter main")
+        calls = []
+
+        def fake_sh(*args, **kwargs):
+            calls.append(args)
+            return 0, ""
+
+        with mock.patch.object(autopilot, "head", return_value=merge_head), \
+                mock.patch.object(autopilot, "ensure_clean_main", return_value=True), \
+                mock.patch.object(autopilot, "_sh", side_effect=fake_sh), \
+                mock.patch.object(autopilot.time, "sleep"):
+            self.assertFalse(autopilot.try_accept(dict(
+                self.ticket(), id=tid,
+                checks={"state": "pass", "head": merge_head},
+                verdict={"state": "pass", "head": merge_head},
+            )))
+
+        self.assertTrue(autopilot._paused)
+        state = autopilot.read_state()
+        self.assertIn("Push nach origin/main fehlgeschlagen", state["reason"])
+        self.assertIn("verworfen", state["reason"])
+        self.assertEqual(
+            self.git_out(self.repo, "rev-parse", "HEAD"), merge_head
+        )
+        self.assertEqual(
+            self.git_out(bare, "rev-parse", "refs/heads/main"), origin_before
+        )
+        self.assertTrue(
+            any("Push nach origin/main fehlgeschlagen" in item["text"]
+                for item in alarm.status()["alarms"])
+        )
+        comments = [args[-1] for args in calls if args[:2] == ("fab", "comment")]
+        self.assertEqual(len(comments), 1)
+        self.assertIn("@orchestrator", comments[0])
+        self.assertIn("Push nach origin/main fehlgeschlagen", comments[0])
+
+    def test_first_red_second_green_neither_revert_nor_pause(self):
+        tid = self.new("Wackliger main")
+        runs = [
+            {"state": "fail", "stdout": "rot", "stderr": "",
+             "run_id": 51, "reason": ""},
+            {"state": "pass", "stdout": "grün", "stderr": "",
+             "run_id": 52, "reason": ""},
+        ]
+        calls = []
+
+        def fake_sh(*args, **kwargs):
+            calls.append(args)
+            return 0, ""
+
+        with mock.patch.object(autopilot, "head", return_value=HEAD), \
+                mock.patch.object(autopilot, "ensure_clean_main", return_value=True), \
+                mock.patch.object(
+                    autopilot.pipeline, "run", side_effect=[*runs, *runs]
+                ), \
+                mock.patch.object(autopilot, "_sh", side_effect=fake_sh), \
+                mock.patch.object(autopilot.time, "sleep"), \
+                mock.patch.object(autopilot.git, "git") as git_cmd:
+            ok, out, err, run_id, reason = autopilot.check_main(self.repo)
+            self.assertTrue(ok)
+            self.assertEqual(out, "grün")
+            self.assertEqual(reason, "")
+            self.assertIsNotNone(run_id)
+            self.assertFalse(autopilot._paused)
+            self.assertTrue(autopilot.try_accept(dict(self.ticket(), id=tid)))
+
+        self.assertFalse(
+            any("revert" in call.args[0] for call in git_cmd.call_args_list
+                if call.args),
+            git_cmd.call_args_list,
+        )
+        self.assertFalse(autopilot._paused)
+        self.assertFalse(os.path.exists(autopilot.pause_path()))
+        self.assertEqual(
+            [args for args in calls if args[:2] == ("fab", "comment")], []
         )
 
     def test_revert_failure_still_pauses_and_reports_once(self):
@@ -587,58 +791,23 @@ class AutopilotCase(FabricCase):
         def fake_execute(command, cwd, timeout):
             return 1, "rot", "fehler"
 
-        revert = mock.Mock(returncode=1, stdout="", stderr="kaputt")
+        fetch_fail = mock.Mock(returncode=1, stdout="", stderr="kaputt")
         with mock.patch.object(autopilot, "head", return_value=HEAD), \
                 mock.patch.object(autopilot, "ensure_clean_main", return_value=True), \
                 mock.patch.object(autopilot.pipeline, "_execute", side_effect=fake_execute), \
                 mock.patch.object(autopilot, "_sh", side_effect=fake_sh), \
                 mock.patch.object(autopilot.time, "sleep"), \
-                mock.patch.object(autopilot.git, "git", return_value=revert):
+                mock.patch.object(autopilot.git, "git", return_value=fetch_fail):
             self.assertFalse(
                 autopilot.try_accept(dict(self.ticket(), id=tid))
             )
         self.assertTrue(autopilot._paused)
         self.assertTrue(os.path.exists(autopilot.pause_path()))
-        comments = [args for args in calls if args[:2] == ("fab", "comment")]
+        self.assertIn("nicht erreichbar", autopilot.read_state()["reason"])
+        comments = [args[-1] for args in calls if args[:2] == ("fab", "comment")]
         self.assertEqual(len(comments), 1)
-        self.assertIn("--no-wake", comments[0])
-
-    def test_main_check_on_real_no_ff_merge_commit(self):
-        """Lehre: Revert und main-Prüfung gegen einen echten Merge-Commit."""
-        verify = os.path.join(self.repo, ".fabric", "verify.sh")
-        self._write(verify, "#!/bin/sh\nexit 0\n")
-        self.git_out(self.repo, "add", ".fabric/verify.sh")
-        self.git_out(self.repo, "commit", "-qm", "verify")
-        self.git_out(self.repo, "checkout", "-qb", "topic")
-        self._write(os.path.join(self.repo, "topic.txt"), "inhalt\n")
-        self.git_out(self.repo, "add", "topic.txt")
-        self.git_out(self.repo, "commit", "-qm", "topic")
-        self.git_out(self.repo, "checkout", "-q", "main")
-        self.git_out(self.repo, "merge", "--no-ff", "-q", "-m", "Merge topic", "topic")
-
-        merge_head = self.git_out(self.repo, "rev-parse", "HEAD")
-        parents = self.git_out(
-            self.repo, "rev-list", "--parents", "-n", "1", "HEAD"
-        ).split()
-        self.assertEqual(len(parents), 3)  # echter Merge-Commit mit zwei Eltern
-
-        with mock.patch.object(autopilot.time, "sleep"):
-            ok, _out, _err, _run = autopilot.check_main(self.repo)
-        self.assertTrue(ok)
-
-        # Rot ohne den Merge zu ändern: der Revert muss den Merge zurücknehmen.
-        self._write(verify, "#!/bin/sh\nexit 1\n")
-        with mock.patch.object(autopilot.time, "sleep"):
-            ok, _out, _err, run_id = autopilot.check_main(self.repo)
-        self.assertFalse(ok)
-        self.assertIsNotNone(run_id)
-        self.assertEqual(
-            self.git_out(self.repo, "rev-parse", "HEAD^"), merge_head
-        )
-        self.assertFalse(os.path.exists(os.path.join(self.repo, "topic.txt")))
-        self.assertEqual(
-            self.git_out(self.repo, "log", "-1", "--pretty=%s"), "Revert \"Merge topic\""
-        )
+        self.assertIn("@orchestrator", comments[0])
+        self.assertIn("nicht erreichbar", comments[0])
 
     # -- Roter main: Anhänge und Fehlerzitat
 

@@ -268,7 +268,7 @@ class AcceptNoopTests(FabricCase):
                     autopilot, "ensure_clean_main", return_value=True
                 ), \
                 mock.patch.object(
-                    autopilot, "check_main", return_value=(True, "", "", 0)
+                    autopilot, "check_main", return_value=(True, "", "", 0, "")
                 ), \
                 mock.patch.object(autopilot, "write_state"):
             autopilot.once()
