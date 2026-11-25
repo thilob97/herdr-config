@@ -171,11 +171,6 @@ def _reap_abandoned():
             )
 
 
-def reap_abandoned():
-    """Öffentlicher Einstieg für Wartende, die einen toten Besitzer erkennen (T-143)."""
-    _reap_abandoned()
-
-
 def run(
     worktree,
     trigger="verify",
@@ -464,7 +459,7 @@ def wait_run(run_id, poll=0.05, on_queue=None):
     """Warten, bis der Lauf einen Endstatus hat, und ihn zurückgeben (T-143).
 
     Der Aufrufer ist nicht der Besitzer; lebt der Besitzer nicht mehr, wird der
-    Lauf wie beim nächsten Start aufgeräumt (`reap_abandoned`) und endet als
+    Lauf wie beim nächsten Start aufgeräumt (`_reap_abandoned`) und endet als
     Abbruch mit Grund. `on_queue` läuft genau einmal, sobald der Lauf in der
     Warteschlange steht.
     """
