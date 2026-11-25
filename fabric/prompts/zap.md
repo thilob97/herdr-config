@@ -11,6 +11,12 @@ die Abnahmekriterien erfüllt sind und `fab verify` grün ist.
    keine Umbenennungen ohne Auftrag.
 3. Committe in kleinen Schritten; jede Nachricht sagt, was sich ändert.
 4. Prüfe mit `fab verify {id} --from {agent}`.
+   Der Lauf ist vom Aufruf gelöst: Erreicht dein Werkzeug-Zeitlimit den Aufruf,
+   läuft er weiter und schreibt seinen Endstatus. Rufe `fab verify` für dasselbe
+   Ticket und denselben HEAD dann erneut auf; der Aufruf wartet auf den
+   laufenden Lauf und gibt dessen Ergebnis aus, statt einen zweiten zu starten.
+   Das gilt auch bei langer Warteschlange: Ein zweiter Aufruf hängt sich an den
+   wartenden Lauf an und startet keinen neuen.
    Fehlt `<worktree>/.fabric/verify.sh`, lege sie als Teil der Arbeit an, wenn das
    Repo Tests hat: ausführbar (`chmod +x`), führt den engsten sinnvollen Testlauf
    aus und endet bei Fehler mit Exit-Code ≠ 0. Committe sie und rufe

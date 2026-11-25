@@ -689,8 +689,10 @@ def gh_pr_merge(repo, url):
     raise FabError(f"PR-Merge ist fehlgeschlagen: {detail}")
 
 
-def run_verify(worktree, *, trigger="verify", ticket=None, repo=""):
+def run_verify(worktree, *, trigger="verify", ticket=None, repo="", on_start=None):
     """Pipeline im Worktree ausführen; Ergebnis wie bisher zuzüglich `run_id`."""
     from . import pipeline
 
-    return pipeline.run(worktree, trigger, ticket=ticket, repo=repo)
+    return pipeline.run(
+        worktree, trigger, ticket=ticket, repo=repo, on_start=on_start
+    )
