@@ -1,4 +1,4 @@
-"""Pfade, die `fab` selbst schreibt und in eigenen Commits auf main legt.
+"""Pfade, die `fab` selbst schreibt oder ungefragt auf main committet.
 
 Eine Definition für die Abnahme (`_sync_base` in `cli.py`) und den Autopilot
 (`ensure_clean_main` in `autopilot.py`). Belegte Committer:
@@ -7,6 +7,8 @@ Eine Definition für die Abnahme (`_sync_base` in `cli.py`) und den Autopilot
 - `fabric/roster.json` – `config.py:172`, `agents.py:56` (`chore(roster)`)
 - `fabric/prompts/` – `prompts.py:137` (`chore(prompt)`)
 - `fabric/templates/` – `templates.py:127` (`chore(template)`)
+- `settings.json`, `keys.json`, `layouts/` – schreibt Herdr; der Autopilot
+  committet sie als `chore: UI-Konfiguration (Autopilot)` (`autopilot.py:359-362`)
 """
 
 FABRIC_DIR = ".fabric/"
