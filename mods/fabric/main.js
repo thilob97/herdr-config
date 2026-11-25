@@ -209,6 +209,7 @@ export default class Fabric extends View {
     this.pipelineDetailLoading = null;
     this.pipelineOpen = {};
     this.pipelineFilter = null;
+    this.pipelineLimit = model.PIPELINE_PAGE;
     this.pipelineSearch = InputState.new({ placeholder: "Log durchsuchen…" });
     this.pipelineSearch.on("change", (_event, cx) => { this.notifyNow(); });
     this.track(this.pipelineSearch);

@@ -3019,3 +3019,40 @@ test("Blocker: offene und erledigte werden getrennt", () => {
   assert.deepEqual(blockerEntries({ id: "T-8", blocked_by: [] }, tickets), []);
 });
 
+
+test("Pipelines: Dauer nach Zustand – läuft seit Start, wartet, fertig (T-135)", async () => {
+  const { pipelineRunDuration } = await import("../model.js");
+  const now = 1_800_000_000_000;
+  assert.equal(
+    pipelineRunDuration({ state: "running", started_at: now - 20 * 60 * 1000, duration_ms: 0 }, now),
+    "20 min",
+    "ein seit 20 min laufender Lauf zeigt nicht „< 1 s“",
+  );
+  assert.equal(pipelineRunDuration({ state: "running", started_at: now - 5000, duration_ms: 0 }, now), "5,0 s");
+  assert.equal(pipelineRunDuration({ state: "queued", started_at: now, duration_ms: 0 }, now), "wartet");
+  assert.equal(pipelineRunDuration({ state: "pass", started_at: now - 99999, duration_ms: 42000 }, now), "42 s");
+  assert.equal(pipelineRunDuration({ state: "fail", duration_ms: 500 }, now), "< 1 s");
+});
+
+test("Pipelines: Liste zeigt die jüngsten 50, „Mehr laden“ je 50 (T-135)", async () => {
+  const { pipelineVisibleRuns, PIPELINE_PAGE } = await import("../model.js");
+  assert.equal(PIPELINE_PAGE, 50);
+  const rows = Array.from({ length: 254 }, (_, index) => ({ id: 254 - index }));
+
+  const first = pipelineVisibleRuns(rows);
+  assert.equal(first.visible.length, 50);
+  assert.equal(first.visible[0].id, 254, "jüngster zuerst");
+  assert.equal(first.hidden, 204);
+  assert.equal(first.next, 50);
+
+  const more = pipelineVisibleRuns(rows, first.visible.length + first.next);
+  assert.equal(more.visible.length, 100);
+
+  const last = pipelineVisibleRuns(rows, 250);
+  assert.equal(last.hidden, 4);
+  assert.equal(last.next, 4, "der letzte Schritt lädt nur den Rest");
+
+  const few = pipelineVisibleRuns(rows.slice(0, 12));
+  assert.equal(few.visible.length, 12);
+  assert.equal(few.hidden, 0, "kein Knopf bei wenigen Läufen");
+});

@@ -63,7 +63,7 @@ function runRow(app, cx, t, run) {
           .child(model.pipelineRunTarget(run)).tooltip(model.pipelineRunTarget(run)))
         .child(ui.chip(t, model.pipelineTriggerWord(run.trigger), t.dim))
         .child(div().flex_none().text_size(T.xs).text_color(t.dim)
-          .child(model.pipelineDuration(run.duration_ms))),
+          .child(model.pipelineRunDuration(run))),
     );
 }
 
@@ -77,8 +77,19 @@ function leftPane(app, cx, t, rows) {
     body = div().px(S.m).pb(S.s).text_size(T.xs).text_color(t.dim).whitespace_normal()
       .child(app.pipelineFilter ? `Keine Läufe für ${app.pipelineFilter}` : "Keine Läufe");
   } else {
+    // Nur die jüngsten Läufe zeichnen (T-135): Alle 250+ Zeilen auf einmal
+    // kosteten unter Last so viel, dass der Render-Schritt abbrach.
+    const page = model.pipelineVisibleRuns(rows, app.pipelineLimit);
     body = v_flex().flex_1().min_h(0).overflow_y_scrollbar().p(S.xs).gap(S.xs)
-      .children(rows.map((run) => runRow(app, cx, t, run)));
+      .children(page.visible.map((run) => runRow(app, cx, t, run)))
+      .when(page.hidden > 0, (el) => el.child(
+        div().w_full().py(S.s).flex().justify_center().child(ui.button(t, {
+          id: "fabric-pipeline-more",
+          label: `Mehr laden (${page.next} von ${page.hidden})`,
+          small: true,
+          onClick: (cx) => { app.pipelineLimit = page.visible.length + page.next; cx.notify(); },
+        })),
+      ));
   }
 
   return v_flex()
@@ -112,7 +123,7 @@ function detailHead(app, cx, t, run) {
   const ticket = run.ticket ? String(run.ticket) : "";
   const head = typeof run.head === "string" ? run.head : "";
   const branch = typeof run.branch === "string" ? run.branch : "";
-  const subtitle = `Branch ${branch || "—"} · ${model.pipelineDuration(run.duration_ms)} · ${startedText(run)}`;
+  const subtitle = `Branch ${branch || "—"} · ${model.pipelineRunDuration(run)} · ${startedText(run)}`;
   return ui.detailHeader(t, `Lauf #${run.id}`, [
     stateChip(t, state),
     ui.chip(t, model.pipelineTriggerWord(run.trigger), t.muted),

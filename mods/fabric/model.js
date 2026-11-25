@@ -3327,6 +3327,29 @@ export function pipelineDuration(ms) {
   return formatDuration(value);
 }
 
+/** Dauer eines Laufs nach Zustand (T-135): `running` zählt seit `started_at`
+ *  bis `now`, `queued` zeigt „wartet“, fertige Läufe ihre gespeicherte Dauer. */
+export function pipelineRunDuration(run, now = Date.now()) {
+  const state = pipelineState(run);
+  if (state === "queued") return "wartet";
+  if (state === "running") {
+    const started = Number(run?.started_at);
+    if (!Number.isFinite(started) || started <= 0) return "—";
+    return pipelineDuration(Math.max(0, Number(now) - started));
+  }
+  return pipelineDuration(run?.duration_ms);
+}
+
+export const PIPELINE_PAGE = 50;
+
+/** Sichtbare Läufe der Liste: die jüngsten `limit`, dazu wie viele fehlen. */
+export function pipelineVisibleRuns(rows, limit = PIPELINE_PAGE) {
+  const list = Array.isArray(rows) ? rows : [];
+  const count = Math.max(PIPELINE_PAGE, Number.isFinite(limit) ? Math.floor(limit) : PIPELINE_PAGE);
+  const visible = list.slice(0, count);
+  return { visible, hidden: list.length - visible.length, next: Math.min(PIPELINE_PAGE, list.length - visible.length) };
+}
+
 /** Ziel eines Laufs: Ticket, sonst die ersten acht Zeichen des Heads. */
 export function pipelineRunTarget(run) {
   const ticket = typeof run?.ticket === "string" ? run.ticket.trim() : "";

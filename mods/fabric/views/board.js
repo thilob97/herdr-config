@@ -159,18 +159,22 @@ function card(app, cx, t, ticket) {
     .child(titleBlock(app, t, ticket))
     .child(
       h_flex().w_full().gap(S.s).items_center()
+        // Zuständiger links (kürzt sich), Kommentarzahl und Zeit rechts fest:
+        // Ohne `overflow_hidden` lief der linke Block bei schmalen Karten in
+        // die Zeitangabe („10vor 5 min“).
         .child(
-          h_flex().flex_1().min_w(0).gap(S.xs).items_center()
+          h_flex().flex_1().min_w(0).overflow_hidden().gap(S.xs).items_center()
             .when(Boolean(ticket.assignee), (el) => el
-              .child(ui.avatar(t, ticket.assignee, app.agentColor(ticket.assignee), 18))
-              .child(div().text_size(T.xs).text_color(t.muted).min_w(40).truncate().child(ticket.assignee)))
+              .child(div().flex_none().child(ui.avatar(t, ticket.assignee, app.agentColor(ticket.assignee), 18)))
+              .child(div().flex_1().min_w(0).text_size(T.xs).text_color(t.muted).truncate().child(ticket.assignee)
+                .tooltip(ticket.assignee)))
             .when(!ticket.assignee, (el) => el
-              .child(div().text_size(T.xs).text_color(t.dim).truncate().child("Nicht zugewiesen")))
-            .when(comments > 0, (el) => el
-              .child(h_flex().flex_none().gap(S.xs).items_center()
-                .child(div().text_color(t.dim).child(ui.icon("lines", 11)))
-                .child(div().text_size(T.xs).text_color(t.dim).child(String(comments))))),
+              .child(div().flex_1().min_w(0).text_size(T.xs).text_color(t.dim).truncate().child("Nicht zugewiesen"))),
         )
+        .when(comments > 0, (el) => el
+          .child(h_flex().flex_none().gap(S.xs).items_center()
+            .child(div().text_color(t.dim).child(ui.icon("lines", 11)))
+            .child(div().text_size(T.xs).text_color(t.dim).child(String(comments)))))
         .child(div().flex_none().text_size(T.xs).text_color(t.dim).child(model.relativeTime(ticket.updated_at))),
     )
     .child(
