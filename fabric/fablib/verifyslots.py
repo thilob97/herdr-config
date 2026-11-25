@@ -222,12 +222,14 @@ def _try_acquire(directory, count):
     return None
 
 
-def acquire(limit, on_wait=None, timeout=None):
+def acquire(limit, on_wait=None, timeout=None, on_poll=None, poll_every=30.0):
     """Einen Slot belegen; `on_wait` läuft genau einmal, bevor gewartet wird.
 
     `timeout` ist das Warte-Zeitlimit in Sekunden (Standard: `wait_timeout()`).
     Danach endet der Aufruf mit `FabError` statt endlos zu hängen; der Lauf
-    wird dadurch als `fail` gespeichert.
+    wird dadurch als `fail` gespeichert. `on_poll` läuft beim Warten alle
+    `poll_every` Sekunden, damit ein stillstehender Lauf seinen Slot an den
+    Wartenden freigeben muss (T-145).
     """
     try:
         count = int(limit)
@@ -244,6 +246,7 @@ def acquire(limit, on_wait=None, timeout=None):
     directory = slot_dir()
     announced = False
     began = time.monotonic()
+    polled = began
     while True:
         slot = _try_acquire(directory, count)
         if slot is not None:
@@ -259,4 +262,7 @@ def acquire(limit, on_wait=None, timeout=None):
             announced = True
             if on_wait is not None:
                 on_wait()
+        if on_poll is not None and time.monotonic() - polled >= poll_every:
+            polled = time.monotonic()
+            on_poll()
         time.sleep(0.05)

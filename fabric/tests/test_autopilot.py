@@ -593,7 +593,7 @@ class AutopilotCase(FabricCase):
         )
         results = iter([(1, "rot", "fehler"), (0, "grün", "")])
 
-        def fake(command, cwd, timeout):
+        def fake(command, cwd, timeout, **_step):
             return next(results)
 
         with mock.patch.object(autopilot.pipeline, "_execute", side_effect=fake), \
@@ -839,7 +839,7 @@ class AutopilotCase(FabricCase):
             calls.append(args)
             return 0, ""
 
-        def fake_execute(command, cwd, timeout):
+        def fake_execute(command, cwd, timeout, **_step):
             return 1, "rot", "fehler"
 
         fetch_fail = mock.Mock(returncode=1, stdout="", stderr="kaputt")
@@ -871,7 +871,7 @@ class AutopilotCase(FabricCase):
         )
         calls = []
 
-        def fake_execute(command, cwd, timeout):
+        def fake_execute(command, cwd, timeout, **_step):
             return 1, stdout, stderr
 
         def fake_sh(*args, **kwargs):

@@ -3,7 +3,9 @@ import contextlib
 import io
 import json
 import os
+import subprocess
 import sys
+import time
 from unittest import mock
 
 from fabric.fablib import pipeline, store, verifyslots
@@ -146,6 +148,103 @@ class PipelineTest(PipelineCase):
             run = store.pipeline_run_load(result["run_id"])
         self.assertEqual(run["reason"], result["reason"])
 
+    # -- Stillstand (T-145)
+
+    def test_stiller_schritt_bricht_ab_und_gibt_den_platz_frei(self):
+        repo = self.make_repo()
+        marker = os.path.join(self.tmp, "enkel-lebt")
+        # Ein Enkel hält die Ausgabe offen und schreibt nichts mehr; das ist
+        # der Fall vom 25.11. (hängende Testprozesse unter run_parallel).
+        self.write_steps(
+            repo,
+            [{"name": "haengt", "run": (
+                f"echo los; (sleep 60; touch {marker}) & sleep 60"
+            )}],
+        )
+        with mock.patch.dict(os.environ, {"FAB_VERIFY_STALL": "0.5"}):
+            started = time.monotonic()
+            result = self.run_pipeline(repo, ticket="T-45")
+            elapsed = time.monotonic() - started
+
+        self.assertLess(elapsed, 20)
+        self.assertEqual(result["state"], "fail")
+        self.assertTrue(
+            result["reason"].startswith("Abbruch: stillstehender Lauf"),
+            result["reason"],
+        )
+        self.assertIn("im Schritt haengt", result["reason"])
+        self.assertIn("los", result["stdout"])
+        with self.store_env():
+            run = store.pipeline_run_load(result["run_id"])
+            self.assertEqual(run["reason"], result["reason"])
+            # Beide Plätze sind frei: Ein neuer Lauf belegt sofort einen.
+            for _ in range(verifyslots.limit()):
+                slot = verifyslots.acquire(verifyslots.limit(), timeout=0)
+                self.addCleanup(slot.release)
+        self.assertFalse(os.path.exists(marker))
+
+    def test_gesunder_schritt_mit_laufender_ausgabe_bleibt(self):
+        repo = self.make_repo()
+        self.write_steps(
+            repo,
+            [{"name": "zaehlt", "run": (
+                "for i in $(seq 1 15); do echo $i; sleep 0.2; done"
+            )}],
+        )
+        # Der Schritt läuft länger als die Frist, schreibt aber laufend.
+        with mock.patch.dict(os.environ, {"FAB_VERIFY_STALL": "2"}):
+            result = self.run_pipeline(repo, ticket="T-46")
+        self.assertEqual(result["state"], "pass", result["reason"])
+        self.assertEqual(result["reason"], "")
+        self.assertIn("15", result["stdout"])
+
+    def test_haengender_besitzer_wird_beim_naechsten_zugriff_abgeraeumt(self):
+        repo = self.make_repo()
+        with self.store_env():
+            run_id = store.pipeline_run_new(
+                trigger="verify", ticket="T-47", repo=repo, worktree=repo,
+                branch="main", head="abc", state="queued",
+            )
+            store.pipeline_step_add(run_id, 0, "unittest", "true", "pending")
+            store.pipeline_run_start(run_id)
+            store.pipeline_step_update(run_id, 0, state="running")
+            # Ein lebender Besitzer hält die Besitzdatei, schreibt aber nichts.
+            owner = subprocess.Popen(
+                [sys.executable, "-c", (
+                    "import fcntl, os, sys, time\n"
+                    "fd = os.open(sys.argv[1], os.O_CREAT | os.O_RDWR)\n"
+                    "fcntl.flock(fd, fcntl.LOCK_EX)\n"
+                    "os.ftruncate(fd, 0); os.write(fd, str(os.getpid()).encode())\n"
+                    "print('bereit', flush=True)\n"
+                    "time.sleep(120)\n"
+                ), verifyslots.run_path(run_id)],
+                stdout=subprocess.PIPE, text=True, start_new_session=True,
+            )
+            self.addCleanup(owner.stdout.close)
+            self.addCleanup(lambda: owner.poll() is None and owner.kill())
+            self.assertEqual(owner.stdout.readline().strip(), "bereit")
+            base = pipeline._step_base(run_id, 0)
+            for suffix in (".out", ".err"):
+                self._write(base + suffix, "alt\n")
+                os.utime(base + suffix, (1000, 1000))
+
+            # Frisch geschrieben: gesund, bleibt unberührt.
+            pipeline._reap_abandoned(stall=600, now=1000 + 30)
+            self.assertEqual(store.pipeline_run_load(run_id)["state"], "running")
+            self.assertIsNone(owner.poll())
+
+            # Weit über der Frist: Besitzer beendet, Lauf mit Grund zu.
+            pipeline._reap_abandoned(stall=600, now=1000 + 3600)
+            run = store.pipeline_run_load(run_id)
+        self.assertEqual(run["state"], "fail")
+        self.assertTrue(
+            run["reason"].startswith("Abbruch: stillstehender Lauf"), run["reason"]
+        )
+        owner.wait(timeout=10)
+        with self.store_env():
+            self.assertTrue(verifyslots.abandoned(run_id))
+            self.assertEqual(store.pipeline_steps(run_id)[0]["state"], "fail")
+
     def test_alle_schritte_sind_beim_start_pending(self):
         repo = self.make_repo()
         self.write_steps(
@@ -201,7 +300,7 @@ class PipelineTest(PipelineCase):
         )
         calls = []
 
-        def abort(command, cwd, timeout):
+        def abort(command, cwd, timeout, **_step):
             calls.append(command)
             if len(calls) == 2:
                 raise FabError("abgebrochen")
@@ -239,7 +338,7 @@ class PipelineTest(PipelineCase):
         cleaning = {"active": False}
         real_update = store.pipeline_step_update
 
-        def execute(command, cwd, timeout):
+        def execute(command, cwd, timeout, **_step):
             cleaning["active"] = True
             raise original
 
@@ -334,7 +433,7 @@ class PipelineTest(PipelineCase):
         cleaning = {"active": False}
         real_update = store.pipeline_step_update
 
-        def execute(command, cwd, timeout):
+        def execute(command, cwd, timeout, **_step):
             cleaning["active"] = True
             raise original
 

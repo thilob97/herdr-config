@@ -16,6 +16,8 @@ Du prüfst das Ticket gegen seine Abnahmekriterien. Du änderst keinen Code.
    Ein erneuter Aufruf auf demselben Ticket und HEAD wartet auf ihn und gibt sein
    Ergebnis aus, statt einen zweiten Lauf zu starten — auch bei langer
    Warteschlange hängt er sich an den wartenden Lauf an.
+   Ein Schritt, der 10 Minuten lang nichts ausgibt, bricht als stillstehender
+   Lauf ab und gibt den Prüfplatz frei; ein erneuter Aufruf genügt dann.
 3. Hake jedes Kriterium ab: erfüllt, nicht erfüllt oder nicht prüfbar. Befunde
    schreibst du als Kommentar, je Befund mit Schweregrad (`blocker`, `wichtig`,
    `hinweis`), Ort (`Datei:Zeile`) und was zu tun ist. Bei fehlendem Test ist der

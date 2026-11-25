@@ -13,6 +13,7 @@ Besitzdatei des Laufs zeigt dabei, ob sein Prozess noch lebt.
 """
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -32,6 +33,35 @@ OPEN_STATES = ("queued", "running")
 ABORT_EXIT = 3
 ABORT_PREFIX = "Abbruch: "
 TAIL_LINES = 20
+
+# T-145: Ein Schritt ohne neue Ausgabe gilt nach dieser Frist als stillstehend
+# und wird samt seiner Prozessgruppe beendet. `FAB_VERIFY_STALL` (Sekunden)
+# überschreibt den Standard.
+STALL_DEFAULT = 600.0
+STALL_EXIT = 125
+STALL_MARK = "Stillstand: "
+KILL_GRACE = 5.0
+POLL = 0.1
+
+
+def stall_seconds():
+    """Stillstands-Frist eines Schritts in Sekunden; 0 schaltet sie ab."""
+    raw = os.environ.get("FAB_VERIFY_STALL")
+    if raw is None or not str(raw).strip():
+        return STALL_DEFAULT
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return STALL_DEFAULT
+    return value if value >= 0 else STALL_DEFAULT
+
+
+def _step_base(run_id, position):
+    return os.path.join(verifyslots.run_dir(), f"run-{int(run_id)}-{int(position)}")
+
+
+def _group_path(run_id):
+    return os.path.join(verifyslots.run_dir(), f"run-{int(run_id)}.pgid")
 
 
 def _steps_path(worktree):
@@ -83,24 +113,130 @@ def _decode(value):
     return value or ""
 
 
-def _execute(command, cwd, timeout):
-    """(code, stdout, stderr); Timeout endet mit 124 und einem Hinweis auf stderr."""
+def _size(path):
     try:
-        result = subprocess.run(
-            ["sh", "-c", command],
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
+        return os.path.getsize(path)
+    except OSError:
+        return 0
+
+
+def _read_text(path):
+    try:
+        with open(path, "rb") as handle:
+            return handle.read().decode("utf-8", "replace")
+    except OSError:
+        return ""
+
+
+def _remove(*paths):
+    for path in paths:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def _group_alive(pgid):
+    try:
+        os.killpg(pgid, 0)
+    except (ProcessLookupError, PermissionError):
+        return False
+    return True
+
+
+def _kill_group(pgid, grace=KILL_GRACE, proc=None):
+    """Prozessgruppe mit SIGTERM beenden, nach `grace` Sekunden mit SIGKILL.
+
+    `proc` ist der eigene Kindprozess der Gruppe; er wird beim Warten
+    eingesammelt, sonst hielte sein Zombie die Gruppe scheinbar am Leben.
+    """
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        return
+    deadline = time.monotonic() + grace
+    while time.monotonic() < deadline:
+        if proc is not None:
+            proc.poll()
+        if not _group_alive(pgid):
+            return
+        time.sleep(POLL)
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+def _execute(command, cwd, timeout, run_id=None, position=None, stall=None):
+    """(code, stdout, stderr) eines Schritts.
+
+    Der Schritt läuft in einer eigenen Prozessgruppe und schreibt in Dateien
+    statt in Pipes (T-145): Ein hängender Enkelprozess mit offener Pipe hält
+    den Lauf so nicht fest. Zeitlimit (124, Hinweis `Timeout nach …`) und
+    Stillstand (`STALL_EXIT`, Hinweis `Stillstand: …`, keine neue Ausgabe für
+    `stall` Sekunden) beenden die ganze Gruppe. Nach dem Ende wird die Gruppe
+    ebenfalls beendet, damit keine Reste des Schritts weiterlaufen.
+    """
+    stall = stall_seconds() if stall is None else stall
+    if run_id is not None and position is not None:
+        base = _step_base(run_id, position)
+    else:
+        base = os.path.join(
+            verifyslots.run_dir(), f"step-{os.getpid()}-{time.time_ns()}"
         )
-        return result.returncode, result.stdout or "", result.stderr or ""
-    except subprocess.TimeoutExpired as exc:
-        out = _decode(exc.stdout)
-        err = _decode(exc.stderr)
-        err += f"\nTimeout nach {timeout} s"
-        return 124, out, err
+    out_path, err_path = base + ".out", base + ".err"
+    try:
+        with open(out_path, "wb") as out_file, open(err_path, "wb") as err_file:
+            proc = subprocess.Popen(
+                ["sh", "-c", command],
+                cwd=cwd,
+                stdin=subprocess.DEVNULL,
+                stdout=out_file,
+                stderr=err_file,
+                start_new_session=True,
+            )
     except FileNotFoundError:
+        _remove(out_path, err_path)
         raise FabError("sh ist nicht vorhanden")
+    if run_id is not None:
+        store.atomic_write(_group_path(run_id), f"{proc.pid}\n")
+    began = time.monotonic()
+    last = began
+    seen = -1
+    outcome = None
+    try:
+        while proc.poll() is None:
+            now = time.monotonic()
+            current = _size(out_path) + _size(err_path)
+            if current != seen:
+                seen = current
+                last = now
+            if timeout is not None and now - began >= timeout:
+                outcome = "timeout"
+                break
+            if stall and now - last >= stall:
+                outcome = "stall"
+                break
+            time.sleep(POLL)
+    finally:
+        # Auch bei einem Abbruch von außen (KeyboardInterrupt, SIGTERM als
+        # Ausnahme) bleibt nichts von diesem Schritt am Leben; nach einem
+        # normalen Ende enden übrig gebliebene Enkel der Gruppe.
+        _kill_group(proc.pid, proc=proc)
+        try:
+            proc.wait(timeout=KILL_GRACE)
+        except subprocess.TimeoutExpired:
+            pass
+        out = _read_text(out_path)
+        err = _read_text(err_path)
+        _remove(out_path, err_path)
+        if run_id is not None:
+            _remove(_group_path(run_id))
+    if outcome == "timeout":
+        return 124, out, err + f"\nTimeout nach {timeout} s"
+    if outcome == "stall":
+        return STALL_EXIT, out, err + f"\n{STALL_MARK}{stall:g} s ohne Ausgabe"
+    return proc.returncode, out, err
 
 
 def _tail(parts, limit=TAIL_LINES):
@@ -111,15 +247,21 @@ def _tail(parts, limit=TAIL_LINES):
 def _abort_reason(name, code, out, err, timeout):
     """Grund für einen Abbruch dieses Schritts; "" bei gewöhnlichem Rot (T-127).
 
-    Erkannt werden drei Arten, die kein Testfehler sind: das Zeitlimit des
-    Schritts (124 mit Hinweis), ein per Signal beendeter Schrittprozess
-    (negativer Rückgabewert) und ein von `run_parallel.py` gemeldeter
-    Signalabbruch (`ABORT_EXIT` mit `Abbruch: `-Zeile).
+    Erkannt werden vier Arten, die kein Testfehler sind: das Zeitlimit des
+    Schritts (124 mit Hinweis), ein Stillstand ohne Ausgabe (`STALL_EXIT` mit
+    Hinweis, T-145), ein per Signal beendeter Schrittprozess (negativer
+    Rückgabewert) und ein von `run_parallel.py` gemeldeter Signalabbruch
+    (`ABORT_EXIT` mit `Abbruch: `-Zeile).
     """
     if code < 0:
         return f"{ABORT_PREFIX}Signal {-code} im Schritt {name}"
     if code == 124 and f"Timeout nach {timeout} s" in (err or ""):
         return f"{ABORT_PREFIX}Zeitlimit nach {timeout} s im Schritt {name}"
+    if code == STALL_EXIT:
+        for line in (err or "").splitlines():
+            if line.startswith(STALL_MARK):
+                detail = line[len(STALL_MARK):].strip()
+                return f"{ABORT_PREFIX}stillstehender Lauf ({detail}) im Schritt {name}"
     if code == ABORT_EXIT:
         for line in (out or "").splitlines() + (err or "").splitlines():
             if line.startswith(ABORT_PREFIX):
@@ -127,41 +269,109 @@ def _abort_reason(name, code, out, err, timeout):
     return ""
 
 
-def _reap_abandoned():
-    """Läufe ohne lebenden Besitzer auf einen Endstatus setzen (T-113).
+def _close_run(row, reason):
+    """Offene Schritte und den Lauf bedingt auf ihren Abbruch-Endstatus setzen."""
+    for step in store.pipeline_steps(row["id"]):
+        wanted = {"running": "fail", "pending": "skipped"}.get(step["state"])
+        if wanted is not None:
+            store.pipeline_step_transition(
+                row["id"], step["position"], step["state"], wanted
+            )
+    started = row.get("started_at") or store.now_ms()
+    store.pipeline_run_finish_if_open(
+        row["id"], "fail", max(0, store.now_ms() - started), reason
+    )
+
+
+def _last_activity(run_id, position):
+    """Letzte Ausgabe (mtime, Sekunden) des laufenden Schritts; None ohne Datei."""
+    base = _step_base(run_id, position)
+    times = []
+    for path in (base + ".out", base + ".err"):
+        try:
+            times.append(os.path.getmtime(path))
+        except OSError:
+            pass
+    return max(times) if times else None
+
+
+def _read_pid(path):
+    try:
+        with open(path, encoding="ascii") as handle:
+            text = handle.read().strip()
+    except OSError:
+        return None
+    return int(text) if text.isdigit() else None
+
+
+def _stalled(row, stall, now):
+    """Steht der Lauf eines lebenden Besitzers seit mehr als der Frist still?
+
+    Normalerweise beendet der Besitzer einen stillen Schritt selbst nach
+    `stall` Sekunden. Erst wenn das deutlich länger ausbleibt (Besitzer hängt),
+    greift das Aufräumen ein.
+    """
+    if not stall or row.get("state") != "running":
+        return False
+    running = [
+        step for step in store.pipeline_steps(row["id"])
+        if step["state"] == "running"
+    ]
+    if not running:
+        return False
+    last = _last_activity(row["id"], running[0]["position"])
+    if last is None:
+        return False
+    return now - last > stall + 2 * KILL_GRACE + 60
+
+
+def _reap_abandoned(stall=None, now=None):
+    """Verwaiste und stillstehende Läufe auf einen Endstatus setzen (T-113, T-145).
 
     Ein per `SIGKILL` beendeter Lauf kann seine Schritte und seinen Endstatus
     nicht mehr selbst schreiben. Der Kernel hat seine Besitzdatei aus
     `verifyslots` freigegeben; bekommt der nächste Laufstart sie, ist der Lauf
     verwaist. Er endet wie im Ausnahme-Aufräumen von `run()`: `running`-Schritte
-    `fail`, `pending`-Schritte `skipped`, Lauf `fail`. Lebende Läufe behalten
-    ihre Sperre und bleiben unberührt.
+    `fail`, `pending`-Schritte `skipped`, Lauf `fail`.
+
+    Ein lebender Besitzer, dessen laufender Schritt länger als die
+    Stillstands-Frist keine Ausgabe geschrieben hat, hängt selbst (T-145): Seine
+    Schritt-Prozessgruppe und er selbst werden beendet, der Lauf endet mit
+    `Abbruch: stillstehender Lauf …` und gibt seinen Prüfplatz frei. Gesunde
+    lebende Läufe bleiben unberührt.
 
     Die Liste und die Besitzprüfung sind nur ein Vorfilter: Zwischen beiden
     kann der Besitzer fertig werden. Geschrieben wird deshalb ausschließlich
     bedingt (`pipeline_step_transition`, `pipeline_run_finish_if_open`) – ein
     bereits beendeter Lauf samt fertigen Schritten bleibt unangetastet.
     """
+    stall = stall_seconds() if stall is None else stall
+    now = time.time() if now is None else now
     for row in store.pipeline_run_list():
-        if row.get("state") not in ("queued", "running"):
+        if row.get("state") not in OPEN_STATES:
             continue
         try:
-            if not verifyslots.abandoned(row["id"]):
-                continue
-            for step in store.pipeline_steps(row["id"]):
-                wanted = {"running": "fail", "pending": "skipped"}.get(
-                    step["state"]
+            if verifyslots.abandoned(row["id"]):
+                _close_run(
+                    row,
+                    f"{ABORT_PREFIX}verwaister Lauf (Besitzer ohne Endstatus beendet)",
                 )
-                if wanted is not None:
-                    store.pipeline_step_transition(
-                        row["id"], step["position"], step["state"], wanted
-                    )
-            started = row.get("started_at") or store.now_ms()
-            store.pipeline_run_finish_if_open(
-                row["id"],
-                "fail",
-                max(0, store.now_ms() - started),
-                f"{ABORT_PREFIX}verwaister Lauf (Besitzer ohne Endstatus beendet)",
+                continue
+            if not _stalled(row, stall, now):
+                continue
+            group = _read_pid(_group_path(row["id"]))
+            if group is not None:
+                _kill_group(group)
+            owner = _read_pid(verifyslots.run_path(row["id"]))
+            if owner is not None and owner != os.getpid():
+                try:
+                    os.kill(owner, signal.SIGTERM)
+                except (ProcessLookupError, PermissionError):
+                    pass
+            _close_run(
+                row,
+                f"{ABORT_PREFIX}stillstehender Lauf (über {stall:g} s ohne "
+                "Ausgabe, Besitzer reagierte nicht)",
             )
         except Exception as error:  # noqa: BLE001 - Aufräumen darf nichts klemmen
             print(
@@ -239,6 +449,7 @@ def run(
         capacity = verifyslots.limit()
         slot = verifyslots.acquire(
             capacity,
+            on_poll=_reap_abandoned,
             on_wait=lambda: print(
                 f"Lauf #{run_id}: in der Warteschlange "
                 f"(max. {capacity} gleichzeitig)",
@@ -268,7 +479,9 @@ def run(
 
             store.pipeline_step_update(run_id, position, state="running")
             step_start = store.now_ms()
-            code, out, err = _execute(command, worktree, step_timeout)
+            code, out, err = _execute(
+                command, worktree, step_timeout, run_id=run_id, position=position
+            )
             duration = store.now_ms() - step_start
             state = "pass" if code == 0 else "fail"
             store.pipeline_step_update(

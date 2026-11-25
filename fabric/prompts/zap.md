@@ -17,6 +17,8 @@ die Abnahmekriterien erfüllt sind und `fab verify` grün ist.
    laufenden Lauf und gibt dessen Ergebnis aus, statt einen zweiten zu starten.
    Das gilt auch bei langer Warteschlange: Ein zweiter Aufruf hängt sich an den
    wartenden Lauf an und startet keinen neuen.
+   Ein Schritt, der 10 Minuten lang nichts ausgibt, bricht als stillstehender
+   Lauf ab und gibt den Prüfplatz frei; ein erneuter `fab verify` genügt dann.
    Fehlt `<worktree>/.fabric/verify.sh`, lege sie als Teil der Arbeit an, wenn das
    Repo Tests hat: ausführbar (`chmod +x`), führt den engsten sinnvollen Testlauf
    aus und endet bei Fehler mit Exit-Code ≠ 0. Committe sie und rufe
