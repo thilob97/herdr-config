@@ -415,7 +415,7 @@ Der Kontext des Team-Orchestrators bleibt begrenzt. Zähler und Leerlauf werden 
 
 ## 4d. Autopilot `fab autopilot`
 
-`fab autopilot start` startet die Schleife als hc-Terminal `autopilot` ohne Parent im Haupt-Checkout. `--until HH:MM` setzt die Endzeit (heute, sonst morgen), `--until done` beendet erst, wenn nichts mehr offen ist. `stop` beendet das Terminal, `resume` hebt eine Pause auf, `status` zeigt den Status; `status --json` gibt genau die Statusdatei aus.
+`fab autopilot start` startet die Schleife als hc-Terminal `autopilot` ohne Parent im Haupt-Checkout des Repos, aus dem er aufgerufen wird; außerhalb eines Git-Repos bricht er mit Meldung ab, statt im aktuellen Ordner zu starten (`fabric/fablib/autopilot.py`, `start`). `--until HH:MM` setzt die Endzeit (heute, sonst morgen), `--until done` beendet erst, wenn nichts mehr offen ist. `stop` beendet das Terminal, `resume` hebt eine Pause auf, `status` zeigt den Status; `status --json` gibt genau die Statusdatei aus.
 
 Die Schleife läuft alle 120 s:
 

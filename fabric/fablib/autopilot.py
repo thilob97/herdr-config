@@ -696,7 +696,13 @@ def start(until="done", cwd=None):
     """Autopilot-Terminal starten; ein zweiter Start bricht mit Meldung ab."""
     value = until or "done"
     end = parse_until(value)
-    repo = _repo_root(cwd)
+    folder = os.path.abspath(cwd or os.getcwd())
+    repo = git.main_toplevel(folder)
+    if not repo:
+        raise FabError(
+            f"{folder} ist kein Git-Repository; fab autopilot start im Checkout "
+            "des Repos ausführen (z. B. cd ~/.config/herdr-app)"
+        )
     if TERMINAL in hc.live():
         raise FabError("Autopilot läuft schon (Terminal autopilot)")
     answer = hc.run(

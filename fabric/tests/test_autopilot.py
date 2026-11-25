@@ -305,17 +305,22 @@ class AutopilotCase(FabricCase):
     # -- start/stop/resume/status
 
     def test_start_uses_terminal_without_prompt(self):
+        repo = self.make_repo("start-repo")
+        sub = os.path.join(repo, "fabric")
+        os.makedirs(sub, exist_ok=True)
         with mock.patch.object(
                 autopilot.hc, "live", return_value={}), \
                 mock.patch.object(
                     autopilot.hc, "run", return_value={"address": "t1"}
                 ) as run:
-            result = autopilot.start("08:00", cwd=self.tmp)
+            # Aus einem Unterordner startet er im Haupt-Checkout.
+            result = autopilot.start("08:00", cwd=sub)
+        top = autopilot.git.main_toplevel(repo)
         self.assertTrue(result["started"])
-        self.assertEqual(result["repo"], os.path.abspath(self.tmp))
+        self.assertEqual(result["repo"], top)
         run.assert_called_once_with(
             name="autopilot",
-            cwd=os.path.abspath(self.tmp),
+            cwd=top,
             argv=[autopilot.sys.executable, autopilot.FAB, "autopilot", "run", "--until", "08:00"],
             prompt=None,
             labels={"fab.role": "autopilot"},
@@ -323,9 +328,24 @@ class AutopilotCase(FabricCase):
         self.assertEqual(autopilot.read_state()["state"], "running")
         self.assertTrue(autopilot.read_state()["end"])
 
+    def test_start_ohne_repo_bricht_ab(self):
+        folder = os.path.join(self.tmp, "kein-repo")
+        os.makedirs(folder)
+        with mock.patch.object(
+                autopilot.hc, "live", return_value={}), \
+                mock.patch.object(autopilot.hc, "run") as run:
+            with self.assertRaises(FabError) as caught:
+                autopilot.start("08:00", cwd=folder)
+        self.assertIn(folder, str(caught.exception))
+        self.assertIn("Checkout", str(caught.exception))
+        run.assert_not_called()
+        self.assertEqual(autopilot.read_state(), {})
+
     def test_start_twice_aborts_with_message(self):
         self.set_live({"autopilot": "t9"})
-        result = self.cli("autopilot", "start", "--until", "08:00")
+        result = self.cli(
+            "autopilot", "start", "--until", "08:00", cwd=self.default_repo()
+        )
         self.assertNotEqual(result.returncode, 0, result.stdout)
         self.assertIn("Autopilot läuft schon", result.stderr)
         self.assertEqual(autopilot.read_state(), {})
