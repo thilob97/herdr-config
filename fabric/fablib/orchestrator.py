@@ -138,11 +138,32 @@ def clear_start(team_entry):
     store.meta_set(_start_key(_team_name(team_entry)), "")
 
 
+def _turn_done(terminal):
+    """Hat das für diesen Versuch gestartete Terminal einen Turn abgeschlossen?
+
+    `hc get` meldet `turn` als Zahl abgeschlossener Turns; fehlt das Feld
+    (andere Agenten), bleibt es beim bisherigen Verhalten. Nur das im
+    Startzustand vermerkte Terminal zählt: Ein Turn eines früheren Terminals
+    liegt vor dem Start und beantwortet ihn nicht.
+    """
+    if not terminal:
+        return False
+    try:
+        data = hc.get(str(terminal))
+    except HcError:
+        return False
+    turn = data.get("turn")
+    return isinstance(turn, int) and turn > 0
+
+
 def start_action(roster, team_entry, row, state, now=None):
     """Was mit einem offenen Startzustand geschieht.
 
-    `answered` heißt: ein `orchestrator`-Ereignis des Teams seit dem Start
-    oder ein beschäftigter Terminal-Status. `retry`/`fail` folgen erst nach
+    `answered` heißt: ein `orchestrator`-Ereignis des Teams seit dem Start,
+    ein beschäftigter Terminal-Status oder ein abgeschlossener Turn des für
+    diesen Versuch gestarteten Terminals (`hc get`: `turn > 0`). Ein reiner
+    Lesedurchlauf ohne fab-Ereignis gilt damit als Antwort; ein Turn eines
+    früheren Terminals zählt nicht. `retry`/`fail` folgen erst nach
     `START_GRACE_MINUTES`; `failed` bleibt liegen, bis jemand eingreift.
     """
     if not state:
@@ -152,6 +173,7 @@ def start_action(roster, team_entry, row, state, now=None):
     answered = (
         _activity_ms(roster, team_name, rows) >= int(state.get("at") or 0)
         or agents.status(row) in agents.BUSY_STATUSES
+        or _turn_done(state.get("terminal"))
     )
     if answered:
         return "answered"

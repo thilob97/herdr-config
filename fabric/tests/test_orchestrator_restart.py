@@ -465,3 +465,78 @@ class OrchestratorRestartCase(FabricCase):
         self.assertEqual(self.hc_calls("run"), [])
         self.assertFalse(self.start_state())
         self.assert_no_attention(now + 6 * MINUTE)
+
+    # -- Lesedurchlauf ohne Ereignis (T-141)
+
+    def test_lesedurchlauf_ohne_ereignis_gilt_als_antwort(self):
+        """Ein abgeschlossener Turn ohne fab-Ereignis beantwortet den Start."""
+        now = self.now()
+        tid = self.ticket_id()
+        self.set_orchestrator()
+        self.set_last_tick(now - MINUTE)
+        self.orchestrator_comment(tid, now - 31 * MINUTE)
+        self.ok("tick", env={"FAB_NOW": str(now)})
+        self.assertEqual(len(self.hc_calls("run")), 1)
+        self.assertEqual(self.start_state()["terminal"], "t900")
+
+        # Der Lauf liest nur und schreibt kein Ereignis; sein Terminal meldet
+        # einen abgeschlossenen Turn.
+        self.set_terminals(
+            [{"address": "t900", "name": ORCHESTRATOR, "state": "live",
+              "status": "done"}]
+        )
+        self.set_gets(
+            {"t900": {"turn": 1, "status_ms": now + MINUTE, "created_ms": now}}
+        )
+        self.clear_log()
+        result = self.ok("tick", env={"FAB_NOW": str(now + 6 * MINUTE)})
+        self.assertIn("antwortet wieder", result.stdout)
+        self.assertNotIn("neu gestartet", result.stdout)
+        self.assertEqual(self.hc_calls("run"), [])
+        self.assertFalse(self.start_state())
+        self.assert_no_attention(now + 6 * MINUTE)
+
+    def test_start_ohne_turn_bleibt_retry_und_fail(self):
+        """Ohne Turn bleibt es beim zweiten Versuch und danach beim Alarm."""
+        now = self.now()
+        tid = self.ticket_id()
+        self.set_orchestrator()
+        self.set_last_tick(now - MINUTE)
+        self.orchestrator_comment(tid, now - 31 * MINUTE)
+        self.ok("tick", env={"FAB_NOW": str(now)})
+        self.assertEqual(self.start_state()["terminal"], "t900")
+        # Das Terminal lebt, hat aber nie einen Turn abgeschlossen.
+        self.set_gets(
+            {"t900": {"turn": 0, "status_ms": now, "created_ms": now}}
+        )
+
+        self.clear_log()
+        retry = self.ok("tick", env={"FAB_NOW": str(now + 6 * MINUTE)})
+        self.assertIn("zweiter Versuch", retry.stdout)
+        self.assertEqual(len(self.hc_calls("run")), 1)
+
+        self.clear_log()
+        failed = self.ok("tick", env={"FAB_NOW": str(now + 12 * MINUTE)})
+        self.assertIn("Start ohne Antwort", failed.stdout)
+        self.assertEqual(self.hc_calls("run"), [])
+        self.assertEqual(self.start_state()["state"], "failed")
+
+    def test_turn_vor_dem_start_zaehlt_nicht(self):
+        """Ein Turn des alten Terminals liegt vor dem Start und zählt nicht."""
+        now = self.now()
+        tid = self.ticket_id()
+        self.set_orchestrator()
+        self.set_last_tick(now - MINUTE)
+        self.orchestrator_comment(tid, now - 31 * MINUTE)
+        self.ok("tick", env={"FAB_NOW": str(now)})
+        self.assertEqual(self.start_state()["terminal"], "t900")
+        # `hc ls` zeigt noch das alte Terminal mit fünf Turns; das für diesen
+        # Versuch gestartete Terminal hat noch keinen.
+        self.set_gets(
+            {"t0": {"turn": 5, "status_ms": now + MINUTE, "created_ms": 1},
+             "t900": {"turn": 0}}
+        )
+        self.clear_log()
+        result = self.ok("tick", env={"FAB_NOW": str(now + 6 * MINUTE)})
+        self.assertIn("zweiter Versuch", result.stdout)
+        self.assertEqual(len(self.hc_calls("run")), 1)
