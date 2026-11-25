@@ -43,9 +43,15 @@ function repoRow(app, cx, t, repo) {
         .when((repo.open_tickets ?? 0) > 0, (el) => el.child(ui.badge(t, repo.open_tickets, t.accent))),
     )
     .child(
-      h_flex().w_full().gap(S.s).items_center()
-        .child(div().flex_1().min_w(0).truncate().text_size(T.xs).text_color(t.dim)
-          .child(repo.branch || "kein Branch").tooltip(repo.path))
+      // Pfad in eigener Zeile, voller Pfad als Tooltip (T-136).
+      div().w_full().min_w(0).truncate().text_size(T.xs).text_color(t.dim)
+        .child(repo.path).tooltip(repo.path),
+    )
+    .child(
+      // Branch und Chips umbrechen, statt den Pfad zu verdrängen (T-136).
+      h_flex().w_full().gap(S.xs).items_center().flex_wrap()
+        .child(div().flex_none().min_w(0).max_w(120).truncate().text_size(T.xs).text_color(t.dim)
+          .child(repo.branch || "kein Branch").tooltip(repo.branch || "kein Branch"))
         .child(ui.chip(t, repo.verify_exists ? "Prüfskript" : "kein Prüfskript", repo.verify_exists ? t.done : t.dim,
           null, { tooltip: repo.verify_exists ? ".fabric/verify.sh vorhanden" : ".fabric/verify.sh fehlt" }))
         .when(repo.lessons_exists, (el) => el.child(ui.chip(t, "Lernnotizen", t.muted, null, { tooltip: ".fabric/lessons.md vorhanden" })))
