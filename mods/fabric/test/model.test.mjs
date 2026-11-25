@@ -16,6 +16,7 @@ import {
   STAGES, STATUS_WORDS, INBOX_WORDS, EVENT_WORDS,
   stallLabel, stallReason,
   wakeLine, sessionChips, sessionStatus, childrenOf, childProgress,
+  openBlockers, blockerEntries,
   teamForTicket, teamAgents,
   decisionSentence, decideConfirmArgs, decideRejectArgs, contextDisplay,
   PROPOSAL_WORDS, proposalQuestion, proposalConsequences, proposalStatusWord,
@@ -2933,3 +2934,24 @@ test("Wissensordner: .md-Endung wird ohne Rücksicht auf Schreibweise erkannt", 
   assert.equal(knowledgeNoteFile("Plan"), "Plan.md");
   assert.equal(knowledgeNoteFile(""), ".md");
 });
+
+test("Blocker: offene und erledigte werden getrennt", () => {
+  const tickets = [
+    { id: "T-1", status: "todo" },
+    { id: "T-2", status: "done" },
+    { id: "T-3", status: "dropped" },
+  ];
+  const ticket = { id: "T-9", blocked_by: ["T-2", "T-3", "T-404", "T-1"] };
+  assert.deepEqual(
+    blockerEntries(ticket, tickets).map((entry) => [entry.id, entry.status, entry.open]),
+    [
+      ["T-2", "done", false],
+      ["T-3", "dropped", false],
+      ["T-404", null, true],
+      ["T-1", "todo", true],
+    ],
+  );
+  assert.deepEqual(openBlockers(ticket, tickets), ["T-404", "T-1"]);
+  assert.deepEqual(blockerEntries({ id: "T-8", blocked_by: [] }, tickets), []);
+});
+

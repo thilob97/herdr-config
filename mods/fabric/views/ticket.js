@@ -627,29 +627,31 @@ function repoField(app, cx, t, ticket) {
 }
 
 function blockerField(app, cx, t, ticket) {
+  const entries = model.blockerEntries(ticket, app.tickets);
   const blocked = ticket.blocked_by ?? [];
   const candidates = app.tickets.filter((row) => row.id !== ticket.id
     && row.status !== "done" && row.status !== "dropped" && !blocked.includes(row.id));
   return ui.field(t, "Blockiert durch", v_flex().w_full().gap(S.s)
-    .when(blocked.length === 0, (el) => el.child(div().text_size(T.xs).text_color(t.dim).child("Keine Blockaden")))
-    .children(blocked.map((id) => h_flex()
-      .id(`fabric-blocker-${id}`)
+    .when(entries.length === 0, (el) => el.child(div().text_size(T.xs).text_color(t.dim).child("Keine Blockaden")))
+    .children(entries.map((entry) => h_flex()
+      .id(`fabric-blocker-${entry.id}`)
       .w_full()
       .h(24)
       .px(S.s)
       .gap(S.s)
       .items_center()
       .rounded(ui.RADIUS.s)
-      .bg(t.blocked + ui.ALPHA.faint)
-      .child(ui.chip(t, id, t.blocked))
+      .bg((entry.open ? t.blocked : t.muted) + ui.ALPHA.faint)
+      .child(ui.chip(t, entry.id, entry.open ? t.blocked : t.muted))
+      .when(!entry.open, (el) => el.child(ui.chip(t, model.statusWord(entry.status), t.dim)))
       .child(div().flex_1())
       .child(ui.iconButton(t, {
-        id: `fabric-blocker-remove-${id}`,
+        id: `fabric-blocker-remove-${entry.id}`,
         icon: "close",
-        tooltip: `Blockade ${id} entfernen`,
+        tooltip: `Blockade ${entry.id} entfernen`,
         size: 20,
         iconSize: 10,
-        onClick: (cx) => app.removeBlocker(id, cx),
+        onClick: (cx) => app.removeBlocker(entry.id, cx),
       }))))
     .child(ui.dropdown(t, {
       id: "fabric-detail-blocker",
