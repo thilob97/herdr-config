@@ -2583,10 +2583,56 @@ def cmd_resume(args):
         events.append("orchestrator", "", "fab", team_name, "gestartet")
         print(f"Orchestrator {team_name} gestartet ({started['name']})")
     with store.locked():
+        caught = _catch_up_paused_wakes(roster)
         events.append("config", "", actor, "", "Fabric fortgesetzt")
         index.rebuild()
+    _print_wake_results(caught)
     print("Fabric läuft. Autopilot bei Bedarf: fab autopilot start --until done")
     return 0
+
+
+def _catch_up_paused_wakes(roster):
+    """Weckrufe nachholen, die während der Pause als `unterdrückt: pausiert`
+    endeten: je offenem Ticket und Ziel genau einmal, mit dem letzten Kommentar
+    des Absenders als Text."""
+    rows = events.read_all()
+    paused_at = 0
+    resumed = False
+    for row in rows:
+        if row.get("kind") != "config":
+            continue
+        if row.get("text") == "Fabric pausiert":
+            paused_at = int(row.get("at") or 0)
+            resumed = False
+        elif row.get("text") == "Fabric fortgesetzt":
+            resumed = True
+    if resumed or not paused_at:
+        return []
+    pending = {}
+    for row in rows:
+        if (
+            row.get("kind") == "wake"
+            and row.get("text") == "unterdrückt: pausiert"
+            and int(row.get("at") or 0) >= paused_at
+        ):
+            pending[(row.get("ticket"), row.get("target"))] = row.get("actor") or "fab"
+    results = []
+    for (tid, target), author in pending.items():
+        try:
+            ticket = store.load(tid)
+        except FabError:
+            continue
+        if ticket.get("status") in ("done", "dropped") or not target:
+            continue
+        text = ""
+        for comment in reversed(ticket.get("comments") or []):
+            if comment.get("author") == author and int(comment.get("at") or 0) >= paused_at:
+                text = comment.get("text") or ""
+                break
+        text = text or f"Während der Pause wurdest du in {tid} erwähnt."
+        results.extend(wake.process(ticket, [target], author, text, roster))
+        store.save(ticket, touch=False)
+    return results
 
 
 def cmd_tick(args):

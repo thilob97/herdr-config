@@ -1,4 +1,5 @@
 """Wecken: jede Regel aus Abschnitt 4 einzeln."""
+import json
 import os
 import time
 
@@ -90,9 +91,17 @@ class WakeTests(FabricCase):
         resumed = self.ok("resume")
         self.assertIn("Fabric läuft", resumed.stdout)
         self.assertFalse(self.index()["paused"])
+        # Der während der Pause unterdrückte Weckruf wird genau einmal nachgeholt.
+        agent = f"zap-{tid.lower()}"
+        runs = [row for row in self.hc_calls("run") if agent in json.dumps(row)]
+        self.assertEqual(len(runs), 1, self.hc_calls("run"))
+        self.assertIn("bitte weiter", json.dumps(runs[0], ensure_ascii=False))
         self.clear_log()
-        self.ok("comment", tid, "--from", "mensch", "@zap jetzt aber")
-        self.assertEqual(len(self.hc_calls("run")), 1, "nach resume wird wieder gestartet")
+        self.ok("resume")
+        self.assertEqual(
+            [row for row in self.hc_calls("run") if agent in json.dumps(row)], [],
+            "ein zweites resume weckt nicht erneut",
+        )
 
     def test_pingpong_bremse_und_eine_orchestrator_nachricht(self):
         tid = self.new("Ping")
