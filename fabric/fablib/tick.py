@@ -924,13 +924,15 @@ def ensure_installed():
     """
     if not autostart_enabled():
         return None
+    if store.tick_disabled():
+        return None
     if _home_deviation():
         return None
     target = plist_path()
     if os.path.exists(target):
         if _plist_home(target) == standard_home():
             return None
-        uninstall()
+        uninstall(keep_off=False)
         path, _ok, _detail = install()
         return path
     path, _ok, _detail = install()
@@ -972,7 +974,8 @@ def install():
 
     Rückgabe: (Pfad, bootstrap_ok, Hinweis). Ein Bootstrap-Fehler ist nur ein
     Hinweis; die Datei bleibt liegen. Weicht `FAB_HOME` vom Standard ab, wird
-    nichts geschrieben und `(None, False, Grund)` zurückgegeben.
+    nichts geschrieben und `(None, False, Grund)` zurückgegeben. Eine Marke von
+    `uninstall` wird entfernt: der Wächter ist wieder gewollt.
     """
     reason = _home_deviation()
     if reason:
@@ -980,18 +983,28 @@ def install():
     target = plist_path()
     text = plistlib.dumps(payload(), sort_keys=True).decode("utf-8")
     store.atomic_write(target, text, mode=0o644)
+    try:
+        os.remove(store.tick_off_path())
+    except FileNotFoundError:
+        pass
     ok, detail = _launchctl("bootstrap", f"gui/{os.getuid()}", target)
     return target, ok, detail
 
 
-def uninstall():
-    """`launchctl bootout` versuchen und die Plist löschen."""
+def uninstall(keep_off=True):
+    """`launchctl bootout` versuchen und die Plist löschen.
+
+    `keep_off` hinterlegt die Marke `tick-off`, damit der nächste `fab`-Aufruf
+    den Auftrag nicht über den Autostart wieder anlegt; nur `install` hebt sie auf.
+    """
     target = plist_path()
     ok, detail = _launchctl("bootout", f"gui/{os.getuid()}", target)
     try:
         os.remove(target)
     except FileNotFoundError:
         pass
+    if keep_off and not _home_deviation():
+        store.atomic_write(store.tick_off_path(), "fab tick --uninstall\n")
     return target, ok, detail
 
 

@@ -1036,6 +1036,39 @@ class TickCase(FabricCase):
         self.assertFalse(os.path.exists(agents))
         self.assertFalse(os.path.exists(log))
 
+    def test_uninstall_bleibt_bis_zum_install_aus(self):
+        agents = os.path.join(self.tmp, "LaunchAgents")
+        log = self.launchctl_stub()
+        env = {
+            "FAB_TICK_AUTOSTART": "1",
+            "FAB_HOME": "",
+            "FAB_LAUNCH_AGENTS_DIR": agents,
+            "LAUNCHCTL_LOG": log,
+        }
+        plist = os.path.join(agents, "de.herdr.fabric.tick.plist")
+        self.ok("version", env=env)
+        self.assertTrue(os.path.isfile(plist))
+        self.ok("tick", "--uninstall", env=env)
+        self.assertFalse(os.path.exists(plist))
+        # Der nächste Aufruf legt den Auftrag nicht wieder an.
+        self.ok("version", env=env)
+        self.assertFalse(os.path.exists(plist))
+        self.ok("tick", "--install", env=env)
+        self.assertTrue(os.path.isfile(plist))
+        self.ok("tick", "--uninstall", env=env)
+        self.ok("tick", "--install", env=env)
+        os.remove(plist)
+        self.ok("version", env=env)
+        self.assertTrue(os.path.isfile(plist))
+
+    def test_abgeschalteter_waechter_ist_nie_stale(self):
+        now = 1800000000000
+        self.set_last_tick(now - 60 * MINUTE)
+        with self.store_env():
+            self.assertTrue(store.tick_alarm(now)["stale"])
+            store.atomic_write(store.tick_off_path(), "aus\n")
+            self.assertFalse(store.tick_alarm(now)["stale"])
+
     # -- Alarm bei ausbleibendem Tick
 
     def set_last_tick(self, at):

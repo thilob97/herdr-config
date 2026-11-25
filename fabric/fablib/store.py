@@ -1453,12 +1453,24 @@ def set_last_tick(at=None):
     meta_set("last_tick", now_ms() if at is None else int(at))
 
 
+def tick_off_path():
+    """Marke für einen absichtlich abgeschalteten Wächter (`fab tick --uninstall`)."""
+    return os.path.join(home(), "tick-off")
+
+
+def tick_disabled():
+    return os.path.exists(tick_off_path())
+
+
 def tick_alarm(now=None, limit_ms=TICK_ALARM_MS):
-    """Alarmzustand des Wächters: stale, sobald der letzte Tick zu alt ist."""
+    """Alarmzustand des Wächters: stale, sobald der letzte Tick zu alt ist.
+
+    Ein absichtlich abgeschalteter Wächter ist nie stale.
+    """
     last = last_tick()
-    if last is None:
+    if last is None or tick_disabled():
         return {
-            "last_tick": None,
+            "last_tick": last,
             "age_ms": None,
             "limit_ms": limit_ms,
             "stale": False,
