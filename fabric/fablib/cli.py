@@ -2522,6 +2522,65 @@ def _team_entries(roster):
     ]
 
 
+def cmd_close(args):
+    """Ticket abschließen, dessen Arbeit schon auf der Basis liegt (ohne Merge).
+
+    Für Arbeit, die direkt auf main gelandet ist: Der Commit muss von der Basis
+    erreichbar sein. Ein vorhandener Branch ohne eigene Commits über der Basis
+    wird samt Worktree und Sessions aufgeräumt; hat er noch eigene Commits,
+    bleibt er stehen und der Abschluss bricht ab.
+    """
+    actor = _actor(args) or "mensch"
+    ticket = store.load(args.id)
+    rev = _new_rev(ticket)
+    if ticket.get("status") in ("done", "dropped"):
+        print(f"{ticket['id']}: bereits {ticket['status']}")
+        return 0
+    repo = ticket.get("repo")
+    top = git.toplevel(repo) if repo else None
+    if not top:
+        raise FabError(f"{ticket['id']}: kein Git-Repository am Ticket")
+    base = ticket.get("base") or git.base_branch(top)
+    ref = git.base_ref(top, base)
+    commit = git.rev_parse(top, args.commit)
+    if not git.is_ancestor(top, commit, ref):
+        raise FabError(
+            f"{ticket['id']}: Commit {_short(commit)} liegt nicht auf {base}; "
+            f"erst mergen, dann abschließen"
+        )
+    branch_name = ticket.get("branch") or ""
+    if branch_name and git.branch_exists(top, branch_name):
+        extra = git.commit_count(top, ref, branch_name)
+        if extra:
+            raise FabError(
+                f"{ticket['id']}: {branch_name} hat noch {extra} Commit(s) über {base}; "
+                f"nicht abgeschlossen"
+            )
+    with store.deferred_events():
+        ended = []
+        if branch_name:
+            ended = _accept_clean(ticket, top, branch_name)
+        else:
+            ended = _end_sessions(ticket)
+            _stop_preview(ticket["id"])
+        ticket["status"] = "done"
+        ticket.pop("stall", None)
+        ticket["waiting"] = []
+        note = (args.note or "").strip()
+        text = f"Abgeschlossen: Arbeit liegt auf {base} @ {_short(commit)}" + (
+            f" – {note}" if note else ""
+        )
+        _add_comment(ticket, actor, text)
+        events.append("accept", ticket["id"], actor, "", f"{base} @ {_short(commit)}")
+        rev = _commit(ticket, rev)
+    print(
+        f"{ticket['id']}: abgeschlossen ({base} @ {_short(commit)})"
+        + (f"; {len(ended)} Session(s) beendet" if ended else "")
+    )
+    _autostart(_unblocked_by(ticket["id"]))
+    return 0
+
+
 def cmd_pause(args):
     """Fabric anhalten: Wächter aus, Autopilot und Orchestratoren beenden,
     Agenten-Sessions offener Tickets beenden; Wecken bleibt gesperrt."""
@@ -4117,6 +4176,13 @@ def build_parser():
     item = command("reject", "Als Mensch zurückweisen mit Feedback", cmd_reject)
     item.add_argument("id", metavar="ID")
     item.add_argument("feedback", metavar="FEEDBACK")
+
+    item = command("close", "Ticket abschließen, dessen Arbeit schon auf der Basis liegt", cmd_close)
+    item.add_argument("id", metavar="ID")
+    item.add_argument("--commit", required=True, metavar="SHA",
+                      help="Commit auf der Basis, der die Arbeit enthält")
+    item.add_argument("--note", default="", metavar="TEXT", help="Zusatz für den Kommentar")
+    item.add_argument("--from", dest="from_", metavar="NAME", help="wer abschließt (Standard: mensch)")
 
     item = command("drop", "Ticket verwerfen; Sessions beenden, Worktree bleibt", cmd_drop)
     item.add_argument("id", metavar="ID")

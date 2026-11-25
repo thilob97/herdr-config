@@ -283,3 +283,38 @@ class AcceptNoopTests(FabricCase):
         ticket = self.ticket(tid)
         self.assertEqual(ticket["status"], "done")
         self.assertNotEqual(ticket["status"], "dropped")
+
+
+class CloseTests(FabricCase):
+    def test_close_schliesst_ticket_ab_dessen_arbeit_auf_main_liegt(self):
+        repo = self.default_repo()
+        tid = self.ok("new", "Direkt auf main", "--repo", repo, "--no-wake").stdout.strip().splitlines()[-1]
+        self.patch_ticket(tid, status="todo", assignee="zap")
+        self._write(os.path.join(repo, "direkt.txt"), "fertig\n")
+        self.git(repo, "add", "direkt.txt")
+        self.git(repo, "commit", "-qm", "direkt auf main")
+        commit = self.git_out(repo, "rev-parse", "HEAD")
+
+        result = self.ok("close", tid, "--commit", commit, "--note", "ohne Branch")
+
+        self.assertIn("abgeschlossen", result.stdout)
+        ticket = self.ticket(tid)
+        self.assertEqual(ticket["status"], "done")
+        self.assertTrue(any(commit[:7] in c["text"] and "ohne Branch" in c["text"]
+                            for c in ticket["comments"]))
+
+    def test_close_verweigert_commit_der_nicht_auf_main_liegt(self):
+        repo = self.default_repo()
+        tid = self.ok("new", "Fremd", "--repo", repo, "--no-wake").stdout.strip().splitlines()[-1]
+        self.git(repo, "checkout", "-qb", "seitenzweig")
+        self._write(os.path.join(repo, "seite.txt"), "x\n")
+        self.git(repo, "add", "seite.txt")
+        self.git(repo, "commit", "-qm", "seitenzweig")
+        commit = self.git_out(repo, "rev-parse", "HEAD")
+        self.git(repo, "checkout", "-q", "main")
+
+        result = self.cli("close", tid, "--commit", commit)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("liegt nicht auf main", result.stderr)
+        self.assertNotEqual(self.ticket(tid)["status"], "done")
