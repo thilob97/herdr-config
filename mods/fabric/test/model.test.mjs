@@ -3184,3 +3184,20 @@ test("Team speichern: Orchestrator-Modell ersetzt nur --model im argv", async ()
   // Nach dem Speichern ist der Formularstand (ohne argv) die Vergleichsbasis.
   assert.equal(teamDraft({ ...changed, orchestrator_model: "neu" }).orchestrator_model, "neu");
 });
+
+test("Statistik: Achsen, Balken, Prozent und Agentenfarbe", async () => {
+  const { reportDayLabel, reportBar, reportPercent, reportLabelStep, reportAgentColor } = await import("../model.js");
+  assert.equal(reportDayLabel("2026-11-05"), "05.11.");
+  assert.equal(reportBar(0, 10, 100), 0);
+  assert.equal(reportBar(5, 10, 100), 50);
+  assert.equal(reportBar(0.001, 10, 100), 2, "sichtbarer Wert bleibt sichtbar");
+  assert.equal(reportBar(20, 10, 100), 100, "über dem Maximum gekappt");
+  assert.equal(reportBar(3, 0, 100), 0);
+  assert.equal(reportPercent(1, 4), "25 %");
+  assert.equal(reportPercent(1, 0), "—");
+  assert.equal(reportLabelStep(7), 1);
+  assert.equal(reportLabelStep(90), 9);
+  assert.equal(reportAgentColor("ada", [{ name: "ada", color: "c3" }]), "c3");
+  assert.match(reportAgentColor("zap", []), /^c[1-6]$/);
+  assert.equal(reportAgentColor("zap", []), reportAgentColor("zap", []));
+});

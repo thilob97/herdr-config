@@ -23,18 +23,20 @@ import { renderSettings } from "./views/settings.js";
 import { renderTicketsPanel } from "./views/tickets.js";
 import { renderInboxPanel as renderPosteingangPanel, renderInboxPage } from "./views/inbox.js";
 import { renderCommandsPage } from "./views/commands.js";
+import { renderStatsPage } from "./views/stats.js";
 import { renderTimelinePanel } from "./views/timeline.js";
 import { renderSwitcher } from "./views/switcher.js";
 import { renderDialogs, renderBlueprintDrawer } from "./views/dialogs.js";
 import { renderContextPreview } from "./views/context.js";
 
-const VIEWS = ["inbox", "commands", "board", "tickets", "ticket", "team", "workflows", "pipelines", "prompts", "templates", "repos", "settings"];
+const VIEWS = ["inbox", "commands", "stats", "board", "tickets", "ticket", "team", "workflows", "pipelines", "prompts", "templates", "repos", "settings"];
 const NAV = [
   { page: "inbox", icon: "inbox" },
   { page: "board", icon: "board" },
   { page: "tickets", icon: "tickets" },
   { page: "workflows", icon: "play" },
   { page: "pipelines", icon: "terminal" },
+  { page: "stats", icon: "chart" },
   { page: "team", icon: "team" },
   { page: "prompts", icon: "prompt" },
   { page: "templates", icon: "prompt" },
@@ -216,6 +218,11 @@ export default class Fabric extends View {
     this.pipelineLimit = model.PIPELINE_PAGE;
     this.commandCatalog = null;
     this.commandCatalogError = null;
+    this.report = null;
+    this.reportDays = 14;
+    this.reportAt = 0;
+    this.reportError = null;
+    this.reportLoading = false;
     this.commandSel = null;
     this.commandInputs = {};
     this.commandFlags = {};
@@ -1064,6 +1071,41 @@ export default class Fabric extends View {
     }
   }
 
+  // ---------- Statistik ----------
+
+  /** `fab report --days N --json` lesen; liest Sessionkosten frisch, daher nur auf Anfrage. */
+  async loadReport(days = this.reportDays) {
+    if (this.reportLoading) return;
+    this.reportDays = days;
+    this.reportLoading = true;
+    this.notifyNow();
+    try {
+      const result = await this.execFab(["report", `--days=${days}`, "--json"], { timeout: 60000 });
+      const data = result.code === 0 ? parseJson(result.stdout, null) : null;
+      if (!data || typeof data !== "object" || !data.overview) {
+        throw new Error((result.stderr || "").trim() || "fab report lieferte keine Daten");
+      }
+      // Wurde inzwischen ein anderer Zeitraum gewählt, gilt der neuere Auftrag.
+      if (days === this.reportDays) {
+        this.report = data;
+        this.reportAt = Date.now();
+        this.reportError = null;
+      }
+    } catch (error) {
+      this.reportError = `Statistik nicht ladbar: ${message(error)}`;
+    } finally {
+      this.reportLoading = false;
+    }
+    this.notifyNow();
+    if (days !== this.reportDays) await this.loadReport(this.reportDays);
+  }
+
+  setReportDays(days) {
+    if (days === this.reportDays && this.report?.days === days) return;
+    this.reportDays = days;
+    this.loadReport(days);
+  }
+
   // ---------- Befehle ----------
 
   async loadCommands(force = false) {
@@ -1406,6 +1448,8 @@ export default class Fabric extends View {
       } else {
         this.syncPipelineSelection(route, cx);
       }
+    } else if (route.page === "stats") {
+      if (!this.report || Date.now() - this.reportAt > 60000) cx.spawn(async () => { await this.loadReport(); });
     } else if (route.page === "commands") {
       if (!this.commandCatalog) cx.spawn(async () => { await this.loadCommands(); });
     } else if (route.page === "settings") {
@@ -4423,6 +4467,7 @@ export default class Fabric extends View {
     const page = route.page;
     const content = page === "inbox" ? renderInboxPage(this, cx, t)
       : page === "commands" ? renderCommandsPage(this, cx, t)
+      : page === "stats" ? renderStatsPage(this, cx, t)
       : page === "board" ? renderBoard(this, cx, t)
       : page === "tickets" ? renderTicketsPage(this, cx, t)
         : page === "ticket" ? renderTicket(this, cx, t)

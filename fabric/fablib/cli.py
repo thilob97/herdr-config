@@ -641,6 +641,53 @@ def cmd_stats(args):
     return 0
 
 
+def _duration(ms):
+    minutes = int(ms or 0) // 60000
+    if minutes < 60:
+        return f"{minutes} min"
+    hours, rest = divmod(minutes, 60)
+    if hours < 48:
+        return f"{hours} h {rest} min" if rest else f"{hours} h"
+    return f"{hours // 24} d {hours % 24} h"
+
+
+def cmd_report(args):
+    from . import analytics
+
+    if args.days < 1 or args.days > 365:
+        raise FabError("--days muss zwischen 1 und 365 liegen")
+    roster = agents.load(required=False)
+    payload = analytics.report(
+        store.all_tickets(), store.event_rows(), store.pipeline_run_list(),
+        reviewer=_reviewer(roster), days=args.days,
+    )
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+    over = payload["overview"]
+    rate = over["pass_rate"]
+    print(f"Statistik der letzten {payload['days']} Tage")
+    print(f"  Tickets: {over['created']} neu, {over['done']} fertig, "
+          f"Durchlauf Median {_duration(over['cycle_median_ms'])}")
+    print(f"  Kosten: {costs.format_cost(over['cost_range'])} "
+          f"(gesamt {costs.format_cost(over['cost_total'])})")
+    for agent in payload["costs"]["agents"]:
+        if agent["range"] > 0:
+            print(f"    {agent['name']:<12}{costs.format_cost(agent['range']):>10}"
+                  f"{round(agent['share'] * 100):>5} %  {agent['sessions']} Sessions")
+    reviews = payload["reviews"]
+    print(f"  Prüfungen: {reviews['verdicts']['pass']} pass, {reviews['verdicts']['fail']} fail, "
+          f"{reviews['rounds_avg']} je Ticket, {reviews['stale_verdicts']} verworfen")
+    counts = payload["pipelines"]["counts"]
+    print(f"  Läufe: {counts['pass']} grün, {counts['fail']} rot, {counts['aborted']} abgebrochen"
+          + (f", {round(rate * 100)} % grün" if rate is not None else ""))
+    waits = payload["waits"]
+    if waits["tickets"]:
+        stages = ", ".join(f"{stage['label']} {_duration(stage['avg_ms'])}" for stage in waits["stages"])
+        print(f"  Liegezeit Ø {_duration(waits['avg_total_ms'])}: {stages}")
+    return 0
+
+
 _URL_TEXT = re.compile(r"https?://\S+", re.IGNORECASE)
 _PROOF_TOKEN = re.compile(
     r"[A-Za-z0-9_.@+\-]+(?:/[A-Za-z0-9_.@+\-]+)*/[A-Za-z0-9_.@+\-]+\.[A-Za-z0-9]+"
@@ -4141,6 +4188,11 @@ def build_parser():
     item.add_argument("--team", metavar="NAME", help="nur dieses Team")
     item.add_argument("--today", action="store_true",
                       help="Heute-Kosten statt Gesamtkosten betonen")
+    item.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe")
+
+    item = command("report", "Statistik: Durchsatz, Kosten je Agent, Prüfungen, Läufe, Liegezeiten", cmd_report)
+    item.add_argument("--days", type=int, default=14, metavar="N",
+                      help="Zeitraum in Kalendertagen bis heute (Standard 14)")
     item.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe")
 
     item = command("diff", "Änderungen des Tickets gegenüber der Basis zeigen", cmd_diff)

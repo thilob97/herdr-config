@@ -38,6 +38,7 @@ export const PAGE_WORDS = {
   timeline: "Zeitverlauf",
   inbox: "Posteingang",
   commands: "Befehle",
+  stats: "Statistik",
 };
 
 export const pageWord = (page) => PAGE_WORDS[page] ?? page ?? "";
@@ -3498,4 +3499,43 @@ export function commandArgv(entry, values = {}) {
     argv: [...(entry?.path ?? []), ...options, ...(positionals.length ? ["--", ...positionals] : [])],
     missing: [],
   };
+}
+
+// ---------- Statistik (Seite „Statistik“, Daten aus `fab report --json`) ----------
+
+/** Wählbare Zeiträume der Statistik in Tagen. */
+export const REPORT_RANGES = [7, 14, 30, 90];
+
+/** Tag `YYYY-MM-DD` als kurze Achsenbeschriftung `25.11.`. */
+export function reportDayLabel(day) {
+  const match = /^\d{4}-(\d{2})-(\d{2})$/.exec(String(day ?? ""));
+  return match ? `${match[2]}.${match[1]}.` : String(day ?? "");
+}
+
+/** Balkenhöhe in Pixeln: Anteil am Maximum, sichtbare Werte mindestens 2 px. */
+export function reportBar(value, max, height) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount) || amount <= 0 || !(max > 0)) return 0;
+  return Math.max(2, Math.round((Math.min(amount, max) / max) * height));
+}
+
+/** Anteil als ganze Prozent; ohne Grundmenge „—“. */
+export function reportPercent(part, whole) {
+  const total = Number(whole);
+  if (!Number.isFinite(total) || total <= 0) return "—";
+  return `${Math.round((Number(part) / total) * 100)} %`;
+}
+
+/** Jede n-te Achsenbeschriftung, damit lange Zeiträume lesbar bleiben (höchstens ~10). */
+export function reportLabelStep(count) {
+  return Math.max(1, Math.ceil(Number(count || 0) / 10));
+}
+
+/** Farbschlüssel je Agent: Blaupausenfarbe, sonst stabil aus dem Namen (c1…c6). */
+export function reportAgentColor(name, blueprints = []) {
+  const blueprint = (blueprints ?? []).find((entry) => entry?.name === name);
+  if (blueprint?.color) return blueprint.color;
+  let hash = 0;
+  for (const char of String(name ?? "")) hash = (hash * 31 + char.codePointAt(0)) >>> 0;
+  return `c${(hash % 6) + 1}`;
 }
