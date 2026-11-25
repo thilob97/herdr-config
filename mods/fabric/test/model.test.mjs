@@ -524,6 +524,18 @@ test("Board-Spalten: fünf Stufen, Fertig begrenzt, Prüfung hervorgehoben", asy
   assert.equal(byAssignee.flatMap((column) => column.tickets).length, 0);
 });
 
+test("Board-Titel: zwei Zeilen, gekappt mit Ellipse", async () => {
+  const { titleLines } = await import("../model.js");
+  const short = titleLines("Kurzer Titel", 150);
+  assert.deepEqual(short, { lines: ["Kurzer Titel"], clipped: false });
+
+  const long = titleLines("Board-Karten: Statusmenü und Zuständiger bei langen Chips sichtbar halten und Zahlen richtig zeigen", 150);
+  assert.equal(long.clipped, true);
+  assert.equal(long.lines.length, 2);
+  assert.match(long.lines[1], /…$/, "die letzte sichtbare Zeile endet mit einer Ellipse");
+  assert.equal(long.lines.join(" ").includes("Zahlen"), false, "gekappter Text bleibt weg");
+});
+
 test("Tabellensortierung: Kopf dreht die Richtung, leere Werte ans Ende", async () => {
   const { sortTickets, nextSort } = await import("../model.js");
   const tickets = [

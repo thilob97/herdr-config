@@ -86,6 +86,39 @@ function cardMenu(app, cx, t, ticket) {
   });
 }
 
+function titleBlock(app, t, ticket) {
+  const full = ticket.title || "Ohne Titel";
+  const widths = app.boardTitleWidth ?? (app.boardTitleWidth = {});
+  const width = widths[ticket.id];
+  const box = v_flex()
+    .w_full()
+    .gap(0)
+    .tooltip(full)
+    .on_size_change((size, cx) => {
+      if (widths[ticket.id] !== size.width) {
+        widths[ticket.id] = size.width;
+        cx.notify();
+      }
+    });
+  if (!width) {
+    return box
+      .text_size(T.s)
+      .font_medium()
+      .line_height(1.3)
+      .whitespace_normal()
+      .max_h(32)
+      .overflow_hidden()
+      .child(full);
+  }
+  return box.children(model.titleLines(full, width).lines.map((line) => div()
+    .w_full()
+    .text_size(T.s)
+    .font_medium()
+    .line_height(1.3)
+    .truncate()
+    .child(line)));
+}
+
 function card(app, cx, t, ticket) {
   const comments = ticket.comment_count ?? 0;
   const waiting = ticket.waiting?.includes("mensch") || ticket.status === "review";
@@ -111,37 +144,34 @@ function card(app, cx, t, ticket) {
     .child(
       h_flex().w_full().gap(S.s).items_center()
         .child(div().flex_none().text_size(T.xs).text_color(t.dim).child(ticket.id))
-        .when(Boolean(waiting), (el) => el.child(ui.chip(t, "wartet auf dich", t.accent)))
+        .when(Boolean(waiting), (el) => el.child(ui.chip(t, "wartet auf dich", t.accent, null, {
+          tooltip: "wartet auf dich",
+          shrink: true,
+        })))
         .when(Boolean(ticket.stall), (el) => el.child(
           ui.chip(t, model.stallLabel(ticket.stall), t.accent, `fabric-card-stall-${ticket.id}`, {
             tooltip: model.stallReason(ticket.stall),
+            shrink: true,
           })))
-        .child(div().flex_1())
-        .child(cardMenu(app, cx, t, ticket)),
+        .child(div().flex_1().min_w(0))
+        .child(div().flex_none().child(cardMenu(app, cx, t, ticket))),
     )
-    .child(div()
-      .w_full()
-      .text_size(T.s)
-      .font_medium()
-      .line_height(1.3)
-      .whitespace_normal()
-      .max_h(32)
-      .overflow_hidden()
-      .child(ticket.title || "Ohne Titel")
-      .tooltip(ticket.title || "Ohne Titel"))
+    .child(titleBlock(app, t, ticket))
     .child(
       h_flex().w_full().gap(S.s).items_center()
-        .when(Boolean(ticket.assignee), (el) => el
-          .child(ui.avatar(t, ticket.assignee, app.agentColor(ticket.assignee), 18))
-          .child(div().text_size(T.xs).text_color(t.muted).truncate().child(ticket.assignee)))
-        .when(!ticket.assignee, (el) => el
-          .child(div().text_size(T.xs).text_color(t.dim).child("Nicht zugewiesen")))
-        .when(comments > 0, (el) => el
-          .child(h_flex().gap(S.xs).items_center()
-            .child(div().text_color(t.dim).child(ui.icon("lines", 11)))
-            .child(div().text_size(T.xs).text_color(t.dim).child(String(comments)))))
-        .child(div().flex_1())
-        .child(div().text_size(T.xs).text_color(t.dim).child(model.relativeTime(ticket.updated_at))),
+        .child(
+          h_flex().flex_1().min_w(0).gap(S.xs).items_center()
+            .when(Boolean(ticket.assignee), (el) => el
+              .child(ui.avatar(t, ticket.assignee, app.agentColor(ticket.assignee), 18))
+              .child(div().text_size(T.xs).text_color(t.muted).min_w(40).truncate().child(ticket.assignee)))
+            .when(!ticket.assignee, (el) => el
+              .child(div().text_size(T.xs).text_color(t.dim).truncate().child("Nicht zugewiesen")))
+            .when(comments > 0, (el) => el
+              .child(h_flex().flex_none().gap(S.xs).items_center()
+                .child(div().text_color(t.dim).child(ui.icon("lines", 11)))
+                .child(div().text_size(T.xs).text_color(t.dim).child(String(comments))))),
+        )
+        .child(div().flex_none().text_size(T.xs).text_color(t.dim).child(model.relativeTime(ticket.updated_at))),
     )
     .child(
       h_flex().w_full().gap(S.s).items_center().flex_wrap()
@@ -165,6 +195,8 @@ function filterBar(app, cx, t) {
 function columnHead(t, col) {
   const attention = col.attention;
   const cost = model.costTotals(col.tickets).total;
+  const total = col.total ?? col.count;
+  const countLabel = total > col.count ? `${col.count} von ${total}` : String(col.count);
   return h_flex()
     .flex_none()
     .w_full()
@@ -176,11 +208,12 @@ function columnHead(t, col) {
     .when(attention, (el) => el.bg(t.accent + ui.ALPHA.faint))
     .child(ui.dot(t, attention ? t.accent : ui.statusColor(t, col.key)))
     .child(div().text_size(T.xs).font_semibold().text_color(attention ? t.accent : t.muted).child(col.label))
-    .child(div().flex_none().text_size(T.xs).text_color(attention ? t.accent : t.dim).child(String(col.count)))
+    .child(div().flex_none().text_size(T.xs).text_color(attention ? t.accent : t.dim).child(countLabel)
+      .when(total > col.count, (el) => el.tooltip(`Zeigt ${col.count} von ${total} Tickets`)))
     .child(div().flex_1())
     .when(cost > 0, (el) => el.child(div().flex_none().text_size(T.xs).text_color(t.dim)
       .child(model.formatCost(cost)).tooltip("Summe der sichtbaren Tickets")))
-    .when(attention, (el) => el.child(ui.chip(t, "wartet", t.accent)));
+    .when(attention, (el) => el.child(ui.chip(t, "wartet", t.accent, null, { shrink: true })));
 }
 
 function column(app, cx, t, col) {
@@ -217,7 +250,7 @@ function compactColumn(app, cx, t, col) {
 
 export function renderBoard(app, cx, t) {
   const columns = model.boardColumns(app.tickets, app.filters());
-  const total = columns.reduce((sum, col) => sum + col.count, 0);
+  const total = columns.reduce((sum, col) => sum + (col.total ?? col.count), 0);
   return v_flex()
     .size_full()
     .min_h(0)

@@ -32,8 +32,8 @@ Die gewählte Auswahl ist überall dieselbe: `shared("fabric.selected")`. Was da
 
 **Board**
 - Spalten Entwurf · Geplant · In Arbeit · Prüfung · Fertig. „Fertig“ zeigt die letzten 20, „Verworfen“ ist ein Filter.
-- Im Spaltenkopf steht die Anzahl. „Prüfung“ wird hervorgehoben, wenn darin etwas auf den Menschen wartet.
-- Karten zeigen: ID, Titel (zwei Zeilen, voller Text im Tooltip), Avatar des Zuständigen, Kommentarzahl, das Badge „wartet auf dich“, Mini-Indikatoren für Checks und Urteil, Alter; bei Stillstand „stockt seit …“ (Tooltip = Grund). Branch, Kosten und Liegezeit stehen als eine graue Metazeile.
+- Im Spaltenkopf steht die Anzahl; ist „Fertig“ gekappt, nennt er „20 von N“. Die Kopfzeile zählt alle Tickets, auch die nicht gezeigten fertigen. „Prüfung“ wird hervorgehoben, wenn darin etwas auf den Menschen wartet.
+- Karten zeigen: ID, Titel (zwei Zeilen, gekappt mit „…“, voller Text im Tooltip), Avatar des Zuständigen, Kommentarzahl, das Badge „wartet auf dich“, Mini-Indikatoren für Checks und Urteil, Alter; bei Stillstand „stockt seit …“ (Tooltip = Grund). Zuständiger, Kommentarzahl und Alter bleiben nebeneinander sichtbar; die Status-Chips kürzen sich mit Ellipse, damit das „•••“-Menü in der Karte bleibt. Branch, Kosten und Liegezeit stehen als eine graue Metazeile.
 - Ein leerer Filter oder ein leerer Datenbestand zeigt genau einen Leerzustand mit Aktion „Neues Ticket“ statt fünf leerer Spalten.
 - Filterleiste: Suche, Zuständig, Repo.
 - Klick auf eine Karte öffnet das Ticket. Status ändert man über das Kontextmenü der Karte oder im Detail; Drag & Drop ist nicht nötig.
