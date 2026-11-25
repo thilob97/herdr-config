@@ -182,6 +182,8 @@ def _tick_orchestrator(roster, team_entry, live, lines, dry):
         )
         if action == "answered":
             if not dry:
+                if orchestrator.sleep_gap(team_entry, now):
+                    orchestrator.reset_idle(team_entry, now)
                 orchestrator.clear_start(team_entry)
             lines.append(f"{team_name}: Orchestrator antwortet wieder")
             return False

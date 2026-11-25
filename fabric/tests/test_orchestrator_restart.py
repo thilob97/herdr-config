@@ -427,6 +427,38 @@ class OrchestratorRestartCase(FabricCase):
         self.assertFalse(self.start_state())
         self.assert_no_attention(wake + 6 * MINUTE)
 
+    def test_antwort_vor_schlafluecke_setzt_leerlauf_zurueck(self):
+        now = self.now()
+        tid = self.ticket_id()
+        self.set_orchestrator()
+        self.set_last_tick(now - MINUTE)
+        self.orchestrator_comment(tid, now - 31 * MINUTE)
+        self.ok("tick", env={"FAB_NOW": str(now)})
+        self.assertEqual(self.start_state()["state"], "pending")
+        # Antwort kurz nach dem Start, dann Schlaf vor dem nächsten Tick.
+        self.orchestrator_comment(tid, now + 2 * MINUTE)
+        self.set_last_tick(now + MINUTE)
+        wake = now + 60 * MINUTE
+        self.clear_log()
+        result = self.ok("tick", env={"FAB_NOW": str(wake)})
+        self.assertIn("antwortet wieder", result.stdout)
+        self.assertFalse(self.start_state())
+        self.assertEqual(self.hc_calls("run"), [])
+        # Die Leerlauf-Basis ist der Aufwachzeitpunkt, nicht die alte Antwort.
+        self.assertEqual(
+            int(self.meta(f"orchestrator_idle_reset:{TEAM}")), wake
+        )
+
+        # Der Folgetick zählt erst ab dem Aufwachen: kein Leerlauf-Neustart.
+        self.clear_log()
+        mark = self.mark()
+        later = self.ok("tick", env={"FAB_NOW": str(wake + 5 * MINUTE)})
+        self.assertNotIn("Leerlauf", later.stdout)
+        self.assertNotIn("neu gestartet", later.stdout)
+        self.assertEqual(self.hc_calls("run"), [])
+        self.assertEqual(self.events_since(mark, "orchestrator"), [])
+        self.assert_no_attention(wake + 5 * MINUTE)
+
     def test_antwort_nach_neustart_verhindert_zweiten_start(self):
         now = self.now()
         tid = self.ticket_id()
