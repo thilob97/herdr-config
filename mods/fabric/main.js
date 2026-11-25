@@ -22,12 +22,13 @@ import { renderPipelinesPage } from "./views/pipelines.js";
 import { renderSettings } from "./views/settings.js";
 import { renderTicketsPanel } from "./views/tickets.js";
 import { renderInboxPanel as renderPosteingangPanel, renderInboxPage } from "./views/inbox.js";
+import { renderCommandsPage } from "./views/commands.js";
 import { renderTimelinePanel } from "./views/timeline.js";
 import { renderSwitcher } from "./views/switcher.js";
 import { renderDialogs, renderBlueprintDrawer } from "./views/dialogs.js";
 import { renderContextPreview } from "./views/context.js";
 
-const VIEWS = ["inbox", "board", "tickets", "ticket", "team", "workflows", "pipelines", "prompts", "templates", "repos", "settings"];
+const VIEWS = ["inbox", "commands", "board", "tickets", "ticket", "team", "workflows", "pipelines", "prompts", "templates", "repos", "settings"];
 const NAV = [
   { page: "inbox", icon: "inbox" },
   { page: "board", icon: "board" },
@@ -38,6 +39,7 @@ const NAV = [
   { page: "prompts", icon: "prompt" },
   { page: "templates", icon: "prompt" },
   { page: "repos", icon: "repo" },
+  { page: "commands", icon: "terminal" },
   { page: "settings", icon: "settings" },
 ];
 
@@ -212,6 +214,17 @@ export default class Fabric extends View {
     this.pipelineOpen = {};
     this.pipelineFilter = null;
     this.pipelineLimit = model.PIPELINE_PAGE;
+    this.commandCatalog = null;
+    this.commandCatalogError = null;
+    this.commandSel = null;
+    this.commandInputs = {};
+    this.commandFlags = {};
+    this.commandChoices = {};
+    this.commandResult = null;
+    this.commandConfirm = null;
+    this.commandSearch = InputState.new({ placeholder: "Befehl suchen…" });
+    this.commandSearch.on("change", (_event, cx) => { this.notifyNow(); });
+    this.track(this.commandSearch);
     this.inboxDiff = {};
     this.inboxRejectFor = null;
     this.inboxReject = InputState.new({ placeholder: "Feedback für den Umsetzer…" });
@@ -1051,6 +1064,97 @@ export default class Fabric extends View {
     }
   }
 
+  // ---------- Befehle ----------
+
+  async loadCommands(force = false) {
+    if (this.commandCatalog && !force) return;
+    try {
+      const result = await this.execFab(["commands", "--json"], { timeout: 30000 });
+      const data = result.code === 0 ? parseJson(result.stdout, null) : null;
+      if (!Array.isArray(data)) throw new Error((result.stderr || "").trim() || "fab commands lieferte keine Liste");
+      this.commandCatalog = data;
+      this.commandCatalogError = null;
+      // Rechts gleich ein Formular zeigen statt einer leeren Fläche.
+      if (!this.selectedCommand() && data.length) this.selectCommand(data[0]);
+    } catch (error) {
+      this.commandCatalogError = `Befehle nicht ladbar: ${message(error)}`;
+    }
+    this.notifyNow();
+  }
+
+  selectedCommand() {
+    return (this.commandCatalog ?? []).find((entry) => model.commandKey(entry) === this.commandSel) ?? null;
+  }
+
+  /** Befehl wählen; Eingabefelder entstehen einmal je Befehl, vorbelegt mit Ticket und mensch. */
+  selectCommand(entry) {
+    const key = model.commandKey(entry);
+    this.commandSel = key;
+    this.commandConfirm = null;
+    if (!this.commandInputs[key]) {
+      const defaults = model.commandDefaults(entry, { ticket: this.selectedId() ?? "" });
+      const inputs = {};
+      for (const arg of entry.args) {
+        if (arg.kind === "flag" || (arg.choices && arg.choices.length <= 8)) continue;
+        const state = InputState.new({ placeholder: arg.metavar || arg.dest });
+        if (defaults[arg.dest]) state.set_value(defaults[arg.dest]);
+        state.on("change", () => { this.commandConfirm = null; this.notifyNow(); });
+        this.track(state);
+        inputs[arg.dest] = state;
+      }
+      this.commandInputs[key] = inputs;
+      this.commandFlags[key] = {};
+      this.commandChoices[key] = {};
+    }
+    this.notifyNow();
+  }
+
+  setCommandFlag(entry, dest, on) {
+    const key = model.commandKey(entry);
+    this.commandFlags[key] = { ...(this.commandFlags[key] ?? {}), [dest]: on };
+    this.commandConfirm = null;
+    this.notifyNow();
+  }
+
+  setCommandChoice(entry, dest, value) {
+    const key = model.commandKey(entry);
+    this.commandChoices[key] = { ...(this.commandChoices[key] ?? {}), [dest]: value };
+    this.commandConfirm = null;
+    this.notifyNow();
+  }
+
+  commandValues(entry) {
+    const key = model.commandKey(entry);
+    const values = { ...(this.commandFlags[key] ?? {}), ...(this.commandChoices[key] ?? {}) };
+    for (const [dest, state] of Object.entries(this.commandInputs[key] ?? {})) values[dest] = state.value();
+    return values;
+  }
+
+  /** Befehl ausführen; folgenreiche Befehle brauchen einen zweiten Klick. */
+  async runCommand(entry) {
+    const key = model.commandKey(entry);
+    const built = model.commandArgv(entry, this.commandValues(entry));
+    if (!built.argv || this.busy) return;
+    if (entry.danger && this.commandConfirm !== key) {
+      this.commandConfirm = key;
+      this.notifyNow();
+      return;
+    }
+    this.commandConfirm = null;
+    this.busy = "command";
+    this.notifyNow();
+    try {
+      const result = await this.execFab(built.argv, { timeout: 900000 });
+      this.commandResult = { key, argv: built.argv, code: result.code, stdout: result.stdout, stderr: result.stderr };
+    } catch (error) {
+      this.commandResult = { key, argv: built.argv, code: -1, stdout: "", stderr: message(error) };
+    } finally {
+      this.busy = null;
+    }
+    await this.refresh();
+    this.notifyNow();
+  }
+
   // ---------- Benachrichtigungen ----------
 
   notifySettings() {
@@ -1302,6 +1406,8 @@ export default class Fabric extends View {
       } else {
         this.syncPipelineSelection(route, cx);
       }
+    } else if (route.page === "commands") {
+      if (!this.commandCatalog) cx.spawn(async () => { await this.loadCommands(); });
     } else if (route.page === "settings") {
       if (!this.version) cx.spawn((cx) => this.loadVersion(cx));
     }
@@ -4307,6 +4413,7 @@ export default class Fabric extends View {
     const route = this.currentRoute();
     const page = route.page;
     const content = page === "inbox" ? renderInboxPage(this, cx, t)
+      : page === "commands" ? renderCommandsPage(this, cx, t)
       : page === "board" ? renderBoard(this, cx, t)
       : page === "tickets" ? renderTicketsPage(this, cx, t)
         : page === "ticket" ? renderTicket(this, cx, t)

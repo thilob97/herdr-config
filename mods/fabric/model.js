@@ -37,6 +37,7 @@ export const PAGE_WORDS = {
   settings: "Einstellungen",
   timeline: "Zeitverlauf",
   inbox: "Posteingang",
+  commands: "Befehle",
 };
 
 export const pageWord = (page) => PAGE_WORDS[page] ?? page ?? "";
@@ -3394,4 +3395,71 @@ export function pipelineRunTarget(run) {
   const head = typeof run?.head === "string" ? run.head.trim() : "";
   if (head !== "") return head.slice(0, 8);
   return "—";
+}
+
+
+// ---------- Befehle (Seite „Befehle“, Katalog aus `fab commands --json`) ----------
+
+/** Schlüssel eines Befehls, z. B. „team add“. */
+export const commandKey = (entry) => (entry?.path ?? []).join(" ");
+
+/** Befehle nach erstem Wort gruppiert, gefiltert nach Suchtext (Pfad oder Hilfe). */
+export function commandGroups(catalog, query = "") {
+  const needle = String(query ?? "").trim().toLowerCase();
+  const groups = new Map();
+  for (const entry of Array.isArray(catalog) ? catalog : []) {
+    if (!Array.isArray(entry?.path) || !entry.path.length) continue;
+    const text = `${commandKey(entry)} ${entry.help ?? ""}`.toLowerCase();
+    if (needle && !text.includes(needle)) continue;
+    const name = entry.path[0];
+    if (!groups.has(name)) groups.set(name, []);
+    groups.get(name).push(entry);
+  }
+  return [...groups.entries()].map(([name, entries]) => ({ name, entries }));
+}
+
+/** Vorbelegung: Ticket-ID aus der Auswahl, `--from` als mensch. */
+export function commandDefaults(entry, { ticket = "" } = {}) {
+  const values = {};
+  for (const arg of entry?.args ?? []) {
+    if (arg.dest === "id" && arg.kind === "positional" && ticket) values.id = ticket;
+    if (arg.dest === "from_") values.from_ = "mensch";
+  }
+  return values;
+}
+
+/** argv für `fab`: Pfad, Optionen und Schalter, dann `--` und die Positionsargumente.
+ *  Dieselbe Form prüft fabric/tests/test_cli.py für jeden Befehl. Fehlende
+ *  Pflichtangaben stehen in `missing`; dann gibt es kein argv. */
+export function commandArgv(entry, values = {}) {
+  const options = [];
+  const positionals = [];
+  const missing = [];
+  const groups = new Map();
+  const words = (raw) => String(raw ?? "").trim().split(/\s+/).filter(Boolean);
+  for (const arg of entry?.args ?? []) {
+    const raw = values[arg.dest];
+    const set = arg.kind === "flag" ? raw === true : String(raw ?? "").trim() !== "";
+    if (arg.group) {
+      const group = groups.get(arg.group) ?? { required: arg.group_required, set: false, names: [] };
+      group.names.push(arg.flag ?? arg.metavar);
+      group.set = group.set || set;
+      groups.set(arg.group, group);
+    }
+    if (!set) {
+      if (arg.required) missing.push(arg.flag ?? arg.metavar);
+      continue;
+    }
+    if (arg.kind === "flag") options.push(arg.flag);
+    else if (arg.kind === "option") options.push(arg.flag, ...(arg.multiple ? words(raw) : [String(raw).trim()]));
+    else positionals.push(...(arg.multiple ? words(raw) : [String(raw)]));
+  }
+  for (const group of groups.values()) {
+    if (group.required && !group.set) missing.push(`eins von ${group.names.join(" / ")}`);
+  }
+  if (missing.length) return { argv: null, missing };
+  return {
+    argv: [...(entry?.path ?? []), ...options, ...(positionals.length ? ["--", ...positionals] : [])],
+    missing: [],
+  };
 }

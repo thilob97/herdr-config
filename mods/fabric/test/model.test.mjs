@@ -3107,3 +3107,37 @@ test("Posteingang-Seite: Filter zählen je Art, Zeilen ohne Entscheidungskarten"
   assert.equal(ticketTitle([{ id: "T-1", title: "Erstes" }], "T-1"), "Erstes");
   assert.equal(ticketTitle([{ id: "T-1", title: "Erstes" }], "T-9"), "");
 });
+
+test("Befehle: Gruppen, Vorbelegung und argv in der Form, die fab parst", async () => {
+  const { commandGroups, commandDefaults, commandArgv, commandKey } = await import("../model.js");
+  const comment = {
+    path: ["comment"], help: "Kommentar schreiben", args: [
+      { dest: "id", flag: null, metavar: "ID", kind: "positional", required: true },
+      { dest: "from_", flag: "--from", metavar: "NAME", kind: "option", required: true },
+      { dest: "no_wake", flag: "--no-wake", kind: "flag", required: false },
+      { dest: "text", flag: null, metavar: "TEXT", kind: "positional", required: true },
+    ],
+  };
+  const link = {
+    path: ["link"], help: "Abhängigkeiten", args: [
+      { dest: "id", flag: null, metavar: "ID", kind: "positional", required: true },
+      { dest: "blocked_by", flag: "--blocked-by", metavar: "ID", kind: "option", multiple: true, group: "g0", group_required: true },
+      { dest: "remove", flag: "--remove", metavar: "ID", kind: "option", multiple: true, group: "g0", group_required: true },
+      { dest: "from_", flag: "--from", metavar: "NAME", kind: "option", required: true },
+    ],
+  };
+  const teamAdd = { path: ["team", "add"], help: "Team anlegen", args: [] };
+
+  assert.deepEqual(commandGroups([comment, link, teamAdd]).map((g) => g.name), ["comment", "link", "team"]);
+  assert.deepEqual(commandGroups([comment, link, teamAdd], "team").map((g) => commandKey(g.entries[0])), ["team add"]);
+  assert.deepEqual(commandDefaults(comment, { ticket: "T-7" }), { id: "T-7", from_: "mensch" });
+
+  const values = { ...commandDefaults(comment, { ticket: "T-7" }), text: "-wichtig @zap", no_wake: true };
+  assert.deepEqual(commandArgv(comment, values).argv,
+    ["comment", "--from", "mensch", "--no-wake", "--", "T-7", "-wichtig @zap"]);
+  assert.deepEqual(commandArgv(comment, { id: "T-7" }).missing, ["--from", "TEXT"]);
+
+  assert.deepEqual(commandArgv(link, { id: "T-1", from_: "mensch" }).missing, ["eins von --blocked-by / --remove"]);
+  assert.deepEqual(commandArgv(link, { id: "T-1", from_: "mensch", blocked_by: "T-2  T-3" }).argv,
+    ["link", "--blocked-by", "T-2", "T-3", "--from", "mensch", "--", "T-1"]);
+});
