@@ -9,7 +9,7 @@ import subprocess
 import unittest
 from unittest import mock
 
-from fabric.fablib import autopilot, store
+from fabric.fablib import alarm, autopilot, git, store
 from fabric.fablib.errors import FabError
 from fabric.tests.support import FabricCase
 
@@ -1102,6 +1102,95 @@ test at fail.mjs:3:1
         self.set_now(stamp)
         age = autopilot.last_event_age_min("T-1")
         self.assertAlmostEqual(age, 10.0, places=3)
+
+    def app_repo(self, name="app-config"):
+        """Repo mit getrackter App-Konfiguration als Ausgangslage."""
+        repo = self.make_repo(name)
+        for relative in ("settings.json", "keys.json", "layouts/fabric.json"):
+            path = os.path.join(repo, relative)
+            folder = os.path.dirname(path)
+            if folder:
+                os.makedirs(folder, exist_ok=True)
+            self.write_file(path, "{}\n")
+        self.git_out(repo, "add", ".")
+        self.git_out(repo, "commit", "-qm", "config")
+        return repo
+
+    def test_ensure_clean_main_commits_settings_json(self):
+        repo = self.app_repo()
+        before = self.git_out(repo, "rev-parse", "HEAD")
+        path = os.path.join(repo, "settings.json")
+        self.write_file(path, '{"theme": "dark"}\n')
+        self.assertTrue(autopilot.ensure_clean_main(repo))
+        self.assertNotEqual(self.git_out(repo, "rev-parse", "HEAD"), before)
+        with open(path, encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), '{"theme": "dark"}\n')
+        self.assertEqual(git.pending_paths(repo), [])
+
+    def test_ensure_clean_main_blocks_foreign_changes(self):
+        repo = self.app_repo("app-blocked")
+        before = self.git_out(repo, "rev-parse", "HEAD")
+        self.write_file(os.path.join(repo, "settings.json"), '{"a": 1}\n')
+        self.write_file(os.path.join(repo, "README.md"), "anders\n")
+        self.assertFalse(autopilot.ensure_clean_main(repo))
+        self.assertEqual(self.git_out(repo, "rev-parse", "HEAD"), before)
+        self.assertEqual(
+            sorted(git.pending_paths(repo)), ["README.md", "settings.json"]
+        )
+
+    def test_ensure_clean_main_commits_keys_and_layouts(self):
+        for position, relative in enumerate(("keys.json", "layouts/fabric.json")):
+            with self.subTest(path=relative):
+                repo = self.app_repo(f"app-single-{position}")
+                path = os.path.join(repo, relative)
+                self.write_file(path, '{"neu": true}\n')
+                self.assertTrue(autopilot.ensure_clean_main(repo))
+                self.assertEqual(git.pending_paths(repo), [])
+                with open(path, encoding="utf-8") as handle:
+                    self.assertEqual(handle.read(), '{"neu": true}\n')
+
+    def test_skips_alarm_after_three_rounds_once(self):
+        repo = self.app_repo("app-skip")
+        moment = datetime.datetime(2026, 1, 2, 10, 0)
+        self.set_now(moment)
+        since = int(moment.timestamp() * 1000)
+        self.write_file(os.path.join(repo, "README.md"), "blockiert\n")
+
+        def skip_alarms():
+            return [
+                item for item in alarm.status()["alarms"] if item["kind"] == "skip"
+            ]
+
+        with mock.patch.object(autopilot, "_wake_orchestrator") as wake:
+            self.assertFalse(autopilot.ensure_clean_main(repo))
+            self.assertFalse(autopilot.ensure_clean_main(repo))
+            self.assertEqual(skip_alarms(), [])
+            wake.assert_not_called()
+
+            self.assertFalse(autopilot.ensure_clean_main(repo))
+            alarms = skip_alarms()
+            self.assertEqual(len(alarms), 1)
+            self.assertEqual(alarms[0]["id"], f"skip:{since}")
+            self.assertIn("README.md", alarms[0]["text"])
+            self.assertIn("3", alarms[0]["text"])
+            wake.assert_called_once()
+
+            self.assertFalse(autopilot.ensure_clean_main(repo))
+            self.assertEqual([item["id"] for item in skip_alarms()], [f"skip:{since}"])
+            wake.assert_called_once()
+
+        self.git_out(repo, "checkout", "--", "README.md")
+        self.assertTrue(autopilot.ensure_clean_main(repo))
+        self.assertEqual(skip_alarms(), [])
+        self.assertEqual(autopilot.skip_state()["paths"], [])
+
+    def test_settings_commit_clears_skip_state(self):
+        repo = self.app_repo("app-clear")
+        self.set_now(datetime.datetime(2026, 1, 2, 11, 0))
+        self.write_file(os.path.join(repo, "settings.json"), '{"x": 2}\n')
+        self.assertTrue(autopilot.ensure_clean_main(repo))
+        self.assertEqual(autopilot.skip_state()["count"], 0)
+        self.assertEqual(autopilot.skip_state()["paths"], [])
 
 
 if __name__ == "__main__":

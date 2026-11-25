@@ -14,21 +14,34 @@ ROSTER_FILE = "fabric/roster.json"
 PROMPTS_DIR = "fabric/prompts/"
 TEMPLATES_DIR = "fabric/templates/"
 
+# App-Konfiguration, die Herdr selbst schreibt (Settings, Tasten, Layouts).
+SETTINGS_FILE = "settings.json"
+KEYS_FILE = "keys.json"
+LAYOUTS_DIR = "layouts/"
+APP_PATHS = (SETTINGS_FILE, KEYS_FILE, LAYOUTS_DIR)
+
 # Alles, was `fab accept` beim Rebase auf origin/<base> mitnimmt.
-FAB_PATHS = (FABRIC_DIR, ROSTER_FILE, PROMPTS_DIR, TEMPLATES_DIR)
-# Davon committet der Autopilot ungefragt nur Roster und Prompts.
-CONFIG_PATHS = (ROSTER_FILE, PROMPTS_DIR)
+FAB_PATHS = (FABRIC_DIR, ROSTER_FILE, PROMPTS_DIR, TEMPLATES_DIR, *APP_PATHS)
+# Davon committet der Autopilot ungefragt Roster, Prompts und App-Konfiguration.
+CONFIG_PATHS = (ROSTER_FILE, PROMPTS_DIR, *APP_PATHS)
+
+
+def _matches(path, allowed):
+    """Präfixlogik: Einträge mit `/` gelten für alles darunter, Dateien exakt."""
+    for entry in allowed:
+        if entry.endswith("/"):
+            if path.startswith(entry):
+                return True
+        elif path == entry:
+            return True
+    return False
 
 
 def is_fab_path(path):
-    """True, wenn `path` ein fab-verwalteter Pfad ist.
+    """True, wenn `path` ein fab-verwalteter Pfad ist."""
+    return _matches(path, FAB_PATHS)
 
-    Einträge mit `/` gelten für alles darunter, Dateien nur exakt.
-    """
-    for allowed in FAB_PATHS:
-        if allowed.endswith("/"):
-            if path.startswith(allowed):
-                return True
-        elif path == allowed:
-            return True
-    return False
+
+def is_config_path(path):
+    """True, wenn der Autopilot `path` ungefragt committen darf."""
+    return _matches(path, CONFIG_PATHS)

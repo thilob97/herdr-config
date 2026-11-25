@@ -14,7 +14,7 @@ from .errors import FabError
 ACK_KEY = "alarm_ack"
 ACK_LIMIT = 100
 _TICKET = re.compile(r"T-\d+")
-_ORDER = {"main": 0, "pause": 1, "orchestrator": 2, "tick": 3}
+_ORDER = {"main": 0, "pause": 1, "skip": 2, "orchestrator": 3, "tick": 4}
 
 
 def _now(now=None):
@@ -171,6 +171,33 @@ def _pause_alarm(state):
     }
 
 
+def _skip_alarm():
+    """Wiederholt übersprungene Abnahmen; zustandsabgeleitet aus dem Autopilot."""
+    state = autopilot.skip_state()
+    if state["count"] < autopilot.SKIP_ALARM_ROUNDS:
+        return None
+    since = int(state["since"] or 0)
+    paths = ", ".join(state["paths"])
+    text = (
+        f"Autopilot: main seit {_clock(since)} nicht sauber – {paths} "
+        f"({state['count']} Abnahmeversuche übersprungen)"
+    )
+    return {
+        "id": f"skip:{since}",
+        "kind": "skip",
+        "at": since,
+        "since": since,
+        "ticket": "",
+        "run": None,
+        "step": "",
+        "reverted": False,
+        "paused": False,
+        "reason": "main nicht sauber",
+        "text": text,
+        "actions": ["ack"],
+    }
+
+
 def _tick_alarm(now):
     state = store.tick_alarm(now)
     if not state.get("stale"):
@@ -241,6 +268,9 @@ def _derive(now):
         alarms.append(main)
     if paused:
         alarms.append(_pause_alarm(paused_state))
+    skip = _skip_alarm()
+    if skip is not None:
+        alarms.append(skip)
     alarms.extend(_orchestrator_alarms())
     tick = _tick_alarm(now)
     if tick is not None:

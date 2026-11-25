@@ -35,6 +35,8 @@ STACK_FRAME = re.compile(r"^at .*:\d+:\d+\)?\s*\{?$")
 QUOTE_MAX_LINES = 20     # Obergrenze für das Zitat
 QUOTE_MAX_CHARS = 1200
 TAIL_CHARS = 600
+SKIP_ALARM_ROUNDS = 3      # so viele übersprungene Abnahmen bis zum Alarm
+SKIP_META_KEY = "autopilot_skip"
 DECIDE = ("@orchestrator Autopilot heute: Der Mensch ist den ganzen Tag nicht da. "
           "Triff die offene Entscheidung selbst – die vorsichtigste, umkehrbare Option –, "
           "begründe sie hier im Ticket und mach weiter. Warten nur bei Löschen außerhalb "
@@ -279,20 +281,107 @@ def _repo_root(cwd=None):
     return git.main_toplevel(folder) or folder
 
 
+def skip_state():
+    """Übersprungene Abnahmeversuche: `count`, `paths`, `since`, `notified`."""
+    raw = store.meta_get(SKIP_META_KEY)
+    data = {}
+    if raw:
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            parsed = {}
+        if isinstance(parsed, dict):
+            data = parsed
+    try:
+        count = int(data.get("count") or 0)
+    except (TypeError, ValueError):
+        count = 0
+    paths = data.get("paths")
+    if not isinstance(paths, list):
+        paths = []
+    paths = [str(item) for item in paths if isinstance(item, str)]
+    try:
+        since = int(data.get("since") or 0)
+    except (TypeError, ValueError):
+        since = 0
+    return {
+        "count": count,
+        "paths": paths,
+        "since": since,
+        "notified": bool(data.get("notified")),
+    }
+
+
+def _save_skip(count, paths, since, notified):
+    store.meta_set(SKIP_META_KEY, json.dumps({
+        "count": int(count),
+        "paths": list(paths),
+        "since": int(since),
+        "notified": bool(notified),
+    }))
+
+
+def _clear_skip():
+    """Skip-Zustand löschen; nach einem Alarm auch das Lesemodell erneuern."""
+    state = skip_state()
+    if not state["count"] and not state["paths"]:
+        return
+    store.meta_set(SKIP_META_KEY, "")
+    if state["count"] >= SKIP_ALARM_ROUNDS:
+        _rebuild_index()
+
+
+def _wake_orchestrator(text):
+    """Orchestrator einmalig wecken; ein Fehler darf die Abnahme nicht kippen."""
+    try:
+        from . import agents, wake
+
+        roster = agents.load(required=False)
+        if roster:
+            wake.notify_orchestrator(roster, text)
+    except (FabError, HcError) as exc:
+        log(f"Orchestrator-Weckung fehlgeschlagen: {exc}")
+
+
 def ensure_clean_main(repo=None):
-    """main darf nur Konfigurationsdateien als Änderung tragen."""
+    """main darf nur App-Konfiguration als Änderung tragen.
+
+    Reine Konfigurationsänderungen werden committet. Alles andere blockiert die
+    Abnahme; wiederholte Versuche zählen und lösen nach
+    `SKIP_ALARM_ROUNDS` genau einen Alarm samt Weckung aus.
+    """
     repo = repo or _repo_root()
     dirty = git.pending_paths(repo)
     if not dirty:
+        _clear_skip()
         return True
-    if all(path.startswith(managed.CONFIG_PATHS) for path in dirty):
+    if all(managed.is_config_path(path) for path in dirty):
         git.git(["add", "--", *dirty], repo)
         commit = git.git(
             ["commit", "-m", "chore: UI-Konfiguration (Autopilot)"], repo
         )
         log(f"Konfiguration committet: {dirty}")
-        return commit.returncode == 0
-    log(f"main nicht sauber, Abnahme übersprungen: {dirty}")
+        if commit.returncode == 0:
+            _clear_skip()
+            return True
+        return False
+    previous = skip_state()
+    count = previous["count"] + 1
+    since = previous["since"] or int(epoch() * 1000)
+    notified = previous["notified"]
+    if count >= SKIP_ALARM_ROUNDS and not notified:
+        notified = True
+        _save_skip(count, dirty, since, notified)
+        _rebuild_index()
+        text = (
+            f"Autopilot: main ist seit {count} Abnahmeversuchen nicht sauber "
+            f"(blockierend: {', '.join(dirty)})."
+        )
+        log(f"Alarm: main nicht sauber, Orchestrator geweckt: {dirty}")
+        _wake_orchestrator(text)
+    else:
+        _save_skip(count, dirty, since, notified)
+    log(f"main nicht sauber, Abnahme übersprungen ({count}): {dirty}")
     return False
 
 
