@@ -138,12 +138,35 @@ def clear_start(team_entry):
     store.meta_set(_start_key(_team_name(team_entry)), "")
 
 
+def _start_done(row, terminal):
+    """Meldet das für diesen Versuch gestartete Terminal `done`?
+
+    `done` setzt der Agent erst, wenn er einen Auftrag fertig bearbeitet hat;
+    ein Start, dessen erster Auftrag nie lief (etwa ohne Netz), bleibt `idle`.
+    `turn` aus `hc` taugt nicht: die Zustellung des Startauftrags zählt schon
+    als Turn. Nur das im Startzustand vermerkte Terminal zählt; ein `done`
+    eines früheren Terminals liegt vor dem Start.
+    """
+    if not terminal:
+        return False
+    if (row or {}).get("address") == terminal:
+        return agents.status(row) == "done"
+    try:
+        data = hc.get(str(terminal))
+    except HcError:
+        return False
+    return agents.status(data) == "done"
+
+
 def start_action(roster, team_entry, row, state, now=None):
     """Was mit einem offenen Startzustand geschieht.
 
-    `answered` heißt: ein `orchestrator`-Ereignis des Teams seit dem Start
-    oder ein beschäftigter Terminal-Status. `retry`/`fail` folgen erst nach
-    `START_GRACE_MINUTES`; `failed` bleibt liegen, bis jemand eingreift.
+    `answered` heißt: ein `orchestrator`-Ereignis des Teams seit dem Start,
+    ein beschäftigter Terminal-Status oder der Status `done` des für diesen
+    Versuch gestarteten Terminals. Ein reiner Lesedurchlauf ohne fab-Ereignis
+    gilt damit als Antwort; ein `done` eines früheren Terminals zählt nicht.
+    `retry`/`fail` folgen erst nach `START_GRACE_MINUTES`; `failed` bleibt
+    liegen, bis jemand eingreift.
     """
     if not state:
         return "answered"
@@ -152,6 +175,7 @@ def start_action(roster, team_entry, row, state, now=None):
     answered = (
         _activity_ms(roster, team_name, rows) >= int(state.get("at") or 0)
         or agents.status(row) in agents.BUSY_STATUSES
+        or _start_done(row, state.get("terminal"))
     )
     if answered:
         return "answered"
