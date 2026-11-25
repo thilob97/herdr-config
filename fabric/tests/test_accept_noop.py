@@ -124,9 +124,14 @@ class AcceptNoopTests(FabricCase):
         repo, tid, worktree = self.ready_ticket()
         self.ok("handover", tid, "--from", "zap", "Keine Änderung nötig")
         main_head = self.git_out(repo, "rev-parse", "HEAD")
+        # Liegengebliebene Vorschau des Tickets: verschwindet mit der Abnahme.
+        previews = os.path.join(self.tmp, "previews")
+        preview_dir = os.path.join(previews, tid)
+        os.makedirs(os.path.join(preview_dir, "home"))
         mark = self.mark()
 
-        result = self.ok("accept", tid)
+        result = self.ok("accept", tid, env={"FAB_PREVIEW_ROOT": previews})
+        self.assertFalse(os.path.exists(preview_dir))
 
         self.assertIn("ohne Änderung abgeschlossen", result.stdout)
         ticket = self.ticket(tid)

@@ -1914,7 +1914,21 @@ def _accept_clean(ticket, top, branch_name, remote="if-present"):
     git.remove_worktree(top, ticket.get("worktree"))
     if git.branch_exists(top, branch_name):
         git.delete_branch(top, branch_name)
+    _stop_preview(ticket["id"])
     return ended
+
+
+def _stop_preview(ticket_id):
+    """Vorschau-Instanz eines abgeschlossenen Tickets beenden, falls vorhanden.
+
+    Ohne das überlebten App, Core und `/tmp/fab-preview/<ID>` Abnahme und
+    Verwerfen und liefen weiter.
+    """
+    if os.path.isdir(preview.root(ticket_id)):
+        try:
+            preview.stop(ticket_id)
+        except FabError:
+            pass
 
 
 
@@ -2405,6 +2419,7 @@ def cmd_drop(args):
         ticket["waiting"] = []
         _add_comment(ticket, actor, reason)
         ended = _end_sessions(ticket)
+        _stop_preview(ticket["id"])
         events.append("drop", ticket["id"], actor, "", reason)
         store.save(ticket)
         index.rebuild()
