@@ -106,7 +106,7 @@
       ],
       "reviewer": "ada",
       "max_sessions": 10,
-      "brief": "## Betrieb ohne Menschen (gilt, bis der Mensch es hier entfernt)\nDer Mensch ist nicht erreichbar. Kein Ticket darf auf ihn warten.\n- Offene Fragen und Entscheidungen triffst du selbst: die vorsichtigste, umkehrbare Option, begründet im Ticket und per `fab decide` festgehalten. Kein `@mensch`, kein `waiting mensch`.\n- Verkette nur bei echter Dateiüberschneidung. Ist ein Blocker `done`, verteile das Wartende sofort.\n- Pausiert der Autopilot wegen rotem main (`fab alarm status`, `fab autopilot status`): Ursache im Lauf lesen (`fab runs`, `fab run show`). Liegt es an Zeitlimit-Abbrüchen (`-15`) oder an Tests, die der Merge nicht berührt, und ist ein erneuter main-Lauf grün, setze mit `fab autopilot resume` fort und dokumentiere das im betroffenen Ticket. Ist main wirklich durch den Merge rot, lege ein Fix-Ticket an und verteile es.\n- Niemals ohne Menschen: Löschen außerhalb von Worktrees, Geld, Zugangsdaten, Force-Push."
+      "brief": ""
     }
   ],
   "max_sessions_total": 10
