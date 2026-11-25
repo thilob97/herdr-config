@@ -536,6 +536,21 @@ test("Board-Titel: zwei Zeilen, gekappt mit Ellipse", async () => {
   assert.equal(long.lines.join(" ").includes("Zahlen"), false, "gekappter Text bleibt weg");
 });
 
+test("Board-Spalten: Fertig nennt neben dem gekappten count die Gesamtzahl", async () => {
+  const { boardColumns } = await import("../model.js");
+  const tickets = [];
+  for (let index = 1; index <= 25; index += 1) {
+    tickets.push({ id: `T-${index}`, status: "done", title: `fertig ${index}`, updated_at: index });
+  }
+
+  const columns = boardColumns(tickets, { doneLimit: 20 });
+  const done = columns.find((column) => column.key === "done");
+  assert.equal(done.count, 20, "die Spalte zeigt höchstens doneLimit Karten");
+  assert.equal(done.tickets.length, 20);
+  assert.equal(done.total, 25, "total bleibt die echte Gesamtzahl");
+  assert.equal(columns.find((column) => column.key === "todo").total, 0);
+});
+
 test("Tabellensortierung: Kopf dreht die Richtung, leere Werte ans Ende", async () => {
   const { sortTickets, nextSort } = await import("../model.js");
   const tickets = [
