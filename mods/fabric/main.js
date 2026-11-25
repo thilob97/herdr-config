@@ -1055,8 +1055,9 @@ export default class Fabric extends View {
       this.inbox, shared(model.NOTIFY_SEEN_KEY), this.notifySettings(), Date.now());
     // Vor dem Senden beanspruchen: sonst meldet jede Mod-Kopie dieselben Einträge.
     if (plan.changed) setShared(model.NOTIFY_SEEN_KEY, plan.seen);
-    for (const entry of plan.fresh) {
-      playSound(model.inboxNotifySound(entry.kind));
+    const toasts = model.inboxToastPlan(plan.fresh);
+    if (toasts.sound) playSound(toasts.sound);
+    for (const entry of toasts.toasts) {
       const line = model.oneLine(entry.text, 140);
       notify({
         title: `Fabric · ${model.INBOX_WORDS[entry.kind] ?? "Hinweis"}`,
@@ -1065,6 +1066,9 @@ export default class Fabric extends View {
         ...(entry.ticket ? { action: { name: "fabric.open", args: { ticket: entry.ticket } } } : {}),
         timeout: 12000,
       });
+    }
+    if (toasts.summary) {
+      notify({ title: "Fabric · Posteingang", body: toasts.summary, level: "info", timeout: 12000 });
     }
   }
 

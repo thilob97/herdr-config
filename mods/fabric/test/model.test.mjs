@@ -1786,6 +1786,43 @@ test("Benachrichtigung: abgeschaltet unterdrückt und merkt die Einträge als ge
   assert.equal(on.changed, false);
 });
 
+test("Benachrichtigung: Erststart ohne Gesehen-Speicher bleibt still (T-134)", async () => {
+  const { inboxNotifications } = await import("../model.js");
+  const inbox = Array.from({ length: 16 }, (_, index) =>
+    ({ id: `alt-${index}`, kind: "attention", ticket: `T-${index}`, at: 1000 + index }));
+
+  for (const missing of [undefined, null]) {
+    const first = inboxNotifications(inbox, missing, notifyOn, localTime(12));
+    assert.deepEqual(first.fresh, [], "bestehende Einträge melden sich beim Erststart nicht");
+    assert.equal(first.changed, true, "der Gesehen-Speicher wird angelegt");
+    assert.equal(Object.keys(first.seen).length, 16);
+
+    const later = inboxNotifications([...inbox, { id: "neu", kind: "review", ticket: "T-99", at: 9000 }],
+      first.seen, notifyOn, localTime(12, 5));
+    assert.deepEqual(later.fresh.map((entry) => entry.id), ["neu"], "danach meldet sich nur Neues");
+  }
+});
+
+test("Benachrichtigung: höchstens 3 Toasts, Rest als Sammel-Toast, ein Ton (T-134)", async () => {
+  const { inboxToastPlan } = await import("../model.js");
+  const ten = Array.from({ length: 10 }, (_, index) =>
+    ({ id: `n-${index}`, kind: index === 2 ? "attention" : "review", ticket: `T-${index}`, at: index }));
+
+  const many = inboxToastPlan(ten);
+  assert.deepEqual(many.toasts.map((entry) => entry.id), ["n-7", "n-8", "n-9"], "die jüngsten drei, ältester zuerst");
+  assert.equal(many.more, 7);
+  assert.equal(many.summary, "7 weitere im Posteingang");
+  assert.equal(many.sound, "blocked", "genau ein Ton; Aufmerksamkeit gewinnt");
+
+  const two = inboxToastPlan(ten.slice(0, 2));
+  assert.deepEqual(two.toasts.map((entry) => entry.id), ["n-0", "n-1"]);
+  assert.equal(two.more, 0);
+  assert.equal(two.summary, "", "kein Sammel-Toast");
+  assert.equal(two.sound, "done");
+
+  assert.deepEqual(inboxToastPlan([]), { toasts: [], more: 0, summary: "", sound: null });
+});
+
 test("Benachrichtigung: Stufe und Klang je Inbox-Art", async () => {
   const { inboxNotifyLevel, inboxNotifySound, INBOX_LEVELS } = await import("../model.js");
 

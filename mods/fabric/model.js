@@ -1615,10 +1615,13 @@ export function inboxEntryId(entry) {
 }
 
 /** Neue, noch nicht gesehene Inbox-Einträge; Ruhezeit und Abschalten merken
- *  die aktuellen Einträge trotzdem als gesehen, damit sie nicht später feuern. */
+ *  die aktuellen Einträge trotzdem als gesehen, damit sie nicht später feuern.
+ *  Ohne Gesehen-Speicher (Erststart, neues Home) gelten alle bestehenden
+ *  Einträge still als gesehen: Nur was danach dazukommt, meldet sich. */
 export function inboxNotifications(inbox, seen, settings, now = Date.now()) {
   const current = sortInbox(inbox);
-  const old = seen && typeof seen === "object" && !Array.isArray(seen) ? seen : {};
+  const first = !seen || typeof seen !== "object" || Array.isArray(seen);
+  const old = first ? {} : seen;
   const known = new Set(Object.keys(old));
   const next = {};
   const fresh = [];
@@ -1631,11 +1634,31 @@ export function inboxNotifications(inbox, seen, settings, now = Date.now()) {
   fresh.reverse();
 
   const nextKeys = Object.keys(next);
-  const changed = nextKeys.length !== known.size || nextKeys.some((key) => !known.has(key));
-  const quiet = !normalizeNotifySettings(settings).enabled
+  const changed = first || nextKeys.length !== known.size || nextKeys.some((key) => !known.has(key));
+  const quiet = first || !normalizeNotifySettings(settings).enabled
     || inQuietHours(minuteOfDay(now), settings);
 
   return { fresh: quiet ? [] : fresh, seen: next, changed };
+}
+
+export const TOAST_LIMIT = 3;
+
+/** Welche Toasts aus neuen Einträgen werden: höchstens `limit` einzelne (die
+ *  jüngsten, ältester zuerst), der Rest als ein Sammel-Toast, genau ein Ton. */
+export function inboxToastPlan(fresh, limit = TOAST_LIMIT) {
+  const entries = Array.isArray(fresh) ? fresh : [];
+  if (!entries.length) return { toasts: [], more: 0, summary: "", sound: null };
+  const toasts = entries.slice(-limit);
+  const more = entries.length - toasts.length;
+  const sound = entries.some((entry) => entry?.kind === "attention")
+    ? inboxNotifySound("attention")
+    : inboxNotifySound(entries[entries.length - 1]?.kind);
+  return {
+    toasts,
+    more,
+    summary: more > 0 ? `${more} weitere im Posteingang` : "",
+    sound,
+  };
 }
 
 // ---------- Verlauf ----------
