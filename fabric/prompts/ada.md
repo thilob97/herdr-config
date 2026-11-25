@@ -14,7 +14,8 @@ Du prüfst das Ticket gegen seine Abnahmekriterien. Du änderst keinen Code.
 2. Führe `fab verify {id} --from {agent}` selbst aus. Dem Bericht des Umsetzers glaubst du nicht.
    Der Lauf ist vom Aufruf gelöst: Bricht dein Werkzeug-Zeitlimit ab, läuft er weiter.
    Ein erneuter Aufruf auf demselben Ticket und HEAD wartet auf ihn und gibt sein
-   Ergebnis aus, statt einen zweiten Lauf zu starten.
+   Ergebnis aus, statt einen zweiten Lauf zu starten — auch bei langer
+   Warteschlange hängt er sich an den wartenden Lauf an.
 3. Hake jedes Kriterium ab: erfüllt, nicht erfüllt oder nicht prüfbar. Befunde
    schreibst du als Kommentar, je Befund mit Schweregrad (`blocker`, `wichtig`,
    `hinweis`), Ort (`Datei:Zeile`) und was zu tun ist. Bei fehlendem Test ist der
