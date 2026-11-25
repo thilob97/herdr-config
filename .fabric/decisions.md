@@ -4,3 +4,4 @@
 - 2026-11-24 · T-114: UI-Aufräumen in drei verkettete Kinder: Audit (xen), dann Fenster, dann Seitenleiste/Toast · Begründung: Gemeinsame Token und Begriffe entstehen zuerst im Audit und in ui.js; die Seitenleiste übernimmt sie danach
 - 2026-11-25 · T-72: Eltern-Tickets, deren Kinder alle done oder dropped sind, verteile ich an den Umsetzer nur zum Abschluss: Kinder prüfen und ohne Änderung übergeben · Begründung: fab handover verlangt einen Worktree; ohne Dispatch gibt es für Eltern-Tickets keinen Weg in die Review
 - 2026-11-25 · T-92: Beendete Sessions von Tickets ohne Zuständigen meldet der Sofortpfad an den Orchestrator; nur assignee mensch bleibt still. · Begründung: Ohne Zuständigen bemerkt sonst niemand die beendete Session.
+- 2026-11-25 · T-107: Dateien im Wissensordner .fabric/knowledge/ werden wie die übrigen .fabric-Dateien ins Repo committet, höchstens 20 MB je Datei · Begründung: Gleiches Verhalten wie T-63; der Ordner soll mit dem Repo wandern
