@@ -104,7 +104,7 @@ def _was_reverted(run):
     return f"This reverts commit {head}" in body
 
 
-def _main_alarm(run, paused):
+def _main_alarm(run, paused, pause_reason=""):
     steps = store.pipeline_steps(run["id"])
     failed = next((step for step in steps if step.get("state") == "fail"), None)
     step = str((failed or {}).get("name") or "")
@@ -119,6 +119,8 @@ def _main_alarm(run, paused):
         text += f" – {ticket}"
     if step:
         text += f" – Schritt {step} fehlgeschlagen"
+    if paused and pause_reason:
+        text += f" – Grund: {pause_reason}"
 
     actions = []
     if run.get("id") is not None:
@@ -139,7 +141,7 @@ def _main_alarm(run, paused):
         "step": step,
         "reverted": reverted,
         "paused": paused,
-        "reason": "",
+        "reason": pause_reason if paused else "",
         "text": text,
         "actions": actions,
     }
@@ -262,8 +264,12 @@ def _derive(now):
     alarms = []
     paused_state = autopilot.status()
     paused = paused_state.get("state") == "paused"
+    pause_reason = str(paused_state.get("reason") or "") if paused else ""
     run = _last_main_run()
-    main = _main_alarm(run, paused) if run and run.get("state") == "fail" else None
+    main = (
+        _main_alarm(run, paused, pause_reason)
+        if run and run.get("state") == "fail" else None
+    )
     if main is not None:
         alarms.append(main)
     if paused:

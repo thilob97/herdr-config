@@ -3,7 +3,9 @@
 - Nimmt Tickets in Prüfung ab, wenn Checks und Urteil `pass` auf dem aktuellen
   Worktree-HEAD sind.
 - Prüft main nach jedem Merge mit `.fabric/verify.sh`; bei Rot wird der Merge
-  zurückgenommen, eine Pausemarke gesetzt und die Abnahme angehalten.
+  höchstens einmal wiederholt. Ein Abbruch wird nicht revertiert; ein Revert
+  landet nur als Merge-Commit ohne fremde lokale Commits auf origin/main. Danach
+  folgen Pausemarke und Alarm; die Abnahme wird angehalten.
 - Leitet Rückfragen an den Orchestrator einmal je Ticket weiter.
 - Weckt bei Stillstand den Zuständigen (höchstens dreimal), danach den
   Orchestrator; stößt das Verteilen höchstens alle 30 Minuten an.
@@ -598,28 +600,96 @@ def _rebuild_index():
         log(f"Index nach main-Prüfung fehlgeschlagen: {exc}")
 
 
+def _revert_main(repo):
+    """Merge-Commit an HEAD zurücknehmen und nach origin/main pushen.
+
+    Die Basisreferenz wird hier genau einmal bestimmt: origin/main nach einem
+    Fetch. Erlaubt ist nur der Merge-Commit von `fab accept`, also HEAD als
+    Merge ohne fremde Commits über origin/main (0 Commits: der PR-Weg hat den
+    Merge schon gepusht; 1 Commit: der lokale Weg hat ihn noch nicht gepusht).
+    Liefert den Pausengrund; "" nur, wenn der Revert auf origin/main liegt.
+    Scheitert der Push, wird der lokale Revert wieder verworfen.
+    """
+    base = "main"
+    try:
+        git.fetch(repo)
+    except FabError as exc:
+        return f"origin/{base} nicht erreichbar: {exc}"
+    remote = git.remote_ref(repo, "origin", base)
+    if not remote:
+        return f"origin/{base} fehlt"
+    local = git.head(repo)
+    if not local:
+        return "HEAD ist nicht lesbar"
+    ahead = git.git(
+        ["rev-list", "--first-parent", "--count", f"{remote}..{local}"], repo
+    )
+    try:
+        count = int(ahead.stdout.strip() or "0") if ahead.returncode == 0 else -1
+    except ValueError:
+        count = -1
+    if count not in (0, 1):
+        return (
+            f"{count} lokale Commits über origin/{base} – fremde lokale Commits, "
+            "kein Revert"
+        )
+    parents = git.git(["rev-list", "--parents", "-n", "1", local], repo)
+    if parents.returncode != 0 or len(parents.stdout.split()) < 3:
+        return "HEAD ist kein Merge-Commit aus fab accept – kein Revert"
+    try:
+        reverted = git.revert(repo, local)
+    except FabError as exc:
+        git.git(["revert", "--abort"], repo)
+        return f"Revert von {local[:7]} fehlgeschlagen – kein Push: {exc}"
+    try:
+        git.push(repo, "origin", base)
+    except FabError as exc:
+        try:
+            git.reset_keep(repo, local)
+        except FabError as reset_exc:
+            return (
+                f"Push nach origin/{base} fehlgeschlagen ({exc}); lokaler Revert "
+                f"{reverted[:7]} blieb stehen: {reset_exc}"
+            )
+        return (
+            f"Push nach origin/{base} fehlgeschlagen ({exc}); Revert lokal "
+            "verworfen"
+        )
+    log(f"Revert {reverted[:7]} nach origin/{base} gepusht")
+    return ""
+
+
 def check_main(repo=None):
     """main nach einem Merge prüfen, bei zweimal Rot den Merge zurücknehmen.
 
-    Rückgabe `(grün, stdout, stderr, run_id)`. Ein fehlgeschlagener Revert ändert
-    nichts an der Entscheidung: der Aufrufer pausiert die Abnahmen in jedem Fall.
+    Rückgabe `(grün, stdout, stderr, run_id, grund)`. `grund` ist "" bei Grün
+    und sonst der Pausengrund: ein Abbruch (Grund beginnt mit `Abbruch:`) wird
+    nicht revertiert; ein gewöhnliches Rot nur, wenn HEAD ein Merge-Commit von
+    `fab accept` ohne fremde lokale Commits ist, und der Revert wird nach
+    origin/main gepusht. Ein fehlgeschlagener Revert ändert nichts an der
+    Entscheidung: der Aufrufer pausiert die Abnahmen in jedem Fall.
     """
     repo = repo or _repo_root()
     result = pipeline.run(repo, "main", repo=repo, timeout=900)
     if result["state"] == "pass":
-        return True, result["stdout"], result["stderr"], result["run_id"]
+        return True, result["stdout"], result["stderr"], result["run_id"], ""
     # Ein Rot kann ein wackliger Test sein: einmal wiederholen.
     log("main rot, zweite Prüfung")
     time.sleep(60)
     result = pipeline.run(repo, "main", repo=repo, timeout=900)
     if result["state"] == "pass":
         log("main beim zweiten Lauf grün (wackliger Test?)")
-        return True, result["stdout"], result["stderr"], result["run_id"]
-    reverted = git.git(["revert", "-m", "1", "--no-edit", "HEAD"], repo)
-    if reverted.returncode != 0:
-        detail = (reverted.stderr or reverted.stdout).strip()
-        log(f"Revert fehlgeschlagen: {detail}")
-    return False, result["stdout"], result["stderr"], result["run_id"]
+        return True, result["stdout"], result["stderr"], result["run_id"], ""
+    reason = str(result.get("reason") or "")
+    if reason.startswith(pipeline.ABORT_PREFIX):
+        return (
+            False, result["stdout"], result["stderr"], result["run_id"],
+            f"main rot durch Abbruch, kein Revert ({reason})",
+        )
+    return (
+        False, result["stdout"], result["stderr"], result["run_id"],
+        _revert_main(repo),
+    )
 
 
 def start(until="done", cwd=None):
@@ -769,15 +839,16 @@ def try_accept(ticket):
     if no_change:
         log(f"accept {tid}: ohne Änderung, main unverändert")
         return True
-    ok, out, err, run_id = check_main(repo)
+    ok, out, err, run_id, note = check_main(repo)
     if ok:
         _rebuild_index()
         log(f"main nach {tid} grün")
         return True
     # Der Schutzschritt hängt nicht am Erfolg des Reverts.
+    reason = note or "main nach Merge rot; Revert nach origin/main gepusht"
     _paused = True
-    _pause("main nach Merge rot")
-    write_state("paused", "main nach Merge rot – Abnahmen pausiert", end=_end_text)
+    _pause(reason)
+    write_state("paused", reason, end=_end_text)
     _rebuild_index()
     try:
         paths = _attach_output(tid, out, err)
@@ -785,18 +856,18 @@ def try_accept(ticket):
         log(f"Anhänge {tid} fehlgeschlagen: {exc}")
         paths = []
     message = [
-        "Autopilot: Nach dem Merge war main rot (.fabric/verify.sh). Merge per Revert "
-        "zurückgenommen, weitere Abnahmen pausiert."
+        f"@orchestrator Autopilot: {reason}. Weitere Abnahmen sind pausiert; "
+        "bitte die Ursache prüfen und danach `fab autopilot resume` ausführen."
     ]
     if paths:
         message.append("Anhänge: " + ", ".join(paths))
     message.append(_error_quote(out, err))
     message.append(f"Lauf: #{run_id} (fab run show {run_id})")
     _sh(
-        "fab", "comment", tid, "--from", "mensch", "--no-wake", "--",
+        "fab", "comment", tid, "--from", "mensch", "--",
         "\n".join(message),
     )
-    log(f"ROT nach {tid}: Revert, Abnahmen pausiert")
+    log(f"ROT nach {tid}: {reason}; Abnahmen pausiert")
     return False
 
 
