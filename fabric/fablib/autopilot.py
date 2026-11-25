@@ -19,7 +19,7 @@ import sys
 import tempfile
 import time
 
-from . import git, hc, pipeline, store
+from . import git, hc, managed, pipeline, store
 from .errors import FabError, HcError
 
 TERMINAL = "autopilot"
@@ -29,7 +29,6 @@ INTERVAL = 120
 STALL_MIN = 20
 DISPATCH_MIN = 30 * 60
 NUDGE_LOCK = 30 * 60
-CONFIG_PATHS = ("fabric/roster.json", "fabric/prompts/")
 ERROR_MARKERS = ("FAIL", "ERROR", "Traceback", "not ok", "failing tests")
 SPEC_SECTION = re.compile(r"^test at \S+:\d+:\d+$")  # node --test, spec-Reporter
 STACK_FRAME = re.compile(r"^at .*:\d+:\d+\)?\s*\{?$")
@@ -286,7 +285,7 @@ def ensure_clean_main(repo=None):
     dirty = git.pending_paths(repo)
     if not dirty:
         return True
-    if all(path.startswith(CONFIG_PATHS) for path in dirty):
+    if all(path.startswith(managed.CONFIG_PATHS) for path in dirty):
         git.git(["add", "--", *dirty], repo)
         commit = git.git(
             ["commit", "-m", "chore: UI-Konfiguration (Autopilot)"], repo
