@@ -167,7 +167,24 @@ def _kill_group(pgid, grace=KILL_GRACE, proc=None):
         pass
 
 
-def _execute(command, cwd, timeout, run_id=None, position=None, stall=None):
+def test_jobs(slots=None):
+    """Testprozesse je Prüflauf: die CPU-Kerne geteilt durch die Prüfplätze.
+
+    `run_parallel.py` nimmt sonst alle Kerne, und zwei gleichzeitige Läufe
+    starteten doppelt so viele Prozesse wie Kerne (Load 50–80 am 24./25.11.).
+    """
+    slots = verifyslots.limit() if slots is None else slots
+    return max(2, (os.cpu_count() or 2) // max(1, int(slots)))
+
+
+def _step_env():
+    env = dict(os.environ)
+    if not (env.get("FAB_TEST_JOBS") or "").strip():
+        env["FAB_TEST_JOBS"] = str(test_jobs())
+    return env
+
+
+def _execute(command, cwd, timeout, run_id=None, position=None, stall=None, env=None):
     """(code, stdout, stderr) eines Schritts.
 
     Der Schritt läuft in einer eigenen Prozessgruppe und schreibt in Dateien
@@ -190,6 +207,7 @@ def _execute(command, cwd, timeout, run_id=None, position=None, stall=None):
             proc = subprocess.Popen(
                 ["sh", "-c", command],
                 cwd=cwd,
+                env=env,
                 stdin=subprocess.DEVNULL,
                 stdout=out_file,
                 stderr=err_file,
@@ -480,7 +498,8 @@ def run(
             store.pipeline_step_update(run_id, position, state="running")
             step_start = store.now_ms()
             code, out, err = _execute(
-                command, worktree, step_timeout, run_id=run_id, position=position
+                command, worktree, step_timeout, run_id=run_id, position=position,
+                env=_step_env(),
             )
             duration = store.now_ms() - step_start
             state = "pass" if code == 0 else "fail"

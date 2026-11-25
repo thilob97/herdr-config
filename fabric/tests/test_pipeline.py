@@ -630,3 +630,21 @@ class PipelineTest(PipelineCase):
         with self.store_env():
             run = store.pipeline_run_load(result["run_id"])
         self.assertEqual(run["reason"], result["reason"])
+
+
+class TestJobsTest(PipelineCase):
+    def test_testprozesse_teilen_sich_die_kerne_mit_den_pruefplaetzen(self):
+        with mock.patch.object(pipeline.os, "cpu_count", return_value=12):
+            self.assertEqual(pipeline.test_jobs(2), 6)
+            self.assertEqual(pipeline.test_jobs(4), 3)
+            self.assertEqual(pipeline.test_jobs(12), 2, "mindestens zwei")
+        repo = self.make_repo()
+        self.write_steps(repo, [{"name": "jobs", "run": "echo jobs=$FAB_TEST_JOBS"}])
+        env = {k: v for k, v in os.environ.items() if k != "FAB_TEST_JOBS"}
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(pipeline, "test_jobs", return_value=5):
+            result = self.run_pipeline(repo)
+        self.assertIn("jobs=5", result["stdout"])
+        with mock.patch.dict(os.environ, {"FAB_TEST_JOBS": "3"}):
+            result = self.run_pipeline(repo)
+        self.assertIn("jobs=3", result["stdout"], "ein gesetzter Wert bleibt")
