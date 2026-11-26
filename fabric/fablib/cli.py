@@ -661,16 +661,25 @@ def cmd_report(args):
         if not roster:
             raise FabError("Kein Team im Roster; fab team add …")
         teams.team(roster, args.team)
+    elif args.fabric:
+        if not roster:
+            raise FabError("Kein Fabric im Roster; fab fabric add …")
+        teams.fabric(roster, args.fabric)
     payload = analytics.report(
         store.all_tickets(), store.event_rows(), store.pipeline_run_list(),
         reviewer=_reviewer(roster), days=args.days, roster=roster, team=args.team,
+        fabric=args.fabric,
     )
     if args.json:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
     over = payload["overview"]
     rate = over["pass_rate"]
-    scope = f"Team {args.team}" if args.team else "Fabric"
+    scope = (
+        f"Team {args.team}" if args.team
+        else f"Fabric {args.fabric}" if args.fabric
+        else "Fabric"
+    )
     print(f"Statistik {scope}, letzte {payload['days']} Tage")
     for row in payload.get("teams") or []:
         print(f"  {row['name'] or 'ohne Team':<14}{costs.format_cost(row['cost_range']):>10}"
@@ -3267,6 +3276,43 @@ def cmd_blueprint(args):
     return 0
 
 
+def cmd_fabric(args):
+    if args.action == "list":
+        rows = config.fabric_rows()
+        if args.json:
+            print(json.dumps(rows, ensure_ascii=False, indent=2))
+            return 0
+        for row in rows:
+            mark = " (Standard)" if row["default"] else ""
+            note = f" · {row['note']}" if row["note"] else ""
+            team_names = ", ".join(row["teams"]) or "—"
+            repos = ", ".join(row["repos"]) or "—"
+            print(
+                f"{row['name']}{mark}  {row['open_tickets']} offen{note} · "
+                f"Teams {team_names} · {repos}"
+            )
+        return 0
+    actor = _require_actor(args)
+    with store.locked():
+        if args.action == "add":
+            entry = config.add_fabric(args.name, note=args.note, actor=actor)
+            line = f"Fabric „{entry['name']}“ angelegt"
+            if entry["note"]:
+                line += f": {entry['note']}"
+            print(line)
+            return 0
+        if args.action == "edit":
+            print(
+                config.edit_fabric(
+                    args.name, rename=args.rename, note=args.note, actor=actor
+                )
+            )
+            return 0
+        config.remove_fabric(args.name, actor)
+    print(f"Fabric „{args.name}“ entfernt")
+    return 0
+
+
 def cmd_team(args):
     if args.action == "list":
         payload = config.payload()
@@ -3296,7 +3342,8 @@ def cmd_team(args):
                     )
             line = (
                 f"{row['name']}  Prüfer {row['reviewer'] or '—'} · "
-                f"{row['max_sessions']} Sessions · {repos} · Mitglieder {members}"
+                f"{row['max_sessions']} Sessions · Fabric {row['fabric']} · "
+                f"{repos} · Mitglieder {members}"
             )
             if overrides:
                 line += " · Übersteuerungen " + "; ".join(overrides)
@@ -3315,6 +3362,7 @@ def cmd_team(args):
                 orchestrator_prompt=args.orchestrator_prompt,
                 reviewer=args.reviewer,
                 max_sessions=args.max_sessions,
+                fabric=args.fabric,
                 actor=actor,
             )
             members = ", ".join(
@@ -3349,6 +3397,7 @@ def cmd_team(args):
                     reviewer=args.reviewer,
                     max_sessions=args.max_sessions,
                     brief=brief,
+                    fabric=args.fabric,
                     actor=actor,
                 )
             )
@@ -4058,6 +4107,7 @@ _TRANSLATIONS = (
     (r"expected one argument", "erwartet einen Wert"),
     (r"expected at least one argument", "erwartet mindestens einen Wert"),
     (r"invalid choice: (.+?) \(choose from (.+)\)", r"ungültige Auswahl: \1 (erlaubt: \2)"),
+    (r"not allowed with argument (.+)", r"nicht zusammen mit \1 erlaubt"),
     (r"argument (.+?): ", r"Argument \1: "),
 )
 
@@ -4066,7 +4116,7 @@ _TRANSLATIONS = (
 # Fenster verlangt dafür einen zweiten Klick.
 DANGEROUS_COMMANDS = {
     ("accept",), ("close",), ("drop",), ("reject",), ("migrate",), ("pause",),
-    ("agent", "rm"), ("blueprint", "rm"), ("team", "rm"), ("flow", "rm"),
+    ("agent", "rm"), ("blueprint", "rm"), ("team", "rm"), ("fabric", "rm"), ("flow", "rm"),
     ("flow", "cancel"), ("knowledge", "rm"), ("autopilot", "stop"),
 }
 
@@ -4201,7 +4251,10 @@ def build_parser():
     item = command("report", "Statistik: Durchsatz, Kosten je Agent, Prüfungen, Läufe, Liegezeiten", cmd_report)
     item.add_argument("--days", type=int, default=14, metavar="N",
                       help="Zeitraum in Kalendertagen bis heute (Standard 14)")
-    item.add_argument("--team", metavar="NAME", help="nur dieses Team (Tickets, Repos, Läufe)")
+    scope = item.add_mutually_exclusive_group()
+    scope.add_argument("--team", metavar="NAME", help="nur dieses Team (Tickets, Repos, Läufe)")
+    scope.add_argument("--fabric", metavar="NAME",
+                       help="nur dieses Fabric (Tickets, Repos, Läufe)")
     item.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe")
 
     item = command("diff", "Änderungen des Tickets gegenüber der Basis zeigen", cmd_diff)
@@ -4414,6 +4467,27 @@ def build_parser():
     remove.add_argument("name", metavar="NAME")
     remove.add_argument("--from", dest="from_", metavar="NAME", required=True)
 
+    item = command("fabric", "Fabrics anlegen, ändern und entfernen", cmd_fabric)
+    fabric_sub = item.add_subparsers(dest="action", metavar="AKTION", required=True)
+    listing = fabric_sub.add_parser("list", help="Fabrics auflisten",
+                                    description="Fabrics auflisten")
+    listing.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe")
+    add = fabric_sub.add_parser("add", help="Fabric anlegen", description="Fabric anlegen")
+    add.add_argument("name", metavar="NAME")
+    add.add_argument("--note", metavar="TEXT", help="Notiz zum Fabric")
+    add.add_argument("--from", dest="from_", metavar="NAME", required=True)
+
+    edit = fabric_sub.add_parser("edit", help="Fabric ändern", description="Fabric ändern")
+    edit.add_argument("name", metavar="NAME")
+    edit.add_argument("--rename", metavar="NEU", help="neuer Name (nur wenn frei)")
+    edit.add_argument("--note", metavar="TEXT", help="Notiz; leer entfernt sie")
+    edit.add_argument("--from", dest="from_", metavar="NAME", required=True)
+
+    remove = fabric_sub.add_parser("rm", help="Fabric entfernen",
+                                   description="Fabric entfernen")
+    remove.add_argument("name", metavar="NAME")
+    remove.add_argument("--from", dest="from_", metavar="NAME", required=True)
+
     item = command("team", "Teams anlegen, ändern und entfernen", cmd_team)
     team_sub = item.add_subparsers(dest="action", metavar="AKTION", required=True)
     listing = team_sub.add_parser("list", help="Teams auflisten",
@@ -4426,6 +4500,7 @@ def build_parser():
     add.add_argument("--members-json", metavar="JSON", required=True,
                      help='Mitglieder als JSON, z. B. [{"blueprint": "zap"}]')
     add.add_argument("--reviewer", metavar="NAME", required=True, help="Prüfer im Team")
+    add.add_argument("--fabric", metavar="NAME", help="Fabric des Teams (Standard: standard)")
     add.add_argument("--max-sessions", metavar="N")
     add.add_argument("--orchestrator-argv-json", metavar="JSON")
     add.add_argument("--orchestrator-prompt", metavar="PFAD")
@@ -4438,6 +4513,7 @@ def build_parser():
                       help="neue Repo-Liste")
     edit.add_argument("--members-json", metavar="JSON")
     edit.add_argument("--reviewer", metavar="NAME")
+    edit.add_argument("--fabric", metavar="NAME", help="Fabric des Teams")
     edit.add_argument("--max-sessions", metavar="N")
     edit.add_argument("--orchestrator-argv-json", metavar="JSON")
     edit.add_argument("--orchestrator-prompt", metavar="PFAD")

@@ -105,10 +105,16 @@ class TeamCase(unittest.TestCase):
     """Team-Sicht filtert Tickets, Ereignisse und Läufe; Fabric-Sicht vergleicht Teams."""
 
     def setUp(self):
-        self.roster = {"teams": [
-            {"name": "web", "repos": ["/r/web/"]},
-            {"name": "api", "repos": ["/r/api"]},
-        ]}
+        self.roster = {
+            "fabrics": [
+                {"name": "standard", "note": ""},
+                {"name": "privat", "note": "Privat"},
+            ],
+            "teams": [
+                {"name": "web", "repos": ["/r/web/"], "fabric": "standard"},
+                {"name": "api", "repos": ["/r/api"], "fabric": "privat"},
+            ],
+        }
         self.tickets = [
             {"id": "T-1", "repo": "/r/web", "status": "done", "cost": {"sessions": [
                 {"agent": "zap", "cost": 2.0, "started_at": _ms(20)}]}},
@@ -125,11 +131,11 @@ class TeamCase(unittest.TestCase):
             {"ticket": "T-2", "state": "fail", "started_at": _ms(20), "reason": "rot"},
         ]
 
-    def report(self, team=None):
+    def report(self, team=None, fabric=None):
         with mock.patch.object(analytics.costs, "team_name",
                                lambda roster, ticket: {"/r/web": "web", "/r/api": "api"}[ticket["repo"]]):
             return analytics.report(self.tickets, self.events, self.runs, now=NOW, days=3,
-                                    fresh=False, roster=self.roster, team=team)
+                                    fresh=False, roster=self.roster, team=team, fabric=fabric)
 
     def test_team_view_filters_everything(self):
         data = self.report("web")
@@ -143,10 +149,33 @@ class TeamCase(unittest.TestCase):
 
     def test_fabric_view_compares_teams(self):
         data = self.report()
+        self.assertIsNone(data["fabric"])
         rows = {row["name"]: row for row in data["teams"]}
-        self.assertEqual(rows["web"], {"name": "web", "cost_range": 2.0, "created": 1, "done": 1, "open": 0})
-        self.assertEqual(rows["api"], {"name": "api", "cost_range": 5.0, "created": 1, "done": 0, "open": 1})
+        self.assertEqual(rows["web"], {"name": "web", "fabric": "standard", "cost_range": 2.0,
+                                       "created": 1, "done": 1, "open": 0})
+        self.assertEqual(rows["api"], {"name": "api", "fabric": "privat", "cost_range": 5.0,
+                                       "created": 1, "done": 0, "open": 1})
         self.assertEqual(data["overview"]["cost_range"], 7.0)
+
+    def test_fabric_filter_limits_teams_tickets_events_and_runs(self):
+        data = self.report(fabric="privat")
+        self.assertEqual(data["fabric"], "privat")
+        self.assertIsNone(data["team"])
+        self.assertEqual(
+            [row["name"] for row in data["teams"]], ["api"])
+        self.assertEqual(data["teams"][0]["fabric"], "privat")
+        self.assertEqual(data["overview"]["cost_range"], 5.0)
+        self.assertEqual([row["name"] for row in data["costs"]["agents"]], ["ada"])
+        # Nur der Ticketlauf von T-2; der main-Lauf im Repo von web gehört standard.
+        self.assertEqual(data["pipelines"]["counts"],
+                         {"pass": 0, "fail": 1, "aborted": 0, "open": 0})
+        self.assertEqual(data["reviews"]["verdicts"], {"pass": 0, "fail": 1})
+
+    def test_fabric_standard_keeps_main_runs_of_its_repos(self):
+        data = self.report(fabric="standard")
+        self.assertEqual([row["name"] for row in data["teams"]], ["web"])
+        self.assertEqual(data["pipelines"]["counts"],
+                         {"pass": 1, "fail": 1, "aborted": 0, "open": 0})
 
 
 if __name__ == "__main__":

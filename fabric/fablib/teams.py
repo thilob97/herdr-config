@@ -19,6 +19,7 @@ COLORS = ("c1", "c2", "c3", "c4", "c5", "c6")
 
 DEFAULT_TEAM = "herdr-app"
 DEFAULT_REPO = "~/.config/herdr-app"
+DEFAULT_FABRIC = "standard"
 GLOBAL_KEY = "max_sessions_total"
 MIN_SESSIONS, MAX_SESSIONS = 1, 16
 MAX_SESSIONS_TOTAL = 64
@@ -46,6 +47,19 @@ def check_name(raw):
             f"Agentname „{value}“ ist ungültig: 1–16 Zeichen, nur Kleinbuchstaben, "
             f"Ziffern, „_“ und „-“, beginnend mit einem Buchstaben "
             f"(Muster ^[a-z][a-z0-9_-]{{0,15}}$)"
+        )
+    return value
+
+
+def check_fabric_name(raw):
+    value = (raw or "").strip()
+    if not value:
+        raise FabError("Der Fabric-Name ist leer")
+    if not NAME_RE.match(value):
+        raise FabError(
+            f"Fabric-Name „{value}“ ist ungültig: 1–16 Zeichen, nur "
+            f"Kleinbuchstaben, Ziffern, „_“ und „-“, beginnend mit einem "
+            f"Buchstaben (Muster ^[a-z][a-z0-9_-]{{0,15}}$)"
         )
     return value
 
@@ -252,6 +266,100 @@ def team(data, name):
         if isinstance(entry, dict) and entry.get("name")
     ) or "leer"
     raise FabError(f"Unbekanntes Team: {name} (vorhanden: {known})")
+
+
+def ensure_fabrics(data):
+    """Fabrics im Speicher normalisieren; schreibt nie eine Datei.
+
+    `standard` steht immer an erster Stelle und existiert immer. Jedes Team
+    bekommt ein `fabric`; fehlt es oder ist es unbekannt, gilt `standard`.
+    Alte Roster ohne `fabrics` bleiben so unverändert lesbar.
+    """
+    if not isinstance(data, dict):
+        return data
+    raw_entries = data.get("fabrics")
+    if not isinstance(raw_entries, list):
+        raw_entries = []
+    entries, names = [], set()
+    for entry in raw_entries:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name") or "").strip()
+        if not name or name in names:
+            continue
+        names.add(name)
+        entries.append({"name": name, "note": str(entry.get("note") or "")})
+    if DEFAULT_FABRIC not in names:
+        entries.insert(0, {"name": DEFAULT_FABRIC, "note": ""})
+    else:
+        # `standard` nach vorn, die übrigen in Roster-Reihenfolge.
+        entries.sort(key=lambda item: item["name"] != DEFAULT_FABRIC)
+    data["fabrics"] = entries
+    known = {entry["name"] for entry in entries}
+    for team_entry in _entries(data, "teams"):
+        if not isinstance(team_entry, dict):
+            continue
+        fabric = str(team_entry.get("fabric") or "").strip()
+        team_entry["fabric"] = fabric if fabric in known else DEFAULT_FABRIC
+    return data
+
+
+def fabric(data, name):
+    ensure_fabrics(data)
+    for entry in data["fabrics"]:
+        if entry["name"] == name:
+            return entry
+    known = ", ".join(entry["name"] for entry in data["fabrics"]) or "leer"
+    raise FabError(f"Unbekanntes Fabric: {name} (vorhanden: {known})")
+
+
+def fabric_names(data):
+    ensure_fabrics(data)
+    return [entry["name"] for entry in data["fabrics"]]
+
+
+def fabric_of_team(entry):
+    """Fabric eines Team-Eintrags; ohne Angabe `standard`, ohne Team leer."""
+    if not isinstance(entry, dict):
+        return ""
+    return str(entry.get("fabric") or "").strip() or DEFAULT_FABRIC
+
+
+def teams_in_fabric(data, name):
+    ensure_fabrics(data)
+    return [
+        entry
+        for entry in _entries(data, "teams")
+        if isinstance(entry, dict) and fabric_of_team(entry) == name
+    ]
+
+
+def fabric_rows(data, open_counts=None):
+    """Fabric-Zeilen fürs UI: Standard zuerst, dann Roster-Reihenfolge."""
+    ensure_fabrics(data)
+    rows = []
+    for entry in data.get("fabrics") or []:
+        name = entry["name"]
+        team_names, repos = [], []
+        for team_entry in _entries(data, "teams"):
+            if not isinstance(team_entry, dict) or fabric_of_team(team_entry) != name:
+                continue
+            if team_entry.get("name"):
+                team_names.append(str(team_entry["name"]))
+            for repo in _strings(team_entry.get("repos")):
+                if repo not in repos:
+                    repos.append(repo)
+        row = {
+            "name": name,
+            "note": str(entry.get("note") or ""),
+            "default": name == DEFAULT_FABRIC,
+            "teams": team_names,
+            "repos": repos,
+        }
+        if open_counts is not None:
+            row["open_tickets"] = int((open_counts or {}).get(name, 0))
+        rows.append(row)
+    return rows
 
 
 def first_team(data):
@@ -684,6 +792,7 @@ def team_rows(data):
         rows.append(
             {
                 "name": name,
+                "fabric": fabric_of_team(entry),
                 "repos": _strings(entry.get("repos")),
                 "orchestrator": _orchestrator(entry.get("orchestrator")),
                 "members": members,

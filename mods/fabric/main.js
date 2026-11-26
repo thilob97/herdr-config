@@ -14,6 +14,7 @@ import { renderBoard } from "./views/board.js";
 import { renderTicket } from "./views/ticket.js";
 import { renderTicketsPage } from "./views/tickets-page.js";
 import { renderTeam, renderTeamPromptDrawer } from "./views/team.js";
+import { renderFabricsPage } from "./views/fabrics.js";
 import { renderPrompts } from "./views/prompts.js";
 import { renderTemplates } from "./views/templates.js";
 import { renderRepos } from "./views/repos.js";
@@ -29,7 +30,7 @@ import { renderSwitcher } from "./views/switcher.js";
 import { renderDialogs, renderBlueprintDrawer } from "./views/dialogs.js";
 import { renderContextPreview } from "./views/context.js";
 
-const VIEWS = ["inbox", "commands", "stats", "board", "tickets", "ticket", "team", "workflows", "pipelines", "prompts", "templates", "repos", "settings"];
+const VIEWS = ["inbox", "commands", "stats", "board", "tickets", "ticket", "team", "fabrics", "workflows", "pipelines", "prompts", "templates", "repos", "settings"];
 const NAV = [
   { page: "inbox", icon: "inbox" },
   { page: "board", icon: "board" },
@@ -38,6 +39,7 @@ const NAV = [
   { page: "pipelines", icon: "terminal" },
   { page: "stats", icon: "chart" },
   { page: "team", icon: "team" },
+  { page: "fabrics", icon: "fabric" },
   { page: "prompts", icon: "prompt" },
   { page: "templates", icon: "prompt" },
   { page: "repos", icon: "repo" },
@@ -68,6 +70,7 @@ function normalizeIndex(raw) {
     inbox: Array.isArray(raw?.inbox) ? raw.inbox : [],
     roster: Array.isArray(raw?.roster) ? raw.roster : [],
     teams: Array.isArray(raw?.teams) ? raw.teams : [],
+    fabrics: Array.isArray(raw?.fabrics) ? raw.fabrics : [],
     events: Array.isArray(raw?.events) ? raw.events : [],
     alarm: raw?.alarm ?? null,
     paused: raw?.paused === true,
@@ -224,6 +227,18 @@ export default class Fabric extends View {
     this.reportAt = 0;
     this.reportError = null;
     this.reportLoading = false;
+    this.fabricList = null;
+    this.fabricListError = null;
+    this.fabricAt = 0;
+    this.fabricScope = String(shared("fabric.scope") ?? "");
+    this.fabricFormFor = null;
+    this.fabricFormOrigin = null;
+    this.fabricRename = null;
+    this.fabricNote = null;
+    this.newFabricOpen = false;
+    this.newFabricId = 0;
+    this.newFabricName = null;
+    this.newFabricNote = null;
     this.commandSel = null;
     this.commandInputs = {};
     this.commandFlags = {};
@@ -272,6 +287,7 @@ export default class Fabric extends View {
     this.newTeamMembers = [];
     this.newTeamReviewer = "";
     this.newTeamSessions = null;
+    this.newTeamFabric = "";
     this.newSentence = null;
     this.newRepo = null;
     this.newWake = true;
@@ -760,6 +776,15 @@ export default class Fabric extends View {
     this.index = next;
     this.notifyPosteingang();
 
+    // Der Fabric-Filter ist geteilt: ein anderes Fenster kann ihn ändern.
+    const scope = String(shared("fabric.scope") ?? "").trim();
+    if (scope !== this.fabricScope) {
+      this.fabricScope = scope;
+      this.normalizeReportTeam();
+      // Eine sichtbare Statistik gehört jetzt zu einer anderen Fabric.
+      if (this.report && this.currentRoute().page === "stats") this.loadReport();
+    }
+
     const selected = this.selectedId();
     const wanted = model.ticketIdFor(this.isApp, this.currentRoute(), selected);
     if (wanted !== this.openId) {
@@ -1074,17 +1099,18 @@ export default class Fabric extends View {
 
   // ---------- Statistik ----------
 
-  /** `fab report --days N [--team NAME] --json` lesen; liest Sessionkosten
-   *  frisch, daher nur auf Anfrage. `reportTeam` "" = ganze Fabric. */
+  /** `fab report --days N [--team NAME | --fabric NAME] --json` lesen; liest
+   *  Sessionkosten frisch, daher nur auf Anfrage. `reportTeam` "" = ganze
+   *  Fabric oder die Fabric aus dem globalen Filter. */
   async loadReport() {
     if (this.reportLoading) return;
     const days = this.reportDays;
     const team = this.reportTeam;
+    const fabric = team ? "" : this.fabricScope;
     this.reportLoading = true;
     this.notifyNow();
     try {
-      const args = ["report", `--days=${days}`, "--json"];
-      if (team) args.push(`--team=${team}`);
+      const args = model.reportArgs({ days, team, fabric });
       const result = await this.execFab(args, { timeout: 60000 });
       const data = result.code === 0 ? parseJson(result.stdout, null) : null;
       if (!data || typeof data !== "object" || !data.overview) {
@@ -1099,8 +1125,17 @@ export default class Fabric extends View {
       this.reportLoading = false;
     }
     this.notifyNow();
-    // Wurde inzwischen ein anderer Zeitraum oder ein anderes Team gewählt, gilt der neuere Wunsch.
-    if (days !== this.reportDays || team !== this.reportTeam) await this.loadReport();
+    // Wurde inzwischen ein anderer Zeitraum, ein anderes Team oder eine andere
+    // Fabric gewählt, gilt der neuere Wunsch.
+    if (days !== this.reportDays || team !== this.reportTeam
+      || fabric !== (team ? "" : this.fabricScope)) await this.loadReport();
+  }
+
+  /** Ein Team außerhalb der gewählten Fabric ist keine gültige Sicht mehr. */
+  normalizeReportTeam() {
+    if (!this.reportTeam || !this.fabricScope) return;
+    const teams = model.fabricTeams(this.roster?.teams, this.fabricScope);
+    if (!teams.some((team) => team.name === this.reportTeam)) this.reportTeam = "";
   }
 
   setReportScope({ days = this.reportDays, team = this.reportTeam } = {}) {
@@ -1456,6 +1491,18 @@ export default class Fabric extends View {
       if (!this.report || Date.now() - this.reportAt > 60000) cx.spawn(async () => { await this.loadReport(); });
       // Teamreiter brauchen das Roster.
       if (!this.roster) cx.spawn((cx) => this.loadRoster(cx));
+    } else if (route.page === "fabrics") {
+      const stale = !this.fabricList || Date.now() - this.fabricAt > 15000;
+      if (stale || !this.roster) {
+        cx.spawn(async (cx) => {
+          if (!this.roster) await this.loadRoster(cx);
+          if (stale) await this.loadFabrics(cx);
+          else this.ensureFabricForm(this.fabricSelectedName());
+          cx.notify();
+        });
+      } else {
+        this.ensureFabricForm(this.fabricSelectedName());
+      }
     } else if (route.page === "commands") {
       if (!this.commandCatalog) cx.spawn(async () => { await this.loadCommands(); });
     } else if (route.page === "settings") {
@@ -1609,6 +1656,7 @@ export default class Fabric extends View {
       if (this.menu) { this.menu = null; this.notifyNow(); return; }
       if (this.autopilotOpen) { this.autopilotOpen = false; this.notifyNow(); return; }
       if (this.newTeamOpen) { this.closeNewTeam(cx); return; }
+      if (this.newFabricOpen) { this.closeNewFabric(cx); return; }
       if (this.newOpen) { this.newOpen = false; this.clearMentions(this.lastCx); this.notifyNow(); return; }
       if (this.blueprintDrawer) { this.closeBlueprintDrawer(cx); return; }
       if (this.contextPreview) { this.closeContextPreview(cx); return; }
@@ -1664,6 +1712,7 @@ export default class Fabric extends View {
       assignee: this.assigneeFilter,
       repo: this.repoFilter,
       includeDropped: this.showDropped,
+      fabric: this.fabricScope,
     };
   }
 
@@ -1819,6 +1868,7 @@ export default class Fabric extends View {
       if (!raw) throw new Error("roster --json lieferte kein JSON");
       this.roster = {
         max_sessions: raw.max_sessions ?? 4,
+        fabrics: model.fabricRows(raw),
         reviewer: raw.reviewer ?? "",
         orchestrator: raw.orchestrator ?? { argv: [], prompt: "" },
         team: raw.team ?? (raw.teams ?? [])[0]?.name ?? null,
@@ -1849,6 +1899,7 @@ export default class Fabric extends View {
           .map((team) => ({
             ...team,
             repos: team.repos ?? [],
+            fabric: model.teamFabric(team),
             members: (team.members ?? []).filter((member) => member?.blueprint),
             reviewer: team.reviewer ?? "",
             max_sessions: team.max_sessions ?? 4,
@@ -1858,11 +1909,312 @@ export default class Fabric extends View {
       };
       this.rosterError = null;
       this.rosterAt = Date.now();
+      this.normalizeFabricScope();
       this.syncTeamForms();
     } catch (error) {
       this.rosterError = `Roster nicht lesbar: ${message(error)}`;
     }
     this.notifyNow();
+  }
+
+  // ---------- Fabrics ----------
+
+  /** Ein Filter auf eine inzwischen entfernte Fabric fällt auf „alle“ zurück. */
+  normalizeFabricScope() {
+    if (!this.fabricScope) return;
+    if (this.fabricScopeRows().some((row) => row.name === this.fabricScope)) return;
+    this.fabricScope = "";
+    setShared("fabric.scope", "");
+    this.normalizeReportTeam();
+  }
+
+  /** Reine Fabric-Zeilen aus Roster oder Index; der Selektorkopf braucht nur Namen. */
+  fabricScopeRows() {
+    const fromRoster = model.fabricOptions(this.roster);
+    return fromRoster.length ? fromRoster : model.fabricOptions(this.index);
+  }
+
+  /** Zeilen der Fabric-Seite: `fab fabric list` liefert Zähler, sonst Roster. */
+  fabricRows() {
+    const rows = Array.isArray(this.fabricList) && this.fabricList.length
+      ? this.fabricList
+      : model.fabricRows(this.roster ?? this.index ?? {}, this.tickets);
+    const teams = this.roster?.teams ?? [];
+    return rows.map((row) => ({
+      ...row,
+      teamRows: model.fabricTeams(teams, row.name),
+    })).sort((a, b) => (a.default === b.default ? 0 : a.default ? -1 : 1));
+  }
+
+  fabricSelectedName() {
+    const route = this.currentRoute();
+    const rows = this.fabricRows();
+    if (rows.some((row) => row.name === route.name)) return route.name;
+    return rows[0]?.name ?? null;
+  }
+
+  fabricFor(name) {
+    return this.fabricRows().find((row) => row.name === name) ?? null;
+  }
+
+  /** Formular der gewählten Fabric; nach einem Wechsel neu aufbauen. */
+  ensureFabricForm(name = null) {
+    const rows = this.fabricRows();
+    const target = rows.some((row) => row.name === name) ? name : this.fabricSelectedName();
+    const row = rows.find((item) => item.name === target) ?? null;
+    if (!row) {
+      this.fabricFormFor = null;
+      this.fabricFormOrigin = null;
+      this.fabricRename = null;
+      this.fabricNote = null;
+      return null;
+    }
+    if (this.fabricFormFor === target && this.fabricRename && this.fabricNote) {
+      const origin = this.fabricFormOrigin ?? { name: target, note: row.note };
+      const dirty = model.isDirty(this.fabricRename.value(), origin.name)
+        || model.isDirty(this.fabricNote.value(), origin.note);
+      if (!dirty && (origin.name !== row.name || origin.note !== row.note)) {
+        this.fabricRename.set_value(row.name);
+        this.fabricNote.set_value(row.note);
+        this.fabricFormOrigin = { name: row.name, note: row.note };
+      }
+      return row;
+    }
+    this.fabricFormFor = target;
+    this.fabricFormOrigin = { name: row.name, note: row.note };
+    this.fabricRename = InputState.new({ value: row.name, placeholder: "Fabricname" });
+    this.fabricRename.on("change", (_event, cx) => cx.notify());
+    this.track(this.fabricRename);
+    this.fabricNote = InputState.new({ value: row.note, placeholder: "Notiz zur Fabric" });
+    this.fabricNote.on("change", (_event, cx) => cx.notify());
+    this.fabricNote.on("submit", (_event, cx) => this.saveFabric(cx));
+    this.track(this.fabricNote);
+    return row;
+  }
+
+  selectFabric(name, cx) {
+    if (!name) return;
+    this.ensureFabricForm(name);
+    this.navigate("fabrics", { name }, cx);
+  }
+
+  /** Globaler Filter; `fabric.scope` gilt für Board, Tickets, Posteingang,
+   *  Teamkarten und Statistik. Leer heißt alle Fabrics. */
+  setFabricScope(scope, cx) {
+    const next = String(scope ?? "").trim();
+    this.menu = null;
+    if (next === this.fabricScope) {
+      if (cx) cx.notify();
+      return;
+    }
+    this.fabricScope = next;
+    setShared("fabric.scope", next);
+    // Eine Team-Sicht außerhalb der neuen Fabric wäre irreführend.
+    this.normalizeReportTeam();
+    if (next || this.report) this.loadReport();
+    this.notifyNow();
+    if (cx) cx.notify();
+  }
+
+  fabricScopeControl(t, cx) {
+    const rows = this.fabricScopeRows();
+    const options = [
+      { value: "", label: "Alle Fabrics", selected: !this.fabricScope },
+      ...rows.map((row) => ({
+        value: row.name,
+        label: row.name,
+        detail: row.default ? "Standard" : null,
+        selected: row.name === this.fabricScope,
+      })),
+    ];
+    const current = options.find((option) => option.value === this.fabricScope) ?? options[0];
+    return div()
+      .flex_none()
+      .w(this.compact ? 118 : 156)
+      .child(ui.dropdown(t, {
+        id: "fabric-scope",
+        // Ohne Präfix wäre „standard“ im Kopf nicht als Filter erkennbar.
+        value: this.fabricScope ? `Fabric: ${current.label}` : "Alle Fabrics",
+        placeholder: "Alle Fabrics",
+        options,
+        open: this.menu === "fabric-scope",
+        width: this.compact ? 150 : 190,
+        scrollHandle: this.dropdownScroll,
+        empty: "Keine Fabrics",
+        onToggle: () => {
+          this.menu = this.menu === "fabric-scope" ? null : "fabric-scope";
+          cx.notify();
+        },
+        onPick: (value) => this.setFabricScope(value, cx),
+      }));
+  }
+
+  async loadFabrics(cx) {
+    try {
+      const result = await this.execFab(["fabric", "list", "--json"], { timeout: 30000 });
+      const data = result.code === 0 ? parseJson(result.stdout, null) : null;
+      if (!Array.isArray(data)) {
+        throw new Error((result.stderr || "").trim() || "fab fabric list lieferte keine Liste");
+      }
+      this.fabricList = model.fabricOptions(data);
+      this.fabricListError = null;
+    } catch (error) {
+      // Ohne Befehl bleibt die Seite über den Roster bedienbar; der Fehler
+      // steht als Hinweis darüber.
+      this.fabricListError = `Fabrics nicht lesbar: ${message(error)}`;
+    }
+    this.fabricAt = Date.now();
+    this.ensureFabricForm(this.fabricSelectedName());
+    this.notifyNow();
+  }
+
+  async saveFabric(cx) {
+    const name = this.fabricFormFor;
+    const row = this.fabricFor(name);
+    if (!name || !row) return false;
+    const plan = model.fabricEditArgs({
+      name,
+      rename: this.fabricRename?.value() ?? name,
+      note: this.fabricNote?.value() ?? row.note,
+    });
+    if (plan.error) {
+      this.setError(`fabric:${name}`, plan.error);
+      this.notifyNow();
+      return false;
+    }
+    const result = await this.action(`fabric:${name}`, plan.args, {
+      success: `Fabric ${plan.name} gespeichert.`,
+      after: async () => {
+        await this.loadRoster(cx);
+        await this.loadFabrics(cx);
+        if (plan.name !== name) this.selectFabric(plan.name, cx);
+        else this.ensureFabricForm(name);
+      },
+    });
+    this.notifyNow();
+    return result.ok;
+  }
+
+  openNewFabric(cx) {
+    this.newFabricId += 1;
+    const id = this.newFabricId;
+    this.newFabricOpen = true;
+    this.setError("fabric-add", null);
+    if (this.newFabricName) this.newFabricName.release?.();
+    if (this.newFabricNote) this.newFabricNote.release?.();
+    this.newFabricName = InputState.new({ placeholder: "z. B. privat" });
+    this.newFabricName.on("change", (_event, cx) => cx.notify());
+    this.track(this.newFabricName);
+    this.newFabricNote = InputState.new({ placeholder: "Notiz (optional)" });
+    this.newFabricNote.on("change", (_event, cx) => cx.notify());
+    this.newFabricNote.on("submit", (_event, cx) => this.createFabric(cx));
+    this.track(this.newFabricNote);
+    this.notifyNow();
+    cx?.notify();
+    cx?.timer.after(60, () => {
+      if (id === this.newFabricId && this.newFabricOpen) this.newFabricName?.focus();
+    });
+  }
+
+  closeNewFabric(cx) {
+    this.newFabricOpen = false;
+    this.newFabricId += 1;
+    this.newFabricName = null;
+    this.newFabricNote = null;
+    this.notifyNow();
+    cx?.notify();
+  }
+
+  async createFabric(cx) {
+    if (this.busy) return;
+    const plan = model.fabricAddArgs({
+      name: this.newFabricName?.value() ?? "",
+      note: this.newFabricNote?.value() ?? "",
+    });
+    if (plan.error) {
+      this.setError("fabric-add", plan.error);
+      this.notifyNow();
+      return;
+    }
+    const result = await this.action("fabric-add", plan.args, {
+      success: `Fabric ${plan.name} angelegt.`,
+      after: async () => {
+        await this.loadRoster(cx);
+        await this.loadFabrics(cx);
+      },
+    });
+    if (result.ok) {
+      this.newFabricOpen = false;
+      this.setError("fabric-add", null);
+      this.selectFabric(plan.name, cx);
+    }
+    this.notifyNow();
+  }
+
+  confirmDeleteFabric(fabric, cx) {
+    if (!fabric?.name) return;
+    this.setError("fabric-rm", null);
+    this.modal = { kind: "fabric-delete", fabric };
+    this.notifyNow();
+    cx?.notify();
+  }
+
+  async deleteFabric(cx) {
+    const fabric = this.modal?.fabric;
+    if (!fabric?.name || this.busy) return;
+    const plan = model.fabricRemoveArgs(fabric.name);
+    if (plan.error) {
+      this.setError("fabric-rm", plan.error);
+      this.notifyNow();
+      return;
+    }
+    const result = await this.action("fabric-rm", plan.args, {
+      success: `Fabric ${fabric.name} gelöscht.`,
+      after: async () => {
+        await this.loadRoster(cx);
+        await this.loadFabrics(cx);
+      },
+    });
+    if (!result.ok) {
+      // fab verweigert bei zugewiesenen Teams; die Meldung bleibt im Dialog.
+      this.modal = { kind: "fabric-delete", fabric };
+    } else {
+      if (this.modal?.kind === "fabric-delete") this.modal = null;
+      if (this.fabricFormFor === fabric.name) {
+        this.fabricFormFor = null;
+        this.ensureFabricForm();
+      }
+      if (this.fabricScope === fabric.name) this.setFabricScope("", cx);
+      this.navigate("fabrics", {}, cx);
+    }
+    this.notifyNow();
+  }
+
+  async moveTeamFabric(name, fabric, cx) {
+    if (!name || !fabric) return;
+    const team = this.teamFor(name);
+    if (team && model.teamFabric(team) === fabric) {
+      this.menu = null;
+      if (cx) cx.notify();
+      return;
+    }
+    const plan = model.teamFabricArgs(name, fabric);
+    if (plan.error) {
+      this.setError("fabric-move", plan.error);
+      this.notifyNow();
+      return;
+    }
+    const result = await this.action("fabric-move", plan.args, {
+      success: `Team ${name} gehört jetzt zu ${fabric}.`,
+      after: async () => {
+        await this.loadRoster(cx);
+        await this.loadFabrics(cx);
+        this.syncTeamForms();
+      },
+    });
+    this.menu = null;
+    this.notifyNow();
+    if (cx) cx.notify();
   }
 
   async loadPrompts(cx) {
@@ -3739,13 +4091,16 @@ export default class Fabric extends View {
 
   // ---------- Neues Team ----------
 
-  openNewTeam(cx) {
+  openNewTeam(cx, fabric = "") {
     this.newTeamId += 1;
     const id = this.newTeamId;
     this.newTeamOpen = true;
     this.newTeamRepos = [];
     this.newTeamMembers = [];
     this.newTeamReviewer = "";
+    // Aus der Fabric-Seite kommt die Fabric vorbelegt; sonst gilt der Filter.
+    const preset = String(fabric ?? "").trim() || this.fabricScope || "";
+    this.newTeamFabric = preset || "standard";
     this.setError("team-add", null);
     if (this.newTeamName) this.newTeamName.release?.();
     this.newTeamName = InputState.new({ placeholder: "z. B. zweit" });
@@ -3808,6 +4163,12 @@ export default class Fabric extends View {
     cx?.notify();
   }
 
+  setNewTeamFabric(name, cx) {
+    this.newTeamFabric = String(name ?? "").trim() || "standard";
+    this.menu = null;
+    cx?.notify();
+  }
+
   async createTeam(cx) {
     if (this.busy) return;
     const plan = model.teamAddArgs({
@@ -3816,6 +4177,7 @@ export default class Fabric extends View {
       members: this.newTeamMembers.map((blueprint) => ({ blueprint, model: "", max_cost: "" })),
       reviewer: this.newTeamReviewer,
       max_sessions: this.newTeamSessions?.value() ?? "",
+      fabric: this.newTeamFabric,
     });
     if (plan.error) {
       this.setError("team-add", plan.error);
@@ -3824,7 +4186,10 @@ export default class Fabric extends View {
     }
     const result = await this.action("team-add", plan.args, {
       success: `Team ${plan.name} angelegt.`,
-      after: () => this.loadRoster(cx),
+      after: async () => {
+        await this.loadRoster(cx);
+        await this.loadFabrics(cx);
+      },
     });
     if (result.ok) {
       this.newTeamOpen = false;
@@ -4488,7 +4853,8 @@ export default class Fabric extends View {
       : page === "tickets" ? renderTicketsPage(this, cx, t)
         : page === "ticket" ? renderTicket(this, cx, t)
           : page === "team" ? renderTeam(this, cx, t)
-            : page === "workflows" ? renderWorkflowsPage(this, cx, t)
+            : page === "fabrics" ? renderFabricsPage(this, cx, t)
+              : page === "workflows" ? renderWorkflowsPage(this, cx, t)
               : page === "pipelines" ? renderPipelinesPage(this, cx, t)
               : page === "prompts" ? renderPrompts(this, cx, t)
               : page === "templates" ? renderTemplates(this, cx, t)
@@ -4622,6 +4988,7 @@ export default class Fabric extends View {
         tooltip: "Neues Ticket (⌘N)",
         onClick: (cx) => this.openNewTicket(cx),
       })))
+      .when(this.fabricScopeRows().length > 1, (el) => el.child(this.fabricScopeControl(t, cx)))
       .child(this.autopilotTrigger(t, cx, {
         compact: this.compact,
         anchor: "bottom_left",
@@ -4680,7 +5047,7 @@ export default class Fabric extends View {
         },
       }));
     }
-    if (this.newOpen || this.newTeamOpen || this.modal) overlay.push(renderDialogs(this, cx, t));
+    if (this.newOpen || this.newTeamOpen || this.newFabricOpen || this.modal) overlay.push(renderDialogs(this, cx, t));
     if (this.imageOpen) overlay.push(ui.imageLightbox(t, { ...this.imageOpen, onClose: () => { this.imageOpen = null; this.notifyNow(); } }));
 
     const root = div()

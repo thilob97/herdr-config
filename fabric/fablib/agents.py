@@ -88,6 +88,7 @@ def load(required=True):
     if data is None:
         return None
     data = _migrate(path, data)
+    teams.ensure_fabrics(data)
     expanded = teams.expansion(data)
     return {
         "path": path,
@@ -103,6 +104,7 @@ def load(required=True):
             "context_limit", teams.DEFAULT_CONTEXT_LIMIT
         ),
         "teams": list(data.get("teams") or []),
+        "fabrics": list(data.get("fabrics") or []),
         "blueprints": list(data.get("blueprints") or []),
         "tick": {
             key: value for key, value in data.items() if key.startswith("tick_")

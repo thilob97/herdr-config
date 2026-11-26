@@ -331,6 +331,7 @@ def payload():
         "agents": rows,
         "blueprints": teams.blueprint_rows(blueprint_data),
         "teams": teams.team_rows(blueprint_data),
+        "fabrics": teams.fabric_rows(roster),
     }
 
 
@@ -616,12 +617,26 @@ def _team_repos(entry):
     ]
 
 
+def _team_fabric(data, raw):
+    """Fabric für ein Team prüfen; ohne Angabe `standard`."""
+    if raw is None or not str(raw).strip():
+        return teams.DEFAULT_FABRIC
+    name = teams.check_fabric_name(raw)
+    known = teams.fabric_names(data)
+    if name not in known:
+        raise FabError(
+            f"Unbekanntes Fabric: {name} (vorhanden: {', '.join(known)})"
+        )
+    return name
+
+
 def add_team(name, repos, members_json, orchestrator_argv_json=None,
              orchestrator_prompt=None, reviewer=None, max_sessions=None,
-             actor=""):
+             fabric=None, actor=""):
     path, data = _load()
     _migrate(data)
     name = check_name(name)
+    fabric = _team_fabric(data, fabric)
     if not repos:
         raise FabError("Fehlt: --repo PFAD")
     normalized = [teams.normalize_repo(repo) for repo in repos]
@@ -678,6 +693,7 @@ def add_team(name, repos, members_json, orchestrator_argv_json=None,
             written.append(target)
     entry = {
         "name": name,
+        "fabric": fabric,
         "repos": normalized,
         "orchestrator": {"argv": argv, "prompt": prompt},
         "members": members,
@@ -692,7 +708,7 @@ def add_team(name, repos, members_json, orchestrator_argv_json=None,
         actor,
         f"Team {name} angelegt: {len(normalized)} Repo(s), Mitglieder "
         f"{', '.join(_member_descriptions(members))}, Prüfer {reviewer}, "
-        f"max_sessions {limit}",
+        f"max_sessions {limit}, Fabric {fabric}",
         written=written,
     )
     return entry
@@ -722,7 +738,8 @@ def _live_blockers(live, name):
 
 def edit_team(name, rename=None, repos=None, members_json=None,
               orchestrator_argv_json=None, orchestrator_prompt=None,
-              reviewer=None, max_sessions=None, brief=None, actor=""):
+              reviewer=None, max_sessions=None, brief=None, fabric=None,
+              actor=""):
     path, data = _load()
     _migrate(data)
     entry = teams.team(data, name)
@@ -801,6 +818,11 @@ def edit_team(name, rename=None, repos=None, members_json=None,
     if brief is not None:
         final_brief = str(brief).strip()
 
+    old_fabric = teams.fabric_of_team(entry)
+    final_fabric = old_fabric
+    if fabric is not None:
+        final_fabric = _team_fabric(data, fabric)
+
     teams.validate_team(
         data, target, final_repos, final_members, final_reviewer, final_limit,
         ignore=name,
@@ -833,11 +855,13 @@ def edit_team(name, rename=None, repos=None, members_json=None,
         changes.append(
             f"Brief {len(old_brief)} → {len(final_brief)} Zeichen"
         )
+    if final_fabric != old_fabric:
+        changes.append(f"Fabric {old_fabric} → {final_fabric}")
     if not changes:
         raise FabError(
             "Nichts zu ändern: nutze --rename, --repo, --members-json, "
             "--reviewer, --max-sessions, --orchestrator-argv-json, "
-            "--orchestrator-prompt oder --brief/--brief-file"
+            "--orchestrator-prompt, --brief/--brief-file oder --fabric"
         )
 
     entry["name"] = target
@@ -857,6 +881,7 @@ def edit_team(name, rename=None, repos=None, members_json=None,
     entry["reviewer"] = final_reviewer
     entry["max_sessions"] = final_limit
     entry["brief"] = final_brief
+    entry["fabric"] = final_fabric
     orchestrator["argv"] = final_argv
     orchestrator["prompt"] = final_prompt
     _sync_legacy(data)
@@ -901,6 +926,112 @@ def remove_team(name, actor):
         data["agents"] = []
         data["reviewer"] = ""
     _commit(path, data, actor, f"Team {name} entfernt")
+    return name
+
+
+# ---------------------------------------------------------------- Fabrics
+
+def fabric_rows():
+    """Fabric-Zeilen für `fab fabric list`, inklusive offener Tickets."""
+    roster = agents.load()
+    counts = {}
+    for ticket in store.all_tickets():
+        if ticket.get("status") in ("done", "dropped"):
+            continue
+        name = teams.fabric_of_team(agents.ticket_team(roster, ticket))
+        if name:
+            counts[name] = counts.get(name, 0) + 1
+    return teams.fabric_rows(roster, counts)
+
+
+def add_fabric(name, note="", actor=""):
+    path, data = _load()
+    _migrate(data)
+    teams.ensure_fabrics(data)
+    name = teams.check_fabric_name(name)
+    if any(entry["name"] == name for entry in data["fabrics"]):
+        raise FabError(
+            f"Fabric „{name}“ gibt es schon; wähle einen anderen Namen"
+        )
+    entry = {"name": name, "note": str(note or "").strip()}
+    data["fabrics"].append(entry)
+    _commit(path, data, actor, f"Fabric {name} angelegt")
+    return entry
+
+
+def edit_fabric(name, rename=None, note=None, actor=""):
+    path, data = _load()
+    _migrate(data)
+    teams.ensure_fabrics(data)
+    entry = teams.fabric(data, name)
+
+    target = name
+    if rename is not None:
+        candidate = rename.strip()
+        if not candidate:
+            raise FabError("Der neue Name ist leer")
+        if candidate != name:
+            if name == teams.DEFAULT_FABRIC:
+                raise FabError(
+                    f"Fabric „{teams.DEFAULT_FABRIC}“ lässt sich nicht umbenennen"
+                )
+            target = teams.check_fabric_name(candidate)
+            if any(item["name"] == target for item in data["fabrics"]):
+                raise FabError(
+                    f"Fabric „{target}“ gibt es schon; wähle einen anderen Namen"
+                )
+
+    old_note = str(entry.get("note") or "")
+    final_note = old_note
+    if note is not None:
+        final_note = str(note).strip()
+
+    changes = []
+    if target != name:
+        changes.append(f"Name {name} → {target}")
+        entry["name"] = target
+        for team_entry in _team_entries(data):
+            if (
+                isinstance(team_entry, dict)
+                and teams.fabric_of_team(team_entry) == name
+            ):
+                team_entry["fabric"] = target
+    if final_note != old_note:
+        changes.append(
+            f"Notiz {old_note or '—'} → {final_note or '—'}"
+        )
+        entry["note"] = final_note
+    if not changes:
+        raise FabError("Nichts zu ändern: nutze --rename oder --note")
+    _commit(
+        path, data, actor, f"Fabric {name} geändert: " + ", ".join(changes)
+    )
+    return f"Fabric {name} geändert: " + ", ".join(changes)
+
+
+def remove_fabric(name, actor):
+    path, data = _load()
+    _migrate(data)
+    teams.ensure_fabrics(data)
+    entry = teams.fabric(data, name)
+    if name == teams.DEFAULT_FABRIC:
+        raise FabError(
+            f"Fabric „{teams.DEFAULT_FABRIC}“ lässt sich nicht entfernen"
+        )
+    assigned = [
+        str(team_entry["name"])
+        for team_entry in _team_entries(data)
+        if isinstance(team_entry, dict)
+        and team_entry.get("name")
+        and teams.fabric_of_team(team_entry) == name
+    ]
+    if assigned:
+        raise FabError(
+            f"Fabric {name} hat noch Teams: {', '.join(assigned)} – "
+            f"erst umhängen"
+        )
+    data["fabrics"].remove(entry)
+    _commit(path, data, actor, f"Fabric {name} entfernt")
     return name
 
 

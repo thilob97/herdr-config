@@ -261,9 +261,11 @@ function pageRow(app, cx, t, entry, index) {
 }
 
 export function renderInboxPage(app, cx, t) {
-  const view = model.inboxPage(app.index?.inbox, app.inboxFilter);
+  // Der globale Fabric-Filter gilt auch hier; Alarme ohne Ticket bleiben.
+  const entries = model.fabricScopeByTicket(app.index?.inbox, app.tickets, app.fabricScope);
+  const view = model.inboxPage(entries, app.inboxFilter);
   const cards = view.showCards
-    ? model.inboxCards(app.index?.inbox ?? [], app.events).filter((card) => card.status === "open")
+    ? model.inboxCards(entries, app.events).filter((card) => card.status === "open")
     : [];
   const openCards = cards.length;
   const total = view.filters[0].count;
@@ -328,7 +330,11 @@ export function renderInboxPage(app, cx, t) {
     .child(ui.header(t, model.pageWord("inbox"), [
       div().text_size(T.xs).text_color(t.dim)
         .child(total === 1 ? "1 Eintrag" : `${total} Einträge`),
-    ], { iconName: "inbox", subtitle: "Was auf dich wartet: prüfen, antworten, entscheiden", compact: app.compact }))
+    ], {
+      iconName: "inbox",
+      subtitle: `Was auf dich wartet: prüfen, antworten, entscheiden${app.fabricScope ? ` · Fabric ${app.fabricScope}` : ""}`,
+      compact: app.compact,
+    }))
     .when(Boolean(app.flash?.text), (el) => el.child(ui.notice(t, app.flash.text, app.flash.level)))
     .child(filterBar)
     .child(body);

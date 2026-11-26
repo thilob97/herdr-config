@@ -3208,3 +3208,129 @@ test("Statistik: Achsen, Balken, Prozent und Agentenfarbe", async () => {
   assert.match(reportAgentColor("zap", []), /^c[1-6]$/);
   assert.equal(reportAgentColor("zap", []), reportAgentColor("zap", []));
 });
+
+// ---------- Fabrics ----------
+
+test("Fabric-Namen folgen der Teamregel", async () => {
+  const { fabricNameProblem } = await import("../model.js");
+  assert.equal(fabricNameProblem("standard"), "");
+  assert.equal(fabricNameProblem(" privat "), "");
+  assert.equal(fabricNameProblem("a-b_c1"), "");
+  assert.equal(fabricNameProblem(""), "Bitte einen Fabricnamen angeben.");
+  assert.equal(fabricNameProblem("Standard"), "Fabricname: 1–16 Zeichen, nur Kleinbuchstaben, Ziffern, „_“ und „-“, beginnend mit einem Buchstaben.");
+  assert.equal(fabricNameProblem("1privat").includes("Fabricname"), true);
+  assert.equal(fabricNameProblem("x".repeat(17)).includes("Fabricname"), true);
+});
+
+test("fabricOptions normalisiert Liste und Roster, standard zuerst", async () => {
+  const { fabricOptions } = await import("../model.js");
+  const listed = fabricOptions([
+    { name: "privat", note: "Familie", teams: ["home"], repos: ["/r/p"], open_tickets: 3 },
+    { name: "standard", note: "", teams: ["a", "b"], repos: ["/r/a", "/r/b"], open_tickets: "2" },
+  ]);
+  assert.deepEqual(listed.map((row) => row.name), ["standard", "privat"]);
+  assert.equal(listed[0].default, true);
+  assert.equal(listed[0].open_tickets, 2);
+  assert.deepEqual(listed[1].teams, ["home"]);
+  assert.deepEqual(fabricOptions({ fabrics: ["standard", { name: "privat", note: "x" }, "standard"] })
+    .map((row) => row.name), ["standard", "privat"]);
+  assert.deepEqual(fabricOptions(null), []);
+});
+
+test("fabricRows ergänzt Teams und Repos, zählt offene Tickets", async () => {
+  const { fabricRows } = await import("../model.js");
+  const roster = {
+    fabrics: [{ name: "standard", note: "" }, { name: "privat", note: "Familie" }],
+    teams: [
+      { name: "a", fabric: "standard", repos: ["/r/a"] },
+      { name: "b", fabric: "privat", repos: ["/r/b", "/r/a"] },
+      { name: "ohne" },
+    ],
+  };
+  const rows = fabricRows(roster, [
+    { id: "T-1", status: "doing", fabric: "standard" },
+    { id: "T-2", status: "done", fabric: "standard" },
+    { id: "T-3", status: "todo", fabric: "privat" },
+    { id: "T-4", status: "todo", fabric: "" },
+  ]);
+  const standard = rows.find((row) => row.name === "standard");
+  assert.deepEqual(standard.teams, ["a", "ohne"]);
+  assert.deepEqual(standard.repos, ["/r/a"]);
+  assert.equal(standard.open_tickets, 1);
+  const privat = rows.find((row) => row.name === "privat");
+  assert.deepEqual(privat.teams, ["b"]);
+  assert.deepEqual(privat.repos, ["/r/b", "/r/a"]);
+  assert.equal(privat.open_tickets, 1);
+});
+
+test("Scope filtert Tickets und Posteingang, Alarme bleiben", async () => {
+  const { fabricScopeTickets, fabricScopeByTicket, scopeTeams, teamFabric, filterTickets } = await import("../model.js");
+  const tickets = [
+    { id: "T-1", fabric: "standard" },
+    { id: "T-2", fabric: "privat" },
+    { id: "T-3" },
+  ];
+  assert.deepEqual(fabricScopeTickets(tickets, "").map((ticket) => ticket.id), ["T-1", "T-2", "T-3"]);
+  assert.deepEqual(fabricScopeTickets(tickets, "privat").map((ticket) => ticket.id), ["T-2"]);
+  assert.deepEqual(fabricScopeTickets(tickets, "standard").map((ticket) => ticket.id), ["T-1"],
+    "Tickets ohne Team gehören keiner Fabric");
+  // Board und Tabelle filtern über filterTickets mit demselben Feld.
+  assert.deepEqual(filterTickets(tickets, { fabric: "privat" }).map((ticket) => ticket.id), ["T-2"]);
+  assert.deepEqual(filterTickets(tickets, { fabric: "" }).map((ticket) => ticket.id), ["T-1", "T-2", "T-3"]);
+
+  const inbox = [
+    { ticket: "T-1", kind: "question" },
+    { ticket: "T-2", kind: "review" },
+    { ticket: null, kind: "alarm" },
+  ];
+  assert.deepEqual(fabricScopeByTicket(inbox, tickets, "standard").map((entry) => entry.kind), ["question", "alarm"]);
+  assert.deepEqual(fabricScopeByTicket(inbox, tickets, ""), inbox);
+
+  const teams = [{ name: "a", fabric: "standard" }, { name: "b", fabric: "privat" }, { name: "c" }];
+  assert.equal(teamFabric(teams[2]), "standard");
+  assert.deepEqual(scopeTeams(teams, "").map((team) => team.name), ["a", "b", "c"]);
+  assert.deepEqual(scopeTeams(teams, "privat").map((team) => team.name), ["b"]);
+});
+
+test("Fabric-Befehle: add, edit, rm und Team umhängen", async () => {
+  const { fabricAddArgs, fabricEditArgs, fabricRemoveArgs, teamFabricArgs } = await import("../model.js");
+  assert.deepEqual(fabricAddArgs({ name: " privat ", note: " Familie " }).args,
+    ["fabric", "add", "privat", "--note=Familie", "--from=mensch"]);
+  assert.deepEqual(fabricAddArgs({ name: "privat", note: " " }).args,
+    ["fabric", "add", "privat", "--from=mensch"]);
+  assert.equal(fabricAddArgs({ name: "Privat" }).error.startsWith("Fabricname:"), true);
+
+  assert.deepEqual(fabricEditArgs({ name: "standard", note: "Basis" }).args,
+    ["fabric", "edit", "standard", "--note=Basis", "--from=mensch"]);
+  assert.deepEqual(fabricEditArgs({ name: "privat", rename: "familie", note: "" }).args,
+    ["fabric", "edit", "privat", "--rename=familie", "--note=", "--from=mensch"]);
+  assert.equal(fabricEditArgs({ name: "standard", rename: "basis" }).error, "standard lässt sich nicht umbenennen.");
+  assert.equal(fabricEditArgs({ name: "privat", rename: "Familie" }).error.startsWith("Fabricname:"), true);
+
+  assert.deepEqual(fabricRemoveArgs("privat").args, ["fabric", "rm", "privat", "--from=mensch"]);
+  assert.equal(fabricRemoveArgs("standard").error, "standard lässt sich nicht löschen.");
+
+  assert.deepEqual(teamFabricArgs("alpha", "privat").args,
+    ["team", "edit", "alpha", "--fabric=privat", "--from=mensch"]);
+  assert.equal(teamFabricArgs("alpha", "").error, "Bitte eine Fabric wählen.");
+});
+
+test("teamAddArgs schreibt die Fabric nur wenn gesetzt", async () => {
+  const { teamAddArgs } = await import("../model.js");
+  const base = {
+    name: "alpha", repos: ["/r/a"], members: [{ blueprint: "zap" }],
+    reviewer: "zap", max_sessions: 4,
+  };
+  const withFabric = teamAddArgs({ ...base, fabric: " privat " });
+  assert.equal(withFabric.args.includes("--fabric=privat"), true);
+  assert.equal(withFabric.args.at(-1), "--from=mensch");
+  assert.equal(teamAddArgs({ ...base }).args.some((arg) => arg.startsWith("--fabric")), false);
+});
+
+test("reportArgs schließen Team und Fabric aus", async () => {
+  const { reportArgs } = await import("../model.js");
+  assert.deepEqual(reportArgs({ days: 7 }), ["report", "--days=7", "--json"]);
+  assert.deepEqual(reportArgs({ days: 7, fabric: "privat" }), ["report", "--days=7", "--json", "--fabric=privat"]);
+  assert.deepEqual(reportArgs({ days: 30, team: "alpha", fabric: "privat" }),
+    ["report", "--days=30", "--json", "--team=alpha"]);
+});

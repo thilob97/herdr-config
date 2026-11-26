@@ -481,6 +481,38 @@ function briefBlock(app, cx, t, team, form) {
       "Der Brief ist Prompt-Kontext für den Agenten und zählt gegen die Obergrenze context_limit."));
 }
 
+function fabricRow(app, cx, t, team) {
+  const current = model.teamFabric(team);
+  const names = app.fabricScopeRows().map((row) => row.name);
+  if (!names.includes(current)) names.push(current);
+  const options = names.map((name) => ({
+    value: name,
+    label: name,
+    detail: name === "standard" ? "Standard" : null,
+    selected: name === current,
+  }));
+  const key = `team-fabric-${team.name}`;
+  return h_flex().w_full().gap(S.s).items_center().flex_wrap()
+    .child(div().flex_none().text_size(T.xs).text_color(t.dim).child("Fabric"))
+    .child(div().w(190).flex_none().child(ui.dropdown(t, {
+      id: `fabric-team-fabric-${team.name}`,
+      value: current,
+      placeholder: "Fabric wählen…",
+      options,
+      open: app.menu === key,
+      width: 210,
+      scrollHandle: app.dropdownScroll,
+      empty: "Keine Fabrics",
+      onToggle: () => {
+        app.menu = app.menu === key ? null : key;
+        cx.notify();
+      },
+      onPick: (value) => cx.spawn(async () => { await app.moveTeamFabric(team.name, value, cx); }),
+    })))
+    .child(div().flex_1().min_w(0).child(ui.hint(t,
+      "Umhängen ändert nur die Fabric; Repos, Mitglieder und Sessions bleiben.")));
+}
+
 function teamCard(app, cx, t, team) {
   const form = app.teamForms[team.name];
   if (!form) return null;
@@ -522,6 +554,7 @@ function teamCard(app, cx, t, team) {
         tooltip: `Team ${team.name} löschen (fragt nach)`,
         onClick: (cx) => app.confirmDeleteTeam(team, cx),
       })),
+    fabricRow(app, cx, t, team),
     orchestratorBlock(app, cx, t, team),
     briefBlock(app, cx, t, team, form),
     reposBlock(app, cx, t, team, form),
@@ -546,7 +579,7 @@ function teamCard(app, cx, t, team) {
 }
 
 export function renderTeam(app, cx, t) {
-  const teams = app.roster?.teams ?? [];
+  const teams = model.scopeTeams(app.roster?.teams, app.fabricScope);
   const blueprints = app.roster?.blueprints ?? [];
   // Bei offenem Drawer bleibt neben dem Inhalt zu wenig Platz für volle Knopftexte.
   const narrow = app.compact || Boolean(app.blueprintDrawer || app.teamPrompt);
@@ -586,7 +619,8 @@ export function renderTeam(app, cx, t) {
     .child(ui.header(t, model.pageWord("team"), [
       ...(narrow ? [] : [
         div().text_size(T.xs).text_color(t.dim).child(
-          `${blueprints.length} Blaupause${blueprints.length === 1 ? "" : "n"} · ${teams.length} Team${teams.length === 1 ? "" : "s"}`,
+          `${blueprints.length} Blaupause${blueprints.length === 1 ? "" : "n"} · ${teams.length} Team${teams.length === 1 ? "" : "s"}`
+          + (app.fabricScope ? ` in ${app.fabricScope}` : ""),
         ),
       ]),
       newTeam,
@@ -594,9 +628,11 @@ export function renderTeam(app, cx, t) {
     ], { iconName: "team", subtitle: "Blaupausen pflegen und Teams steuern", compact: narrow }))
     .when(Boolean(app.rosterError), (el) => el.child(ui.notice(t, app.rosterError)))
     .when(Boolean(app.flash?.text), (el) => el.child(ui.notice(t, app.flash.text, app.flash.level)))
+    .when(Boolean(app.errorFor("fabric-move")),
+      (el) => el.child(ui.notice(t, app.errorFor("fabric-move").text, app.errorFor("fabric-move").level)))
     .child(
       app.roster
-        ? (blueprints.length === 0 && teams.length === 0
+        ? (blueprints.length === 0 && (app.roster?.teams ?? []).length === 0
           ? ui.emptyState(t, {
             title: "Noch keine Blaupausen und Teams",
             text: "Eine Blaupause beschreibt Rolle, Farbe, Programm und Prompt einer Sitzung. Ein Team verbindet Repos, Blaupausen, einen Prüfer und einen Orchestrator.",
@@ -618,8 +654,10 @@ export function renderTeam(app, cx, t) {
           : v_flex().flex_1().min_h(0).overflow_y_scrollbar().p(S.l).gap(S.m)
             .child(blueprintCard(app, cx, t))
             .when(teams.length === 0, (el) => el.child(ui.emptyState(t, {
-              title: "Noch keine Teams",
-              text: "Ein Team verbindet Repos, Blaupausen, einen Prüfer und einen Orchestrator.",
+              title: app.fabricScope ? `Keine Teams in ${app.fabricScope}` : "Noch keine Teams",
+              text: app.fabricScope
+                ? "Ein anderes Team umhängen oder hier ein neues Team anlegen; der Fabric-Filter steht oben im Fenster."
+                : "Ein Team verbindet Repos, Blaupausen, einen Prüfer und einen Orchestrator.",
               compact: true,
               action: ui.button(t, {
                 id: "fabric-team-empty-new",

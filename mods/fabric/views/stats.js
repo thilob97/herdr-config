@@ -304,8 +304,10 @@ function teamsCard(app, t, report) {
 
 export function renderStatsPage(app, cx, t) {
   const report = app.report;
-  const teams = (app.roster?.teams ?? []).map((team) => team.name).filter(Boolean);
-  const scope = app.reportTeam ? `Team ${app.reportTeam}` : "ganze Fabric";
+  const teams = model.scopeTeams(app.roster?.teams, app.fabricScope).map((team) => team.name).filter(Boolean);
+  const scope = app.reportTeam
+    ? `Team ${app.reportTeam}`
+    : app.fabricScope ? `Fabric ${app.fabricScope}` : "ganze Fabric";
   const stamp = app.reportAt ? `Stand ${model.relativeTime(app.reportAt)}` : "";
   return v_flex()
     .size_full()

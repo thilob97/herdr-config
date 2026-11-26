@@ -318,6 +318,14 @@ function newTeamDialog(app, cx, t) {
     };
   });
   const error = app.errorFor("team-add");
+  const fabricRows = app.fabricScopeRows();
+  const fabricOptions = (fabricRows.length ? fabricRows : [{ name: "standard", note: "" }]).map((row) => ({
+    value: row.name,
+    label: row.name,
+    detail: row.default ? "Standard" : (row.note || null),
+    selected: row.name === (app.newTeamFabric || "standard"),
+  }));
+  const fabricValue = app.newTeamFabric || "standard";
   return ui.modal(t, {
     title: "Neues Team",
     detail: "fab legt ein eigenes Team an und kopiert dafür einen eigenen Orchestrator-Prompt.",
@@ -345,6 +353,21 @@ function newTeamDialog(app, cx, t) {
       .child(ui.field(t, "Name", app.newTeamName ? ui.input(t, app.newTeamName, { focused: true }) : div(), {
         hint: "a–z, 0–9, _ und -, höchstens 16 Zeichen",
       }))
+      .child(ui.field(t, "Fabric", ui.dropdown(t, {
+        id: "fabric-team-new-fabric",
+        value: fabricValue,
+        placeholder: "Fabric wählen…",
+        options: fabricOptions,
+        open: app.menu === "new-team-fabric",
+        width: 260,
+        scrollHandle: app.dropdownScroll,
+        empty: "Keine Fabrics",
+        onToggle: () => {
+          app.menu = app.menu === "new-team-fabric" ? null : "new-team-fabric";
+          cx.notify();
+        },
+        onPick: (value) => app.setNewTeamFabric(value, cx),
+      }), { hint: "Das Team wird dieser Fabric zugeordnet (fab team add --fabric)." }))
       .child(ui.field(t, "Repos", v_flex().w_full().gap(S.xs)
         .children((app.newTeamRepos ?? []).map((path, index) => h_flex()
           .w_full()
@@ -478,6 +501,77 @@ function deleteTeamDialog(app, cx, t) {
   }, error ? [ui.notice(t, error.text, error.level)] : []);
 }
 
+
+function newFabricDialog(app, cx, t) {
+  const error = app.errorFor("fabric-add");
+  return ui.modal(t, {
+    title: "Neue Fabric",
+    detail: "Eine Fabric gruppiert Teams. Sie liegt im selben Datenbestand wie alle anderen Fabrics; „standard“ bleibt bestehen.",
+    width: ui.SIZE.modal,
+    actions: [
+      ui.button(t, {
+        id: "fabric-new-cancel",
+        label: "Abbrechen",
+        tooltip: "Ohne Anlegen schließen (Esc)",
+        onClick: (cx) => app.closeNewFabric(cx),
+      }),
+      ui.button(t, {
+        id: "fabric-new-create",
+        label: "Anlegen",
+        icon: "plus",
+        primary: true,
+        busy: app.busy === "fabric-add",
+        disabled: Boolean(app.busy) || !(app.newFabricName?.value().trim()),
+        tooltip: "Fabric anlegen (fab fabric add)",
+        onClick: (cx) => app.createFabric(cx),
+      }),
+    ],
+  }, [
+    ui.field(t, "Name", app.newFabricName ? ui.input(t, app.newFabricName, { focused: true }) : div(), {
+      hint: "a–z, 0–9, _ und -, 1–16 Zeichen; beginnt mit einem Buchstaben",
+    }),
+    ui.field(t, "Notiz", app.newFabricNote ? ui.input(t, app.newFabricNote) : div(), {
+      hint: "Optional, etwa der Zweck der Fabric.",
+    }),
+    ...(error ? [ui.notice(t, error.text, error.level)] : []),
+  ]);
+}
+
+function deleteFabricDialog(app, cx, t) {
+  const fabric = app.modal.fabric ?? {};
+  const teams = (fabric.teams ?? []).join(", ");
+  const detail = [
+    teams
+      ? `Zugewiesene Teams: ${teams}. fab verweigert das Löschen, solange sie zugeordnet sind.`
+      : "Der Fabric sind keine Teams zugeordnet.",
+    "„standard“ bleibt immer bestehen.",
+  ].join("\n");
+  const error = app.errorFor("fabric-rm");
+  return ui.modal(t, {
+    title: `Fabric ${fabric.name} löschen?`,
+    detail,
+    width: ui.SIZE.modal,
+    actions: [
+      ui.button(t, {
+        id: "fabric-delete-cancel",
+        label: "Abbrechen",
+        tooltip: "Nicht löschen",
+        onClick: (cx) => { app.modal = null; cx.notify(); },
+      }),
+      ui.button(t, {
+        id: "fabric-delete-confirm",
+        label: "Löschen",
+        icon: "trash",
+        danger: true,
+        busy: app.busy === "fabric-rm",
+        disabled: Boolean(app.busy),
+        tooltip: "Fabric entfernen (fab fabric rm)",
+        onClick: (cx) => cx.spawn(async () => { await app.deleteFabric(cx); }),
+      }),
+    ],
+  }, error ? [ui.notice(t, error.text, error.level)] : []);
+}
+
 function knowledgeNoteDialog(app, cx, t) {
   const note = app.knowledgeNote;
   if (!note) return null;
@@ -551,11 +645,13 @@ function knowledgeRemoveDialog(app, cx, t) {
 export function renderDialogs(app, cx, t) {
   if (app.newOpen) return newTicketDialog(app, cx, t);
   if (app.newTeamOpen) return newTeamDialog(app, cx, t);
+  if (app.newFabricOpen) return newFabricDialog(app, cx, t);
   if (!app.modal) return null;
   if (app.modal.kind === "accept") return acceptDialog(app, cx, t);
   if (app.modal.kind === "drop") return dropDialog(app, cx, t);
   if (app.modal.kind === "delete-blueprint") return deleteBlueprintDialog(app, cx, t);
   if (app.modal.kind === "team-delete") return deleteTeamDialog(app, cx, t);
+  if (app.modal.kind === "fabric-delete") return deleteFabricDialog(app, cx, t);
   if (app.modal.kind === "knowledge-note") return knowledgeNoteDialog(app, cx, t);
   if (app.modal.kind === "knowledge-remove") return knowledgeRemoveDialog(app, cx, t);
   if (app.modal.kind === "unsaved" || app.modal.kind === "unsaved-close") return unsavedDialog(app, cx, t);

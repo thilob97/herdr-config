@@ -29,6 +29,7 @@ export const PAGE_WORDS = {
   tickets: "Tickets",
   ticket: "Ticket",
   team: "Team",
+  fabrics: "Fabrics",
   workflows: "Workflows",
   pipelines: "Pipelines",
   prompts: "Prompts",
@@ -333,12 +334,14 @@ function matchesQuery(ticket, query) {
 
 /** Filter für Board und Tabelle. `assignee`/`repo` sind exakte Werte oder "all". */
 export function filterTickets(tickets, filters = {}) {
-  const { query = "", assignee = "all", repo = "all", includeDropped = false } = filters;
+  const { query = "", assignee = "all", repo = "all", includeDropped = false, fabric = "" } = filters;
+  const fabricName = String(fabric ?? "").trim();
   return [...(tickets ?? [])].filter((ticket) => {
     if (!ticket) return false;
     if (!includeDropped && ticket.status === "dropped") return false;
     if (assignee !== "all" && (ticket.assignee ?? "") !== assignee) return false;
     if (repo !== "all" && (ticket.repo ?? "") !== repo) return false;
+    if (fabricName && (ticket.fabric ?? "") !== fabricName) return false;
     return matchesQuery(ticket, query);
   });
 }
@@ -1021,6 +1024,7 @@ export function teamAddArgs(form) {
   const members = normalizeMembers(form?.members);
   const reviewer = String(form?.reviewer ?? "").trim();
   const sessions = sessionNumber(form?.max_sessions);
+  const fabric = String(form?.fabric ?? "").trim();
   if (!name) return { error: "Bitte einen Teamnamen angeben." };
   if (!TEAM_NAME.test(name)) return { error: TEAM_NAME_ERROR };
   if (!repos.length) return { error: "Team braucht mindestens ein Repo." };
@@ -1040,9 +1044,171 @@ export function teamAddArgs(form) {
     `--members-json=${teamMembersJson(members)}`,
     `--reviewer=${reviewer}`,
     `--max-sessions=${sessions}`,
-    "--from=mensch",
   );
+  if (fabric) args.push(`--fabric=${fabric}`);
+  args.push("--from=mensch");
   return { args, name, sessions };
+}
+
+// ---------- Fabrics ----------
+
+export const FABRIC_NAME_ERROR = "Fabricname: 1–16 Zeichen, nur Kleinbuchstaben, Ziffern, „_“ und „-“, beginnend mit einem Buchstaben.";
+
+/** Leerer Text heißt gültig; sonst die deutsche Begründung. */
+export function fabricNameProblem(name) {
+  const text = String(name ?? "").trim();
+  if (!text) return "Bitte einen Fabricnamen angeben.";
+  if (!TEAM_NAME.test(text)) return FABRIC_NAME_ERROR;
+  return "";
+}
+
+/** Fabric eines Teams; ohne Angabe gehört es zu „standard“. */
+export function teamFabric(team) {
+  return String(team?.fabric ?? "").trim() || "standard";
+}
+
+/** Teams einer Fabric; ohne Scope alle. */
+export function scopeTeams(teams, scope) {
+  const rows = (teams ?? []).filter((team) => team?.name);
+  const name = String(scope ?? "").trim();
+  return name ? rows.filter((team) => teamFabric(team) === name) : rows;
+}
+
+export function fabricTeams(teams, name) {
+  const wanted = String(name ?? "").trim();
+  if (!wanted) return [];
+  return (teams ?? []).filter((team) => team?.name && teamFabric(team) === wanted);
+}
+
+/** Fabric-Zeilen aus `fab fabric list --json` oder aus Roster/Index. */
+export function fabricOptions(source) {
+  const raw = Array.isArray(source) ? source
+    : Array.isArray(source?.fabrics) ? source.fabrics
+      : [];
+  const seen = new Set();
+  const rows = [];
+  for (const item of raw) {
+    const name = String((typeof item === "string" ? item : item?.name) ?? "").trim();
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    const row = typeof item === "string" ? {} : item;
+    rows.push({
+      name,
+      note: String(row?.note ?? ""),
+      default: name === "standard",
+      teams: Array.isArray(row?.teams) ? row.teams.map((team) => String(team)) : [],
+      repos: Array.isArray(row?.repos) ? row.repos.map((repo) => String(repo)) : [],
+      open_tickets: Number(row?.open_tickets ?? 0) || 0,
+    });
+  }
+  // standard steht immer vorn; die übrigen behalten die Roster-Reihenfolge.
+  return rows.sort((a, b) => (a.default === b.default ? 0 : a.default ? -1 : 1));
+}
+
+/** Fabric-Zeilen für die Seite; fehlende Fabrics der Teams werden ergänzt. */
+export function fabricRows(roster, tickets = []) {
+  const teams = (roster?.teams ?? []).filter((team) => team?.name);
+  const rows = fabricOptions(roster);
+  const known = new Set(rows.map((row) => row.name));
+  for (const team of teams) {
+    const name = teamFabric(team);
+    if (known.has(name)) continue;
+    known.add(name);
+    rows.push({ name, note: "", default: name === "standard", teams: [], repos: [], open_tickets: 0 });
+  }
+  if (!known.has("standard")) {
+    known.add("standard");
+    rows.push({ name: "standard", note: "", default: true, teams: [], repos: [], open_tickets: 0 });
+  }
+  return rows.map((row) => {
+    const members = fabricTeams(teams, row.name);
+    const repos = new Set(row.repos);
+    for (const team of members) {
+      for (const repo of team.repos ?? []) if (repo) repos.add(repo);
+    }
+    const open = (tickets ?? []).filter((ticket) => ticket
+      && (ticket.fabric ?? "") === row.name
+      && ticket.status !== "done" && ticket.status !== "dropped").length;
+    return {
+      ...row,
+      teams: row.teams.length ? row.teams : members.map((team) => team.name),
+      repos: [...repos],
+      open_tickets: row.open_tickets || open,
+    };
+  }).sort((a, b) => (a.default === b.default ? 0 : a.default ? -1 : 1));
+}
+
+/** Tickets einer Fabric; leerer Scope lässt alle stehen. */
+export function fabricScopeTickets(tickets, scope) {
+  const name = String(scope ?? "").trim();
+  if (!name) return [...(tickets ?? [])];
+  return (tickets ?? []).filter((ticket) => ticket && (ticket.fabric ?? "") === name);
+}
+
+/** Posteingang, Vorschläge und andere Zeilen mit `ticket`: Alarme ohne
+ *  Ticket bleiben sichtbar, alles andere folgt der Fabric des Tickets. */
+export function fabricScopeByTicket(items, tickets, scope) {
+  const name = String(scope ?? "").trim();
+  if (!name) return [...(items ?? [])];
+  const map = new Map((tickets ?? [])
+    .filter((ticket) => ticket?.id)
+    .map((ticket) => [ticket.id, ticket]));
+  return (items ?? []).filter((item) => {
+    if (!item) return false;
+    if (!item.ticket) return true;
+    return (map.get(item.ticket)?.fabric ?? "") === name;
+  });
+}
+
+export function fabricAddArgs(form) {
+  const name = String(form?.name ?? "").trim();
+  const problem = fabricNameProblem(name);
+  if (problem) return { error: problem };
+  const args = ["fabric", "add", name];
+  const note = String(form?.note ?? "").trim();
+  if (note) args.push(`--note=${note}`);
+  args.push("--from=mensch");
+  return { args, name };
+}
+
+/** Änderungsargumente; `note` wird immer geschrieben, ein leeres Feld leert sie. */
+export function fabricEditArgs(form) {
+  const name = String(form?.name ?? "").trim();
+  if (!name) return { error: "Fabricname fehlt." };
+  const args = ["fabric", "edit", name];
+  const next = String(form?.rename ?? "").trim();
+  if (next && next !== name) {
+    if (name === "standard") return { error: "standard lässt sich nicht umbenennen." };
+    const problem = fabricNameProblem(next);
+    if (problem) return { error: problem };
+    args.push(`--rename=${next}`);
+  }
+  if (form?.note !== undefined) args.push(`--note=${String(form.note ?? "").trim()}`);
+  args.push("--from=mensch");
+  return { args, name: next && next !== name ? next : name };
+}
+
+export function fabricRemoveArgs(name) {
+  const fabric = String(name ?? "").trim();
+  if (!fabric) return { error: "Fabricname fehlt." };
+  if (fabric === "standard") return { error: "standard lässt sich nicht löschen." };
+  return { args: ["fabric", "rm", fabric, "--from=mensch"], name: fabric };
+}
+
+export function teamFabricArgs(name, fabric) {
+  const team = String(name ?? "").trim();
+  const target = String(fabric ?? "").trim();
+  if (!team) return { error: "Teamname fehlt." };
+  if (!target) return { error: "Bitte eine Fabric wählen." };
+  return { args: ["team", "edit", team, `--fabric=${target}`, "--from=mensch"], name: team, fabric: target };
+}
+
+/** `fab report`-Argumente; --team und --fabric schließen sich aus. */
+export function reportArgs({ days = 14, team = "", fabric = "" } = {}) {
+  const args = ["report", `--days=${days}`, "--json"];
+  if (team) args.push(`--team=${team}`);
+  else if (fabric) args.push(`--fabric=${fabric}`);
+  return args;
 }
 
 /** Noch nicht gewählte Blaupausen für das Mitglieder-Dropdown. */

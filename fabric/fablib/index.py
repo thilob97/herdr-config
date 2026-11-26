@@ -42,7 +42,7 @@ def _reviewer():
     return str((roster or {}).get("reviewer") or "ada")
 
 
-def entry(ticket, waits=None, team=None):
+def entry(ticket, waits=None, team=None, fabric=None):
     if waits is None:
         waits = costs.waits(ticket, store.event_rows_for(ticket["id"]), _reviewer())
     last = ticket["comments"][-1] if ticket["comments"] else None
@@ -80,6 +80,7 @@ def entry(ticket, waits=None, team=None):
             for session in ticket.get("sessions") or []
         ],
         "team": str(team or ""),
+        "fabric": str(fabric or ""),
         "max_cost": ticket.get("max_cost"),
         "cost": _cost_snapshot(ticket),
         "waits": waits,
@@ -324,6 +325,7 @@ def build():
                 ticket,
                 waits=costs.waits(ticket, ticket_rows, reviewer),
                 team=str((team_entry or {}).get("name") or ""),
+                fabric=teams.fabric_of_team(team_entry),
             )
         )
     alarm_state = alarm.status()
@@ -346,6 +348,7 @@ def build():
         "inbox": inbox,
         "roster": agents.roster_rows(roster) if roster else [],
         "teams": _teams(roster) if roster else [],
+        "fabrics": [row["name"] for row in teams.fabric_rows(roster)] if roster else [],
         "events": rows[-MAX_EVENTS:],
     }
     return payload

@@ -50,8 +50,9 @@ export function renderTicketsPage(app, cx, t) {
   const filtersValue = { ...app.filters(), includeDropped: app.showDropped };
   const rows = model.sortTickets(model.filterTickets(app.tickets, filtersValue), app.tableSort)
     .map((ticket) => ({ ...ticket, __selected: app.cursorId === ticket.id }));
-  const open = app.tickets.filter((ticket) => ticket.status !== "done" && ticket.status !== "dropped").length;
-  const review = app.tickets.filter((ticket) => ticket.status === "review").length;
+  const scoped = model.fabricScopeTickets(app.tickets, app.fabricScope);
+  const open = scoped.filter((ticket) => ticket.status !== "done" && ticket.status !== "dropped").length;
+  const review = scoped.filter((ticket) => ticket.status === "review").length;
   const columns = app.compact
     ? model.TABLE_COLUMNS.filter((column) => column.key === "id" || column.key === "title" || column.key === "status")
     : model.TABLE_COLUMNS;
@@ -60,7 +61,8 @@ export function renderTicketsPage(app, cx, t) {
     .size_full()
     .min_h(0)
     .child(ui.header(t, model.pageWord("tickets"), [
-      div().text_size(T.xs).text_color(t.dim).child(`${app.tickets.length} gesamt`),
+      div().text_size(T.xs).text_color(t.dim)
+        .child(`${scoped.length} gesamt${app.fabricScope ? ` · Fabric ${app.fabricScope}` : ""}`),
     ], {
       iconName: "tickets",
       subtitle: `${open} offen · ${review} in Prüfung · Spaltenkopf sortiert`,

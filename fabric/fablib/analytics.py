@@ -6,7 +6,7 @@ Tage sind Kalendertage in der Zeitzone des Rechners.
 """
 from datetime import datetime, timedelta
 
-from . import clock, costs
+from . import clock, costs, teams
 
 DONE_KINDS = ("accept", "accept_noop")
 STALE_VERDICT = "Das bisherige Urteil wird verworfen"
@@ -62,12 +62,13 @@ def _range_cost(cost, in_range):
     )
 
 
-def _team_rows(tickets, team_of, cost_of, events, in_range):
+def _team_rows(tickets, team_of, cost_of, events, in_range, fabric_of=None):
     """Je Team: Kosten im Zeitraum, neue und fertige Tickets (für die Fabric-Sicht)."""
     rows = {}
 
     def row(name):
-        return rows.setdefault(name, {"name": name, "cost_range": 0.0, "created": 0, "done": 0,
+        return rows.setdefault(name, {"name": name, "fabric": (fabric_of or {}).get(name, ""),
+                                      "cost_range": 0.0, "created": 0, "done": 0,
                                       "open": 0})
 
     for ticket in tickets:
@@ -92,14 +93,15 @@ def _team_rows(tickets, team_of, cost_of, events, in_range):
 
 
 def report(tickets, events, runs, reviewer="ada", days=14, now=None, fresh=True,
-           roster=None, team=None):
+           roster=None, team=None, fabric=None):
     """Kennzahlen über `days` Kalendertage bis heute (einschließlich).
 
     `fresh` liest Sessionkosten wie `fab stats` neu aus den Session-Logs; der
     gespeicherte Schnappschuss im Ticket hinkt sonst hinterher. `team`
     beschränkt alles auf die Tickets dieses Teams („" = ohne Team) und die
-    Läufe seiner Tickets und Repos; ohne `team` gilt die ganze Fabric und
-    `teams` vergleicht die Teams.
+    Läufe seiner Tickets und Repos; `fabric` auf die Teams dieses Fabrics.
+    Ohne `team` vergleicht `teams` die Teams (mit ihrem `fabric`), mit
+    `fabric` nur die Teams dieses Fabrics.
     """
     now = clock.now_ms() if now is None else int(now)
     days = max(1, int(days))
@@ -109,6 +111,11 @@ def report(tickets, events, runs, reviewer="ada", days=14, now=None, fresh=True,
 
     tickets = [ticket for ticket in tickets or [] if isinstance(ticket, dict)]
     team_of = {ticket.get("id"): costs.team_name(roster, ticket) for ticket in tickets}
+    fabric_of = {
+        str(entry.get("name")): teams.fabric_of_team(entry)
+        for entry in (roster or {}).get("teams") or []
+        if isinstance(entry, dict) and entry.get("name")
+    }
     cache = {}
 
     def cost_of(ticket):
@@ -117,7 +124,10 @@ def report(tickets, events, runs, reviewer="ada", days=14, now=None, fresh=True,
             cache[key] = _ticket_cost(ticket, fresh, now)
         return cache[key]
 
-    teams = None if team is not None else _team_rows(tickets, team_of, cost_of, events, in_range)
+    team_rows = (
+        None if team is not None
+        else _team_rows(tickets, team_of, cost_of, events, in_range, fabric_of)
+    )
     if team is not None:
         tickets = [ticket for ticket in tickets if team_of.get(ticket.get("id")) == team]
         ids = {ticket.get("id") for ticket in tickets}
@@ -132,6 +142,25 @@ def report(tickets, events, runs, reviewer="ada", days=14, now=None, fresh=True,
             run for run in runs or []
             if run.get("ticket") in ids or (not run.get("ticket") and _trim(run.get("repo")) in repos)
         ]
+    elif fabric is not None:
+        allowed = {name for name, value in fabric_of.items() if value == fabric}
+        tickets = [
+            ticket for ticket in tickets
+            if team_of.get(ticket.get("id")) in allowed
+        ]
+        ids = {ticket.get("id") for ticket in tickets}
+        events = [row for row in events or [] if row.get("ticket") in ids]
+        repos = {
+            _trim(repo)
+            for entry in (roster or {}).get("teams") or []
+            if isinstance(entry, dict) and entry.get("name") in allowed
+            for repo in entry.get("repos") or []
+        }
+        runs = [
+            run for run in runs or []
+            if run.get("ticket") in ids or (not run.get("ticket") and _trim(run.get("repo")) in repos)
+        ]
+        team_rows = [row for row in team_rows or [] if row.get("fabric") == fabric]
     by_id = {ticket["id"]: ticket for ticket in tickets if ticket.get("id")}
     rows_by_ticket = {}
     for row in events or []:
@@ -282,7 +311,8 @@ def report(tickets, events, runs, reviewer="ada", days=14, now=None, fresh=True,
         "generated_at": now,
         "days": days,
         "team": team,
-        "teams": teams,
+        "fabric": fabric,
+        "teams": team_rows,
         "since": since,
         "overview": {
             "tickets": len(tickets),
