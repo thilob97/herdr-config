@@ -608,3 +608,17 @@ test("Alarm-Knöpfe: Reihenfolge des Alarms, ack zuletzt, Unbekanntes fällt weg
   assert.deepEqual(alarmButtons({ actions: ["close"] }), []);
   assert.deepEqual(alarmButtons(null), []);
 });
+
+test("fabricSections: Teams unter ihrer Fabric, eine Fabric ohne Überschrift", async () => {
+  const { fabricSections } = await import("../model.js");
+  const group = (name) => ({ name, rows: [{}], count: 1 });
+  const one = fabricSections([group("a"), group("b")], [{ name: "a" }, { name: "b", fabric: "standard" }]);
+  assert.deepEqual(one.map((section) => section.fabric), [null]);
+  assert.equal(one[0].groups.length, 2);
+  const two = fabricSections(
+    [group("p"), group("a"), { name: "leer", rows: [], count: 0 }],
+    [{ name: "p", fabric: "privat" }, { name: "a" }, { name: "leer", fabric: "dritte" }],
+  );
+  assert.deepEqual(two.map((section) => [section.fabric, section.groups.map((g) => g.name)]),
+    [["standard", ["a"]], ["privat", ["p"]]]);
+});

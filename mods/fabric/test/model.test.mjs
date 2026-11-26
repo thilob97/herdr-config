@@ -3334,3 +3334,20 @@ test("reportArgs schließen Team und Fabric aus", async () => {
   assert.deepEqual(reportArgs({ days: 30, team: "alpha", fabric: "privat" }),
     ["report", "--days=30", "--json", "--team=alpha"]);
 });
+
+test("Fabric-Bereich: Teams und Repos leuchten unter Fabrics; Repos folgen dem Filter", async () => {
+  const { navPageFor, scopeRepos, FABRIC_TABS } = await import("../model.js");
+  assert.deepEqual(FABRIC_TABS.map((tab) => tab.page), ["fabrics", "team", "repos"]);
+  assert.equal(navPageFor("team"), "fabrics");
+  assert.equal(navPageFor("repos"), "fabrics");
+  assert.equal(navPageFor("ticket"), "tickets");
+  assert.equal(navPageFor("board"), "board");
+  const teams = [
+    { name: "web", fabric: "arbeit", repos: ["/r/web/"] },
+    { name: "home", fabric: "privat", repos: ["/r/home"] },
+  ];
+  const repos = [{ path: "/r/web" }, { path: "/r/home" }, { path: "/r/lose" }];
+  assert.equal(scopeRepos(repos, teams, "").length, 3);
+  assert.deepEqual(scopeRepos(repos, teams, "arbeit").map((repo) => repo.path), ["/r/web"]);
+  assert.deepEqual(scopeRepos(repos, teams, "leer"), []);
+});

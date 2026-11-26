@@ -38,11 +38,9 @@ const NAV = [
   { page: "workflows", icon: "play" },
   { page: "pipelines", icon: "terminal" },
   { page: "stats", icon: "chart" },
-  { page: "team", icon: "team" },
   { page: "fabrics", icon: "fabric" },
   { page: "prompts", icon: "prompt" },
   { page: "templates", icon: "prompt" },
-  { page: "repos", icon: "repo" },
   { page: "commands", icon: "terminal" },
   { page: "settings", icon: "settings" },
 ];
@@ -1450,6 +1448,8 @@ export default class Fabric extends View {
         cx.spawn((cx) => this.loadTemplate(route.name, cx));
       }
     } else if (route.page === "repos") {
+      // Der Fabric-Filter braucht die Repos der Teams aus dem Roster.
+      if (!this.roster) cx.spawn((cx) => this.loadRoster(cx));
       if (!this.repos || Date.now() - this.reposAt > 15000) {
         cx.spawn(async (cx) => {
           await this.loadRepos(cx);
@@ -2014,6 +2014,43 @@ export default class Fabric extends View {
     if (next || this.report) this.loadReport();
     this.notifyNow();
     if (cx) cx.notify();
+  }
+
+  /** Fabric-Auswahl links in der Leiste (ab zwei Fabrics): Klick setzt den Filter. */
+  fabricNavRows(t, cx) {
+    const rows = this.fabricScopeRows();
+    if (rows.length < 2) return [];
+    const open = (name) => (this.index?.tickets ?? [])
+      .filter((ticket) => (!name || ticket.fabric === name) && ticket.status !== "done" && ticket.status !== "dropped").length;
+    const item = (value, label, detail) => {
+      const active = this.fabricScope === value;
+      const count = open(value);
+      return h_flex()
+        .id(`fabric-scope-nav-${value || "alle"}`)
+        .w_full()
+        .h(26)
+        .px(10)
+        .gap(ui.SPACE.s)
+        .items_center()
+        .rounded(ui.RADIUS.s)
+        .bg(active ? t.selected : t.surface + ui.ALPHA.clear)
+        .text_color(active ? t.foreground : t.muted)
+        .text_size(ui.FONT.s)
+        .cursor_pointer()
+        .hover((s) => s.bg(active ? t.selected : t.hover))
+        .tooltip(detail)
+        .on_click((_event, cx) => { cx.stop_propagation(); this.setFabricScope(value, cx); })
+        .child(div().flex_none().size(6).rounded(3).bg(active ? t.accent : t.border))
+        .child(div().flex_1().min_w(0).truncate().child(label))
+        .when(count > 0, (el) => el.child(div().flex_none().text_size(ui.FONT.xs).text_color(t.dim).child(String(count))));
+    };
+    return [
+      v_flex().w_full().gap(2).pb(ui.SPACE.s).mb(ui.SPACE.xs).border_b(1).border_color(t.border)
+        .child(div().px(10).pb(2).text_size(ui.FONT.xs).text_color(t.dim).child("Fabrics"))
+        .child(item("", "Alle", "Alle Fabrics zeigen"))
+        .children(rows.map((row) => item(row.name, row.name,
+          `Nur Fabric ${row.name}${row.note ? ` – ${row.note}` : ""} zeigen (Board, Tickets, Posteingang, Teams, Repos, Statistik)`))),
+    ];
   }
 
   fabricScopeControl(t, cx) {
@@ -4891,11 +4928,12 @@ export default class Fabric extends View {
               .child(div().text_size(ui.FONT.m).font_semibold().child("Fabric")),
           ),
       )
+      .children(this.fabricNavRows(t, cx))
       .children(NAV.map((item) => ui.navItem(t, {
         id: `fabric-nav-${item.page}`,
         icon: item.icon,
         label: model.pageWord(item.page),
-        active: page === item.page || (page === "ticket" && item.page === "tickets"),
+        active: model.navPageFor(page) === item.page,
         onClick: (cx) => this.navigate(item.page, {}, cx),
         badge: this.navBadge(t, item.page),
       })))
@@ -4929,7 +4967,7 @@ export default class Fabric extends View {
         id: `fabric-nav-${item.page}`,
         icon: item.icon,
         label: model.pageWord(item.page),
-        active: page === item.page || (page === "ticket" && item.page === "tickets"),
+        active: model.navPageFor(page) === item.page,
         onClick: (cx) => this.navigate(item.page, {}, cx),
         badge: this.navBadge(t, item.page),
         compact: true,
@@ -4988,7 +5026,8 @@ export default class Fabric extends View {
         tooltip: "Neues Ticket (⌘N)",
         onClick: (cx) => this.openNewTicket(cx),
       })))
-      .when(this.fabricScopeRows().length > 1, (el) => el.child(this.fabricScopeControl(t, cx)))
+      // Breit steht die Fabric-Auswahl links in der Leiste, schmal hier im Kopf.
+      .when(this.compact && this.fabricScopeRows().length > 1, (el) => el.child(this.fabricScopeControl(t, cx)))
       .child(this.autopilotTrigger(t, cx, {
         compact: this.compact,
         anchor: "bottom_left",
@@ -5003,7 +5042,21 @@ export default class Fabric extends View {
         onClick: (cx) => this.closeWindowWithGuard(cx),
       }));
 
-    const contentPane = v_flex().flex_1().min_w(0).h_full().min_h(0).overflow_hidden().child(content);
+    // Teams und Repos sind Reiter des Fabric-Bereichs.
+    const area = model.FABRIC_TABS.some((tab) => tab.page === page)
+      ? v_flex().size_full().min_h(0)
+        .child(h_flex().flex_none().w_full().px(ui.SPACE.l).pt(ui.SPACE.s).pb(ui.SPACE.xs).gap(ui.SPACE.s).items_center()
+          .child(ui.tabs(t, {
+            id: "fabric-area-tabs",
+            items: model.FABRIC_TABS.map((tab) => ({ value: tab.page, label: tab.label })),
+            value: page,
+            onPick: (next) => this.navigate(next, {}, cx),
+          }))
+          .when(Boolean(this.fabricScope) && page !== "fabrics", (el) => el.child(
+            div().text_size(ui.FONT.xs).text_color(t.dim).child(`gefiltert: Fabric ${this.fabricScope}`))))
+        .child(div().flex_1().min_h(0).child(content))
+      : content;
+    const contentPane = v_flex().flex_1().min_w(0).h_full().min_h(0).overflow_hidden().child(area);
     const drawerLayer = (node) => div().absolute().right_0().top_0().bottom_0().bg(t.surface).overflow_hidden().child(node);
     const body = v_flex()
       .flex_1()

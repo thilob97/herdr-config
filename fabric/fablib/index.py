@@ -289,6 +289,7 @@ def _teams(roster):
         rows.append(
             {
                 "name": str(entry["name"]),
+                "fabric": teams.fabric_of_team(entry),
                 "reviewer": str(entry.get("reviewer") or ""),
                 "max_sessions": limit,
                 "orchestrator": teams.orchestrator_config(entry),

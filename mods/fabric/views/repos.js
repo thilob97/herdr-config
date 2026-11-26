@@ -60,7 +60,7 @@ function repoRow(app, cx, t, repo) {
 }
 
 function list(app, cx, t) {
-  const repos = app.repos ?? [];
+  const repos = model.scopeRepos(app.repos ?? [], app.roster?.teams ?? [], app.fabricScope);
   if (!repos.length) {
     return v_flex().w(LIST).min_w(LIST).h_full().border_r(1).border_color(t.border)
       .child(ui.emptyState(t, {

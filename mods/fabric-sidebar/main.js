@@ -125,6 +125,23 @@ function teamHeader(t, group, first) {
     .child(div().flex_none().text_size(FONT.xs).text_color(t.dim).child(String(group.count)));
 }
 
+// Fabric-Überschrift über ihren Teams; kräftiger als die Team-Überschrift.
+function fabricHeader(t, section, first) {
+  const count = section.groups.reduce((sum, group) => sum + group.count, 0);
+  return h_flex()
+    .flex_none()
+    .w_full()
+    .when(!first, (el) => el.mt(SPACE.s))
+    .px(SPACE.s)
+    .py(SPACE.xs)
+    .gap(SPACE.xs)
+    .items_center()
+    .child(div().flex_none().size(6).rounded(3).bg(t.accent))
+    .child(div().flex_1().min_w(0).truncate().text_size(FONT.xs).font_semibold().text_color(t.muted)
+      .child(section.fabric))
+    .child(div().flex_none().text_size(FONT.xs).text_color(t.dim).child(String(count)));
+}
+
 // Farbton je Maschinengruppe; alle Farben kommen aus theme().
 function groupTint(t, index) {
   const palette = [t.accent, t.working, t.done, t.ansi5, t.ansi6, t.blocked];
@@ -471,10 +488,13 @@ export default class FabricSidebar extends View {
         }
       });
     }
-    for (const group of groups) {
-      if (group.rows.length === 0) continue;
-      sections.push(teamHeader(t, group, sections.length === 0));
-      for (const row of group.rows) sections.push(rowView(t, row));
+    // Mehrere Fabrics: Teams stehen unter ihrer Fabric-Überschrift.
+    for (const section of model.fabricSections(groups, this.index?.teams ?? [])) {
+      if (section.fabric) sections.push(fabricHeader(t, section, sections.length === 0));
+      for (const group of section.groups) {
+        sections.push(teamHeader(t, group, sections.length === 0));
+        for (const row of group.rows) sections.push(rowView(t, row));
+      }
     }
 
     return v_flex()

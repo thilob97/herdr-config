@@ -3723,3 +3723,29 @@ export function reportAgentColor(name, blueprints = []) {
   for (const char of String(name ?? "")) hash = (hash * 31 + char.codePointAt(0)) >>> 0;
   return `c${(hash % 6) + 1}`;
 }
+
+// ---------- Fabrics als Bereich: Übersicht, Teams, Repos ----------
+
+/** Reiter des Fabric-Bereichs; Teams und Repos sind Unterseiten der Fabrics. */
+export const FABRIC_TABS = [
+  { page: "fabrics", label: "Übersicht" },
+  { page: "team", label: "Teams" },
+  { page: "repos", label: "Repos" },
+];
+
+/** Navigationspunkt, der für eine Seite leuchtet. */
+export function navPageFor(page) {
+  if (page === "ticket") return "tickets";
+  if (page === "team" || page === "repos") return "fabrics";
+  return page;
+}
+
+/** Repos im Fabric-Filter: nur Repos der Teams dieser Fabric; ohne Filter alle. */
+export function scopeRepos(repos, teams, scope) {
+  const list = repos ?? [];
+  const name = String(scope ?? "").trim();
+  if (!name) return list;
+  const trim = (value) => String(value ?? "").replace(/\/+$/, "");
+  const wanted = new Set(scopeTeams(teams, name).flatMap((team) => (team.repos ?? []).map(trim)));
+  return list.filter((repo) => wanted.has(trim(repo?.path)));
+}
