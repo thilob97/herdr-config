@@ -657,16 +657,24 @@ def cmd_report(args):
     if args.days < 1 or args.days > 365:
         raise FabError("--days muss zwischen 1 und 365 liegen")
     roster = agents.load(required=False)
+    if args.team:
+        if not roster:
+            raise FabError("Kein Team im Roster; fab team add …")
+        teams.team(roster, args.team)
     payload = analytics.report(
         store.all_tickets(), store.event_rows(), store.pipeline_run_list(),
-        reviewer=_reviewer(roster), days=args.days,
+        reviewer=_reviewer(roster), days=args.days, roster=roster, team=args.team,
     )
     if args.json:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
     over = payload["overview"]
     rate = over["pass_rate"]
-    print(f"Statistik der letzten {payload['days']} Tage")
+    scope = f"Team {args.team}" if args.team else "Fabric"
+    print(f"Statistik {scope}, letzte {payload['days']} Tage")
+    for row in payload.get("teams") or []:
+        print(f"  {row['name'] or 'ohne Team':<14}{costs.format_cost(row['cost_range']):>10}"
+              f"  {row['created']} neu, {row['done']} fertig, {row['open']} offen")
     print(f"  Tickets: {over['created']} neu, {over['done']} fertig, "
           f"Durchlauf Median {_duration(over['cycle_median_ms'])}")
     print(f"  Kosten: {costs.format_cost(over['cost_range'])} "
@@ -4193,6 +4201,7 @@ def build_parser():
     item = command("report", "Statistik: Durchsatz, Kosten je Agent, Prüfungen, Läufe, Liegezeiten", cmd_report)
     item.add_argument("--days", type=int, default=14, metavar="N",
                       help="Zeitraum in Kalendertagen bis heute (Standard 14)")
+    item.add_argument("--team", metavar="NAME", help="nur dieses Team (Tickets, Repos, Läufe)")
     item.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe")
 
     item = command("diff", "Änderungen des Tickets gegenüber der Basis zeigen", cmd_diff)

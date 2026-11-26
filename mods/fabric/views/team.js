@@ -141,23 +141,63 @@ function blueprintCard(app, cx, t) {
   ], { id: "fabric-blueprints", padding: S.m, gap: S.xs });
 }
 
-// Modell des Orchestrators: Eingabe im Teamformular, gespeichert mit dem Team
-// (fab team edit --orchestrator-argv-json); wirkt beim nächsten Start.
-function orchestratorModelRow(app, t, team, parts) {
-  const form = app.teamForms[team.name];
-  if (!form?.orchestratorModel) return definition(t, "Modell", parts.model, parts.model);
-  const changed = form.orchestratorModel.value().trim() !== parts.model;
+// Programm, Modell und Flags des Orchestrators: Teil des Teamformulars,
+// gespeichert mit dem Team (fab team edit --orchestrator-argv-json); wirken
+// beim nächsten (Neu-)Start.
+function settingRow(t, label, child) {
   return h_flex()
     .w_full()
-    .min_h(22)
+    .min_h(26)
     .gap(S.s)
     .items_center()
-    .child(div().flex_none().w(72).text_size(T.xs).text_color(t.dim).whitespace_nowrap().child("Modell"))
-    .child(div().flex_1().min_w(120).max_w(360).id(`fabric-team-orchestrator-model-${team.name}`)
+    .child(div().flex_none().w(72).text_size(T.xs).text_color(t.dim).whitespace_nowrap().child(label))
+    .child(child);
+}
+
+function orchestratorSettings(app, cx, t, team, parts) {
+  const form = app.teamForms[team.name];
+  if (!form?.orchestratorModel) {
+    return [
+      definition(t, "Programm", parts.program, parts.program),
+      definition(t, "Modell", parts.model, parts.model),
+    ];
+  }
+  const menu = `orchestrator-program:${team.name}`;
+  const rows = model.programOptions(app.programs, form.orchestratorProgram);
+  const label = rows.find((row) => row.value === form.orchestratorProgram)?.label ?? form.orchestratorProgram;
+  const changed = model.argvFromParts({
+    program: form.orchestratorProgram,
+    model: form.orchestratorModel.value(),
+    flags: form.orchestratorFlags.value(),
+  }).join("\u0000") !== model.argvFromParts({
+    program: parts.program, model: parts.model, flags: model.flagsText(parts.flags),
+  }).join("\u0000");
+  return [
+    settingRow(t, "Programm", ui.dropdown(t, {
+      id: `fabric-team-orchestrator-program-${team.name}`,
+      value: label,
+      placeholder: app.programs ? "Programm wählen…" : "Programme werden geladen …",
+      options: rows,
+      open: app.menu === menu,
+      width: 240,
+      scrollHandle: app.dropdownScroll,
+      onToggle: () => { app.menu = app.menu === menu ? null : menu; cx.notify(); },
+      onPick: (value) => {
+        app.menu = null;
+        const current = app.teamForms[team.name];
+        if (current) current.orchestratorProgram = value;
+        cx.notify();
+      },
+    })),
+    settingRow(t, "Modell", div().flex_1().min_w(120).max_w(360).id(`fabric-team-orchestrator-model-${team.name}`)
       .child(ui.input(t, form.orchestratorModel))
-      .tooltip("Leer = Standardmodell des Programms. Speichern schreibt das Orchestrator-argv; wirkt beim nächsten (Neu-)Start."))
-    .when(changed, (el) => el.child(div().text_size(T.xs).text_color(t.dim).whitespace_nowrap()
-      .child("wirkt nach Neustart")));
+      .tooltip("Leer = Standardmodell des Programms; wird als --model=<Wert> gesetzt")),
+    settingRow(t, "Flags", div().flex_1().min_w(120).max_w(360).id(`fabric-team-orchestrator-flags-${team.name}`)
+      .child(ui.input(t, form.orchestratorFlags))
+      .tooltip("Weitere Argumente nach Shell-Regeln, z. B. --approval-mode=yolo")),
+    ...(changed ? [div().text_size(T.xs).text_color(t.working)
+      .child("Geändert: Speichern, dann Orchestrator neu starten.")] : []),
+  ];
 }
 
 function orchestratorBlock(app, cx, t, team) {
@@ -188,8 +228,7 @@ function orchestratorBlock(app, cx, t, team) {
       .child(div().flex_1())
       .child(div().max_w(240).min_w(0).truncate().text_size(T.xs).text_color(t.dim)
         .child(state?.terminal ?? "kein Terminal").tooltip(state?.terminal ?? "kein Terminal")))
-    .child(definition(t, "Programm", parts.program, parts.program))
-    .child(orchestratorModelRow(app, t, team, parts))
+    .children(orchestratorSettings(app, cx, t, team, parts))
     .child(definition(t, "Prompt", team.orchestrator?.prompt, team.orchestrator?.prompt))
     .child(h_flex().w_full().gap(S.s).items_center().flex_wrap()
       .child(ui.button(t, {

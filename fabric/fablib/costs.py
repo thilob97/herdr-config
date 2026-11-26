@@ -380,7 +380,7 @@ def waits(ticket, rows, reviewer="ada", now=None):
     }
 
 
-def _team_name(roster, ticket):
+def team_name(roster, ticket):
     if not roster or not ticket.get("repo"):
         return ""
     from . import agents
@@ -401,7 +401,7 @@ def stats(tickets, roster=None, team=None, today=False, now=None):
     now = _now(now)
     buckets = {}
     for ticket in tickets or []:
-        name = _team_name(roster, ticket)
+        name = team_name(roster, ticket)
         if team is not None and name != team:
             continue
         snapshot = _snapshot(ticket)

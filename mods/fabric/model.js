@@ -908,8 +908,18 @@ export function teamDraft(team) {
       })),
     reviewer: String(team?.reviewer ?? ""),
     max_sessions: Number(team?.max_sessions ?? 4),
-    // Formularwerte tragen das Modell direkt, Roster-Teams im Orchestrator-argv.
-    orchestrator_model: String(team?.orchestrator_model ?? argvParts(team?.orchestrator?.argv ?? []).model),
+    ...orchestratorDraft(team),
+  };
+}
+
+/** Programm, Modell und Flags des Orchestrators. Formularwerte tragen sie
+ *  direkt, Roster-Teams im Orchestrator-argv. */
+function orchestratorDraft(team) {
+  const parts = argvParts(team?.orchestrator?.argv ?? []);
+  return {
+    orchestrator_program: String(team?.orchestrator_program ?? parts.program),
+    orchestrator_model: String(team?.orchestrator_model ?? parts.model),
+    orchestrator_flags: String(team?.orchestrator_flags ?? flagsText(parts.flags)),
   };
 }
 
@@ -976,14 +986,20 @@ export function teamSaveArgs(team, form, { briefFile = "" } = {}) {
     `--reviewer=${reviewer}`,
     `--max-sessions=${sessions}`,
   );
-  // Orchestrator-Modell: nur bei Änderung, Programm und Flags bleiben.
-  if (form?.orchestrator_model !== undefined) {
-    const parts = argvParts(team?.orchestrator?.argv ?? []);
-    const nextModel = String(form.orchestrator_model ?? "").trim();
-    if (nextModel !== parts.model) {
-      if (!parts.program) return { error: "Orchestrator hat kein Programm im Roster; Modell lässt sich nicht setzen." };
-      if (/\s/.test(nextModel)) return { error: "Orchestrator-Modell darf keine Leerzeichen enthalten." };
-      const argv = [parts.program, ...(nextModel ? [`--model=${nextModel}`] : []), ...parts.flags];
+  // Orchestrator-Programm, -Modell und -Flags: argv nur bei Änderung schreiben.
+  const keys = ["orchestrator_program", "orchestrator_model", "orchestrator_flags"];
+  if (keys.some((key) => form?.[key] !== undefined)) {
+    const current = orchestratorDraft(team);
+    const program = String(form.orchestrator_program ?? current.orchestrator_program).trim();
+    const nextModel = String(form.orchestrator_model ?? current.orchestrator_model).trim();
+    const flags = String(form.orchestrator_flags ?? current.orchestrator_flags);
+    if (/\s/.test(nextModel)) return { error: "Orchestrator-Modell darf keine Leerzeichen enthalten." };
+    const before = argvFromParts({
+      program: current.orchestrator_program, model: current.orchestrator_model, flags: current.orchestrator_flags,
+    });
+    const argv = argvFromParts({ program, model: nextModel, flags });
+    if (JSON.stringify(argv) !== JSON.stringify(before)) {
+      if (!program) return { error: "Bitte ein Programm für den Orchestrator wählen." };
       args.push(`--orchestrator-argv-json=${JSON.stringify(argv)}`);
     }
   }
@@ -1055,7 +1071,9 @@ export function teamDirty(team, form) {
     members: normalizeMembers(form.members),
     reviewer: String(form.reviewer ?? ""),
     max_sessions: sessionNumber(form.max_sessions),
+    orchestrator_program: String(form.orchestrator_program ?? base.orchestrator_program).trim(),
     orchestrator_model: String(form.orchestrator_model ?? base.orchestrator_model).trim(),
+    orchestrator_flags: String(form.orchestrator_flags ?? base.orchestrator_flags).trim(),
   };
   return JSON.stringify(base) !== JSON.stringify(next);
 }

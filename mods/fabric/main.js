@@ -220,6 +220,7 @@ export default class Fabric extends View {
     this.commandCatalogError = null;
     this.report = null;
     this.reportDays = 14;
+    this.reportTeam = "";
     this.reportAt = 0;
     this.reportError = null;
     this.reportLoading = false;
@@ -1073,37 +1074,40 @@ export default class Fabric extends View {
 
   // ---------- Statistik ----------
 
-  /** `fab report --days N --json` lesen; liest Sessionkosten frisch, daher nur auf Anfrage. */
-  async loadReport(days = this.reportDays) {
+  /** `fab report --days N [--team NAME] --json` lesen; liest Sessionkosten
+   *  frisch, daher nur auf Anfrage. `reportTeam` "" = ganze Fabric. */
+  async loadReport() {
     if (this.reportLoading) return;
-    this.reportDays = days;
+    const days = this.reportDays;
+    const team = this.reportTeam;
     this.reportLoading = true;
     this.notifyNow();
     try {
-      const result = await this.execFab(["report", `--days=${days}`, "--json"], { timeout: 60000 });
+      const args = ["report", `--days=${days}`, "--json"];
+      if (team) args.push(`--team=${team}`);
+      const result = await this.execFab(args, { timeout: 60000 });
       const data = result.code === 0 ? parseJson(result.stdout, null) : null;
       if (!data || typeof data !== "object" || !data.overview) {
         throw new Error((result.stderr || "").trim() || "fab report lieferte keine Daten");
       }
-      // Wurde inzwischen ein anderer Zeitraum gewählt, gilt der neuere Auftrag.
-      if (days === this.reportDays) {
-        this.report = data;
-        this.reportAt = Date.now();
-        this.reportError = null;
-      }
+      this.report = data;
+      this.reportAt = Date.now();
+      this.reportError = null;
     } catch (error) {
       this.reportError = `Statistik nicht ladbar: ${message(error)}`;
     } finally {
       this.reportLoading = false;
     }
     this.notifyNow();
-    if (days !== this.reportDays) await this.loadReport(this.reportDays);
+    // Wurde inzwischen ein anderer Zeitraum oder ein anderes Team gewählt, gilt der neuere Wunsch.
+    if (days !== this.reportDays || team !== this.reportTeam) await this.loadReport();
   }
 
-  setReportDays(days) {
-    if (days === this.reportDays && this.report?.days === days) return;
+  setReportScope({ days = this.reportDays, team = this.reportTeam } = {}) {
+    if (days === this.reportDays && team === this.reportTeam) return;
     this.reportDays = days;
-    this.loadReport(days);
+    this.reportTeam = team;
+    this.loadReport();
   }
 
   // ---------- Befehle ----------
@@ -1450,6 +1454,8 @@ export default class Fabric extends View {
       }
     } else if (route.page === "stats") {
       if (!this.report || Date.now() - this.reportAt > 60000) cx.spawn(async () => { await this.loadReport(); });
+      // Teamreiter brauchen das Roster.
+      if (!this.roster) cx.spawn((cx) => this.loadRoster(cx));
     } else if (route.page === "commands") {
       if (!this.commandCatalog) cx.spawn(async () => { await this.loadCommands(); });
     } else if (route.page === "settings") {
@@ -3613,13 +3619,21 @@ export default class Fabric extends View {
       value: draft.orchestrator_model,
       placeholder: "Standard des Programms",
     });
-    orchestratorModel.on("change", (_event, cx) => cx.notify());
-    orchestratorModel.on("submit", (_event, cx) => this.saveTeam(team.name, cx));
-    this.track(orchestratorModel);
+    const orchestratorFlags = InputState.new({
+      value: draft.orchestrator_flags,
+      placeholder: "z. B. --approval-mode=yolo",
+    });
+    for (const state of [orchestratorModel, orchestratorFlags]) {
+      state.on("change", (_event, cx) => cx.notify());
+      state.on("submit", (_event, cx) => this.saveTeam(team.name, cx));
+      this.track(state);
+    }
     return {
       name,
       brief,
+      orchestratorProgram: draft.orchestrator_program,
       orchestratorModel,
+      orchestratorFlags,
       repos: [...draft.repos],
       reviewer: draft.reviewer,
       members: draft.members.map((member) => this.memberForm(member)),
@@ -3642,7 +3656,9 @@ export default class Fabric extends View {
       })),
       reviewer: form.reviewer,
       max_sessions: form.maxSessions.value(),
+      orchestrator_program: form.orchestratorProgram,
       orchestrator_model: form.orchestratorModel.value(),
+      orchestrator_flags: form.orchestratorFlags.value(),
     };
   }
 

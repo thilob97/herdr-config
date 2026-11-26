@@ -286,8 +286,26 @@ function overview(app, t, report) {
     }));
 }
 
+/** Vergleich der Teams in der Fabric-Sicht; Klick wechselt in die Team-Sicht. */
+function teamsCard(app, t, report) {
+  const rows = report.teams ?? [];
+  if (rows.length < 2) return null;
+  const max = Math.max(0, ...rows.map((row) => row.cost_range));
+  return section(t, "fabric-stats-teams", "Teams", "Zeitraum; Klick zeigt die Statistik des Teams", rows.map((row) => barRow(t, {
+    id: `fabric-stats-team-${row.name || "ohne"}`,
+    label: row.name || "ohne Team",
+    fraction: max > 0 ? row.cost_range / max : 0,
+    color: t.accent,
+    value: `${model.formatCost(row.cost_range)} · ${row.done} fertig · ${row.open} offen`,
+    tooltip: `${row.name || "ohne Team"}: ${row.created} neu, ${row.done} fertig, ${row.open} offen`,
+    onClick: row.name ? () => app.setReportScope({ team: row.name }) : null,
+  })));
+}
+
 export function renderStatsPage(app, cx, t) {
   const report = app.report;
+  const teams = (app.roster?.teams ?? []).map((team) => team.name).filter(Boolean);
+  const scope = app.reportTeam ? `Team ${app.reportTeam}` : "ganze Fabric";
   const stamp = app.reportAt ? `Stand ${model.relativeTime(app.reportAt)}` : "";
   return v_flex()
     .size_full()
@@ -298,7 +316,7 @@ export function renderStatsPage(app, cx, t) {
         id: "fabric-stats-range",
         items: model.REPORT_RANGES.map((days) => ({ value: days, label: `${days} Tage` })),
         value: app.reportDays,
-        onPick: (days) => app.setReportDays(days),
+        onPick: (days) => app.setReportScope({ days }),
       }),
       ui.iconButton(t, {
         id: "fabric-stats-reload",
@@ -306,13 +324,22 @@ export function renderStatsPage(app, cx, t) {
         tooltip: "Neu berechnen (fab report)",
         onClick: (cx) => cx.spawn(async () => { await app.loadReport(); }),
       }),
-    ], { iconName: "chart", subtitle: "Durchsatz, Kosten, Prüfungen, Läufe und Liegezeiten", compact: app.compact }))
+    ], { iconName: "chart", subtitle: `Durchsatz, Kosten, Prüfungen, Läufe und Liegezeiten · ${scope}`, compact: app.compact }))
+    .when(teams.length > 0, (el) => el.child(h_flex().w_full().px(S.l).pt(S.s).gap(S.s).items_center()
+      .child(div().text_size(T.xs).text_color(t.dim).child("Sicht"))
+      .child(ui.tabs(t, {
+        id: "fabric-stats-scope",
+        items: [{ value: "", label: "Fabric" }, ...teams.map((name) => ({ value: name, label: name }))],
+        value: app.reportTeam,
+        onPick: (team) => app.setReportScope({ team }),
+      }))))
     .when(Boolean(app.reportError), (el) => el.child(ui.notice(t, app.reportError)))
     .child(!report
       ? ui.loading(t, "Statistik wird berechnet …")
       : v_flex().id("fabric-stats-scroll").flex_1().min_h(0).overflow_y_scrollbar().p(S.l).gap(S.m)
         .child(v_flex().w_full().max_w(1100).gap(S.m)
           .child(overview(app, t, report))
+          .children([teamsCard(app, t, report)].filter(Boolean))
           .children(costCards(app, t, report))
           .child(throughputCard(app, t, report))
           .child(reviewCard(app, t, report))

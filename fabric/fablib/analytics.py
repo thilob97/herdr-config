@@ -44,11 +44,62 @@ def _number(value):
         return 0.0
 
 
-def report(tickets, events, runs, reviewer="ada", days=14, now=None, fresh=True):
+def _trim(path):
+    return str(path or "").rstrip("/")
+
+
+def _ticket_cost(ticket, fresh, now):
+    if fresh and ticket.get("worktree") and ticket.get("sessions"):
+        return costs.collect(ticket, now=now)
+    return ticket.get("cost") if isinstance(ticket.get("cost"), dict) else {}
+
+
+def _range_cost(cost, in_range):
+    return sum(
+        _number(session.get("cost"))
+        for session in cost.get("sessions") or []
+        if isinstance(session, dict) and in_range(session.get("started_at"))
+    )
+
+
+def _team_rows(tickets, team_of, cost_of, events, in_range):
+    """Je Team: Kosten im Zeitraum, neue und fertige Tickets (für die Fabric-Sicht)."""
+    rows = {}
+
+    def row(name):
+        return rows.setdefault(name, {"name": name, "cost_range": 0.0, "created": 0, "done": 0,
+                                      "open": 0})
+
+    for ticket in tickets:
+        entry = row(team_of.get(ticket.get("id"), ""))
+        entry["cost_range"] += _range_cost(cost_of(ticket), in_range)
+        if ticket.get("status") not in ("done", "dropped"):
+            entry["open"] += 1
+    for event in events or []:
+        if not in_range(event.get("at")):
+            continue
+        tid = event.get("ticket") or ""
+        if tid not in team_of:
+            continue
+        if event.get("kind") == "created":
+            row(team_of[tid])["created"] += 1
+        elif event.get("kind") in DONE_KINDS:
+            row(team_of[tid])["done"] += 1
+    return [
+        dict(entry, cost_range=round(entry["cost_range"], 6))
+        for entry in sorted(rows.values(), key=lambda item: (not item["name"], item["name"]))
+    ]
+
+
+def report(tickets, events, runs, reviewer="ada", days=14, now=None, fresh=True,
+           roster=None, team=None):
     """Kennzahlen über `days` Kalendertage bis heute (einschließlich).
 
     `fresh` liest Sessionkosten wie `fab stats` neu aus den Session-Logs; der
-    gespeicherte Schnappschuss im Ticket hinkt sonst hinterher.
+    gespeicherte Schnappschuss im Ticket hinkt sonst hinterher. `team`
+    beschränkt alles auf die Tickets dieses Teams („" = ohne Team) und die
+    Läufe seiner Tickets und Repos; ohne `team` gilt die ganze Fabric und
+    `teams` vergleicht die Teams.
     """
     now = clock.now_ms() if now is None else int(now)
     days = max(1, int(days))
@@ -57,6 +108,30 @@ def report(tickets, events, runs, reviewer="ada", days=14, now=None, fresh=True)
     in_range = lambda at: int(at or 0) >= since  # noqa: E731
 
     tickets = [ticket for ticket in tickets or [] if isinstance(ticket, dict)]
+    team_of = {ticket.get("id"): costs.team_name(roster, ticket) for ticket in tickets}
+    cache = {}
+
+    def cost_of(ticket):
+        key = ticket.get("id")
+        if key not in cache:
+            cache[key] = _ticket_cost(ticket, fresh, now)
+        return cache[key]
+
+    teams = None if team is not None else _team_rows(tickets, team_of, cost_of, events, in_range)
+    if team is not None:
+        tickets = [ticket for ticket in tickets if team_of.get(ticket.get("id")) == team]
+        ids = {ticket.get("id") for ticket in tickets}
+        events = [row for row in events or [] if row.get("ticket") in ids]
+        repos = {
+            _trim(repo)
+            for entry in (roster or {}).get("teams") or []
+            if isinstance(entry, dict) and entry.get("name") == team
+            for repo in entry.get("repos") or []
+        }
+        runs = [
+            run for run in runs or []
+            if run.get("ticket") in ids or (not run.get("ticket") and _trim(run.get("repo")) in repos)
+        ]
     by_id = {ticket["id"]: ticket for ticket in tickets if ticket.get("id")}
     rows_by_ticket = {}
     for row in events or []:
@@ -100,10 +175,7 @@ def report(tickets, events, runs, reviewer="ada", days=14, now=None, fresh=True)
     total_cost = 0.0
     range_cost = 0.0
     for ticket in tickets:
-        if fresh and ticket.get("worktree") and ticket.get("sessions"):
-            cost = costs.collect(ticket, now=now)
-        else:
-            cost = ticket.get("cost") if isinstance(ticket.get("cost"), dict) else {}
+        cost = cost_of(ticket)
         total = _number(cost.get("total"))
         total_cost += total
         ticket_range = 0.0
@@ -209,6 +281,8 @@ def report(tickets, events, runs, reviewer="ada", days=14, now=None, fresh=True)
     return {
         "generated_at": now,
         "days": days,
+        "team": team,
+        "teams": teams,
         "since": since,
         "overview": {
             "tickets": len(tickets),

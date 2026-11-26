@@ -1148,7 +1148,9 @@ test("teamDraft liest die Teamkarte ohne Zusatzfelder", async () => {
     ],
     reviewer: "ada",
     max_sessions: 4,
+    orchestrator_program: "",
     orchestrator_model: "",
+    orchestrator_flags: "",
   });
 });
 
@@ -3165,24 +3167,29 @@ test("Kosten je Agent: Summe über Tickets, teuerster zuerst", async () => {
   assert.equal(costTotals(tickets).agents.length, 2);
 });
 
-test("Team speichern: Orchestrator-Modell ersetzt nur --model im argv", async () => {
+test("Team speichern: Orchestrator-Programm, -Modell und -Flags schreiben das argv nur bei Änderung", async () => {
   const { teamSaveArgs, teamDraft, teamDirty } = await import("../model.js");
   const team = {
     name: "web", repos: ["/r"], members: [{ blueprint: "ada" }], reviewer: "ada", max_sessions: 4,
-    orchestrator: { argv: ["omp", "--model=alt", "--approval-mode=yolo"], prompt: "prompts/orchestrator.md" },
+    orchestrator: { argv: ["omp", "--model", "alt", "--approval-mode=yolo"], prompt: "prompts/orchestrator.md" },
   };
   const form = { ...teamDraft(team) };
-  assert.equal(form.orchestrator_model, "alt");
+  assert.deepEqual([form.orchestrator_program, form.orchestrator_model, form.orchestrator_flags],
+    ["omp", "alt", "--approval-mode=yolo"]);
   assert.equal(teamDirty(team, form), false);
-  assert.ok(!teamSaveArgs(team, form).args.some((arg) => arg.startsWith("--orchestrator-argv-json")));
+  const argvArg = (plan) => plan.args.find((arg) => arg.startsWith("--orchestrator-argv-json="));
+  assert.equal(argvArg(teamSaveArgs(team, form)), undefined, "unverändert: argv bleibt, auch in anderer Schreibweise");
   const changed = { ...form, orchestrator_model: " neu " };
   assert.equal(teamDirty(team, changed), true);
-  assert.ok(teamSaveArgs(team, changed).args.includes('--orchestrator-argv-json=["omp","--model=neu","--approval-mode=yolo"]'));
-  const cleared = teamSaveArgs(team, { ...form, orchestrator_model: "" }).args;
-  assert.ok(cleared.includes('--orchestrator-argv-json=["omp","--approval-mode=yolo"]'));
-  assert.match(teamSaveArgs({ ...team, orchestrator: { argv: [] } }, changed).error, /kein Programm/);
+  assert.equal(argvArg(teamSaveArgs(team, changed)), '--orchestrator-argv-json=["omp","--model=neu","--approval-mode=yolo"]');
+  assert.equal(argvArg(teamSaveArgs(team, { ...form, orchestrator_model: "" })), '--orchestrator-argv-json=["omp","--approval-mode=yolo"]');
+  const claude = { ...form, orchestrator_program: "claude", orchestrator_model: "sonnet", orchestrator_flags: "--dangerously-skip-permissions" };
+  assert.equal(teamDirty(team, claude), true);
+  assert.equal(argvArg(teamSaveArgs(team, claude)), '--orchestrator-argv-json=["claude","--model=sonnet","--dangerously-skip-permissions"]');
+  assert.match(teamSaveArgs(team, { ...form, orchestrator_program: "" }).error, /Programm/);
+  assert.match(teamSaveArgs(team, { ...form, orchestrator_model: "a b" }).error, /Leerzeichen/);
   // Nach dem Speichern ist der Formularstand (ohne argv) die Vergleichsbasis.
-  assert.equal(teamDraft({ ...changed, orchestrator_model: "neu" }).orchestrator_model, "neu");
+  assert.equal(teamDirty(teamDraft(claude), claude), false);
 });
 
 test("Statistik: Achsen, Balken, Prozent und Agentenfarbe", async () => {
