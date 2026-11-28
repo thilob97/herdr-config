@@ -8,10 +8,6 @@ import * as ui from "../ui.js";
 const T = ui.FONT;
 const S = ui.SPACE;
 
-function filters(app, cx, t) {
-  return ui.fabricFilters(t, { app, cx, droppedKey: "showDropped" });
-}
-
 function cell(app, t, ticket, column) {
   if (column.key === "id") {
     return div().text_size(T.xs).text_color(t.dim).child(ticket.id);
@@ -46,29 +42,49 @@ function cell(app, t, ticket, column) {
     .child(String(ticket.comment_count ?? 0));
 }
 
-export function renderTicketsPage(app, cx, t) {
+/** Tickets-Liste. `panel`: dieselbe Liste schmal im rechten Panel – drei
+ *  Spalten, Klick öffnet das Ticket im Fabric-Fenster. */
+export function renderTicketsPage(app, cx, t, { panel = false } = {}) {
   const filtersValue = { ...app.filters(), includeDropped: app.showDropped };
   const rows = model.sortTickets(model.filterTickets(app.tickets, filtersValue), app.tableSort)
     .map((ticket) => ({ ...ticket, __selected: app.cursorId === ticket.id }));
   const scoped = model.fabricScopeTickets(app.tickets, app.fabricScope);
   const open = scoped.filter((ticket) => ticket.status !== "done" && ticket.status !== "dropped").length;
   const review = scoped.filter((ticket) => ticket.status === "review").length;
-  const columns = app.compact
+  const columns = app.compact || panel
     ? model.TABLE_COLUMNS.filter((column) => column.key === "id" || column.key === "title" || column.key === "status")
     : model.TABLE_COLUMNS;
 
   return v_flex()
     .size_full()
     .min_h(0)
-    .child(ui.header(t, model.pageWord("tickets"), [
-      div().text_size(T.xs).text_color(t.dim)
-        .child(`${scoped.length} gesamt${app.fabricScope ? ` · Fabric ${app.fabricScope}` : ""}`),
-    ], {
+    .child(ui.header(t, model.pageWord("tickets"), panel
+      ? [
+        ui.badge(t, rows.length, t.muted),
+        ui.iconButton(t, {
+          id: "fabric-panel-new",
+          icon: "plus",
+          tooltip: "Neues Ticket (⌘⇧N)",
+          onClick: (cx) => app.requestNewTicket(cx),
+        }),
+        ui.iconButton(t, {
+          id: "fabric-panel-open-tickets",
+          icon: "external",
+          tooltip: "Tickets im Fenster öffnen (⌘⇧F)",
+          onClick: (cx) => app.openInWindow({ page: "tickets" }, cx),
+        }),
+      ]
+      : [
+        div().text_size(T.xs).text_color(t.dim)
+          .child(`${scoped.length} gesamt${app.fabricScope ? ` · Fabric ${app.fabricScope}` : ""}`),
+      ], {
       iconName: "tickets",
-      subtitle: `${open} offen · ${review} in Prüfung · Spaltenkopf sortiert`,
-      compact: app.compact,
+      subtitle: panel
+        ? `${open} offen · ${review} in Prüfung${app.fabricScope ? ` · ${app.fabricScope}` : ""}`
+        : `${open} offen · ${review} in Prüfung · Spaltenkopf sortiert`,
+      compact: app.compact || panel,
     }))
-    .child(filters(app, cx, t))
+    .child(ui.fabricFilters(t, { app, cx, droppedKey: "showDropped", compact: panel }))
     .when(Boolean(app.loadError), (el) => el.child(ui.notice(t, app.loadError)))
     .when(Boolean(app.flash?.text), (el) => el.child(ui.notice(t, app.flash.text, app.flash.level)))
     .child(
@@ -82,7 +98,7 @@ export function renderTicketsPage(app, cx, t) {
               label: "Neues Ticket",
               icon: "plus",
               primary: true,
-              onClick: (cx) => app.openNewTicket(cx),
+              onClick: (cx) => (panel ? app.requestNewTicket(cx) : app.openNewTicket(cx)),
             }),
           })
           : v_flex()
@@ -97,7 +113,8 @@ export function renderTicketsPage(app, cx, t) {
               onSort: (sort) => { app.tableSort = sort; cx.notify(); },
               onRow: (row, cx) => {
                 app.cursorId = row.id;
-                app.navigate("ticket", { id: row.id }, cx);
+                if (panel) app.openInWindow({ page: "ticket", id: row.id }, cx);
+                else app.navigate("ticket", { id: row.id }, cx);
               },
               renderCell: (row, column) => cell(app, t, row, column),
             })),

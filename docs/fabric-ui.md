@@ -11,7 +11,7 @@ Grundlagen: `docs/concept.md`, Vertrag `docs/fabric.md` (Daten, CLI, Abschnitt 3
 | Fläche | Wo | Zweck |
 |---|---|---|
 | **Fabric-Fenster** | `openOverlay({ mod: "fabric", kind: "window", key: "fabric", keep: true, width: 0.86, height: 0.86, props: { view: "app" } })`, Taste `cmd-shift-f`, Knopf in jedem Panel-Kopf | Die Arbeitsfläche, in der alles gepflegt wird |
-| Panel `tickets` | Sidepanel | Schnellzugriff: Liste, kompaktes Detail, Kommentar, Abnahme („Abnehmen“ oder „Nur PR öffnen“ → `fab accept --pr-only`, ohne Merge); Knopf „Im Fenster öffnen“ |
+| Panel `tickets` | Sidepanel (`cmd-shift-1`) | Dieselbe Tickets-Liste wie im Fenster, schmal: Filter (Fabric-Filter, Zuständig, Repo, Verworfen, Suche), sortierbare Spalten ID, Titel, Status; Klick öffnet das Ticket im Fabric-Fenster. Kopf: Anzahl, **+** (Neues Ticket), „Im Fenster öffnen“ |
 | Panel `timeline` | Sidepanel | Zeitverlauf |
 | **Posteingang-Badge** | Kopfzeile des Blocks `fabric-agents` (Mod `fabric-sidebar`) neben „Fabric“ | Zahl der offenen Posteingangs-Einträge; bei 0 ausgeblendet, Klick öffnet die Seite **Posteingang** im Fabric-Fenster |
 | **Fabric-Dienst** | Seitenleiste, Block `fabric-service` (Mod `fabric`, `view: "service"`, `size.px: 0`) in `layouts/fabric.json` | Kopflose, immer eingehängte Instanz: liest den Index rev-gesteuert, meldet neue Posteingangs-Einträge, hört als einzige auf die Kürzel `window`/`new`/`open`/`tickets`/`timeline` und öffnet in der Vorschau das Fenster. Zeichnet nichts (`div().size(0)`) |

@@ -713,7 +713,7 @@ export function filterBar(t, {
 }
 
 /** Gemeinsame Filterleiste für Board und Tickets-Tabelle. */
-export function fabricFilters(t, { app, cx, droppedKey = "showDropped" }) {
+export function fabricFilters(t, { app, cx, droppedKey = "showDropped", compact = false }) {
   const options = model.filterOptions(app.tickets);
   const active = app.assigneeFilter !== "all" || app.repoFilter !== "all"
     || Boolean(app[droppedKey]) || Boolean(app.search.value().trim());
@@ -730,7 +730,7 @@ export function fabricFilters(t, { app, cx, droppedKey = "showDropped" }) {
     onRepo: (value) => { app.repoFilter = value; cx.notify(); },
     onDropped: (value) => { app[droppedKey] = value; cx.notify(); },
     active,
-    compact: Boolean(app.compact),
+    compact: compact || Boolean(app.compact),
     onReset: (cx2) => {
       app.search.set_value("");
       app.assigneeFilter = "all";

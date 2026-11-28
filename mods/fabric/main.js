@@ -22,7 +22,6 @@ import { renderRepos } from "./views/repos.js";
 import { renderWorkflowsPage } from "./views/workflows.js";
 import { renderPipelinesPage } from "./views/pipelines.js";
 import { renderSettings } from "./views/settings.js";
-import { renderTicketsPanel } from "./views/tickets.js";
 import { renderInboxPage } from "./views/inbox.js";
 import { renderCommandsPage } from "./views/commands.js";
 import { renderStatsPage } from "./views/stats.js";
@@ -321,14 +320,6 @@ export default class Fabric extends View {
     this.search.on("focus", (_event, cx) => { this.searchFocused = true; this.fieldFocused = true; this.notifyNow(); });
     this.search.on("blur", (_event, cx) => { this.searchFocused = false; this.fieldFocused = false; this.notifyNow(); });
 
-    this.newInput = InputState.new({ placeholder: "Neues Ticket in einem Satz…" });
-    this.newInput.on("submit", (_event, cx) => {
-      if (this.consumeMentionSubmit("quick", cx)) return;
-      this.createFromPanel(cx);
-    });
-    this.track(this.newInput);
-    this.wireMentions("quick", this.newInput);
-
     this.commentInput = TextareaState.new({ placeholder: "Kommentar … @name weckt", rows: 3 });
     this.commentInput.on("submit", (_event, cx) => {
       if (this.consumeMentionSubmit("comment", cx)) return;
@@ -513,7 +504,6 @@ export default class Fabric extends View {
     switch (field) {
       case "comment": return this.commentInput;
       case "new": return this.newSentence;
-      case "quick": return this.newInput;
       case "title": return this.titleEdit;
       case "wake": return this.wakeText;
       default: return null;
@@ -3164,30 +3154,6 @@ export default class Fabric extends View {
 
   // ---------- Tickets ----------
 
-  async createFromPanel(cx) {
-    if (this.busy) return;
-    const sentence = this.newInput.value().trim();
-    if (!sentence) {
-      this.flash = { level: "error", text: "Bitte einen Satz eingeben." };
-      this.notifyNow();
-      return;
-    }
-    const result = await this.action("new", model.newArgs(sentence, { wake: false }), {
-      success: (r) => {
-        const match = /T-\d+/.exec(r.stdout ?? "");
-        return match ? `Ticket ${match[0]} als Entwurf angelegt.` : "Ticket als Entwurf angelegt.";
-      },
-      after: (r) => {
-        const match = /T-\d+/.exec(r.stdout ?? "");
-        if (match) this.select(match[0], cx);
-      },
-    });
-    if (result.ok) {
-      this.newInput.set_value("");
-      this.clearMentions();
-    }
-  }
-
   openNewTicket(cx) {
     this.guard(() => this.showNewTicket(cx), cx);
   }
@@ -5019,7 +4985,7 @@ export default class Fabric extends View {
     if (this.view === "timeline") return renderTimelinePanel(this, cx, t);
     if (this.view === "switcher") return renderSwitcher(this, cx, t);
     if (this.view === "app") return this.renderWindow(cx, t);
-    return renderTicketsPanel(this, cx, t);
+    return renderTicketsPage(this, cx, t, { panel: true });
   }
 
   renderWindow(cx, t) {
