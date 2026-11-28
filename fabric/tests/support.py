@@ -426,8 +426,13 @@ class FabricCase(unittest.TestCase):
         self._sync_config()
         merged = dict(self.env)
         merged.update(env or {})
+        # FAB_BIN prüft eine andere Umsetzung (heddle) gegen dieselben Tests;
+        # was sie noch nicht kann, gibt sie an diese Python-CLI weiter.
+        binary = os.environ.get("FAB_BIN")
+        if binary:
+            merged.setdefault("HEDDLE_FALLBACK", FAB)
         return subprocess.run(
-            [sys.executable, FAB, *args],
+            [binary, *args] if binary else [sys.executable, FAB, *args],
             cwd=cwd or self.tmp,
             env=merged,
             input=input_text,
