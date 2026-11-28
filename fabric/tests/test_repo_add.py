@@ -176,5 +176,24 @@ class RepoAddTests(FabricCase):
         self.assertFalse(os.path.exists(path))
 
 
+    def test_neues_repo_ohne_tickets_steht_in_fab_repos(self):
+        path = os.path.join(self.tmp, "frisch")
+        self.ok("repo", "add", path, "--team", self.team, "--new", "--from", "mensch")
+        rows = json.loads(self.ok("repos", "--json").stdout)
+        self.assertIn(os.path.realpath(path), [row["path"] for row in rows])
+
+    def test_fab_repos_loest_jeden_pfad_nur_einmal_auf(self):
+        from unittest import mock
+        from fabric.fablib import repos, store
+
+        tickets = [{"id": f"T-{n}", "repo": self.tmp, "status": "doing"} for n in range(20)]
+        with mock.patch.object(store, "all_tickets", return_value=tickets), \
+                mock.patch.object(repos, "_checkout", return_value=self.tmp) as checkout:
+            rows = repos.known()
+        self.assertEqual(rows[0]["open_tickets"], 20)
+        called = [call.args[0] for call in checkout.call_args_list]
+        self.assertEqual(len(called), len(set(called)), "derselbe Pfad zweimal aufgelöst")
+
+
 if __name__ == "__main__":
     unittest.main()

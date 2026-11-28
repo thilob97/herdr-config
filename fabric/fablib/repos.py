@@ -118,18 +118,39 @@ def _read(path):
 
 
 def known(extra=()):
-    """Bekannte Repos aus den Tickets und aus den übergebenen Ordnern."""
+    """Bekannte Repos aus den Tickets, den Team-Repos im Roster und den
+    übergebenen Ordnern.
+
+    Jeder Pfad wird nur einmal aufgelöst: `_checkout` startet bis zu drei
+    git-Prozesse, und viele Tickets teilen sich wenige Repos.
+    """
+    from . import agents
+
+    checkouts = {}
+
+    def checkout(raw):
+        path = os.path.abspath(os.path.expanduser(str(raw)))
+        if path not in checkouts:
+            checkouts[path] = _checkout(path) if os.path.isdir(path) else None
+        return checkouts[path]
+
     tickets_by_root = {}
     for ticket in store.all_tickets():
         repo = ticket.get("repo")
         if not repo:
             continue
-        top = _checkout(repo)
+        top = checkout(repo)
         if top:
             tickets_by_root.setdefault(top, []).append(ticket)
-    for raw in extra or ():
-        path = os.path.abspath(os.path.expanduser(raw))
-        top = _checkout(path) if os.path.isdir(path) else None
+    roster = agents.load(required=False) or {}
+    team_repos = [
+        repo
+        for team in roster.get("teams") or []
+        if isinstance(team, dict)
+        for repo in team.get("repos") or []
+    ]
+    for raw in [*team_repos, *(extra or ())]:
+        top = checkout(raw)
         if top:
             tickets_by_root.setdefault(top, [])
     rows = []
