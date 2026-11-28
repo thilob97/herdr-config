@@ -4102,6 +4102,31 @@ export default class Fabric extends View {
     cx?.notify();
   }
 
+  /** Repos-Seite: Ordner wählen und sofort dem Team zuordnen (fab team edit --repo …). */
+  async addRepoToTeam(name, cx) {
+    this.menu = null;
+    const team = this.teamFor(name);
+    if (!team) return;
+    const folder = await pickFolder({ prompt: `Repo für Team ${name} wählen` });
+    if (!folder) return;
+    const plan = model.teamRepoAddArgs(team, folder);
+    if (plan.error) {
+      this.setError("repo-add", plan.error);
+      this.notifyNow();
+      return;
+    }
+    await this.action("repo-add", plan.args, {
+      success: `${plan.path} zu Team ${name} hinzugefügt.`,
+      after: async () => {
+        await this.loadRoster(cx);
+        this.syncTeamForms();
+        await this.loadRepos(cx);
+        this.selectRepo(plan.path, cx, true);
+      },
+    });
+    this.notifyNow();
+  }
+
   async pickTeamRepo(name, cx) {
     const folder = await pickFolder({ prompt: `Repo für Team ${name} wählen` });
     if (folder) this.addTeamRepo(name, folder, cx);

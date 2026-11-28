@@ -611,27 +611,26 @@ export function alarmButtons(alarm) {
 
 // --- Fabrics: Teamgruppen unter ihrer Fabric --------------------------------
 
-/** Teamgruppen nach Fabric bündeln (Fabric aus `index.teams[].fabric`).
- *  Nur Gruppen mit Zeilen zählen; gibt es darunter nur eine Fabric, bleibt
- *  es bei einem Abschnitt ohne Überschrift (`fabric: null`). `standard`
- *  steht vorn, die übrigen in der Reihenfolge ihres ersten Teams. */
-export function fabricSections(groups = [], teams = []) {
+/** Fabrics mit ihren Teamgruppen für die Seitenleiste: jede Fabric aus
+ *  `fabricList` (auch ohne Agenten), darunter ihre Teamgruppen mit Zeilen.
+ *  Teams ohne bekannte Fabric zählen zu `standard`. */
+export function fabricSections(groups = [], teams = [], list = []) {
   const fabricOf = new Map((Array.isArray(teams) ? teams : [])
     .filter((team) => team && typeof team === "object" && team.name)
     .map((team) => [String(team.name), String(team.fabric || "standard")]));
   const visible = (groups ?? []).filter((group) => group?.rows?.length > 0);
-  const sections = [];
+  const fabrics = (list ?? []).length ? list : [{ name: "standard" }];
+  const sections = fabrics.map((fabric) => ({ ...fabric, fabric: fabric.name, groups: [] }));
   for (const group of visible) {
-    const fabric = fabricOf.get(group.name) ?? "standard";
-    let section = sections.find((entry) => entry.fabric === fabric);
+    const name = fabricOf.get(group.name) ?? "standard";
+    let section = sections.find((entry) => entry.fabric === name);
     if (!section) {
-      section = { fabric, groups: [] };
+      section = { name, fabric: name, groups: [] };
       sections.push(section);
     }
     section.groups.push(group);
   }
-  if (sections.length <= 1) return [{ fabric: null, groups: visible }];
-  return sections.sort((a, b) => Number(b.fabric === "standard") - Number(a.fabric === "standard"));
+  return sections;
 }
 
 /** Fabric-Liste der Seitenleiste aus dem Index: je Fabric offene Tickets,

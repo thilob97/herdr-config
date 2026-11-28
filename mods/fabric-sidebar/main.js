@@ -126,58 +126,35 @@ function teamHeader(t, group, first) {
     .child(div().flex_none().text_size(FONT.xs).text_color(t.dim).child(String(group.count)));
 }
 
-// Fabric-Überschrift über ihren Teams; kräftiger als die Team-Überschrift.
-function fabricHeader(t, section, first) {
-  const count = section.groups.reduce((sum, group) => sum + group.count, 0);
+// Fabric als Überschrift ihrer Teams; Klick setzt den Fabric-Filter und
+// öffnet das Board, ein zweiter Klick auf die aktive Fabric hebt ihn auf.
+function fabricRow(t, fabric, scope, first) {
+  const active = scope === fabric.name;
+  const detail = `${fabric.teams ?? 0} Team${fabric.teams === 1 ? "" : "s"} · ${fabric.open ?? 0} offen · ${fabric.agents ?? 0} Agent${fabric.agents === 1 ? "" : "en"}`;
   return h_flex()
+    .id(`fabric-sidebar-fabric-${fabric.name}`)
     .flex_none()
     .w_full()
-    .when(!first, (el) => el.mt(SPACE.s))
+    .h(26)
+    .when(!first, (el) => el.mt(SPACE.xs))
     .px(SPACE.s)
-    .py(SPACE.xs)
     .gap(SPACE.xs)
     .items_center()
-    .child(div().flex_none().size(6).rounded(3).bg(t.accent))
-    .child(div().flex_1().min_w(0).truncate().text_size(FONT.xs).font_semibold().text_color(t.muted)
-      .child(section.fabric))
-    .child(div().flex_none().text_size(FONT.xs).text_color(t.dim).child(String(count)));
-}
-
-// Fabrics als Liste unter dem Kopf; Klick setzt den Fabric-Filter und öffnet
-// das Fenster (Board), ein zweiter Klick auf die aktive Fabric hebt ihn auf.
-function fabricListView(t, list, scope) {
-  return v_flex()
-    .flex_none()
-    .w_full()
-    .px(SPACE.xs)
-    .pb(SPACE.xs)
-    .gap(2)
-    .children(list.map((fabric) => {
-      const active = scope === fabric.name;
-      const detail = `${fabric.teams} Team${fabric.teams === 1 ? "" : "s"} · ${fabric.open} offen · ${fabric.agents} Agent${fabric.agents === 1 ? "" : "en"}`;
-      return h_flex()
-        .id(`fabric-sidebar-fabric-${fabric.name}`)
-        .w_full()
-        .h(24)
-        .px(SPACE.s)
-        .gap(SPACE.xs)
-        .items_center()
-        .rounded(RADIUS.s)
-        .bg(active ? t.selected : t.surface + "00")
-        .cursor_pointer()
-        .hover((s) => s.bg(active ? t.selected : t.hover))
-        .tooltip(`${fabric.name}: ${detail} · Klick ${active ? "hebt den Filter auf" : "filtert das Fenster"}`)
-        .on_click(() => {
-          setShared("fabric.scope", active ? "" : fabric.name);
-          openRoute({ page: "board" });
-        })
-        .child(div().flex_none().size(6).rounded(3).bg(active ? t.accent : t.border))
-        .child(div().flex_1().min_w(0).truncate().text_size(FONT.s)
-          .text_color(active ? t.foreground : t.muted).child(fabric.name))
-        .when(fabric.agents > 0, (el) => el.child(div().flex_none().text_size(FONT.xs).text_color(t.working)
-          .child(`${fabric.agents} ●`)))
-        .child(div().flex_none().text_size(FONT.xs).text_color(t.dim).child(String(fabric.open)));
-    }));
+    .rounded(RADIUS.s)
+    .bg(active ? t.selected : t.surface + "00")
+    .cursor_pointer()
+    .hover((s) => s.bg(active ? t.selected : t.hover))
+    .tooltip(`${fabric.name}: ${detail} · Klick ${active ? "hebt den Filter auf" : "filtert das Fenster"}`)
+    .on_click(() => {
+      setShared("fabric.scope", active ? "" : fabric.name);
+      openRoute({ page: "board" });
+    })
+    .child(div().flex_none().size(6).rounded(3).bg(active ? t.accent : t.muted))
+    .child(div().flex_1().min_w(0).truncate().text_size(FONT.s).font_semibold()
+      .text_color(active ? t.foreground : t.muted).child(fabric.name))
+    .when((fabric.agents ?? 0) > 0, (el) => el.child(div().flex_none().text_size(FONT.xs).text_color(t.working)
+      .child(`${fabric.agents} ●`)))
+    .child(div().flex_none().text_size(FONT.xs).text_color(t.dim).child(String(fabric.open ?? 0)));
 }
 
 // Farbton je Maschinengruppe; alle Farben kommen aus theme().
@@ -526,13 +503,16 @@ export default class FabricSidebar extends View {
         }
       });
     }
-    // Mehrere Fabrics: Teams stehen unter ihrer Fabric-Überschrift.
-    for (const section of model.fabricSections(groups, this.index?.teams ?? [])) {
-      if (section.fabric) sections.push(fabricHeader(t, section, sections.length === 0));
-      for (const group of section.groups) {
-        sections.push(teamHeader(t, group, sections.length === 0));
-        for (const row of group.rows) sections.push(rowView(t, row));
-      }
+    // Jede Fabric ist Überschrift (Klick filtert das Fenster); ihre Teams und
+    // Agenten stehen eingerückt darunter.
+    const scope = String(shared("fabric.scope") ?? "");
+    const list = model.fabricList(this.index ?? {}, rows);
+    for (const section of model.fabricSections(groups, this.index?.teams ?? [], list)) {
+      sections.push(fabricRow(t, section, scope, sections.length === 0));
+      section.groups.forEach((group, index) => {
+        sections.push(v_flex().w_full().pl(SPACE.s).child(teamHeader(t, group, index === 0)));
+        for (const row of group.rows) sections.push(v_flex().w_full().pl(SPACE.s).child(rowView(t, row)));
+      });
     }
 
     return v_flex()
@@ -563,7 +543,6 @@ export default class FabricSidebar extends View {
               .child(String(rows.length)),
           ),
       )
-      .child(fabricListView(t, model.fabricList(this.index ?? {}, rows), String(shared("fabric.scope") ?? "")))
       .when(alarms.length > 0, (el) => el.child(
         v_flex()
           .flex_none()
@@ -603,16 +582,16 @@ export default class FabricSidebar extends View {
           .w_full()
           .py(SPACE.xs)
           .overflow_y_scrollbar()
+          .children(sections)
           .when(rows.length === 0 && free.cards.length === 0, (el) => el.child(
             v_flex()
               .px(SPACE.m)
               .py(SPACE.s)
               .gap(SPACE.xs)
-              .child(div().text_size(FONT.xs).text_color(t.muted).child("Keine Fabric-Agenten"))
+              .child(div().text_size(FONT.xs).text_color(t.muted).child("Keine Agenten aktiv"))
               .child(div().text_size(FONT.xs).text_color(t.dim)
                 .child("fab dispatch startet einen.")),
-          ))
-          .children(sections),
+          )),
       );
   }
 }

@@ -289,6 +289,28 @@ function detail(app, cx, t) {
     );
 }
 
+// „Hinzufügen“: Team wählen (im Fabric-Filter nur dessen Teams), dann Ordner.
+// Ein Repo gehört der Fabric über sein Team.
+function addRepoButton(app, cx, t) {
+  const teams = model.scopeTeams(app.roster?.teams ?? [], app.fabricScope);
+  return div().flex_none().w(190).child(ui.dropdown(t, {
+    id: "fabric-repos-add",
+    value: "",
+    placeholder: "+ Repo hinzufügen…",
+    options: teams.map((team) => ({
+      value: team.name,
+      label: `zu Team ${team.name}`,
+      detail: model.teamFabric(team),
+    })),
+    open: app.menu === "repos-add",
+    width: 260,
+    scrollHandle: app.dropdownScroll,
+    empty: app.roster ? "Kein Team – erst unter Teams anlegen" : "Teams werden geladen …",
+    onToggle: () => { app.menu = app.menu === "repos-add" ? null : "repos-add"; cx.notify(); },
+    onPick: (name) => cx.spawn(async () => { await app.addRepoToTeam(name, cx); }),
+  }));
+}
+
 export function renderRepos(app, cx, t) {
   const problem = detailProblem(app);
   return v_flex()
@@ -296,6 +318,7 @@ export function renderRepos(app, cx, t) {
     .min_h(0)
     .child(ui.header(t, model.pageWord("repos"), [
       div().text_size(T.xs).text_color(t.dim).child(`${(app.repos ?? []).length} ${(app.repos ?? []).length === 1 ? "Repo" : "Repos"}`),
+      addRepoButton(app, cx, t),
       ui.iconButton(t, {
         id: "fabric-repos-refresh",
         icon: "restart",
@@ -305,6 +328,7 @@ export function renderRepos(app, cx, t) {
     ], { iconName: "repo", subtitle: "Prüfskripte und Lernnotizen je Checkout" }))
     .when(Boolean(app.reposError), (el) => el.child(ui.notice(t, app.reposError)))
     .when(Boolean(app.repoError), (el) => el.child(ui.notice(t, app.repoError)))
+    .when(Boolean(app.errorFor("repo-add")), (el) => el.child(ui.notice(t, app.errorFor("repo-add").text, app.errorFor("repo-add").level)))
     .when(Boolean(problem), (el) => el.child(ui.notice(t, problem.text, problem.level)))
     .child(
       !app.repos

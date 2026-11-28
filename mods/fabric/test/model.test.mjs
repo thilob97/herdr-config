@@ -3351,3 +3351,11 @@ test("Fabric-Bereich: Teams und Repos leuchten unter Fabrics; Repos folgen dem F
   assert.deepEqual(scopeRepos(repos, teams, "arbeit").map((repo) => repo.path), ["/r/web"]);
   assert.deepEqual(scopeRepos(repos, teams, "leer"), []);
 });
+
+test("Repo hinzufügen: bisherige Repos bleiben, Doppelte werden abgelehnt", async () => {
+  const { teamRepoAddArgs } = await import("../model.js");
+  const team = { name: "web", repos: ["/r/a/"] };
+  assert.deepEqual(teamRepoAddArgs(team, "/r/b/").args, ["team", "edit", "web", "--repo", "/r/a", "/r/b", "--from=mensch"]);
+  assert.match(teamRepoAddArgs(team, "/r/a").error, /schon/);
+  assert.match(teamRepoAddArgs(team, "").error, /Ordner/);
+});

@@ -3749,3 +3749,15 @@ export function scopeRepos(repos, teams, scope) {
   const wanted = new Set(scopeTeams(teams, name).flatMap((team) => (team.repos ?? []).map(trim)));
   return list.filter((repo) => wanted.has(trim(repo?.path)));
 }
+
+/** `fab team edit` für „Repo hinzufügen“: bisherige Repos plus das neue.
+ *  Gibt `{error}` zurück, wenn das Repo schon zum Team gehört. */
+export function teamRepoAddArgs(team, path) {
+  const trim = (value) => String(value ?? "").trim().replace(/\/+$/, "");
+  const next = trim(path);
+  if (!team?.name) return { error: "Kein Team gewählt." };
+  if (!next) return { error: "Kein Ordner gewählt." };
+  const repos = (team.repos ?? []).map(trim).filter(Boolean);
+  if (repos.includes(next)) return { error: `${next} gehört schon zu Team ${team.name}.` };
+  return { args: ["team", "edit", team.name, "--repo", ...repos, next, "--from=mensch"], path: next };
+}
