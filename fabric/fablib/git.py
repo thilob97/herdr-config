@@ -63,6 +63,34 @@ def branch(path):
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
+def init_repo(path):
+    """Leeres Git-Repo mit Branch `main` im Ordner `path` anlegen."""
+    result = git(["init", "-b", "main"], path)
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "unbekannter Fehler"
+        raise FabError(f"git init in {path} fehlgeschlagen: {detail}")
+    return path
+
+
+def _config_value(path, key):
+    result = git(["config", "--get", key], path)
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def initial_commit(path, message="Initial commit"):
+    """Leeren ersten Commit anlegen; fehlende Identität gilt nur für diesen Commit."""
+    args = []
+    if not _config_value(path, "user.name"):
+        args += ["-c", "user.name=Fabric"]
+    if not _config_value(path, "user.email"):
+        args += ["-c", "user.email=fabric@localhost"]
+    result = git([*args, "commit", "--allow-empty", "-m", message], path)
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "unbekannter Fehler"
+        raise FabError(f"Erster Commit in {path} fehlgeschlagen: {detail}")
+    return message
+
+
 def dirty(path):
     """Uncommittete Änderungen; unversionierte Dateien blockieren keinen Merge."""
     result = git(["status", "--porcelain", "--untracked-files=no"], path)

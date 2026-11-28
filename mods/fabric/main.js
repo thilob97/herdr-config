@@ -286,6 +286,14 @@ export default class Fabric extends View {
     this.newTeamReviewer = "";
     this.newTeamSessions = null;
     this.newTeamFabric = "";
+    this.repoAddOpen = false;
+    this.repoAddId = 0;
+    this.repoAddMode = "folder";
+    this.repoAddTeam = "";
+    this.repoAddPath = null;
+    this.repoAddParent = null;
+    this.repoAddName = null;
+    this.repoAddInit = true;
     this.newSentence = null;
     this.newRepo = null;
     this.newWake = true;
@@ -1660,6 +1668,7 @@ export default class Fabric extends View {
       if (this.autopilotOpen) { this.autopilotOpen = false; this.notifyNow(); return; }
       if (this.newTeamOpen) { this.closeNewTeam(cx); return; }
       if (this.newFabricOpen) { this.closeNewFabric(cx); return; }
+      if (this.repoAddOpen) { this.closeRepoAdd(cx); return; }
       if (this.newOpen) { this.newOpen = false; this.clearMentions(this.lastCx); this.notifyNow(); return; }
       if (this.blueprintDrawer) { this.closeBlueprintDrawer(cx); return; }
       if (this.contextPreview) { this.closeContextPreview(cx); return; }
@@ -4102,28 +4111,102 @@ export default class Fabric extends View {
     cx?.notify();
   }
 
-  /** Repos-Seite: Ordner wählen und sofort dem Team zuordnen (fab team edit --repo …). */
-  async addRepoToTeam(name, cx) {
+  // ---------- Repo hinzufügen (Repos-Seite) ----------
+
+  openRepoAdd(cx) {
+    this.repoAddId += 1;
+    const id = this.repoAddId;
+    const teams = model.scopeTeams(this.roster?.teams ?? [], this.fabricScope);
+    this.repoAddOpen = true;
     this.menu = null;
-    const team = this.teamFor(name);
-    if (!team) return;
-    const folder = await pickFolder({ prompt: `Repo für Team ${name} wählen` });
+    this.repoAddMode = "folder";
+    this.repoAddTeam = teams[0]?.name ?? "";
+    this.repoAddInit = true;
+    this.setError("repo-add", null);
+    if (this.repoAddPath) this.repoAddPath.release?.();
+    this.repoAddPath = InputState.new({ placeholder: "z. B. ~/Projekte/app" });
+    this.repoAddPath.on("change", (_event, cx) => cx.notify());
+    this.repoAddPath.on("submit", (_event, cx) => this.addRepo(cx));
+    this.track(this.repoAddPath);
+    if (this.repoAddParent) this.repoAddParent.release?.();
+    this.repoAddParent = InputState.new({ placeholder: "z. B. ~/Projekte" });
+    this.repoAddParent.on("change", (_event, cx) => cx.notify());
+    this.track(this.repoAddParent);
+    if (this.repoAddName) this.repoAddName.release?.();
+    this.repoAddName = InputState.new({ placeholder: "z. B. neues-repo" });
+    this.repoAddName.on("change", (_event, cx) => cx.notify());
+    this.repoAddName.on("submit", (_event, cx) => this.addRepo(cx));
+    this.track(this.repoAddName);
+    this.notifyNow();
+    cx?.notify();
+    cx?.timer.after(60, () => {
+      if (id === this.repoAddId && this.repoAddOpen) this.repoAddPath?.focus();
+    });
+  }
+
+  closeRepoAdd(cx) {
+    this.repoAddOpen = false;
+    this.repoAddId += 1;
+    this.repoAddPath = null;
+    this.repoAddParent = null;
+    this.repoAddName = null;
+    this.setError("repo-add", null);
+    this.notifyNow();
+    cx?.notify();
+  }
+
+  async pickRepoAddFolder(cx) {
+    const folder = await pickFolder({ prompt: "Ordner für das Repo wählen" });
     if (!folder) return;
-    const plan = model.teamRepoAddArgs(team, folder);
+    this.repoAddPath?.set_value(folder);
+    this.notifyNow();
+    cx?.notify?.();
+  }
+
+  async pickRepoAddParent(cx) {
+    const folder = await pickFolder({ prompt: "Elternordner für das neue Repo wählen" });
+    if (!folder) return;
+    this.repoAddParent?.set_value(folder);
+    this.notifyNow();
+    cx?.notify?.();
+  }
+
+  /** Repos-Seite: „fab repo add“ mit dem Plan aus dem Dialog; Fehler bleiben im Dialog. */
+  async addRepo(cx) {
+    if (this.busy) return;
+    const teams = model.scopeTeams(this.roster?.teams ?? [], this.fabricScope);
+    const team = teams.some((row) => row.name === this.repoAddTeam)
+      ? this.repoAddTeam
+      : (teams[0]?.name ?? "");
+    const values = {
+      mode: this.repoAddMode,
+      team,
+      path: this.repoAddPath?.value() ?? "",
+      parent: this.repoAddParent?.value() ?? "",
+      name: this.repoAddName?.value() ?? "",
+      init: this.repoAddInit,
+    };
+    const plan = model.repoAddPlan(values);
     if (plan.error) {
       this.setError("repo-add", plan.error);
       this.notifyNow();
       return;
     }
-    await this.action("repo-add", plan.args, {
-      success: `${plan.path} zu Team ${name} hinzugefügt.`,
-      after: async () => {
+    const result = await this.action("repo-add", plan.args, {
+      success: (r) => {
+        const data = parseJson(r.stdout ?? "", null);
+        const word = data?.created ? "neu angelegt" : data?.initialized ? "initialisiert" : "bestehend";
+        return `Repo ${data?.path || plan.path} zu Team ${values.team} hinzugefügt (${word}).`;
+      },
+      after: async (r) => {
+        const data = parseJson(r.stdout ?? "", null);
         await this.loadRoster(cx);
         this.syncTeamForms();
         await this.loadRepos(cx);
-        this.selectRepo(plan.path, cx, true);
+        this.selectRepo(data?.path || plan.path, cx, true);
       },
     });
+    if (result.ok) this.closeRepoAdd(cx);
     this.notifyNow();
   }
 
@@ -5128,7 +5211,7 @@ export default class Fabric extends View {
         },
       }));
     }
-    if (this.newOpen || this.newTeamOpen || this.newFabricOpen || this.modal) overlay.push(renderDialogs(this, cx, t));
+    if (this.newOpen || this.newTeamOpen || this.newFabricOpen || this.repoAddOpen || this.modal) overlay.push(renderDialogs(this, cx, t));
     if (this.imageOpen) overlay.push(ui.imageLightbox(t, { ...this.imageOpen, onClose: () => { this.imageOpen = null; this.notifyNow(); } }));
 
     const root = div()

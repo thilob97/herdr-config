@@ -3352,10 +3352,30 @@ test("Fabric-Bereich: Teams und Repos leuchten unter Fabrics; Repos folgen dem F
   assert.deepEqual(scopeRepos(repos, teams, "leer"), []);
 });
 
-test("Repo hinzufügen: bisherige Repos bleiben, Doppelte werden abgelehnt", async () => {
-  const { teamRepoAddArgs } = await import("../model.js");
-  const team = { name: "web", repos: ["/r/a/"] };
-  assert.deepEqual(teamRepoAddArgs(team, "/r/b/").args, ["team", "edit", "web", "--repo", "/r/a", "/r/b", "--from=mensch"]);
-  assert.match(teamRepoAddArgs(team, "/r/a").error, /schon/);
-  assert.match(teamRepoAddArgs(team, "").error, /Ordner/);
+test("Repo hinzufügen: Plan für Ordner und neues Repo", async () => {
+  const { repoAddPlan, repoChildPath } = await import("../model.js");
+  assert.deepEqual(repoAddPlan({ mode: "folder", team: "web", path: "/r/neu", init: true }), {
+    args: ["repo", "add", "/r/neu", "--team", "web", "--init", "--json", "--from=mensch"],
+    path: "/r/neu",
+  });
+  assert.deepEqual(repoAddPlan({ mode: "folder", team: "web", path: "/r/neu", init: false }).args,
+    ["repo", "add", "/r/neu", "--team", "web", "--json", "--from=mensch"]);
+  assert.deepEqual(repoAddPlan({ mode: "new", team: "web", parent: "/r/", name: "neu" }), {
+    args: ["repo", "add", "/r/neu", "--team", "web", "--new", "--json", "--from=mensch"],
+    path: "/r/neu",
+  });
+  assert.equal(repoChildPath("/r///", "neu"), "/r/neu");
+  assert.equal(repoChildPath("~", "neu"), "~/neu");
+  assert.equal(repoChildPath("/", "neu"), "/neu");
+});
+
+test("Repo hinzufügen: Prüfungen vor dem Anlegen", async () => {
+  const { repoAddPlan } = await import("../model.js");
+  assert.match(repoAddPlan({ mode: "folder", team: "", path: "/r/neu" }).error, /Team/);
+  assert.match(repoAddPlan({ mode: "folder", team: "web", path: "  " }).error, /Ordner/);
+  assert.match(repoAddPlan({ mode: "new", team: "web", parent: "", name: "neu" }).error, /Ort/);
+  assert.match(repoAddPlan({ mode: "new", team: "web", parent: "/r", name: " " }).error, /Namen/);
+  assert.match(repoAddPlan({ mode: "new", team: "web", parent: "/r", name: ".neu" }).error, /Name:/);
+  assert.match(repoAddPlan({ mode: "new", team: "web", parent: "/r", name: "ne u" }).error, /Name:/);
+  assert.equal(repoAddPlan({ mode: "new", team: "web", parent: "/r", name: "a-b_c.d" }).path, "/r/a-b_c.d");
 });

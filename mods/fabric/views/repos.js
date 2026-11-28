@@ -289,26 +289,17 @@ function detail(app, cx, t) {
     );
 }
 
-// „Hinzufügen“: Team wählen (im Fabric-Filter nur dessen Teams), dann Ordner.
-// Ein Repo gehört der Fabric über sein Team.
-function addRepoButton(app, cx, t) {
-  const teams = model.scopeTeams(app.roster?.teams ?? [], app.fabricScope);
-  return div().flex_none().w(190).child(ui.dropdown(t, {
+// „Repo hinzufügen“ öffnet den Dialog; ein Repo gehört der Fabric über sein Team.
+function addRepoButton(app, t) {
+  return ui.button(t, {
     id: "fabric-repos-add",
-    value: "",
-    placeholder: "+ Repo hinzufügen…",
-    options: teams.map((team) => ({
-      value: team.name,
-      label: `zu Team ${team.name}`,
-      detail: model.teamFabric(team),
-    })),
-    open: app.menu === "repos-add",
-    width: 260,
-    scrollHandle: app.dropdownScroll,
-    empty: app.roster ? "Kein Team – erst unter Teams anlegen" : "Teams werden geladen …",
-    onToggle: () => { app.menu = app.menu === "repos-add" ? null : "repos-add"; cx.notify(); },
-    onPick: (name) => cx.spawn(async () => { await app.addRepoToTeam(name, cx); }),
-  }));
+    label: "Repo hinzufügen",
+    icon: "plus",
+    small: true,
+    disabled: Boolean(app.busy),
+    tooltip: "Vorhandenen Ordner übernehmen oder ein neues Repo anlegen",
+    onClick: (cx) => app.openRepoAdd(cx),
+  });
 }
 
 export function renderRepos(app, cx, t) {
@@ -318,7 +309,7 @@ export function renderRepos(app, cx, t) {
     .min_h(0)
     .child(ui.header(t, model.pageWord("repos"), [
       div().text_size(T.xs).text_color(t.dim).child(`${(app.repos ?? []).length} ${(app.repos ?? []).length === 1 ? "Repo" : "Repos"}`),
-      addRepoButton(app, cx, t),
+      addRepoButton(app, t),
       ui.iconButton(t, {
         id: "fabric-repos-refresh",
         icon: "restart",

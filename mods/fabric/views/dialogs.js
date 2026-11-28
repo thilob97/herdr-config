@@ -642,10 +642,138 @@ function knowledgeRemoveDialog(app, cx, t) {
   }, error ? [ui.notice(t, error.text, error.level)] : []);
 }
 
+function repoAddDialog(app, cx, t) {
+  const teams = model.scopeTeams(app.roster?.teams ?? [], app.fabricScope);
+  const team = teams.some((row) => row.name === app.repoAddTeam) ? app.repoAddTeam : (teams[0]?.name ?? "");
+  const mode = app.repoAddMode === "new" ? "new" : "folder";
+  const parent = app.repoAddParent?.value().trim() ?? "";
+  const name = app.repoAddName?.value().trim() ?? "";
+  const preview = parent && name ? model.repoChildPath(parent, name) : "";
+  const plan = model.repoAddPlan({
+    mode,
+    team,
+    path: app.repoAddPath?.value() ?? "",
+    parent,
+    name,
+    init: app.repoAddInit,
+  });
+  const error = app.errorFor("repo-add");
+  const teamOptions = teams.map((row) => ({
+    value: row.name,
+    label: row.name,
+    detail: model.teamFabric(row),
+    selected: row.name === team,
+  }));
+  return ui.modal(t, {
+    title: "Repo hinzufügen",
+    detail: "Ein Repo gehört über sein Team zur Fabric. Einen vorhandenen Ordner übernehmen oder ein neues Git-Repo anlegen.",
+    width: ui.SIZE.modalWide,
+    actions: [
+      ui.button(t, {
+        id: "fabric-repo-add-cancel",
+        label: "Abbrechen",
+        tooltip: "Ohne Hinzufügen schließen (Esc)",
+        onClick: (cx) => app.closeRepoAdd(cx),
+      }),
+      ui.button(t, {
+        id: "fabric-repo-add-submit",
+        label: "Hinzufügen",
+        icon: "plus",
+        primary: true,
+        busy: app.busy === "repo-add",
+        disabled: Boolean(app.busy) || Boolean(plan.error),
+        reason: plan.error || "",
+        tooltip: "Repo dem Team zuordnen (fab repo add)",
+        onClick: (cx) => cx.spawn(async () => { await app.addRepo(cx); }),
+      }),
+    ],
+  }, [
+    v_flex().w_full().gap(S.m)
+      .child(ui.tabs(t, {
+        id: "fabric-repo-add-mode",
+        value: mode,
+        items: [
+          { value: "folder", label: "Ordner hinzufügen" },
+          { value: "new", label: "Neues Repo" },
+        ],
+        onPick: (value) => {
+          app.repoAddMode = value;
+          app.setError("repo-add", null);
+          cx.notify();
+        },
+      }))
+      .child(ui.field(t, "Team", ui.dropdown(t, {
+        id: "fabric-repo-add-team",
+        value: team,
+        placeholder: "Team wählen…",
+        options: teamOptions,
+        open: app.menu === "repo-add-team",
+        width: 280,
+        scrollHandle: app.dropdownScroll,
+        empty: app.roster ? "Kein Team in dieser Fabric" : "Teams werden geladen …",
+        onToggle: () => {
+          app.menu = app.menu === "repo-add-team" ? null : "repo-add-team";
+          cx.notify();
+        },
+        onPick: (value) => {
+          app.menu = null;
+          app.repoAddTeam = value;
+          app.setError("repo-add", null);
+          cx.notify();
+        },
+      }), {
+        hint: teams.length ? null : "Erst unter Teams ein Team anlegen; ohne Team lässt sich kein Repo zuordnen.",
+      }))
+      .when(mode === "folder", (el) => el
+        .child(ui.field(t, "Ordner", h_flex().w_full().gap(S.s).items_center()
+          .child(div().flex_1().min_w(0).child(app.repoAddPath ? ui.input(t, app.repoAddPath) : div()))
+          .child(ui.button(t, {
+            id: "fabric-repo-add-pick",
+            label: "Wählen…",
+            small: true,
+            disabled: Boolean(app.busy),
+            tooltip: "Ordner im Systemdialog wählen",
+            onClick: (cx) => cx.spawn(async () => { await app.pickRepoAddFolder(cx); }),
+          })), {
+          hint: "Ein vorhandener Ordner; der Pfad darf ein Git-Repo sein oder eines werden.",
+        }))
+        .child(ui.checkbox(t, {
+          id: "fabric-repo-add-init",
+          checked: Boolean(app.repoAddInit),
+          label: "Falls nötig als Git-Repo initialisieren",
+          tooltip: "Ohne Häkchen muss der Ordner schon ein Git-Repo sein (--init).",
+          onChange: (checked) => {
+            app.repoAddInit = checked;
+            app.setError("repo-add", null);
+            cx.notify();
+          },
+        })))
+      .when(mode === "new", (el) => el
+        .child(ui.field(t, "Ort", h_flex().w_full().gap(S.s).items_center()
+          .child(div().flex_1().min_w(0).child(app.repoAddParent ? ui.input(t, app.repoAddParent) : div()))
+          .child(ui.button(t, {
+            id: "fabric-repo-add-parent",
+            label: "Wählen…",
+            small: true,
+            disabled: Boolean(app.busy),
+            tooltip: "Elternordner im Systemdialog wählen",
+            onClick: (cx) => cx.spawn(async () => { await app.pickRepoAddParent(cx); }),
+          })), {
+          hint: "Der Elternordner muss schon existieren.",
+        }))
+        .child(ui.field(t, "Name", app.repoAddName ? ui.input(t, app.repoAddName) : div(), {
+          hint: "A–Z, a–z, 0–9, Punkt, _ und -; nicht mit Punkt beginnend.",
+        }))
+        .child(ui.hint(t, preview ? `Wird als ${preview} angelegt.` : "Ort und Name ergeben den Pfad des neuen Repos.")))
+      .when(Boolean(error), (el) => el.child(ui.notice(t, error.text, error.level))),
+  ]);
+}
+
 export function renderDialogs(app, cx, t) {
   if (app.newOpen) return newTicketDialog(app, cx, t);
   if (app.newTeamOpen) return newTeamDialog(app, cx, t);
   if (app.newFabricOpen) return newFabricDialog(app, cx, t);
+  if (app.repoAddOpen) return repoAddDialog(app, cx, t);
   if (!app.modal) return null;
   if (app.modal.kind === "accept") return acceptDialog(app, cx, t);
   if (app.modal.kind === "drop") return dropDialog(app, cx, t);

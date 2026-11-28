@@ -3750,14 +3750,36 @@ export function scopeRepos(repos, teams, scope) {
   return list.filter((repo) => wanted.has(trim(repo?.path)));
 }
 
-/** `fab team edit` für „Repo hinzufügen“: bisherige Repos plus das neue.
- *  Gibt `{error}` zurück, wenn das Repo schon zum Team gehört. */
-export function teamRepoAddArgs(team, path) {
-  const trim = (value) => String(value ?? "").trim().replace(/\/+$/, "");
-  const next = trim(path);
-  if (!team?.name) return { error: "Kein Team gewählt." };
-  if (!next) return { error: "Kein Ordner gewählt." };
-  const repos = (team.repos ?? []).map(trim).filter(Boolean);
-  if (repos.includes(next)) return { error: `${next} gehört schon zu Team ${team.name}.` };
-  return { args: ["team", "edit", team.name, "--repo", ...repos, next, "--from=mensch"], path: next };
+/** Elternordner und Name zu einem Pfad: genau ein Trennzeichen, kein Rest-Schrägstrich. */
+export function repoChildPath(parent, name) {
+  const place = String(parent ?? "").trim();
+  const leaf = String(name ?? "").trim();
+  if (!place) return leaf;
+  const base = place.replace(/\/+$/, "");
+  if (!leaf) return base || "/";
+  return `${base}/${leaf}`;
+}
+
+/** `fab repo add` für „Repo hinzufügen“: Ordner übernehmen oder neues Repo anlegen.
+ *  Gibt `{error}` zurück, solange Team, Ort oder Name fehlen bzw. der Name nicht passt. */
+export function repoAddPlan(form = {}) {
+  const team = String(form.team ?? "").trim();
+  if (!team) return { error: "Kein Team gewählt." };
+  if (form.mode === "new") {
+    const parent = String(form.parent ?? "").trim();
+    if (!parent) return { error: "Keinen Ort gewählt." };
+    const name = String(form.name ?? "").trim();
+    if (!name) return { error: "Keinen Namen angegeben." };
+    if (name.startsWith(".") || !/^[A-Za-z0-9._-]+$/.test(name)) {
+      return { error: "Name: nur A–Z, a–z, 0–9, Punkt, _ und -, nicht mit Punkt beginnend." };
+    }
+    const path = repoChildPath(parent, name);
+    return { args: ["repo", "add", path, "--team", team, "--new", "--json", "--from=mensch"], path };
+  }
+  const path = String(form.path ?? "").trim();
+  if (!path) return { error: "Keinen Ordner gewählt." };
+  return {
+    args: ["repo", "add", path, "--team", team, ...(form.init ? ["--init"] : []), "--json", "--from=mensch"],
+    path,
+  };
 }

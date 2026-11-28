@@ -3821,7 +3821,143 @@ def cmd_repos(args):
     return 0
 
 
+def _repo_add_path(raw, new):
+    """Absoluten Repo-Pfad prüfen; `--new` löst über den vorhandenen Überordner auf."""
+    value = str(raw or "").strip()
+    if not value:
+        raise FabError("Repo-Pfad ist leer")
+    absolute = os.path.abspath(
+        os.path.normpath(os.path.expanduser(value))
+    )
+    if not new:
+        return os.path.realpath(absolute)
+    parent, base = os.path.split(absolute)
+    if not base:
+        raise FabError(f"Repo-Pfad „{raw}“ hat keinen Ordnernamen")
+    if not os.path.isdir(parent):
+        raise FabError(f"Überordner gibt es nicht: {parent}")
+    if os.path.exists(absolute) and not os.path.isdir(absolute):
+        raise FabError(f"{absolute} ist kein Ordner")
+    return os.path.join(os.path.realpath(parent), base)
+
+
+def _repo_add_team(roster, name, path):
+    """Team-Eintrag und dessen Repos prüfen; liefert (Name, Eintrag, Repos)."""
+    team_name = str(name or "").strip()
+    if not team_name:
+        raise FabError("Fehlt: --team NAME")
+    entry = teams.team(roster, team_name)
+    current = [
+        teams.normalize_repo(repo) for repo in (entry.get("repos") or [])
+    ]
+    if path in current:
+        raise FabError(f"Repo „{path}“ gehört schon zu Team {team_name}")
+    owner = teams.repo_owner(roster, path)
+    if owner is not None:
+        raise FabError(
+            f"Repo „{path}“ gehört bereits zu Team {owner.get('name')}"
+        )
+    limit = entry.get("max_sessions")
+    limit = (
+        teams.DEFAULT_MAX_SESSIONS
+        if limit is None
+        else teams.check_sessions(limit)
+    )
+    teams.validate_team(
+        roster,
+        team_name,
+        [*current, path],
+        entry.get("members") or [],
+        entry.get("reviewer"),
+        limit,
+        ignore=team_name,
+    )
+    return team_name, entry, current
+
+
+def _repo_add_apply(new, init, path):
+    """Ordner und Git-Repo vorbereiten; liefert (created, initialized)."""
+    if new:
+        exists = os.path.exists(path)
+        if exists and os.listdir(path):
+            raise FabError(
+                f"{path} ist nicht leer; --new legt nur einen neuen oder leeren "
+                f"Ordner an"
+            )
+        if not exists:
+            try:
+                os.makedirs(path)
+            except OSError as exc:
+                raise FabError(f"Ordner {path} nicht anlegbar: {exc}")
+        git.init_repo(path)
+        git.initial_commit(path)
+        return not exists, True
+    if not os.path.isdir(path):
+        raise FabError(f"Ordner gibt es nicht: {path}")
+    top = git.toplevel(path)
+    if top:
+        top = os.path.realpath(top)
+        if top != path:
+            raise FabError(
+                f"{path} liegt im Repo {top}; wähle dessen Wurzel oder lege "
+                f"mit --new ein eigenes Repo an"
+            )
+        if git.head(path):
+            return False, False
+        if not init:
+            raise FabError(
+                f"{path} ist ein Git-Repo ohne Commit; mit --init den ersten "
+                f"Commit anlegen"
+            )
+        git.initial_commit(path)
+        return False, True
+    if not init:
+        raise FabError(f"{path} ist kein Git-Repo; mit --init initialisieren")
+    git.init_repo(path)
+    git.initial_commit(path)
+    return False, True
+
+
+def cmd_repo_add(args):
+    actor = _require_actor(args)
+    new = bool(args.new)
+    init = bool(args.init)
+    path = _repo_add_path(args.path, new)
+    roster = agents.load()
+    team_name, _entry, current = _repo_add_team(roster, args.team, path)
+    created, initialized = _repo_add_apply(new, init, path)
+    with store.locked():
+        config.edit_team(
+            team_name,
+            repos=[*current, path],
+            actor=actor,
+        )
+    branch = git.branch(path)
+    if args.json:
+        print(json.dumps(
+            {
+                "path": path,
+                "team": team_name,
+                "created": created,
+                "initialized": initialized,
+                "branch": branch,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ))
+        return 0
+    state = (
+        "neu angelegt" if created
+        else "initialisiert" if initialized
+        else "bestehend"
+    )
+    print(f"Repo {path} zu Team {team_name} hinzugefügt ({state})")
+    return 0
+
+
 def cmd_repo(args):
+    if args.action == "add":
+        return cmd_repo_add(args)
     if args.action == "show":
         data = repos.show(args.path)
         if args.json:
@@ -4652,8 +4788,27 @@ def build_parser():
     item.add_argument("--add", nargs="+", metavar="PFAD",
                       help="weitere Ordner, die Git-Wurzeln sind")
 
-    item = command("repo", "Repo-Dateien zeigen, schreiben und testen", cmd_repo)
+    item = command("repo", "Repo-Dateien zeigen, schreiben, testen und Repos anlegen", cmd_repo)
     repo_sub = item.add_subparsers(dest="action", metavar="AKTION", required=True)
+    add_repo = repo_sub.add_parser(
+        "add", help="Repo anlegen oder aufnehmen und einem Team zuordnen",
+        description="Repo anlegen oder aufnehmen und einem Team zuordnen",
+    )
+    add_repo.add_argument("path", metavar="PFAD")
+    add_repo.add_argument("--team", metavar="NAME", required=True,
+                          help="Team, dessen Repos der Ordner zugeordnet wird")
+    add_mode = add_repo.add_mutually_exclusive_group()
+    add_mode.add_argument(
+        "--new", action="store_true",
+        help="neuen Ordner mit Git-Repo auf main anlegen",
+    )
+    add_mode.add_argument(
+        "--init", action="store_true",
+        help="vorhandenen Ordner als Git-Repo initialisieren",
+    )
+    add_repo.add_argument("--json", action="store_true",
+                          help="maschinenlesbare Ausgabe")
+    add_repo.add_argument("--from", dest="from_", metavar="NAME", required=True)
     show_repo = repo_sub.add_parser("show", help="Repo-Dateien zeigen",
                                     description="Repo-Dateien zeigen")
     show_repo.add_argument("path", metavar="PFAD")
