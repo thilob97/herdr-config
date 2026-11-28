@@ -39,6 +39,7 @@ function normalizeIndex(raw) {
     tickets: Array.isArray(raw?.tickets) ? raw.tickets : [],
     roster: Array.isArray(raw?.roster) ? raw.roster : [],
     teams: Array.isArray(raw?.teams) ? raw.teams : [],
+    fabrics: Array.isArray(raw?.fabrics) ? raw.fabrics : [],
     alarm: raw?.alarm ?? null,
   };
 }
@@ -140,6 +141,43 @@ function fabricHeader(t, section, first) {
     .child(div().flex_1().min_w(0).truncate().text_size(FONT.xs).font_semibold().text_color(t.muted)
       .child(section.fabric))
     .child(div().flex_none().text_size(FONT.xs).text_color(t.dim).child(String(count)));
+}
+
+// Fabrics als Liste unter dem Kopf; Klick setzt den Fabric-Filter und öffnet
+// das Fenster (Board), ein zweiter Klick auf die aktive Fabric hebt ihn auf.
+function fabricListView(t, list, scope) {
+  return v_flex()
+    .flex_none()
+    .w_full()
+    .px(SPACE.xs)
+    .pb(SPACE.xs)
+    .gap(2)
+    .children(list.map((fabric) => {
+      const active = scope === fabric.name;
+      const detail = `${fabric.teams} Team${fabric.teams === 1 ? "" : "s"} · ${fabric.open} offen · ${fabric.agents} Agent${fabric.agents === 1 ? "" : "en"}`;
+      return h_flex()
+        .id(`fabric-sidebar-fabric-${fabric.name}`)
+        .w_full()
+        .h(24)
+        .px(SPACE.s)
+        .gap(SPACE.xs)
+        .items_center()
+        .rounded(RADIUS.s)
+        .bg(active ? t.selected : t.surface + "00")
+        .cursor_pointer()
+        .hover((s) => s.bg(active ? t.selected : t.hover))
+        .tooltip(`${fabric.name}: ${detail} · Klick ${active ? "hebt den Filter auf" : "filtert das Fenster"}`)
+        .on_click(() => {
+          setShared("fabric.scope", active ? "" : fabric.name);
+          openRoute({ page: "board" });
+        })
+        .child(div().flex_none().size(6).rounded(3).bg(active ? t.accent : t.border))
+        .child(div().flex_1().min_w(0).truncate().text_size(FONT.s)
+          .text_color(active ? t.foreground : t.muted).child(fabric.name))
+        .when(fabric.agents > 0, (el) => el.child(div().flex_none().text_size(FONT.xs).text_color(t.working)
+          .child(`${fabric.agents} ●`)))
+        .child(div().flex_none().text_size(FONT.xs).text_color(t.dim).child(String(fabric.open)));
+    }));
 }
 
 // Farbton je Maschinengruppe; alle Farben kommen aus theme().
@@ -525,6 +563,7 @@ export default class FabricSidebar extends View {
               .child(String(rows.length)),
           ),
       )
+      .child(fabricListView(t, model.fabricList(this.index ?? {}, rows), String(shared("fabric.scope") ?? "")))
       .when(alarms.length > 0, (el) => el.child(
         v_flex()
           .flex_none()

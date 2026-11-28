@@ -633,3 +633,20 @@ export function fabricSections(groups = [], teams = []) {
   if (sections.length <= 1) return [{ fabric: null, groups: visible }];
   return sections.sort((a, b) => Number(b.fabric === "standard") - Number(a.fabric === "standard"));
 }
+
+/** Fabric-Liste der Seitenleiste aus dem Index: je Fabric offene Tickets,
+ *  Teams und aktive Agenten-Zeilen; `standard` zuerst. */
+export function fabricList(index = {}, rows = []) {
+  const names = Array.isArray(index?.fabrics) && index.fabrics.length ? index.fabrics.map(String) : ["standard"];
+  const teamFabric = new Map((index?.teams ?? []).filter((team) => team?.name)
+    .map((team) => [String(team.name), String(team.fabric || "standard")]));
+  const open = (ticket) => ticket && ticket.status !== "done" && ticket.status !== "dropped";
+  return names
+    .map((name) => ({
+      name,
+      teams: [...teamFabric.values()].filter((fabric) => fabric === name).length,
+      open: (index?.tickets ?? []).filter((ticket) => open(ticket) && ticket.fabric === name).length,
+      agents: (rows ?? []).filter((row) => teamFabric.get(String(row?.team ?? "")) === name).length,
+    }))
+    .sort((a, b) => Number(b.name === "standard") - Number(a.name === "standard"));
+}

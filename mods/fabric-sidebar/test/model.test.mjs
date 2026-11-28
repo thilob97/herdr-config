@@ -622,3 +622,17 @@ test("fabricSections: Teams unter ihrer Fabric, eine Fabric ohne Überschrift", 
   assert.deepEqual(two.map((section) => [section.fabric, section.groups.map((g) => g.name)]),
     [["standard", ["a"]], ["privat", ["p"]]]);
 });
+
+test("fabricList: Fabrics mit Teams, offenen Tickets und Agenten; standard vorn", async () => {
+  const { fabricList } = await import("../model.js");
+  const index = {
+    fabrics: ["privat", "standard"],
+    teams: [{ name: "a" }, { name: "p", fabric: "privat" }],
+    tickets: [{ fabric: "privat", status: "doing" }, { fabric: "privat", status: "done" }, { fabric: "standard", status: "draft" }],
+  };
+  assert.deepEqual(fabricList(index, [{ team: "p" }, { team: "p" }]), [
+    { name: "standard", teams: 1, open: 1, agents: 0 },
+    { name: "privat", teams: 1, open: 1, agents: 2 },
+  ]);
+  assert.deepEqual(fabricList({}, []).map((row) => row.name), ["standard"]);
+});

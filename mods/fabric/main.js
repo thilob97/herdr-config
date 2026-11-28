@@ -1538,6 +1538,9 @@ export default class Fabric extends View {
   }
 
   openRequested(route, cx) {
+    // Die Seitenleiste setzt den Fabric-Filter direkt vor der Anfrage.
+    const scope = String(shared("fabric.scope") ?? "").trim();
+    if (scope !== this.fabricScope) this.setFabricScope(scope, cx);
     const target = normalizeRoute(route);
     this.navigate(target.page, target.page === "ticket" ? { id: target.id } : target, cx);
   }
