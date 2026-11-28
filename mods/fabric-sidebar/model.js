@@ -664,3 +664,39 @@ export function tickDue(lastAttempt, now = Date.now(), interval = TICK_INTERVAL_
   if (!Number.isFinite(stamp) || stamp <= 0) return true;
   return Number(now) - stamp >= interval;
 }
+
+// --- Eingeklappte Fabrics ----------------------------------------------------
+
+/** Geteilter Schlüssel der eingeklappten Fabric-Namen (bleibt über Neustarts). */
+export const COLLAPSED_KEY = "fabric.sidebarCollapsed";
+
+/** Gültige Liste eingeklappter Namen aus dem Shared-State. */
+export function collapsedNames(raw) {
+  return Array.isArray(raw) ? [...new Set(raw.filter((name) => typeof name === "string" && name))] : [];
+}
+
+/** Name ein- oder ausklappen; liefert die neue Liste. */
+export function toggleCollapsed(raw, name) {
+  const list = collapsedNames(raw);
+  return list.includes(name) ? list.filter((entry) => entry !== name) : [...list, name];
+}
+
+/** Stabiler Farbindex je Fabric-Name (0…5), `standard` immer 0. */
+export function fabricTintIndex(name) {
+  if (!name || name === "standard") return 0;
+  let hash = 0;
+  for (const char of String(name)) hash = (hash * 31 + char.codePointAt(0)) >>> 0;
+  return 1 + (hash % 5);
+}
+
+/** Kurzzusammenfassung einer eingeklappten Fabric. */
+export function fabricSummary(fabric) {
+  const parts = [];
+  const teams = fabric?.teams ?? 0;
+  parts.push(`${teams} Team${teams === 1 ? "" : "s"}`);
+  const agents = fabric?.agents ?? 0;
+  parts.push(agents ? `${agents} aktiv` : "ruhig");
+  const open = fabric?.open ?? 0;
+  if (open) parts.push(`${open} offen`);
+  return parts.join(" · ");
+}

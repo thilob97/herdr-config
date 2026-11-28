@@ -652,3 +652,17 @@ test("Tick ist ohne Versuch sofort fällig, sonst nach einer Minute", () => {
   assert.equal(tickDue(NOW - 60_000, NOW), true);
   assert.equal(tickDue("keine Zahl", NOW), true);
 });
+
+test("Eingeklappte Fabrics: umschalten, aufräumen, Zusammenfassung, Farbe", async () => {
+  const { collapsedNames, toggleCollapsed, fabricSummary, fabricTintIndex } = await import("../model.js");
+  assert.deepEqual(collapsedNames(null), []);
+  assert.deepEqual(collapsedNames(["a", "a", 3, ""]), ["a"]);
+  assert.deepEqual(toggleCollapsed(["a"], "b"), ["a", "b"]);
+  assert.deepEqual(toggleCollapsed(["a", "b"], "a"), ["b"]);
+  assert.equal(fabricSummary({ teams: 1, agents: 0, open: 0 }), "1 Team · ruhig");
+  assert.equal(fabricSummary({ teams: 2, agents: 3, open: 4 }), "2 Teams · 3 aktiv · 4 offen");
+  assert.equal(fabricTintIndex("standard"), 0);
+  const index = fabricTintIndex("elric_dev");
+  assert.ok(index >= 1 && index <= 5);
+  assert.equal(fabricTintIndex("elric_dev"), index);
+});

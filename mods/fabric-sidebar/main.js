@@ -119,57 +119,144 @@ function orchestratorBadge(t) {
     .child("Orchestrator");
 }
 
-// Platzhalter-Karte für einen nicht laufenden Orchestrator eines Teams mit Agenten.
+// Platzhalter für einen nicht laufenden Orchestrator eines Teams mit Agenten.
 function stoppedOrchestrator(t, team) {
   return h_flex()
     .flex_none()
-    .ml(SPACE.xs + SPACE.m)
-    .mr(SPACE.xs)
-    .mt(SPACE.xs)
+    .w_full()
     .px(SPACE.s)
     .py(SPACE.xs)
-    .gap(SPACE.xs)
+    .gap(SPACE.s)
     .items_center()
-    .rounded(RADIUS.m)
-    .border_1()
-    .border_color(t.border)
+    .rounded(RADIUS.s)
     .tooltip(`Orchestrator von ${team} läuft nicht`)
-    .child(div().size(SIZE.dot).flex_none().rounded(SIZE.dot / 2).bg(t.dim))
-    .child(orchestratorBadge(t))
-    .child(div().flex_1().min_w(0).truncate().text_size(FONT.xs).text_color(t.dim).child(`${team} · gestoppt`));
+    .child(image(`${SPRITE_DIR}/orchestrator.svg`).size(22).flex_none().opacity(0.45))
+    .child(v_flex().flex_1().min_w(0)
+      .child(div().truncate().text_size(FONT.s).font_semibold().text_color(t.dim).child(team))
+      .child(div().text_size(FONT.xs).text_color(t.dim).child("Orchestrator · gestoppt")));
 }
 
-// Fabric als Überschrift ihrer Teams; Klick setzt den Fabric-Filter und
-// öffnet das Board, ein zweiter Klick auf die aktive Fabric hebt ihn auf.
-function fabricRow(t, fabric, scope, first) {
-  const active = scope === fabric.name;
-  const detail = `${fabric.teams ?? 0} Team${fabric.teams === 1 ? "" : "s"} · ${fabric.open ?? 0} offen · ${fabric.agents ?? 0} Agent${fabric.agents === 1 ? "" : "en"}`;
+// Kleine Zahl-Pille im Fabric-Kopf.
+function pill(t, text, color, tooltip) {
+  return div()
+    .flex_none()
+    .h(SIZE.badge)
+    .px(SPACE.xs + 2)
+    .rounded(SIZE.badge / 2)
+    .bg(color + ALPHA.tint)
+    .text_size(FONT.xs)
+    .font_semibold()
+    .text_color(color)
+    .flex()
+    .items_center()
+    .tooltip(tooltip)
+    .child(text);
+}
+
+// Kopf einer Fabric: Pfeil und Name klappen ein und aus, der Filter-Knopf
+// rechts setzt den Fabric-Filter und öffnet das Board.
+function fabricHeader(t, fabric, { tint, collapsed, active, onToggle }) {
+  const filterTip = active
+    ? "Filter aufheben (Fenster zeigt wieder alle Fabrics)"
+    : `Fenster auf ${fabric.name} filtern und Board öffnen`;
   return h_flex()
     .id(`fabric-sidebar-fabric-${fabric.name}`)
     .flex_none()
-    .h(30)
-    .mx(SPACE.xs)
-    .when(!first, (el) => el.mt(SPACE.s))
+    .w_full()
+    .h(32)
     .px(SPACE.s)
-    .gap(SPACE.xs)
+    .gap(SPACE.s)
     .items_center()
     .rounded(RADIUS.m)
-    .border_1()
-    .border_color(active ? t.accent : t.border)
-    .bg(active ? t.selected : t.raised)
     .cursor_pointer()
-    .hover((s) => s.bg(active ? t.selected : t.hover))
-    .tooltip(`${fabric.name}: ${detail} · Klick ${active ? "hebt den Filter auf" : "filtert das Fenster"}`)
-    .on_click(() => {
-      setShared("fabric.scope", active ? "" : fabric.name);
-      openRoute({ page: "board" });
-    })
-    .child(div().flex_none().size(6).rounded(3).bg(active ? t.accent : t.muted))
-    .child(div().flex_1().min_w(0).truncate().text_size(FONT.s).font_semibold()
-      .text_color(active ? t.foreground : t.muted).child(fabric.name))
-    .when((fabric.agents ?? 0) > 0, (el) => el.child(div().flex_none().text_size(FONT.xs).text_color(t.working)
-      .child(`${fabric.agents} ●`)))
-    .child(div().flex_none().text_size(FONT.xs).text_color(t.dim).child(String(fabric.open ?? 0)));
+    .hover((style) => style.bg(tint + ALPHA.soft))
+    .tooltip(`${fabric.name} · ${model.fabricSummary(fabric)} · Klick ${collapsed ? "klappt auf" : "klappt ein"}`)
+    .on_click((_event, cx) => { cx.stop_propagation(); onToggle(cx); })
+    .child(div().flex_none().text_color(t.dim)
+      .child(svg(`mods/workspace-chrome/${collapsed ? "chevron-right" : "chevron-down"}.svg`).size(SIZE.iconSmall)))
+    .child(div()
+      .flex_none()
+      .size(20)
+      .rounded(RADIUS.s)
+      .bg(tint + ALPHA.tint)
+      .border_1()
+      .border_color(tint + ALPHA.border)
+      .flex()
+      .items_center()
+      .justify_center()
+      .text_size(FONT.xs)
+      .font_semibold()
+      .text_color(tint)
+      .child(fabric.name.slice(0, 1).toUpperCase()))
+    .child(v_flex().flex_1().min_w(0)
+      .child(div().truncate().text_size(FONT.s).font_semibold().text_color(t.foreground).child(fabric.name))
+      .when(collapsed, (el) => el.child(div().truncate().text_size(FONT.xs).text_color(t.dim)
+        .child(model.fabricSummary(fabric)))))
+    .when(!collapsed && (fabric.agents ?? 0) > 0, (el) => el.child(
+      pill(t, `● ${fabric.agents}`, t.working, `${fabric.agents} Sitzung${fabric.agents === 1 ? "" : "en"} aktiv`)))
+    .when(!collapsed && (fabric.open ?? 0) > 0, (el) => el.child(
+      pill(t, String(fabric.open), t.accent, `${fabric.open} offene Ticket${fabric.open === 1 ? "" : "s"}`)))
+    .child(div()
+      .id(`fabric-sidebar-filter-${fabric.name}`)
+      .flex_none()
+      .p(SPACE.xs)
+      .rounded(RADIUS.s)
+      .bg(active ? tint + ALPHA.tint : t.surface + "00")
+      .text_color(active ? tint : t.dim)
+      .cursor_pointer()
+      .hover((style) => style.bg(t.hover).text_color(t.foreground))
+      .tooltip(filterTip)
+      .on_click((_event, cx) => {
+        cx.stop_propagation();
+        setShared("fabric.scope", active ? "" : fabric.name);
+        openRoute({ page: "board" });
+      })
+      .child(svg("mods/fabric/icons/filter.svg").size(SIZE.iconSmall).flex_none()));
+}
+
+// Eine Fabric als getönte Gruppe: Kopf, darunter (aufgeklappt) die
+// Orchestratoren mit ihren Agenten an einer Baumlinie.
+function fabricGroup(t, section, { scope, collapsed, first, onToggle }) {
+  const tint = fabricTint(t, model.fabricTintIndex(section.name));
+  const active = scope === section.name;
+  const body = [];
+  for (const group of section.groups) {
+    if (!group.orchestrator) body.push(stoppedOrchestrator(t, group.name));
+    for (const row of group.rows) {
+      const depth = row.depth + (group.orchestrator ? 0 : 1);
+      body.push(rowView(t, row, { depth, team: group.name, tint }));
+    }
+  }
+  return v_flex()
+    .flex_none()
+    .mx(SPACE.xs)
+    .when(!first, (el) => el.mt(SPACE.s))
+    .p(2)
+    .rounded(RADIUS.l)
+    .border_1()
+    .border_color(active ? tint : tint + ALPHA.border)
+    .bg(tint + ALPHA.faint)
+    .child(fabricHeader(t, section, { tint, collapsed, active, onToggle }))
+    .when(!collapsed, (el) => el.child(
+      v_flex()
+        .w_full()
+        .ml(SPACE.m)
+        .pl(SPACE.xs)
+        .pb(SPACE.xs)
+        .pr(SPACE.m)
+        .gap(2)
+        .border_l(1)
+        .border_color(tint + ALPHA.border)
+        .when(body.length === 0, (inner) => inner.child(div().px(SPACE.s).py(SPACE.xs)
+          .text_size(FONT.xs).text_color(t.dim).child("Keine aktiven Sitzungen")))
+        .children(body),
+    ));
+}
+
+// Farbton je Fabric: ohne Rot und Gelb, die für Fehler und „arbeitet“ stehen.
+function fabricTint(t, index) {
+  const palette = [t.accent, t.ansi5, t.ansi6, t.ansi2, t.ansi4, t.done];
+  return palette[index % palette.length] ?? t.accent;
 }
 
 // Farbton je Maschinengruppe; alle Farben kommen aus theme().
@@ -303,40 +390,37 @@ function metaLine(t, row) {
     .when(Boolean(row.costText), (el) => el.child(div().text_color(t.dim).child(row.costText)));
 }
 
-// Karte einer Sitzung. `indent` rückt unter die Fabric ein: Orchestrator eine
-// Stufe, seine Agenten eine weitere (Fabric → Orchestrator → Agent).
-function rowView(t, row, { indent = 0, team = "" } = {}) {
+// Zeile einer Sitzung in der Fabric-Gruppe. Orchestratoren tragen ihr
+// Sprite und den Teamnamen, Agenten hängen eine Stufe tiefer (`depth`).
+function rowView(t, row, { depth = 0, team = "", tint = t.accent } = {}) {
+  const status = statusColor(t, row.status);
   return h_flex()
     .id(`fabric-side-${row.address}`)
     .flex_none()
-    .ml(SPACE.xs + indent * SPACE.m)
-    .mr(SPACE.xs)
-    .mt(SPACE.xs)
-    .px(SPACE.s)
+    .w_full()
+    .pl(SPACE.xs + depth * SPACE.m)
+    .pr(SPACE.xs)
     .py(SPACE.xs)
-    .gap(SPACE.xs)
+    .gap(SPACE.s)
     .items_center()
-    .rounded(RADIUS.m)
-    .border_1()
-    .border_color(t.border)
+    .rounded(RADIUS.s)
     .cursor_pointer()
-    .hover((style) => style.bg(t.hover))
-    .tooltip(row.orchestrator ? "Orchestrator öffnen" : `${row.name} öffnen`)
+    .hover((style) => style.bg(tint + ALPHA.soft))
+    .tooltip(row.orchestrator ? `Orchestrator ${team} öffnen` : `${row.name} öffnen`)
     .on_click(() => run("agent.focus", { terminal: row.address }))
-    .child(div().size(SIZE.dot).flex_none().rounded(SIZE.dot / 2).bg(statusColor(t, row.status)))
+    .child(div().relative().flex_none()
+      .child(image(`${SPRITE_DIR}/${row.orchestrator ? "orchestrator" : "agent-a"}.svg`).size(22))
+      .child(div().absolute().right(-1).bottom(-1).size(SIZE.dot).rounded(SIZE.dot / 2)
+        .border_1().border_color(t.background).bg(status)))
     .child(
-      v_flex().flex_1().min_w(0).gap(SPACE.xs)
-        .child(
-          h_flex().gap(SPACE.xs).items_center().min_w(0)
-            .when(row.orchestrator, (el) => el.child(orchestratorBadge(t))
-              .when(Boolean(team), (inner) => inner.child(div().flex_1().min_w(0).truncate()
-                .text_size(FONT.xs).text_color(t.dim).child(team))))
-            .when(!row.orchestrator, (el) => el
-              .child(div().flex_1().min_w(0).truncate().text_size(FONT.s).child(row.title))),
-        )
-        .child(metaLine(t, row)),
-    )
-    .when(Boolean(row.ticket), (el) => el.child(ticketChip(t, row.ticket)));
+      v_flex().flex_1().min_w(0)
+        .child(h_flex().gap(SPACE.xs).items_center().min_w(0)
+          .child(div().flex_1().min_w(0).truncate().text_size(FONT.s)
+            .when(row.orchestrator, (el) => el.font_semibold())
+            .child(row.orchestrator ? (team || "Orchestrator") : row.title))
+          .when(Boolean(row.ticket), (el) => el.child(ticketChip(t, row.ticket))))
+        .child(metaLine(t, row.orchestrator ? { ...row, role: "Orchestrator" } : row)),
+    );
 }
 
 // Andere Mods (agents-filtered) bekommen die Kartenadressen nur über den
@@ -571,22 +655,19 @@ export default class FabricSidebar extends View {
         }
       });
     }
-    // Jede Fabric ist Überschrift (Klick filtert das Fenster); ihre Teams und
-    // Agenten stehen eingerückt darunter.
+    // Jede Fabric ist eine einklappbare Gruppe; Orchestratoren und Agenten
+    // hängen darunter an einer Baumlinie.
     const scope = String(shared("fabric.scope") ?? "");
+    const collapsed = model.collapsedNames(shared(model.COLLAPSED_KEY));
     const list = model.fabricList(this.index ?? {}, rows);
-    for (const section of model.fabricSections(groups, this.index?.teams ?? [], list)) {
-      sections.push(fabricRow(t, section, scope, sections.length === 0));
-      for (const group of section.groups) {
-        // Ohne laufenden Orchestrator steht ein Platzhalter, damit die Agenten
-        // trotzdem eine Stufe unter „ihrem“ Orchestrator hängen.
-        const shift = group.orchestrator ? 1 : 2;
-        if (!group.orchestrator) sections.push(stoppedOrchestrator(t, group.name));
-        for (const row of group.rows) {
-          sections.push(rowView(t, row, { indent: row.depth + shift, team: group.name }));
-        }
-      }
-    }
+    model.fabricSections(groups, this.index?.teams ?? [], list).forEach((section, index) => {
+      sections.push(fabricGroup(t, section, {
+        scope,
+        collapsed: collapsed.includes(section.name),
+        first: index === 0 && free.cards.length === 0,
+        onToggle: () => setShared(model.COLLAPSED_KEY, model.toggleCollapsed(shared(model.COLLAPSED_KEY), section.name)),
+      }));
+    });
 
     return v_flex()
       .size_full()
@@ -690,15 +771,6 @@ export default class FabricSidebar extends View {
           .py(SPACE.xs)
           .overflow_y_scrollbar()
           .children(sections)
-          .when(rows.length === 0 && free.cards.length === 0, (el) => el.child(
-            v_flex()
-              .px(SPACE.m)
-              .py(SPACE.s)
-              .gap(SPACE.xs)
-              .child(div().text_size(FONT.xs).text_color(t.muted).child("Keine Agenten aktiv"))
-              .child(div().text_size(FONT.xs).text_color(t.dim)
-                .child("fab dispatch startet einen.")),
-          )),
       );
   }
 }
