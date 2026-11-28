@@ -111,19 +111,24 @@ function orchestratorBadge(t) {
     .child("Orchestrator");
 }
 
-// Team-Überschrift: dezent, mit Anzahl; nur die erste Gruppe ohne Trennlinie.
-function teamHeader(t, group, first) {
+// Platzhalter-Karte für einen nicht laufenden Orchestrator eines Teams mit Agenten.
+function stoppedOrchestrator(t, team) {
   return h_flex()
     .flex_none()
-    .w_full()
-    .when(!first, (el) => el.mt(SPACE.xs).pt(SPACE.xs).border_t(1).border_color(t.border))
+    .ml(SPACE.xs + SPACE.m)
+    .mr(SPACE.xs)
+    .mt(SPACE.xs)
     .px(SPACE.s)
-    .pb(SPACE.xs)
+    .py(SPACE.xs)
     .gap(SPACE.xs)
     .items_center()
-    .child(div().flex_1().min_w(0).truncate().text_size(FONT.xs).font_semibold().text_color(t.dim)
-      .child(group.name))
-    .child(div().flex_none().text_size(FONT.xs).text_color(t.dim).child(String(group.count)));
+    .rounded(RADIUS.m)
+    .border_1()
+    .border_color(t.border)
+    .tooltip(`Orchestrator von ${team} läuft nicht`)
+    .child(div().size(SIZE.dot).flex_none().rounded(SIZE.dot / 2).bg(t.dim))
+    .child(orchestratorBadge(t))
+    .child(div().flex_1().min_w(0).truncate().text_size(FONT.xs).text_color(t.dim).child(`${team} · gestoppt`));
 }
 
 // Fabric als Überschrift ihrer Teams; Klick setzt den Fabric-Filter und
@@ -134,14 +139,16 @@ function fabricRow(t, fabric, scope, first) {
   return h_flex()
     .id(`fabric-sidebar-fabric-${fabric.name}`)
     .flex_none()
-    .w_full()
-    .h(26)
-    .when(!first, (el) => el.mt(SPACE.xs))
+    .h(30)
+    .mx(SPACE.xs)
+    .when(!first, (el) => el.mt(SPACE.s))
     .px(SPACE.s)
     .gap(SPACE.xs)
     .items_center()
-    .rounded(RADIUS.s)
-    .bg(active ? t.selected : t.surface + "00")
+    .rounded(RADIUS.m)
+    .border_1()
+    .border_color(active ? t.accent : t.border)
+    .bg(active ? t.selected : t.raised)
     .cursor_pointer()
     .hover((s) => s.bg(active ? t.selected : t.hover))
     .tooltip(`${fabric.name}: ${detail} · Klick ${active ? "hebt den Filter auf" : "filtert das Fenster"}`)
@@ -288,17 +295,22 @@ function metaLine(t, row) {
     .when(Boolean(row.costText), (el) => el.child(div().text_color(t.dim).child(row.costText)));
 }
 
-function rowView(t, row) {
+// Karte einer Sitzung. `indent` rückt unter die Fabric ein: Orchestrator eine
+// Stufe, seine Agenten eine weitere (Fabric → Orchestrator → Agent).
+function rowView(t, row, { indent = 0, team = "" } = {}) {
   return h_flex()
     .id(`fabric-side-${row.address}`)
-    .w_full()
     .flex_none()
-    .pl(SPACE.s + row.depth * SPACE.m)
-    .pr(SPACE.s)
+    .ml(SPACE.xs + indent * SPACE.m)
+    .mr(SPACE.xs)
+    .mt(SPACE.xs)
+    .px(SPACE.s)
     .py(SPACE.xs)
     .gap(SPACE.xs)
     .items_center()
-    .rounded(RADIUS.s)
+    .rounded(RADIUS.m)
+    .border_1()
+    .border_color(t.border)
     .cursor_pointer()
     .hover((style) => style.bg(t.hover))
     .tooltip(row.orchestrator ? "Orchestrator öffnen" : `${row.name} öffnen`)
@@ -308,7 +320,9 @@ function rowView(t, row) {
       v_flex().flex_1().min_w(0).gap(SPACE.xs)
         .child(
           h_flex().gap(SPACE.xs).items_center().min_w(0)
-            .when(row.orchestrator, (el) => el.child(orchestratorBadge(t)))
+            .when(row.orchestrator, (el) => el.child(orchestratorBadge(t))
+              .when(Boolean(team), (inner) => inner.child(div().flex_1().min_w(0).truncate()
+                .text_size(FONT.xs).text_color(t.dim).child(team))))
             .when(!row.orchestrator, (el) => el
               .child(div().flex_1().min_w(0).truncate().text_size(FONT.s).child(row.title))),
         )
@@ -509,10 +523,15 @@ export default class FabricSidebar extends View {
     const list = model.fabricList(this.index ?? {}, rows);
     for (const section of model.fabricSections(groups, this.index?.teams ?? [], list)) {
       sections.push(fabricRow(t, section, scope, sections.length === 0));
-      section.groups.forEach((group, index) => {
-        sections.push(v_flex().w_full().pl(SPACE.s).child(teamHeader(t, group, index === 0)));
-        for (const row of group.rows) sections.push(v_flex().w_full().pl(SPACE.s).child(rowView(t, row)));
-      });
+      for (const group of section.groups) {
+        // Ohne laufenden Orchestrator steht ein Platzhalter, damit die Agenten
+        // trotzdem eine Stufe unter „ihrem“ Orchestrator hängen.
+        const shift = group.orchestrator ? 1 : 2;
+        if (!group.orchestrator) sections.push(stoppedOrchestrator(t, group.name));
+        for (const row of group.rows) {
+          sections.push(rowView(t, row, { indent: row.depth + shift, team: group.name }));
+        }
+      }
     }
 
     return v_flex()
