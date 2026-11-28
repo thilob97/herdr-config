@@ -106,8 +106,19 @@
       ],
       "reviewer": "ada",
       "max_sessions": 10,
-      "brief": ""
+      "brief": "",
+      "fabric": "standard"
     }
   ],
-  "max_sessions_total": 10
+  "max_sessions_total": 10,
+  "fabrics": [
+    {
+      "name": "standard",
+      "note": ""
+    },
+    {
+      "name": "test",
+      "note": ""
+    }
+  ]
 }
