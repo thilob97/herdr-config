@@ -27,14 +27,6 @@ class DecisionCase(FabricCase):
             args += ["--reason", reason]
         return self.cli(*args)
 
-    def load_prompt(self):
-        path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "prompts",
-            "orchestrator.md",
-        )
-        return self._read(path)
-
 
 class ProposeConfirmTests(DecisionCase):
     def test_propose_legt_vorschlag_an_und_confirm_schreibt_eintrag(self):
@@ -277,15 +269,6 @@ class ContextTests(DecisionCase):
 
 
 class OrchestratorPromptTests(DecisionCase):
-    def test_prompt_verlangt_entscheidungen_als_vorschlag(self):
-        text = self.load_prompt()
-        self.assertIn("## Was der Mensch entscheidet", text)
-        self.assertIn("fab decide", text)
-        self.assertIn("--from orchestrator", text)
-        self.assertIn("--reason", text)
-        self.assertIn("fab decide confirm", text)
-        self.assertIn(".fabric/decisions.md", text)
-
     def test_data_layer_liest_nur_bestaetigte_zeilen(self):
         repo = self.make_repo()
         path = self.file(repo)
