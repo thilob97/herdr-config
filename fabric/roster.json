@@ -108,6 +108,30 @@
       "max_sessions": 10,
       "brief": "",
       "fabric": "standard"
+    },
+    {
+      "name": "elricdev",
+      "fabric": "elric_dev",
+      "repos": [
+        "/Users/thilo/Developer/elric-dev-website"
+      ],
+      "orchestrator": {
+        "argv": [
+          "omp",
+          "--approval-mode=yolo"
+        ],
+        "prompt": "prompts/orchestrator-elricdev.md"
+      },
+      "members": [
+        {
+          "blueprint": "zap"
+        },
+        {
+          "blueprint": "ada"
+        }
+      ],
+      "reviewer": "ada",
+      "max_sessions": 4
     }
   ],
   "max_sessions_total": 10,
