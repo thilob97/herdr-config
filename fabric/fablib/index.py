@@ -290,6 +290,7 @@ def _teams(roster):
             {
                 "name": str(entry["name"]),
                 "fabric": teams.fabric_of_team(entry),
+                "repos": [str(repo) for repo in entry.get("repos") or []],
                 "reviewer": str(entry.get("reviewer") or ""),
                 "max_sessions": limit,
                 "orchestrator": teams.orchestrator_config(entry),

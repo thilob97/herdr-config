@@ -1736,8 +1736,26 @@ export default class Fabric extends View {
       assignee: this.assigneeFilter,
       repo: this.repoFilter,
       includeDropped: this.showDropped,
-      fabric: this.fabricScope,
+      fabric: this.view === "tickets" ? this.panelScope() : this.fabricScope,
     };
+  }
+
+  /** Fabric des fokussierten Terminals bzw. Space (über die Team-Repos). */
+  focusedFabric() {
+    const focus = focused();
+    const folder = focus?.cwd
+      ?? spaces().find((space) => space.id === focus?.space)?.folder
+      ?? "";
+    return model.fabricForPath(this.index?.teams ?? [], folder);
+  }
+
+  /** Wirksamer Fabric-Filter des Tickets-Panels. */
+  panelScope() {
+    return model.panelFabricScope({
+      global: this.fabricScope,
+      auto: this.focusedFabric(),
+      override: this.panelScopeOverride,
+    });
   }
 
   saveActive(cx) {

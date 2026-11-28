@@ -3389,3 +3389,22 @@ test("alte Anhangspfade zeigen auf den Cache-Pfad des Lesemodells", () => {
   assert.equal(imageRefs("![bild](data/fabric/cache/attachments/T-12/1-bild.png)")[0].path,
     "data/fabric/cache/attachments/T-12/1-bild.png");
 });
+
+test("Tickets-Panel: Fabric aus dem fokussierten Pfad, globaler Filter gewinnt", async () => {
+  const { fabricForPath, panelFabricScope } = await import("../model.js");
+  const teams = [
+    { name: "web", fabric: "arbeit", repos: ["/r/web/"] },
+    { name: "web-docs", fabric: "doku", repos: ["/r/web/docs"] },
+    { name: "alt", repos: ["/r/alt"] },
+  ];
+  assert.equal(fabricForPath(teams, "/r/web/src"), "arbeit");
+  assert.equal(fabricForPath(teams, "/r/web/docs/a"), "doku", "längster Treffer");
+  assert.equal(fabricForPath(teams, "/r/webshop"), "", "kein Präfix-Fehltreffer");
+  assert.equal(fabricForPath(teams, "/r/alt"), "standard");
+  assert.equal(fabricForPath(teams, null), "");
+  assert.equal(fabricForPath(teams, "/Users/x/.herdr/worktrees/web/fab-T-1-foo"), "arbeit", "Ticket-Worktree");
+  assert.equal(fabricForPath(teams, "/Users/x/.herdr/worktrees/fremd/zweig"), "");
+  assert.equal(panelFabricScope({ global: "", auto: "arbeit" }), "arbeit");
+  assert.equal(panelFabricScope({ global: "doku", auto: "arbeit" }), "doku");
+  assert.equal(panelFabricScope({ global: "", auto: "arbeit", override: "all" }), "");
+});

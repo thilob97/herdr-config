@@ -42,13 +42,31 @@ function cell(app, t, ticket, column) {
     .child(String(ticket.comment_count ?? 0));
 }
 
+/** Fabric-Chip im Panel: zeigt, worauf gefiltert ist; Klick schaltet
+ *  zwischen „Alle“ und der Fabric des fokussierten Ortes. */
+function panelScopeChip(app, t) {
+  const scope = app.panelScope();
+  const auto = app.focusedFabric();
+  const source = app.fabricScope ? "Filter aus der Seitenleiste" : auto ? "aus dem fokussierten Space" : "";
+  const canToggle = !app.fabricScope && Boolean(auto);
+  return ui.chip(t, scope || "Alle Fabrics", scope ? t.accent : t.dim, "fabric-panel-scope", {
+    tooltip: canToggle
+      ? (scope ? `Fabric ${scope} ${source} · Klick zeigt alle` : `Alle Fabrics · Klick filtert auf ${auto}`)
+      : (scope ? `Fabric ${scope} · ${source}` : "Kein Fabric-Filter"),
+    onClick: canToggle
+      ? (cx) => { app.panelScopeOverride = app.panelScopeOverride === "all" ? null : "all"; cx.notify(); }
+      : null,
+  });
+}
+
 /** Tickets-Liste. `panel`: dieselbe Liste schmal im rechten Panel – drei
  *  Spalten, Klick öffnet das Ticket im Fabric-Fenster. */
 export function renderTicketsPage(app, cx, t, { panel = false } = {}) {
   const filtersValue = { ...app.filters(), includeDropped: app.showDropped };
   const rows = model.sortTickets(model.filterTickets(app.tickets, filtersValue), app.tableSort)
     .map((ticket) => ({ ...ticket, __selected: app.cursorId === ticket.id }));
-  const scoped = model.fabricScopeTickets(app.tickets, app.fabricScope);
+  const scope = panel ? app.panelScope() : app.fabricScope;
+  const scoped = model.fabricScopeTickets(app.tickets, scope);
   const open = scoped.filter((ticket) => ticket.status !== "done" && ticket.status !== "dropped").length;
   const review = scoped.filter((ticket) => ticket.status === "review").length;
   const columns = app.compact || panel
@@ -60,6 +78,7 @@ export function renderTicketsPage(app, cx, t, { panel = false } = {}) {
     .min_h(0)
     .child(ui.header(t, model.pageWord("tickets"), panel
       ? [
+        panelScopeChip(app, t),
         ui.badge(t, rows.length, t.muted),
         ui.iconButton(t, {
           id: "fabric-panel-new",
@@ -80,7 +99,7 @@ export function renderTicketsPage(app, cx, t, { panel = false } = {}) {
       ], {
       iconName: "tickets",
       subtitle: panel
-        ? `${open} offen · ${review} in Prüfung${app.fabricScope ? ` · ${app.fabricScope}` : ""}`
+        ? `${open} offen · ${review} in Prüfung`
         : `${open} offen · ${review} in Prüfung · Spaltenkopf sortiert`,
       compact: app.compact || panel,
     }))

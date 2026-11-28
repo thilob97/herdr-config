@@ -3790,3 +3790,40 @@ export function repoAddPlan(form = {}) {
     path,
   };
 }
+
+/** Fabric zu einem Pfad: das Team, in dessen Repo der Pfad liegt (längster
+ *  Treffer gewinnt), liefert seine Fabric; sonst "". Für das Tickets-Panel,
+ *  das sich nach dem fokussierten Terminal bzw. Space richtet. */
+export function fabricForPath(teams, path) {
+  const target = String(path ?? "").replace(/\/+$/, "");
+  if (!target) return "";
+  let best = { length: -1, fabric: "" };
+  for (const team of teams ?? []) {
+    for (const raw of team?.repos ?? []) {
+      const repo = String(raw ?? "").replace(/\/+$/, "");
+      if (!repo) continue;
+      if ((target === repo || target.startsWith(`${repo}/`)) && repo.length > best.length) {
+        best = { length: repo.length, fabric: String(team.fabric || "standard") };
+      }
+    }
+  }
+  if (best.fabric) return best.fabric;
+  // Ticket-Worktrees liegen unter ~/.herdr/worktrees/<Repo-Name>/<Branch>:
+  // über den Ordnernamen zum Team-Repo gleichen Namens.
+  const match = /\/\.herdr\/worktrees\/([^/]+)(\/|$)/.exec(target);
+  if (!match) return "";
+  for (const team of teams ?? []) {
+    for (const raw of team?.repos ?? []) {
+      const name = String(raw ?? "").replace(/\/+$/, "").split("/").pop();
+      if (name === match[1]) return String(team.fabric || "standard");
+    }
+  }
+  return "";
+}
+
+/** Fabric-Filter des Tickets-Panels: ein gesetzter globaler Filter gewinnt,
+ *  sonst die Fabric des fokussierten Ortes; `override` "all" zeigt alles. */
+export function panelFabricScope({ global = "", auto = "", override = null } = {}) {
+  if (override === "all") return "";
+  return String(global || auto || "");
+}
