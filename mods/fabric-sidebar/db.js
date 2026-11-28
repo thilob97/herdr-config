@@ -1,10 +1,14 @@
 // Lesezugriff auf fabric.db. Die Seitenleiste liest nur die fertigen Modelle
 // (`read_models`) und den Änderungszähler (`meta.rev`); geschrieben wird
-// ausschließlich in `fab`. `/usr/bin/sqlite3` läuft mit `-readonly -json` und
+// ausschließlich in `fab`. `/usr/bin/sqlite3` läuft mit `-json` und `PRAGMA query_only` und
 // liefert ein JSON-Array, bei leerem Ergebnis nichts. Reine Teile bleiben ohne
 // "herdr"-Import testbar.
 
 export const SQLITE = "/usr/bin/sqlite3";
+// Nicht `-readonly`: Bei einer WAL-Datenbank ohne offene -wal-Datei scheitert
+// das Öffnen dann mit „unable to open database file (14)“. `query_only`
+// verbietet Schreiben ebenso, `.timeout` wartet kurz auf Schreiber.
+export const SQLITE_ARGS = ["-json", "-cmd", ".timeout 3000", "-cmd", "PRAGMA query_only=ON"];
 
 /** SQL-Stringliteral; nur so gebaute Werte dürfen in Abfragen stehen. */
 export function sqlQuote(value) {
@@ -23,7 +27,7 @@ export function parseRows(stdout) {
 /** Bindet die sqlite3-Aufrufe an `run` (herdrs `exec`) und liefert die Leser. */
 export function createReader(run) {
   async function queryJson(dbPath, sql) {
-    const result = await run(SQLITE, ["-readonly", "-json", dbPath, sql]);
+    const result = await run(SQLITE, [...SQLITE_ARGS, dbPath, sql]);
     const code = Number(result?.code ?? 0);
     if (code !== 0) {
       const detail = String(result?.stderr ?? "").trim();

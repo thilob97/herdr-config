@@ -51,7 +51,7 @@ test("createReader liest read_models, meta und Log über sqlite3", async () => {
   assert.equal(calls.length, 3);
   for (const call of calls) {
     assert.equal(call.command, "/usr/bin/sqlite3");
-    assert.deepEqual(call.args.slice(0, 3), ["-readonly", "-json", "/x/fabric.db"]);
+    assert.deepEqual(call.args.slice(0, 6), ["-json", "-cmd", ".timeout 3000", "-cmd", "PRAGMA query_only=ON", "/x/fabric.db"]);
   }
   assert.match(calls[0].args[3], /WHERE key = 'index'/);
   assert.match(calls[1].args[3], /meta/);

@@ -48,7 +48,7 @@ Tabellen mit Sonderrolle:
 - `prompts(path, text)` – Prompttexte unter dem im Roster genannten Pfad, z. B. `prompts/zap.md`.
 - `templates(name, text)` – Ticketvorlagen (`bug`, `feature`, `refactor`, `chore`, eigene).
 
-Die gesamte Datenhaltung läuft über die schmale Schnittstelle in `fabric/fablib/store.py`; kein anderes Modul öffnet `fabric.db`. Mod und Seitenleiste lesen nur (`/usr/bin/sqlite3 -readonly -json`), geschrieben wird ausschließlich von `fab`.
+Die gesamte Datenhaltung läuft über die schmale Schnittstelle in `fabric/fablib/store.py`; kein anderes Modul öffnet `fabric.db`. Mod und Seitenleiste lesen nur (`/usr/bin/sqlite3 -json` mit `PRAGMA query_only=ON`), geschrieben wird ausschließlich von `fab`.
 
 - **Zeit.** Alle Uhrleser (`store.now_ms()`, Kosten, Liegezeiten, Vorschau, Sicherung) nutzen die zentrale Uhr in `fabric/fablib/clock.py`. Ohne `FAB_NOW` gilt die echte Uhr; `FAB_NOW` (Epoch-Millisekunden oder ISO 8601, ohne Zone lokal) friert sie für Tests ein.
 - **Eine Änderung = eine Transaktion.** Ticket, Ereignis, Zähler und die betroffenen Lesemodelle werden gemeinsam festgeschrieben oder gar nicht; `meta.rev` zählt im selben Commit. Ein abgebrochener Schreibvorgang hinterlässt keinen halben Zustand.
@@ -517,7 +517,7 @@ Ein einziger Mod, mehrfach im Layout, Ansicht über `props().view`:
 | `inbox` | `index.inbox`, neueste oben. Klick → `setShared("fabric.selected", id)` und Ticket-Ansicht zeigen. Die Zahl hängt als Badge am Kopf. |
 | `timeline` | Ereignisse aus `index.events` als chronologischer Feed, neueste oben und nach Tagen gruppiert. Je Zeile: Akteur, Satz („weckte ada“, „änderte den Status“, „urteilte“), Ticket-ID, Uhrzeit, Art-Punkt; `wake` nennt das Ziel im Satz. Die Auswahl grenzt auf ein Ticket ein, „Alle“ zeigt wieder alle. Klick auf eine Zeile wählt das Ticket. |
 
-- Der Mod liest die Lesemodelle direkt aus `fabric.db` (`exec /usr/bin/sqlite3 -readonly -json`, Schlüssel `index` und `ticket:<ID>`) und pollt `meta.rev`; ohne Änderung lädt er nichts neu.
+- Der Mod liest die Lesemodelle direkt aus `fabric.db` (`exec /usr/bin/sqlite3 -json`, `PRAGMA query_only=ON`, Schlüssel `index` und `ticket:<ID>`) und pollt `meta.rev`; ohne Änderung lädt er nichts neu.
 - Solange der Inbox-Block existiert (Layout `fabric`), ruft der Mod jede Minute `fab tick` auf (Abschnitt 4b); ein laufender Tick blockiert keinen zweiten. Board- und Ticket-Karten zeigen bei `stall` „stockt seit …“ mit dem Grund als Tooltip.
 - Geschrieben wird nur über `exec("${appHome()}/fabric/fab", […])`. Der Mod schreibt nie selbst in Ticket-Dateien.
 - Gemeinsamer Zustand: `shared("fabric.selected")` (gewähltes Ticket).

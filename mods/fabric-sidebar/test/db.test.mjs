@@ -18,7 +18,7 @@ test("parseRows: leere Ausgabe sind keine Zeilen, sonst ein Array", () => {
   assert.throws(() => parseRows('{"value":"3"}'), /kein JSON-Array/);
 });
 
-test("createReader liest Index und rev über sqlite3 -readonly -json", async () => {
+test("createReader liest Index und rev über sqlite3 -json mit query_only", async () => {
   const calls = [];
   const db = createReader(async (command, args) => {
     calls.push({ command, args });
@@ -31,7 +31,7 @@ test("createReader liest Index und rev über sqlite3 -readonly -json", async () 
   assert.equal(await db.readModel("/x/fabric.db", "index"), '{"tickets":[]}');
   assert.equal(await db.metaValue("/x/fabric.db", "rev"), "4");
   assert.equal(calls[0].command, "/usr/bin/sqlite3");
-  assert.deepEqual(calls[0].args.slice(0, 3), ["-readonly", "-json", "/x/fabric.db"]);
+  assert.deepEqual(calls[0].args.slice(0, 6), ["-json", "-cmd", ".timeout 3000", "-cmd", "PRAGMA query_only=ON", "/x/fabric.db"]);
   assert.match(calls[0].args[3], /WHERE key = 'index'/);
 });
 
