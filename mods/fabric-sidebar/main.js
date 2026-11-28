@@ -119,12 +119,14 @@ function orchestratorBadge(t) {
     .child("Orchestrator");
 }
 
-// Platzhalter für einen nicht laufenden Orchestrator eines Teams mit Agenten.
-function stoppedOrchestrator(t, team) {
+// Nicht laufender Orchestrator eines Teams: gedimmt, mit „Starten“
+// (`fab orchestrator start <team>`). So lässt sich ein versehentlich
+// beendeter Orchestrator direkt aus der Seitenleiste wieder hochfahren.
+function stoppedOrchestrator(t, team, { busy = false, onStart = null } = {}) {
   return h_flex()
     .flex_none()
     .w_full()
-    .px(SPACE.s)
+    .px(SPACE.xs)
     .py(SPACE.xs)
     .gap(SPACE.s)
     .items_center()
@@ -133,7 +135,25 @@ function stoppedOrchestrator(t, team) {
     .child(image(`${SPRITE_DIR}/orchestrator.svg`).size(22).flex_none().opacity(0.45))
     .child(v_flex().flex_1().min_w(0)
       .child(div().truncate().text_size(FONT.s).font_semibold().text_color(t.dim).child(team))
-      .child(div().text_size(FONT.xs).text_color(t.dim).child("Orchestrator · gestoppt")));
+      .child(div().text_size(FONT.xs).text_color(t.dim).child(busy ? "startet …" : "Orchestrator · gestoppt")))
+    .when(Boolean(onStart) && !busy, (el) => el.child(div()
+      .id(`fabric-sidebar-start-${team}`)
+      .flex_none()
+      .h(SIZE.buttonSmall)
+      .px(SPACE.s)
+      .rounded(RADIUS.s)
+      .border_1()
+      .border_color(t.border)
+      .flex()
+      .items_center()
+      .text_size(FONT.xs)
+      .font_semibold()
+      .text_color(t.foreground)
+      .cursor_pointer()
+      .hover((style) => style.bg(t.hover))
+      .tooltip(`Orchestrator für ${team} starten (fab orchestrator start ${team})`)
+      .on_click((_event, cx) => { cx.stop_propagation(); onStart(cx); })
+      .child("Starten")));
 }
 
 // Kleine Zahl-Pille im Fabric-Kopf.
@@ -216,12 +236,19 @@ function fabricHeader(t, fabric, { tint, collapsed, active, onToggle }) {
 
 // Eine Fabric als getönte Gruppe: Kopf, darunter (aufgeklappt) die
 // Orchestratoren mit ihren Agenten an einer Baumlinie.
-function fabricGroup(t, section, { scope, collapsed, first, onToggle }) {
+function fabricGroup(t, section, { scope, collapsed, first, onToggle, teams = [], starting = null, onStart }) {
   const tint = fabricTint(t, model.fabricTintIndex(section.name));
   const active = scope === section.name;
   const body = [];
+  const stopped = (name) => stoppedOrchestrator(t, name, {
+    busy: starting === name,
+    onStart: (cx) => onStart(name, cx),
+  });
+  // Teams dieser Fabric ohne jede Sitzung: nur der gestoppte Orchestrator.
+  const withRows = new Set(section.groups.map((group) => group.name));
+  for (const name of teams) if (!withRows.has(name)) body.push(stopped(name));
   for (const group of section.groups) {
-    if (!group.orchestrator) body.push(stoppedOrchestrator(t, group.name));
+    if (!group.orchestrator) body.push(stopped(group.name));
     for (const row of group.rows) {
       const depth = row.depth + (group.orchestrator ? 0 : 1);
       body.push(rowView(t, row, { depth, team: group.name, tint }));
@@ -594,6 +621,29 @@ export default class FabricSidebar extends View {
   // `run` und `ticket` springen nur in die Fabric-Oberfläche; `resume` und
   // `ack` räumen serverseitig auf und laden den Index neu, damit der Banner
   // ohne den 5-s-Takt verschwindet. Fehler landen still im loadError.
+  /** Orchestrator eines Teams starten; Fehler erscheinen wie Ladefehler oben. */
+  async startOrchestrator(team, cx) {
+    if (this.starting) return;
+    this.starting = team;
+    cx.notify();
+    let failure = null;
+    try {
+      const result = await exec(`${appHome()}/fabric/fab`, ["orchestrator", "start", team], {
+        cwd: appHome(), timeout: 120000,
+      });
+      if (result?.code !== 0) {
+        failure = (result?.stderr || "").trim() || (result?.stdout || "").trim()
+          || `fab endete mit Code ${result?.code}.`;
+      }
+    } catch (error) {
+      failure = message(error);
+    }
+    this.starting = null;
+    await this.load();
+    this.actionError = failure ? `Orchestrator ${team}: ${failure}` : null;
+    if (!this.closed) cx.notify();
+  }
+
   async activate(alarm, action, cx) {
     if (action === "run") {
       openRoute({ page: "pipelines", run: alarm.run });
@@ -617,7 +667,7 @@ export default class FabricSidebar extends View {
       failure = message(error);
     }
     await this.load();
-    if (failure) this.loadError = failure;
+    this.actionError = failure;
     if (!this.closed) cx.notify();
   }
 
@@ -662,6 +712,11 @@ export default class FabricSidebar extends View {
     const list = model.fabricList(this.index ?? {}, rows);
     model.fabricSections(groups, this.index?.teams ?? [], list).forEach((section, index) => {
       sections.push(fabricGroup(t, section, {
+        teams: (this.index?.teams ?? [])
+          .filter((team) => team?.name && (team.fabric || "standard") === section.name)
+          .map((team) => team.name),
+        starting: this.starting,
+        onStart: (name, cx) => cx.spawn(async () => { await this.startOrchestrator(name, cx); }),
         scope,
         collapsed: collapsed.includes(section.name),
         first: index === 0 && free.cards.length === 0,
@@ -728,7 +783,7 @@ export default class FabricSidebar extends View {
             eventCx.spawn(async () => { await this.activate(entry, action, eventCx); });
           }))),
       ))
-      .when(Boolean(this.loadError), (el) => el.child(
+      .when(Boolean(this.loadError || this.actionError), (el) => el.child(
         h_flex()
           .flex_none()
           .w_full()
@@ -746,8 +801,8 @@ export default class FabricSidebar extends View {
             .whitespace_normal()
             .text_size(FONT.s)
             .text_color(t.blocked)
-            .tooltip(this.loadError)
-            .child("Ticketdaten nicht lesbar")),
+            .tooltip(this.actionError || this.loadError)
+            .child(this.actionError || "Ticketdaten nicht lesbar")),
       ))
       .child(
         v_flex()

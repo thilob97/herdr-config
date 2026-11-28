@@ -616,7 +616,7 @@ export function renderTeam(app, cx, t) {
   return v_flex()
     .size_full()
     .min_h(0)
-    .child(app.fabricAreaHeader(t, cx, [newTeam, newBlueprint]))
+    .child(app.areaHeader(t, cx, [newTeam, newBlueprint]))
     .when(Boolean(app.rosterError), (el) => el.child(ui.notice(t, app.rosterError)))
     .when(Boolean(app.flash?.text), (el) => el.child(ui.notice(t, app.flash.text, app.flash.level)))
     .when(Boolean(app.errorFor("fabric-move")),

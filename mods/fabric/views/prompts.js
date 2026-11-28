@@ -128,7 +128,7 @@ export function renderPrompts(app, cx, t) {
   return v_flex()
     .size_full()
     .min_h(0)
-    .child(ui.header(t, model.pageWord("prompts"), [
+    .child(app.areaHeader(t, cx, [
       div().text_size(T.xs).text_color(t.dim).child(`${(app.promptList ?? []).length} Dateien`),
       ui.iconButton(t, {
         id: "fabric-prompts-refresh",
@@ -136,7 +136,7 @@ export function renderPrompts(app, cx, t) {
         tooltip: "Liste neu lesen",
         onClick: (cx) => app.loadPrompts(cx),
       }),
-    ], { iconName: "prompt", subtitle: "Orchestrator, Präambel und Rollenprompts" }))
+    ]))
     .when(Boolean(app.promptError), (el) => el.child(ui.notice(t, app.promptError)))
     .when(Boolean(app.errorFor("prompt")), (el) =>
       el.child(ui.notice(t, app.errorFor("prompt").text, app.errorFor("prompt").level)))

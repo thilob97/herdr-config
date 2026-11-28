@@ -326,7 +326,7 @@ export function renderPipelinesPage(app, cx, t) {
   return v_flex()
     .size_full()
     .min_h(0)
-    .child(ui.header(t, model.pageWord("pipelines"), [
+    .child(app.areaHeader(t, cx, [
       ...(app.compact ? [] : [
         div().text_size(T.xs).text_color(t.dim)
           .child(`${all.length} Läufe${running ? ` · ${running} läuft` : ""}${queued ? ` · ${queued} in Warteschlange` : ""}`),
@@ -338,7 +338,7 @@ export function renderPipelinesPage(app, cx, t) {
         disabled: Boolean(app.busy),
         onClick: (cx) => app.reloadPipelines(cx),
       }),
-    ], { iconName: "terminal", subtitle: "Läufe, Schritte und Ausgabe", compact: app.compact }))
+    ]))
     .when(Boolean(app.pipelineRunsError), (el) => el.child(ui.notice(t, app.pipelineRunsError)))
     .when(Boolean(app.pipelineDetailError), (el) => el.child(ui.notice(t, app.pipelineDetailError)))
     .when(Boolean(app.errorFor("pipeline-rerun")), (el) => el.child(

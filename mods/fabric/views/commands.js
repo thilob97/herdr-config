@@ -170,7 +170,7 @@ export function renderCommandsPage(app, cx, t) {
   return v_flex()
     .size_full()
     .min_h(0)
-    .child(ui.header(t, model.pageWord("commands"), [
+    .child(app.areaHeader(t, cx, [
       div().text_size(T.xs).text_color(t.dim).child(`${count} Befehle`),
       ui.iconButton(t, {
         id: "fabric-commands-reload",
@@ -178,7 +178,7 @@ export function renderCommandsPage(app, cx, t) {
         tooltip: "Befehle neu laden",
         onClick: (cx) => cx.spawn(async () => { await app.loadCommands(true); }),
       }),
-    ], { iconName: "terminal", subtitle: "Jeder fab-Befehl mit seinen Argumenten", compact: app.compact }))
+    ]))
     .when(Boolean(app.commandCatalogError), (el) => el.child(ui.notice(t, app.commandCatalogError)))
     .child(h_flex().flex_1().min_h(0).items_stretch()
       .child(listPane(app, t))

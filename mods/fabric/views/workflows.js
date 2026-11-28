@@ -1092,7 +1092,7 @@ export function renderWorkflowsPage(app, cx, t) {
   return v_flex()
     .size_full()
     .min_h(0)
-    .child(ui.header(t, model.pageWord("workflows"), [
+    .child(app.areaHeader(t, cx, [
       ...(app.compact ? [] : [
         div().text_size(T.xs).text_color(t.dim)
           .child(`${flows.length} Workflows · ${active} aktiv`),
@@ -1104,7 +1104,7 @@ export function renderWorkflowsPage(app, cx, t) {
         disabled: Boolean(app.busy),
         onClick: (cx) => app.reloadFlows(cx),
       }),
-    ], { iconName: "play", subtitle: "Definitionen, Läufe und Knotenstatus", compact: app.compact }))
+    ]))
     .when(Boolean(app.flowError), (el) => el.child(ui.notice(t, app.flowError)))
     .when(Boolean(app.flowRunsError), (el) => el.child(ui.notice(t, app.flowRunsError)))
     .when(Boolean(app.errorFor("flow-pause")), (el) => el.child(

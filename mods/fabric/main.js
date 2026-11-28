@@ -36,13 +36,10 @@ const NAV = [
   { page: "inbox", icon: "inbox" },
   { page: "board", icon: "board" },
   { page: "tickets", icon: "tickets" },
-  { page: "workflows", icon: "play" },
-  { page: "pipelines", icon: "terminal" },
   { page: "stats", icon: "chart" },
   { page: "fabrics", icon: "fabric" },
+  { page: "workflows", icon: "play" },
   { page: "prompts", icon: "prompt" },
-  { page: "templates", icon: "prompt" },
-  { page: "commands", icon: "terminal" },
   { page: "settings", icon: "settings" },
 ];
 
@@ -2058,10 +2055,11 @@ export default class Fabric extends View {
     if (cx) cx.notify();
   }
 
-  /** Kopf des Fabric-Bereichs: Reiter Übersicht/Teams/Repos statt eines
-   *  Seitentitels, daneben der aktive Fabric-Filter, rechts die Aktionen. */
-  fabricAreaHeader(t, cx, right = []) {
+  /** Kopf einer Bereichsseite: Reiter des Bereichs statt eines Seitentitels,
+   *  im Fabric-Bereich daneben der aktive Fabric-Filter, rechts die Aktionen. */
+  areaHeader(t, cx, right = []) {
     const page = this.currentRoute().page;
+    const area = model.areaFor(page);
     return h_flex()
       .flex_none()
       .w_full()
@@ -2071,14 +2069,14 @@ export default class Fabric extends View {
       .items_center()
       .border_b(1)
       .border_color(t.border)
-      .child(div().flex_none().text_color(t.muted).child(ui.icon("fabric", 15)))
+      .child(div().flex_none().text_color(t.muted).child(ui.icon(area?.icon ?? "fabric", 15)))
       .child(ui.tabs(t, {
         id: "fabric-area-tabs",
-        items: model.FABRIC_TABS.map((tab) => ({ value: tab.page, label: tab.label })),
+        items: (area?.tabs ?? []).map((tab) => ({ value: tab.page, label: tab.label })),
         value: page,
         onPick: (next) => this.navigate(next, {}, cx),
       }))
-      .when(Boolean(this.fabricScope) && page !== "fabrics", (el) => el.child(
+      .when(area?.key === "fabrics" && Boolean(this.fabricScope) && page !== "fabrics", (el) => el.child(
         ui.chip(t, this.fabricScope, t.accent, "fabric-area-scope", {
           tooltip: `Gefiltert auf Fabric ${this.fabricScope} · Klick hebt den Filter auf`,
           onClick: (cx) => this.setFabricScope("", cx),
@@ -5087,7 +5085,7 @@ export default class Fabric extends View {
       .children(NAV.map((item) => ui.navItem(t, {
         id: `fabric-nav-${item.page}`,
         icon: item.icon,
-        label: model.pageWord(item.page),
+        label: model.navWord(item.page),
         active: model.navPageFor(page) === item.page,
         onClick: (cx) => this.navigate(item.page, {}, cx),
         badge: this.navBadge(t, item.page),
@@ -5121,7 +5119,7 @@ export default class Fabric extends View {
       .children(NAV.map((item) => div().flex_1().min_w(0).child(ui.navItem(t, {
         id: `fabric-nav-${item.page}`,
         icon: item.icon,
-        label: model.pageWord(item.page),
+        label: model.navWord(item.page),
         active: model.navPageFor(page) === item.page,
         onClick: (cx) => this.navigate(item.page, {}, cx),
         badge: this.navBadge(t, item.page),

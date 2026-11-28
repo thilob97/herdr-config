@@ -3733,18 +3733,30 @@ export function reportAgentColor(name, blueprints = []) {
 
 // ---------- Fabrics als Bereich: Übersicht, Teams, Repos ----------
 
-/** Reiter des Fabric-Bereichs; Teams und Repos sind Unterseiten der Fabrics. */
-export const FABRIC_TABS = [
-  { page: "fabrics", label: "Übersicht" },
-  { page: "team", label: "Teams" },
-  { page: "repos", label: "Repos" },
+/** Bereiche mit Unterseiten: ein Navigationspunkt, oben Reiter. */
+export const AREAS = [
+  { key: "fabrics", label: "Fabrics", icon: "fabric",
+    tabs: [{ page: "fabrics", label: "Übersicht" }, { page: "team", label: "Teams" }, { page: "repos", label: "Repos" }] },
+  { key: "automation", label: "Automatisierung", icon: "play",
+    tabs: [{ page: "workflows", label: "Workflows" }, { page: "pipelines", label: "Pipelines" }, { page: "commands", label: "Befehle" }] },
+  { key: "texts", label: "Texte", icon: "prompt",
+    tabs: [{ page: "prompts", label: "Prompts" }, { page: "templates", label: "Vorlagen" }] },
 ];
 
-/** Navigationspunkt, der für eine Seite leuchtet. */
+/** Bereich einer Seite oder null. */
+export function areaFor(page) {
+  return AREAS.find((area) => area.tabs.some((tab) => tab.page === page)) ?? null;
+}
+
+/** Navigationspunkt, der für eine Seite leuchtet (erste Seite ihres Bereichs). */
 export function navPageFor(page) {
   if (page === "ticket") return "tickets";
-  if (page === "team" || page === "repos") return "fabrics";
-  return page;
+  return areaFor(page)?.tabs[0].page ?? page;
+}
+
+/** Wort im Navigationspunkt: Bereichsname, sonst Seitenname. */
+export function navWord(page) {
+  return areaFor(page)?.label ?? pageWord(page);
 }
 
 /** Repos im Fabric-Filter: nur Repos der Teams dieser Fabric; ohne Filter alle. */

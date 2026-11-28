@@ -314,7 +314,7 @@ export function renderRepos(app, cx, t) {
   return v_flex()
     .size_full()
     .min_h(0)
-    .child(app.fabricAreaHeader(t, cx, [
+    .child(app.areaHeader(t, cx, [
       addRepoButton(app, t),
       ui.iconButton(t, {
         id: "fabric-repos-refresh",

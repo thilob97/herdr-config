@@ -101,7 +101,17 @@ function teamCard(app, cx, t, team) {
         tooltip: state
           ? `Orchestrator ${model.orchestratorWord(state)} · ${state.name ?? ""} ${state.terminal ?? ""}`
           : "Orchestrator-Status unbekannt",
-      })),
+      }))
+      .when(!state?.live, (el) => el.child(ui.button(t, {
+        id: `fabric-team-start-${team.name}`,
+        label: "Starten",
+        icon: "play",
+        small: true,
+        busy: app.busy === `orchestrator:${team.name}`,
+        disabled: Boolean(app.busy),
+        tooltip: `Orchestrator für ${team.name} starten (fab orchestrator start ${team.name})`,
+        onClick: (cx) => app.orchestrator("start", team.name, cx),
+      }))),
     h_flex().w_full().gap(S.xs).items_center().flex_wrap()
       .child(div().flex_none().text_size(T.xs).text_color(t.dim).child(
         repos.length ? "Repos" : "Keine Repos",
@@ -286,7 +296,7 @@ export function renderFabricsPage(app, cx, t) {
   return v_flex()
     .size_full()
     .min_h(0)
-    .child(app.fabricAreaHeader(t, cx, []))
+    .child(app.areaHeader(t, cx, []))
     .when(Boolean(app.fabricListError), (el) => el.child(ui.notice(t, app.fabricListError)))
     .when(Boolean(app.rosterError), (el) => el.child(ui.notice(t, app.rosterError)))
     .child(

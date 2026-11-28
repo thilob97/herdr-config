@@ -97,7 +97,7 @@ export function renderTemplates(app, cx, t) {
   return v_flex()
     .size_full()
     .min_h(0)
-    .child(ui.header(t, model.pageWord("templates"), [
+    .child(app.areaHeader(t, cx, [
       div().text_size(T.xs).text_color(t.dim).child(`${(app.templateList ?? []).length} Dateien`),
       ui.iconButton(t, {
         id: "fabric-templates-refresh",
@@ -105,7 +105,7 @@ export function renderTemplates(app, cx, t) {
         tooltip: "Liste neu lesen",
         onClick: (cx) => app.loadTemplates(cx),
       }),
-    ], { iconName: "prompt", subtitle: "Markdown-Gerüste für neue Tickets" }))
+    ]))
     .when(Boolean(app.templateError), (el) => el.child(ui.notice(t, app.templateError)))
     .when(Boolean(app.errorFor("template")), (el) =>
       el.child(ui.notice(t, app.errorFor("template").text, app.errorFor("template").level)))

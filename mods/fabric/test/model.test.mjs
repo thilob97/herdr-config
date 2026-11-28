@@ -3324,8 +3324,12 @@ test("reportArgs schließen Team und Fabric aus", async () => {
 });
 
 test("Fabric-Bereich: Teams und Repos leuchten unter Fabrics; Repos folgen dem Filter", async () => {
-  const { navPageFor, scopeRepos, FABRIC_TABS } = await import("../model.js");
-  assert.deepEqual(FABRIC_TABS.map((tab) => tab.page), ["fabrics", "team", "repos"]);
+  const { navPageFor, navWord, scopeRepos, areaFor } = await import("../model.js");
+  assert.deepEqual(areaFor("team").tabs.map((tab) => tab.page), ["fabrics", "team", "repos"]);
+  assert.equal(navPageFor("pipelines"), "workflows");
+  assert.equal(navPageFor("templates"), "prompts");
+  assert.equal(navWord("workflows"), "Automatisierung");
+  assert.equal(navWord("board"), "Board");
   assert.equal(navPageFor("team"), "fabrics");
   assert.equal(navPageFor("repos"), "fabrics");
   assert.equal(navPageFor("ticket"), "tickets");
