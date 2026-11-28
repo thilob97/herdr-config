@@ -25,6 +25,10 @@ function knowledgeKindWord(kind) {
 
 function repoRow(app, cx, t, repo) {
   const active = app.repoDetail?.path === repo.path;
+  // Fabric nur zeigen, wenn es mehrere gibt und kein Filter sie ohnehin festlegt.
+  const fabric = (app.fabricScopeRows().length > 1 && !app.fabricScope)
+    ? model.fabricForPath(app.roster?.teams ?? [], repo.path)
+    : "";
   return v_flex()
     .id(`fabric-repo-${repo.path}`)
     .w_full()
@@ -40,6 +44,9 @@ function repoRow(app, cx, t, repo) {
         .child(div().flex_none().text_color(active ? t.accent : t.dim).child(ui.icon("repo", 13)))
         .child(div().flex_1().min_w(0).truncate().text_size(T.s)
           .text_color(active ? t.foreground : t.muted).child(model.repoName(repo.path)))
+        .when(Boolean(fabric), (el) => el.child(ui.chip(t, fabric, t.muted, null, {
+          tooltip: `Gehört über sein Team zur Fabric ${fabric}`,
+        })))
         .when((repo.open_tickets ?? 0) > 0, (el) => el.child(ui.badge(t, repo.open_tickets, t.accent))),
     )
     .child(
@@ -307,8 +314,7 @@ export function renderRepos(app, cx, t) {
   return v_flex()
     .size_full()
     .min_h(0)
-    .child(ui.header(t, model.pageWord("repos"), [
-      div().text_size(T.xs).text_color(t.dim).child(`${(app.repos ?? []).length} ${(app.repos ?? []).length === 1 ? "Repo" : "Repos"}`),
+    .child(app.fabricAreaHeader(t, cx, [
       addRepoButton(app, t),
       ui.iconButton(t, {
         id: "fabric-repos-refresh",
@@ -316,7 +322,7 @@ export function renderRepos(app, cx, t) {
         tooltip: "Repos und Space-Ordner neu lesen",
         onClick: (cx) => app.loadRepos(cx),
       }),
-    ], { iconName: "repo", subtitle: "Prüfskripte und Lernnotizen je Checkout" }))
+    ]))
     .when(Boolean(app.reposError), (el) => el.child(ui.notice(t, app.reposError)))
     .when(Boolean(app.repoError), (el) => el.child(ui.notice(t, app.repoError)))
     .when(Boolean(app.errorFor("repo-add")), (el) => el.child(ui.notice(t, app.errorFor("repo-add").text, app.errorFor("repo-add").level)))

@@ -682,20 +682,6 @@ export default class FabricSidebar extends View {
           .gap(SPACE.xs)
           .items_center()
           .child(div().text_size(FONT.xs).font_semibold().text_color(t.muted).child("Fabric"))
-          .child(
-            div()
-              .min_w(SIZE.badge)
-              .h(SIZE.badge)
-              .px(SPACE.xs)
-              .rounded(SIZE.badge / 2)
-              .bg(t.raised)
-              .text_size(FONT.xs)
-              .text_color(t.dim)
-              .flex()
-              .items_center()
-              .justify_center()
-              .child(String(rows.length)),
-          )
           // Kompakter Posteingang statt eines eigenen Blocks: Zahl der
           // offenen Einträge, Klick öffnet die Seite im Fabric-Fenster.
           .when(inbox > 0, (el) => el.child(

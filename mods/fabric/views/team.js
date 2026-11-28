@@ -494,7 +494,9 @@ function fabricRow(app, cx, t, team) {
   const key = `team-fabric-${team.name}`;
   return h_flex().w_full().gap(S.s).items_center().flex_wrap()
     .child(div().flex_none().text_size(T.xs).text_color(t.dim).child("Fabric"))
-    .child(div().w(190).flex_none().child(ui.dropdown(t, {
+    .child(div().w(190).flex_none()
+      .tooltip("Umhängen ändert nur die Fabric; Repos, Mitglieder und Sessions bleiben.")
+      .child(ui.dropdown(t, {
       id: `fabric-team-fabric-${team.name}`,
       value: current,
       placeholder: "Fabric wählen…",
@@ -508,9 +510,7 @@ function fabricRow(app, cx, t, team) {
         cx.notify();
       },
       onPick: (value) => cx.spawn(async () => { await app.moveTeamFabric(team.name, value, cx); }),
-    })))
-    .child(div().flex_1().min_w(0).child(ui.hint(t,
-      "Umhängen ändert nur die Fabric; Repos, Mitglieder und Sessions bleiben.")));
+    })));
 }
 
 function teamCard(app, cx, t, team) {
@@ -616,16 +616,7 @@ export function renderTeam(app, cx, t) {
   return v_flex()
     .size_full()
     .min_h(0)
-    .child(ui.header(t, model.pageWord("team"), [
-      ...(narrow ? [] : [
-        div().text_size(T.xs).text_color(t.dim).child(
-          `${blueprints.length} Blaupause${blueprints.length === 1 ? "" : "n"} · ${teams.length} Team${teams.length === 1 ? "" : "s"}`
-          + (app.fabricScope ? ` in ${app.fabricScope}` : ""),
-        ),
-      ]),
-      newTeam,
-      newBlueprint,
-    ], { iconName: "team", subtitle: "Blaupausen pflegen und Teams steuern", compact: narrow }))
+    .child(app.fabricAreaHeader(t, cx, [newTeam, newBlueprint]))
     .when(Boolean(app.rosterError), (el) => el.child(ui.notice(t, app.rosterError)))
     .when(Boolean(app.flash?.text), (el) => el.child(ui.notice(t, app.flash.text, app.flash.level)))
     .when(Boolean(app.errorFor("fabric-move")),

@@ -38,11 +38,10 @@ function fabricRow(app, cx, t, row, active) {
         .child(div().flex_none().text_color(active ? t.accent : t.dim).child(ui.icon("fabric", 13)))
         .child(div().flex_1().min_w(0).truncate().text_size(T.s)
           .text_color(active ? t.foreground : t.muted).child(row.name))
-        .when(row.default, (el) => el.child(ui.chip(t, "Standard", t.muted)))
-        .when(row.open_tickets > 0, (el) => el.child(ui.badge(t, row.open_tickets, t.accent))),
+        .when(row.default, (el) => el.child(ui.chip(t, "Standard", t.muted))),
     )
-    .child(div().w_full().truncate().text_size(T.xs).text_color(t.dim)
-      .child(row.note || "Keine Notiz").tooltip(row.note || "Keine Notiz"))
+    .when(Boolean(row.note), (el) => el.child(div().w_full().truncate().text_size(T.xs).text_color(t.muted)
+      .child(row.note).tooltip(row.note)))
     .child(div().w_full().truncate().text_size(T.xs).text_color(t.dim).child(fabricMeta(row)));
 }
 
@@ -55,8 +54,7 @@ function list(app, cx, t, rows, selected) {
     .border_color(t.border)
     .child(
       h_flex().w_full().px(S.m).py(S.s).gap(S.s).items_center()
-        .child(div().flex_1().min_w(0).text_size(T.xs).text_color(t.dim)
-          .child(count(rows.length, "Fabric", "Fabrics")))
+        .child(div().flex_1())
         .child(ui.button(t, {
           id: "fabric-new",
           label: "Neue Fabric",
@@ -106,7 +104,7 @@ function teamCard(app, cx, t, team) {
       })),
     h_flex().w_full().gap(S.xs).items_center().flex_wrap()
       .child(div().flex_none().text_size(T.xs).text_color(t.dim).child(
-        repos.length ? `Repos: ${count(repos.length, "Repo", "Repos")}` : "Keine Repos",
+        repos.length ? "Repos" : "Keine Repos",
       ))
       .children(repos.slice(0, 3).map((path, index) => ui.chip(t, model.repoName(path), t.muted,
         `fabric-team-repo-${team.name}-${index}`, { tooltip: path })))
@@ -135,18 +133,12 @@ function editForm(app, cx, t, row) {
   const busy = app.busy === `fabric:${row.name}`;
   const error = app.errorFor(`fabric:${row.name}`);
   return ui.card(t, [
-    ui.sectionTitle(t, "Name und Notiz", [],
-      row.default ? "standard bleibt als Namen; nur die Notiz ist frei." : null),
-    row.default
-      ? h_flex().w_full().gap(S.s).items_center()
-        .child(div().flex_none().text_size(T.s).font_medium().text_color(t.foreground).child(row.name))
-        .child(ui.chip(t, "Standard", t.muted))
-      : ui.field(t, "Name", rename ? ui.input(t, rename) : div(), {
-        hint: "Kleinbuchstaben, Ziffern, „_“ und „-“, 1–16 Zeichen",
-      }),
-    ui.field(t, "Notiz", note ? ui.input(t, note) : div(), {
-      hint: "Erscheint in der Fabric-Liste und im Kopf dieser Seite.",
-    }),
+    ui.sectionTitle(t, row.default ? "Notiz" : "Name und Notiz", [],
+      row.default ? "Die Standard-Fabric behält ihren Namen." : null),
+    ...(row.default ? [] : [ui.field(t, "Name", rename ? ui.input(t, rename) : div(), {
+      hint: "Kleinbuchstaben, Ziffern, „_“ und „-“, 1–16 Zeichen",
+    })]),
+    row.default ? (note ? ui.input(t, note) : div()) : ui.field(t, "Notiz", note ? ui.input(t, note) : div()),
     h_flex().w_full().gap(S.s).items_center()
       .child(ui.button(t, {
         id: `fabric-save-${row.name}`,
@@ -180,7 +172,6 @@ function teamsSection(app, cx, t, row, teams) {
     .child(
       h_flex().w_full().gap(S.s).items_center().flex_wrap()
         .child(div().flex_1().min_w(80).text_size(T.s).font_semibold().text_color(t.muted).child("Teams"))
-        .child(ui.chip(t, count(teams.length, "Team", "Teams"), t.dim))
         .child(ui.button(t, {
           id: `fabric-team-new-${row.name}`,
           label: "Neues Team in dieser Fabric",
@@ -268,22 +259,17 @@ function detail(app, cx, t, row) {
     .h_full()
     .min_h(0)
     .child(ui.detailHeader(t, row.name, [
-      ...(row.default ? [ui.chip(t, "Standard", t.muted)] : []),
-      ui.chip(t, count(row.teams?.length ?? teams.length, "Team", "Teams"), t.accent),
-      ui.button(t, {
+      ...(row.default ? [ui.chip(t, "Standard", t.muted, null, { tooltip: "Teams ohne eigene Fabric landen hier; sie lässt sich nicht löschen." })] : [ui.button(t, {
         id: `fabric-delete-${row.name}`,
-        label: "Fabric löschen",
+        label: "Löschen",
         icon: "trash",
         danger: true,
         small: true,
-        disabled: row.default || Boolean(app.busy),
-        reason: row.default ? "standard lässt sich nicht löschen." : "",
-        tooltip: row.default
-          ? "standard bleibt immer bestehen."
-          : `Fabric ${row.name} löschen (fragt nach)`,
+        disabled: Boolean(app.busy),
+        tooltip: `Fabric ${row.name} löschen (fragt nach)`,
         onClick: (cx) => app.confirmDeleteFabric(row, cx),
-      }),
-    ], { subtitle: fabricMeta(row) }))
+      })]),
+    ], { subtitle: [row.note, fabricMeta(row)].filter(Boolean).join(" · ") }))
     .child(
       v_flex().flex_1().min_h(0).overflow_y_scrollbar().p(S.l).gap(S.m)
         .child(v_flex().w_full().max_w(980).gap(S.m)
@@ -300,9 +286,7 @@ export function renderFabricsPage(app, cx, t) {
   return v_flex()
     .size_full()
     .min_h(0)
-    .child(ui.header(t, model.pageWord("fabrics"), [
-      div().text_size(T.xs).text_color(t.dim).child(count(rows.length, "Fabric", "Fabrics")),
-    ], { iconName: "fabric", subtitle: "Teams nach Fabric gruppieren und umhängen", compact: app.compact }))
+    .child(app.fabricAreaHeader(t, cx, []))
     .when(Boolean(app.fabricListError), (el) => el.child(ui.notice(t, app.fabricListError)))
     .when(Boolean(app.rosterError), (el) => el.child(ui.notice(t, app.rosterError)))
     .child(

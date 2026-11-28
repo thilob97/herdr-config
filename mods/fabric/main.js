@@ -2058,6 +2058,35 @@ export default class Fabric extends View {
     if (cx) cx.notify();
   }
 
+  /** Kopf des Fabric-Bereichs: Reiter Übersicht/Teams/Repos statt eines
+   *  Seitentitels, daneben der aktive Fabric-Filter, rechts die Aktionen. */
+  fabricAreaHeader(t, cx, right = []) {
+    const page = this.currentRoute().page;
+    return h_flex()
+      .flex_none()
+      .w_full()
+      .h(ui.SIZE.header)
+      .px(ui.SPACE.l)
+      .gap(ui.SPACE.s)
+      .items_center()
+      .border_b(1)
+      .border_color(t.border)
+      .child(div().flex_none().text_color(t.muted).child(ui.icon("fabric", 15)))
+      .child(ui.tabs(t, {
+        id: "fabric-area-tabs",
+        items: model.FABRIC_TABS.map((tab) => ({ value: tab.page, label: tab.label })),
+        value: page,
+        onPick: (next) => this.navigate(next, {}, cx),
+      }))
+      .when(Boolean(this.fabricScope) && page !== "fabrics", (el) => el.child(
+        ui.chip(t, this.fabricScope, t.accent, "fabric-area-scope", {
+          tooltip: `Gefiltert auf Fabric ${this.fabricScope} · Klick hebt den Filter auf`,
+          onClick: (cx) => this.setFabricScope("", cx),
+        })))
+      .child(div().flex_1())
+      .children(right);
+  }
+
   /** Fabric-Auswahl links in der Leiste (ab zwei Fabrics): Klick setzt den Filter. */
   fabricNavRows(t, cx) {
     const rows = this.fabricScopeRows();
@@ -5168,21 +5197,7 @@ export default class Fabric extends View {
         onClick: (cx) => this.closeWindowWithGuard(cx),
       }));
 
-    // Teams und Repos sind Reiter des Fabric-Bereichs.
-    const area = model.FABRIC_TABS.some((tab) => tab.page === page)
-      ? v_flex().size_full().min_h(0)
-        .child(h_flex().flex_none().w_full().px(ui.SPACE.l).pt(ui.SPACE.s).pb(ui.SPACE.xs).gap(ui.SPACE.s).items_center()
-          .child(ui.tabs(t, {
-            id: "fabric-area-tabs",
-            items: model.FABRIC_TABS.map((tab) => ({ value: tab.page, label: tab.label })),
-            value: page,
-            onPick: (next) => this.navigate(next, {}, cx),
-          }))
-          .when(Boolean(this.fabricScope) && page !== "fabrics", (el) => el.child(
-            div().text_size(ui.FONT.xs).text_color(t.dim).child(`gefiltert: Fabric ${this.fabricScope}`))))
-        .child(div().flex_1().min_h(0).child(content))
-      : content;
-    const contentPane = v_flex().flex_1().min_w(0).h_full().min_h(0).overflow_hidden().child(area);
+    const contentPane = v_flex().flex_1().min_w(0).h_full().min_h(0).overflow_hidden().child(content);
     const drawerLayer = (node) => div().absolute().right_0().top_0().bottom_0().bg(t.surface).overflow_hidden().child(node);
     const body = v_flex()
       .flex_1()
