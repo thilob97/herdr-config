@@ -1,18 +1,21 @@
-"""Zustand unter `$FAB_HOME`: SQLite als Quelle, JSON nur als Lesemodell.
+"""Zustand unter `$FAB_HOME`: SQLite ist die einzige Datenquelle.
 
-Die Datenbank liegt in `data/fabric/fabric.db` (WAL). `tickets/<id>.json` und
-`index.json` werden nach jedem Commit aus der Datenbank neu erzeugt, damit Mod
-und Sidebar unverändert weiterlesen können. Schreibvorgänge laufen unter einem
-prozessweiten, reentranten flock und genau einer SQLite-Transaktion.
+Die Datenbank liegt in `data/fabric/fabric.db` (WAL). Die Lesemodelle für Mod
+und Sidebar stehen in `read_models` (Schlüssel `index` und `ticket:<ID>`, Wert
+jeweils das frühere JSON-Dokument). Schreibvorgänge laufen unter einem
+prozessweiten, reentranten flock und genau einer SQLite-Transaktion; `meta.rev`
+zählt jede Änderung an Lesemodellen, Autopilotstatus, Autopilotlog und
+Wächtermarke.
 
 Alle `sqlite3`-Aufrufe bleiben in diesem Modul. `events.py`, `herdr.py` und die
 übrigen Fablib-Module sprechen ausschließlich über diese Schnittstelle.
 
-Altbestand (`tickets/`, `counter`, `events.jsonl`, `herdr.json`) wird beim
+Altbestand (`tickets/`, `counter`, `events.jsonl`, `herdr.json`, `index.json`,
+`autopilot.json`, `autopilot.log`, `tick-off`, `autopilot-pause`) wird beim
 ersten `ensure()` in eine temporäre Datenbank migriert, die Zählungen werden
 exakt verglichen, erst dann ersetzt `os.replace` die Zieldatei. Schlägt die
-Migration fehl, bleiben die Altdateien unangetastet und der alte Dateipfad
-dient weiter (Fallback).
+Migration fehl, bleiben die Altdateien unangetastet und `ensure()` meldet den
+Fehler; es gibt keinen Datei-Fallback mehr.
 """
 import contextlib
 import errno
@@ -41,13 +44,15 @@ class PersistError(FabError):
 
 DEFAULT_HOME = "~/.config/herdr-app/data/fabric"
 LOCK_TIMEOUT_DEFAULT = 30.0
-_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = 4
 STATUSES = ("draft", "todo", "doing", "review", "done", "dropped")
 MAX_CHILDREN = 3
+AUTOPILOT_LOG_MAX = 2000
 _ID_RE = re.compile(r"^[Tt]-(\d+)$")
 _TICKET_FILE_RE = re.compile(r"^T-(\d+)\.json$")
 
 _MIGRATION_MARKER = "legacy_migrated"
+CONFIG_MARKER = "config_imported"
 _TABLES = ("tickets", "comments", "sessions", "attachments", "events", "counter", "meta")
 
 _FLOW_SCHEMA = (
@@ -158,6 +163,8 @@ _SCHEMA = (
         name TEXT,
         path TEXT,
         at INTEGER,
+        data BLOB,
+        mime TEXT,
         PRIMARY KEY (ticket, position)
     )""",
     """CREATE TABLE IF NOT EXISTS events (
@@ -177,6 +184,31 @@ _SCHEMA = (
         value INTEGER NOT NULL
     )""",
     "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)",
+    """CREATE TABLE IF NOT EXISTS read_models (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS autopilot_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        at INTEGER NOT NULL,
+        line TEXT NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS config (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS prompts (
+        path TEXT PRIMARY KEY,
+        text TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS templates (
+        name TEXT PRIMARY KEY,
+        text TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+    )""",
     *_FLOW_SCHEMA,
     *_PIPELINE_SCHEMA,
 )
@@ -186,7 +218,34 @@ _SCHEMA = (
 
 
 def home():
-    raw = os.environ.get("FAB_HOME") or DEFAULT_HOME
+    raw = os.environ.get("FAB_HOME")
+    if os.environ.get("FAB_TEST_GUARD"):
+        # Tests dürfen niemals auf das Standard-Home fallen: dort liegen die
+        # echten Daten des Menschen.
+        if not raw:
+            raise FabError(
+                "Test ohne FAB_HOME: Fabric-Tests brauchen ein temporäres "
+                "FAB_HOME unter dem Temp-Ordner"
+            )
+        resolved = os.path.realpath(os.path.abspath(os.path.expanduser(raw)))
+        roots = {
+            os.path.realpath(tempfile.gettempdir()),
+            os.path.realpath("/tmp"),
+            os.path.realpath("/private/tmp"),
+            os.path.realpath("/var/folders"),
+            os.path.realpath("/private/var/folders"),
+        }
+        if os.environ.get("FAB_TEST_ROOT"):
+            roots.add(os.path.realpath(os.environ["FAB_TEST_ROOT"]))
+        if not any(
+            resolved == root or resolved.startswith(root + os.sep)
+            for root in roots
+        ):
+            raise FabError(
+                "Test-FAB_HOME muss unter einem Temp-Ordner liegen, "
+                f"nicht {resolved}"
+            )
+    raw = raw or DEFAULT_HOME
     return os.path.abspath(os.path.expanduser(raw))
 
 
@@ -200,10 +259,6 @@ def counter_path():
 
 def events_path():
     return os.path.join(home(), "events.jsonl")
-
-
-def index_path():
-    return os.path.join(home(), "index.json")
 
 
 def lock_path():
@@ -227,12 +282,13 @@ def backups_dir():
 
 
 def attachments_dir(tid=None):
+    """Ablage der Altdateien; nur noch die Migration liest von hier."""
     base = os.path.join(home(), "attachments")
     return os.path.join(base, tid) if tid else base
 
 
-def ticket_path(tid):
-    return os.path.join(tickets_dir(), f"{tid}.json")
+def cache_dir():
+    return os.path.join(home(), "cache")
 
 
 def now_ms():
@@ -250,9 +306,9 @@ _tx_open = False
 _dirty_tickets = set()
 _index_dirty = False
 _pending_index = None
-_fallback = {}          # home -> True, wenn Bootstrap/Migration scheiterte
+_fallback = set()       # home -> Migration/Upgrade scheiterte; ensure meldet den Fehler
 _bootstrapped = set()   # home -> Bootstrap einmal versucht
-_legacy_meta = {}       # home -> {key: value} für den Datei-Fallback
+_upgrading = 0          # Datei-Upgrade läuft; ensure nicht erneut anfordern
 _bootstrapping = 0      # Migration hält den flock; kein zweites Mal anfordern
 _deferred_events = None # aktiver Puffer für Ereignisse, die ein CAS verwerfen darf
 
@@ -291,10 +347,6 @@ def _reset_pending():
     _pending_index = None
 
 
-def _db_ready():
-    return os.path.exists(db_path()) and not _fallback.get(home())
-
-
 def _connect():
     global _conn, _conn_home
     current = home()
@@ -316,6 +368,38 @@ def _connect():
         except sqlite3.OperationalError:
             pass
     version = conn.execute("PRAGMA user_version").fetchone()[0]
+    # Lesemodelle und Autopilotlog kamen mit Schema 4; bestehende Datenbanken
+    # bekommen sie beim ersten Öffnen, ohne ihre Daten zu verlieren.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS read_models ("
+        "key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL)"
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS autopilot_log ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, "
+        "line TEXT NOT NULL)"
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS config ("
+        "key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL)"
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS prompts ("
+        "path TEXT PRIMARY KEY, text TEXT NOT NULL, updated_at INTEGER NOT NULL)"
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS templates ("
+        "name TEXT PRIMARY KEY, text TEXT NOT NULL, updated_at INTEGER NOT NULL)"
+    )
+    attachment_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(attachments)")
+    }
+    for column, kind in (("data", "BLOB"), ("mime", "TEXT")):
+        if column not in attachment_columns:
+            try:
+                conn.execute(f"ALTER TABLE attachments ADD COLUMN {column} {kind}")
+            except sqlite3.OperationalError:
+                pass
     if version < _SCHEMA_VERSION:
         for statement in _FLOW_SCHEMA:
             conn.execute(statement)
@@ -445,10 +529,21 @@ def _flock():
             handle.close()
 
 
-def _has_legacy():
-    if os.path.exists(counter_path()) or os.path.exists(events_path()):
-        return True
-    if os.path.exists(os.path.join(home(), "herdr.json")):
+_LEGACY_FILES = (
+    "counter",
+    "events.jsonl",
+    "index.json",
+    "herdr.json",
+    "autopilot.json",
+    "autopilot.log",
+    "autopilot-pause",
+    "tick-off",
+)
+
+
+def _legacy_files_present():
+    """Liegen noch Altdateien im Datenordner (Migration oder Datei-Upgrade)?"""
+    if any(os.path.exists(os.path.join(home(), name)) for name in _LEGACY_FILES):
         return True
     folder = tickets_dir()
     if os.path.isdir(folder):
@@ -457,53 +552,59 @@ def _has_legacy():
 
 
 def ensure():
-    """Verzeichnisse anlegen und beim ersten Aufruf DB bzw. Migration aufbauen."""
+    """Verzeichnisse anlegen, DB aufbauen und Altdateien einmalig übernehmen."""
     _sync_home()
     current = home()
     os.makedirs(current, exist_ok=True)
+    if current in _fallback:
+        raise FabError(f"Fabric-Datenbank nicht verfügbar: {db_path()}")
     if os.path.exists(db_path()):
-        _fallback.pop(current, None)
-        return
-    if _fallback.get(current):
+        if not (_upgrading or _bootstrapping or in_transaction()):
+            _upgrade_legacy_files()
         return
     if current in _bootstrapped:
         return
     _bootstrapped.add(current)
     with _flock():
         if os.path.exists(db_path()):
-            _fallback.pop(current, None)
             return
-        try:
-            if _has_legacy():
-                report = _migrate_locked(force=True)
-                if report["status"] == "failed":
-                    _fallback[current] = True
-            else:
-                _install_empty_db()
-        except Exception:  # noqa: BLE001 - jeder Fehler führt in den Fallback
-            if not os.path.exists(db_path()):
-                _fallback[current] = True
-    if _fallback.get(current):
-        _legacy_prepare()
-
-
-def _legacy_prepare():
-    os.makedirs(tickets_dir(), exist_ok=True)
-    path = events_path()
-    if not os.path.exists(path):
-        with open(path, "a", encoding="utf-8"):
-            pass
+        if _legacy_files_present():
+            report = _migrate_locked(force=True)
+        else:
+            _install_empty_db()
+            report = None
+        if report is not None and report["status"] == "failed":
+            _fallback.add(current)
+    if current in _fallback:
+        raise FabError(
+            "Migration nach SQLite fehlgeschlagen: "
+            f"{report['error'] if report else 'unbekannter Fehler'}"
+        )
 
 
 def _install_empty_db():
     fd, tmp = tempfile.mkstemp(dir=home(), prefix=".fabric-", suffix=".db")
     os.close(fd)
     try:
+        from . import prompts as prompts_mod
+        from . import templates as templates_mod
+
         conn = sqlite3.connect(tmp, isolation_level=None)
         try:
             for statement in _SCHEMA:
                 conn.execute(statement)
             conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
+            at = now_ms()
+            for key, text in prompts_mod.DEFAULTS.items():
+                conn.execute(
+                    "INSERT INTO prompts(path,text,updated_at) VALUES (?,?,?)",
+                    (key, text, at),
+                )
+            for name, text in templates_mod.DEFAULTS.items():
+                conn.execute(
+                    "INSERT INTO templates(name,text,updated_at) VALUES (?,?,?)",
+                    (name, text, at),
+                )
         finally:
             conn.close()
         _close_conn()
@@ -525,24 +626,6 @@ def locked(timeout=None):
     global _lock_depth, _lock_handle, _tx_open
 
     ensure()
-    if not _db_ready():
-        if _lock_depth == 0:
-            handle = open(lock_path(), "a+", encoding="utf-8")
-            try:
-                _acquire(handle, timeout)
-            except BaseException:
-                handle.close()
-                raise
-            _lock_handle = handle
-        _lock_depth += 1
-        try:
-            yield
-        finally:
-            _lock_depth -= 1
-            if _lock_depth == 0 and _lock_handle is not None:
-                _unlock()
-        return
-
     if _lock_depth:
         _lock_depth += 1
         try:
@@ -568,12 +651,15 @@ def locked(timeout=None):
         _tx_open = True
         try:
             yield
+            _flush_read_models()
             conn.execute("COMMIT")
             _tx_open = False
         except PersistError:
             _tx_open = False
             conn.execute("COMMIT")
+            conn.execute("BEGIN IMMEDIATE")
             _flush_read_models()
+            conn.execute("COMMIT")
             _reset_pending()
             raise
         except BaseException:
@@ -584,7 +670,6 @@ def locked(timeout=None):
                 pass
             _reset_pending()
             raise
-        _flush_read_models()
         _reset_pending()
     finally:
         _tx_open = False
@@ -619,16 +704,46 @@ def in_transaction():
 
 
 def defer_index(payload):
-    """Von `index.rebuild()` innerhalb einer Transaktion aufgerufen."""
+    """Von `index.rebuild()` aufgerufen: Lesemodell in der Transaktion vormerken."""
     global _pending_index, _index_dirty
     if in_transaction():
         _pending_index = payload
         _index_dirty = True
         return
-    atomic_write(index_path(), _json_line(payload))
+    with _auto_tx():
+        _pending_index = payload
+        _index_dirty = True
 
 
-def _flush_read_models():
+REV_META_KEY = "rev"
+
+
+def _bump_rev(conn):
+    """`meta.rev` in derselben Transaktion fortschreiben; Rückgabe: neuer Wert."""
+    row = conn.execute("SELECT value FROM meta WHERE key='rev'").fetchone()
+    try:
+        value = int(row["value"]) if row is not None else 0
+    except (TypeError, ValueError):
+        value = 0
+    value += 1
+    conn.execute(
+        "INSERT INTO meta(key,value) VALUES ('rev',?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (str(value),),
+    )
+    return value
+
+
+def rev():
+    """Aktueller Stand von `meta.rev`; Mods pollen ihn zum Neuladen."""
+    ensure()
+    try:
+        return int(meta_get(REV_META_KEY) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _reviewer():
     reviewer = "ada"
     try:
         from . import agents
@@ -638,15 +753,57 @@ def _flush_read_models():
             reviewer = str(roster.get("reviewer") or "ada")
     except FabError:
         pass
+    return reviewer
+
+
+def _model_write(conn, key, text):
+    conn.execute(
+        "INSERT INTO read_models(key,value,updated_at) VALUES (?,?,?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value, "
+        "updated_at=excluded.updated_at",
+        (key, text, now_ms()),
+    )
+
+
+def ticket_model_key(tid):
+    return f"ticket:{tid}"
+
+
+def read_model(key, default=None):
+    """Rohes Lesemodell (JSON-Text) aus `read_models`."""
+    ensure()
+    row = _connect().execute(
+        "SELECT value FROM read_models WHERE key=?", (key,)
+    ).fetchone()
+    return row["value"] if row is not None else default
+
+
+def read_model_json(key, default=None):
+    raw = read_model(key)
+    if raw is None:
+        return default
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return default
+
+
+def _flush_read_models():
+    """Lesemodelle und `meta.rev` in der laufenden Transaktion fortschreiben."""
+    if not (_dirty_tickets or _index_dirty or _pending_index is not None):
+        return
+    conn = _connect()
+    reviewer = _reviewer()
     for tid in sorted(_dirty_tickets, key=_number_of):
-        _write_model(load(tid), reviewer)
+        _write_model(conn, load(tid), reviewer)
     payload = _pending_index
     if payload is None and _index_dirty:
         from . import index as index_mod
 
         payload = index_mod.build()
     if payload is not None:
-        atomic_write(index_path(), _json_line(payload))
+        _model_write(conn, "index", _json_line(payload))
+    _bump_rev(conn)
 
 
 # ---------------------------------------------------------------- Dateien
@@ -681,15 +838,25 @@ def _ticket_text(ticket):
     return json.dumps(ticket, ensure_ascii=False, indent=2) + "\n"
 
 
-def _write_model(ticket, reviewer="ada"):
-    """Lesemodell schreiben: Kosten bleiben gespeichert, Liegezeiten kommen dazu."""
+def _ticket_model(ticket, reviewer="ada"):
+    """Lesemodell: Kosten bleiben gespeichert, Liegezeiten und Anhang-Cache kommen dazu."""
     from . import costs
 
     model = dict(ticket)
     model["waits"] = costs.waits(
         ticket, event_rows_for(ticket["id"]), reviewer
     )
-    atomic_write(ticket_path(ticket["id"]), _ticket_text(model))
+    attachments = attachment_models(ticket["id"])
+    if attachments:
+        model["attachments"] = attachments
+    return model
+
+
+def _write_model(conn, ticket, reviewer="ada"):
+    model = _ticket_model(ticket, reviewer)
+    _model_write(
+        conn, ticket_model_key(ticket["id"]), _ticket_text(model)
+    )
 
 
 # ---------------------------------------------------------------- Ticket-Modell
@@ -840,11 +1007,29 @@ def _write_ticket(conn, tid, ticket):
             "INSERT INTO sessions(ticket,position,data) VALUES (?,?,?)",
             (tid, index, json.dumps(session, ensure_ascii=False)),
         )
+    existing = {
+        row["name"]: dict(row)
+        for row in conn.execute(
+            "SELECT position,name,data,mime FROM attachments WHERE ticket=?", (tid,)
+        )
+    }
     conn.execute("DELETE FROM attachments WHERE ticket=?", (tid,))
     for index, item in _iter_attachments(ticket):
+        name = item.get("name")
+        previous = existing.get(name) or {}
+        position = int(item.get("position") or index)
         conn.execute(
-            "INSERT INTO attachments(ticket,position,name,path,at) VALUES (?,?,?,?,?)",
-            (tid, index, item.get("name"), item.get("path"), item.get("at")),
+            "INSERT INTO attachments(ticket,position,name,path,at,data,mime) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (
+                tid,
+                position,
+                name,
+                attachment_cache_rel(tid, position, name or "anhang"),
+                item.get("at"),
+                previous.get("data"),
+                previous.get("mime"),
+            ),
         )
 
 
@@ -921,7 +1106,7 @@ def _load_db(raw_id):
 
 def _legacy_load(raw_id):
     tid = normalize_id(raw_id)
-    path = ticket_path(tid)
+    path = os.path.join(tickets_dir(), f"{tid}.json")
     try:
         with open(path, encoding="utf-8") as handle:
             data = json.load(handle)
@@ -936,9 +1121,7 @@ def _legacy_load(raw_id):
 
 def load(raw_id):
     ensure()
-    if _db_ready():
-        return _load_db(raw_id)
-    return _legacy_load(raw_id)
+    return _load_db(raw_id)
 
 
 _REVISION_IGNORED = ("comments", "updated_at", "cost", "waits")
@@ -978,60 +1161,27 @@ def _save_db(ticket, touch):
     _index_dirty = True
 
 
-def _legacy_save(ticket, touch):
-    tid = normalize_id(ticket.get("id"))
-    ticket["id"] = tid
-    if touch:
-        ticket["updated_at"] = now_ms()
-    if ticket.get("sessions") and ticket.get("worktree"):
-        from . import costs
-
-        ticket["cost"] = costs.collect(ticket)
-    atomic_write(ticket_path(tid), _ticket_text(ticket))
-
-
 def save(ticket, touch=True):
     ensure()
-    if _db_ready():
-        with _auto_tx():
-            _save_db(ticket, touch)
-        return
-    _legacy_save(ticket, touch)
+    with _auto_tx():
+        _save_db(ticket, touch)
 
 
 def next_id():
     """Nächste ID aus `counter`; innerhalb der laufenden Transaktion."""
     ensure()
-    if _db_ready():
-        with _auto_tx():
-            conn = _connect()
-            row = conn.execute("SELECT value FROM counter WHERE id=1").fetchone()
-            if row is None:
-                value = 1
-                conn.execute("INSERT INTO counter(id,value) VALUES (1,?)", (value + 1,))
-            else:
-                value = int(row["value"])
-                conn.execute("UPDATE counter SET value=? WHERE id=1", (value + 1,))
-            if value < 1:
-                raise FabError(f"counter enthält keine gültige Nummer: {db_path()}")
-            return f"T-{value}"
-    return _legacy_next_id()
-
-
-def _legacy_next_id():
-    path = counter_path()
-    try:
-        with open(path, encoding="utf-8") as handle:
-            raw = handle.read().strip()
-        number = int(raw or "1")
-    except FileNotFoundError:
-        number = 1
-    except ValueError:
-        raise FabError(f"counter enthält keine Zahl: {path}")
-    if number < 1:
-        raise FabError(f"counter enthält keine gültige Nummer: {path}")
-    atomic_write(path, f"{number + 1}\n")
-    return f"T-{number}"
+    with _auto_tx():
+        conn = _connect()
+        row = conn.execute("SELECT value FROM counter WHERE id=1").fetchone()
+        if row is None:
+            value = 1
+            conn.execute("INSERT INTO counter(id,value) VALUES (1,?)", (value + 1,))
+        else:
+            value = int(row["value"])
+            conn.execute("UPDATE counter SET value=? WHERE id=1", (value + 1,))
+        if value < 1:
+            raise FabError(f"counter enthält keine gültige Nummer: {db_path()}")
+        return f"T-{value}"
 
 
 def _all_ids():
@@ -1057,19 +1207,11 @@ def _legacy_ticket_files():
 
 def all_tickets():
     ensure()
-    if _db_ready():
-        conn = _connect()
-        return [
-            _ticket_from_row(conn, row)
-            for row in conn.execute("SELECT * FROM tickets ORDER BY number")
-        ]
-    tickets = []
-    for name in _legacy_ticket_files():
-        try:
-            tickets.append(_legacy_load(name[:-5]))
-        except FabError:
-            continue
-    return tickets
+    conn = _connect()
+    return [
+        _ticket_from_row(conn, row)
+        for row in conn.execute("SELECT * FROM tickets ORDER BY number")
+    ]
 
 
 _QUERIES = {
@@ -1084,11 +1226,9 @@ _QUERIES = {
 
 def _query_tickets(mode):
     ensure()
-    if _db_ready():
-        conn = _connect()
-        sql = f"SELECT * FROM tickets WHERE {_QUERIES[mode]} ORDER BY number"
-        return [_ticket_from_row(conn, row) for row in conn.execute(sql)]
-    return [ticket for ticket in all_tickets() if _match(ticket, mode)]
+    conn = _connect()
+    sql = f"SELECT * FROM tickets WHERE {_QUERIES[mode]} ORDER BY number"
+    return [_ticket_from_row(conn, row) for row in conn.execute(sql)]
 
 
 def _match(ticket, where):
@@ -1231,23 +1371,16 @@ def event_append(kind, ticket, actor="", target="", text="", reason="", at=None)
         _deferred_events.append(row)
         return row
     ensure()
-    if _db_ready():
-        global _index_dirty
-        with _auto_tx():
-            conn = _connect()
-            _insert_event(conn, row)
-            _index_dirty = True
-        return row
-    with open(events_path(), "a", encoding="utf-8") as handle:
-        handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+    global _index_dirty
+    with _auto_tx():
+        conn = _connect()
+        _insert_event(conn, row)
+        _index_dirty = True
     return row
 
 
 def event_rows(limit=None):
     ensure()
-    if not _db_ready():
-        rows = _legacy_event_rows()
-        return rows[-limit:] if limit is not None else rows
     conn = _connect()
     if limit is None:
         rows = conn.execute("SELECT * FROM events ORDER BY id").fetchall()
@@ -1269,12 +1402,6 @@ def event_rows_for(tid):
     """Alle Ereignisse eines Tickets; Zeilen ohne Ticket-ID gelten mit."""
     ensure()
     tid = normalize_id(tid)
-    if not _db_ready():
-        return [
-            row
-            for row in _legacy_event_rows()
-            if not row.get("ticket") or row.get("ticket") == tid
-        ]
     rows = _connect().execute(
         "SELECT * FROM events WHERE ticket=? OR ticket='' ORDER BY id", (tid,)
     ).fetchall()
@@ -1285,13 +1412,6 @@ def event_rows_for_ticket(tid, kind=None):
     """Nur Ereignisse dieses Tickets (optional einer Art), über events_ticket."""
     ensure()
     tid = normalize_id(tid)
-    if not _db_ready():
-        return [
-            row
-            for row in _legacy_event_rows()
-            if row.get("ticket") == tid
-            and (kind is None or row.get("kind") == kind)
-        ]
     if kind is None:
         rows = _connect().execute(
             "SELECT * FROM events WHERE ticket=? ORDER BY id", (tid,)
@@ -1306,13 +1426,6 @@ def event_rows_for_ticket(tid, kind=None):
 
 def event_has_text(ticket, text):
     ensure()
-    if not _db_ready():
-        return any(
-            row.get("kind") == "wake"
-            and row.get("ticket") == ticket
-            and row.get("text") == text
-            for row in _legacy_event_rows()
-        )
     row = _connect().execute(
         "SELECT 1 FROM events WHERE kind='wake' AND ticket=? AND text=? LIMIT 1",
         (ticket, text),
@@ -1325,16 +1438,6 @@ def event_count_wakes(ticket, target, since_ms, texts):
     texts = list(texts)
     if not texts:
         return 0
-    if not _db_ready():
-        return sum(
-            1
-            for row in _legacy_event_rows()
-            if row.get("kind") == "wake"
-            and row.get("ticket") == ticket
-            and row.get("target") == target
-            and row.get("text") in texts
-            and int(row.get("at") or 0) >= since_ms
-        )
     marks = ",".join("?" for _ in texts)
     sql = (
         "SELECT COUNT(*) FROM events WHERE kind='wake' AND ticket=? AND target=? "
@@ -1353,16 +1456,6 @@ def attention_event_rows(texts):
     texts = list(texts)
     if not texts:
         return []
-    if not _db_ready():
-        rows = []
-        per_ticket = {}
-        for row in _legacy_event_rows():
-            per_ticket[row.get("ticket")] = row
-        for row in per_ticket.values():
-            if row.get("kind") == "wake" and row.get("text") in texts:
-                rows.append(row)
-        rows.sort(key=lambda row: (_number_of(row.get("ticket") or ""),))
-        return rows
     marks = ",".join("?" for _ in texts)
     sql = (
         "SELECT e.* FROM events e JOIN ("
@@ -1377,17 +1470,12 @@ def attention_event_rows(texts):
 
 def event_marker():
     ensure()
-    if not _db_ready():
-        return len(_legacy_event_rows())
     row = _connect().execute("SELECT COALESCE(MAX(id),0) FROM events").fetchone()
     return int(row[0])
 
 
 def event_clear():
     ensure()
-    if not _db_ready():
-        atomic_write(events_path(), "")
-        return
     global _index_dirty
     with _auto_tx():
         _connect().execute("DELETE FROM events")
@@ -1397,45 +1485,36 @@ def event_clear():
 # ---------------------------------------------------------------- Metadaten
 
 
-def _legacy_meta_get(key, default):
-    if key == "herdr_space":
-        try:
-            with open(os.path.join(home(), "herdr.json"), encoding="utf-8") as handle:
-                data = json.load(handle)
-        except (FileNotFoundError, json.JSONDecodeError):
-            return default
-        space = data.get("space") if isinstance(data, dict) else None
-        return space if isinstance(space, str) and space else default
-    return _legacy_meta.get(home(), {}).get(key, default)
-
-
-def _legacy_meta_set(key, value):
-    if key == "herdr_space":
-        path = os.path.join(home(), "herdr.json")
-        atomic_write(path, _json_line({"space": value}))
-        return
-    _legacy_meta.setdefault(home(), {})[key] = value
-
-
 def meta_get(key, default=None):
     ensure()
-    if not _db_ready():
-        return _legacy_meta_get(key, default)
     row = _connect().execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
     return row["value"] if row is not None else default
 
 
 def meta_set(key, value):
+    global _index_dirty
     ensure()
-    if not _db_ready():
-        _legacy_meta_set(key, value)
-        return
     with _auto_tx():
-        _connect().execute(
+        conn = _connect()
+        conn.execute(
             "INSERT INTO meta(key,value) VALUES (?,?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             (key, str(value)),
         )
+        if key in REV_KEYS:
+            _index_dirty = True
+            _bump_rev(conn)
+
+
+def meta_delete(key):
+    global _index_dirty
+    ensure()
+    with _auto_tx():
+        conn = _connect()
+        conn.execute("DELETE FROM meta WHERE key=?", (key,))
+        if key in REV_KEYS:
+            _index_dirty = True
+            _bump_rev(conn)
 
 
 TICK_ALARM_MS = 5 * 60 * 1000
@@ -1453,13 +1532,249 @@ def set_last_tick(at=None):
     meta_set("last_tick", now_ms() if at is None else int(at))
 
 
-def tick_off_path():
-    """Marke für einen absichtlich abgeschalteten Wächter (`fab tick --uninstall`)."""
-    return os.path.join(home(), "tick-off")
+TICK_OFF_KEY = "tick_off"
+AUTOPILOT_KEY = "autopilot"
+AUTOPILOT_PAUSE_KEY = "autopilot_pause"
+REV_KEYS = (AUTOPILOT_KEY, AUTOPILOT_PAUSE_KEY, TICK_OFF_KEY)
 
 
 def tick_disabled():
-    return os.path.exists(tick_off_path())
+    """Wächter absichtlich aus? Marke `meta.tick_off` statt der alten Datei."""
+    ensure()
+    return meta_get(TICK_OFF_KEY) is not None
+
+
+def set_tick_off(value="1"):
+    meta_set(TICK_OFF_KEY, value or "1")
+
+
+def clear_tick_off():
+    meta_delete(TICK_OFF_KEY)
+
+
+ROSTER_CONFIG_KEY = "roster"
+
+
+def roster_set(data):
+    """Roster als JSON in die Konfiguration schreiben."""
+    config_set(
+        ROSTER_CONFIG_KEY,
+        json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+    )
+
+
+def config_export():
+    """Roster, Prompts und Vorlagen der aktuellen DB als Daten (für die Vorschau)."""
+    ensure()
+    conn = _connect()
+    roster = conn.execute("SELECT value FROM config WHERE key='roster'").fetchone()
+    return {
+        "roster": roster[0] if roster else None,
+        "prompts": {row[0]: row[1] for row in conn.execute("SELECT path, text FROM prompts")},
+        "templates": {row[0]: row[1] for row in conn.execute("SELECT name, text FROM templates")},
+    }
+
+
+def config_import(data):
+    """Gegenstück zu `config_export`: Einträge in die aktuelle DB schreiben."""
+    ensure()
+    stamp = now_ms()
+    with _auto_tx():
+        conn = _connect()
+        if data.get("roster"):
+            conn.execute(
+                "INSERT INTO config(key,value,updated_at) VALUES ('roster',?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+                (data["roster"], stamp),
+            )
+        for path, text in (data.get("prompts") or {}).items():
+            conn.execute(
+                "INSERT INTO prompts(path,text,updated_at) VALUES (?,?,?) "
+                "ON CONFLICT(path) DO UPDATE SET text=excluded.text, updated_at=excluded.updated_at",
+                (path, text, stamp),
+            )
+        for name, text in (data.get("templates") or {}).items():
+            conn.execute(
+                "INSERT INTO templates(name,text,updated_at) VALUES (?,?,?) "
+                "ON CONFLICT(name) DO UPDATE SET text=excluded.text, updated_at=excluded.updated_at",
+                (name, text, stamp),
+            )
+        conn.execute(
+            "INSERT INTO meta(key,value) VALUES (?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (CONFIG_MARKER, "1"),
+        )
+        _bump_rev(conn)
+
+
+def config_get(key, default=None):
+    """Rohtext aus der Konfiguration (etwa `roster` als JSON)."""
+    ensure()
+    row = _connect().execute(
+        "SELECT value FROM config WHERE key=?", (key,)
+    ).fetchone()
+    return row["value"] if row is not None else default
+
+
+def config_set(key, value):
+    global _index_dirty
+    ensure()
+    with _auto_tx():
+        conn = _connect()
+        conn.execute(
+            "INSERT INTO config(key,value,updated_at) VALUES (?,?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value, "
+            "updated_at=excluded.updated_at",
+            (key, str(value), now_ms()),
+        )
+        _index_dirty = True
+        _bump_rev(conn)
+
+
+def config_delete(key):
+    global _index_dirty
+    ensure()
+    with _auto_tx():
+        conn = _connect()
+        conn.execute("DELETE FROM config WHERE key=?", (key,))
+        _index_dirty = True
+        _bump_rev(conn)
+
+
+def prompt_get(path, default=None):
+    ensure()
+    row = _connect().execute(
+        "SELECT text FROM prompts WHERE path=?", (path,)
+    ).fetchone()
+    return row["text"] if row is not None else default
+
+
+def prompt_set(path, text):
+    global _index_dirty
+    ensure()
+    with _auto_tx():
+        conn = _connect()
+        conn.execute(
+            "INSERT INTO prompts(path,text,updated_at) VALUES (?,?,?) "
+            "ON CONFLICT(path) DO UPDATE SET text=excluded.text, "
+            "updated_at=excluded.updated_at",
+            (path, text, now_ms()),
+        )
+        _index_dirty = True
+        _bump_rev(conn)
+
+
+def prompt_delete(path):
+    global _index_dirty
+    ensure()
+    with _auto_tx():
+        conn = _connect()
+        conn.execute("DELETE FROM prompts WHERE path=?", (path,))
+        _index_dirty = True
+        _bump_rev(conn)
+
+
+def prompt_paths():
+    ensure()
+    return [
+        row["path"]
+        for row in _connect().execute("SELECT path FROM prompts ORDER BY path")
+    ]
+
+
+def template_get(name, default=None):
+    ensure()
+    row = _connect().execute(
+        "SELECT text FROM templates WHERE name=?", (name,)
+    ).fetchone()
+    return row["text"] if row is not None else default
+
+
+def template_names():
+    ensure()
+    return [
+        row["name"]
+        for row in _connect().execute("SELECT name FROM templates ORDER BY name")
+    ]
+
+
+def template_set(name, text):
+    global _index_dirty
+    ensure()
+    with _auto_tx():
+        conn = _connect()
+        conn.execute(
+            "INSERT INTO templates(name,text,updated_at) VALUES (?,?,?) "
+            "ON CONFLICT(name) DO UPDATE SET text=excluded.text, "
+            "updated_at=excluded.updated_at",
+            (name, text, now_ms()),
+        )
+        _index_dirty = True
+        _bump_rev(conn)
+
+
+def template_delete(name):
+    global _index_dirty
+    ensure()
+    with _auto_tx():
+        conn = _connect()
+        conn.execute("DELETE FROM templates WHERE name=?", (name,))
+        _index_dirty = True
+        _bump_rev(conn)
+
+
+def autopilot_log_append(line, at=None):
+    """Zeile ins Autopilotlog; hält die neuesten `AUTOPILOT_LOG_MAX` Zeilen."""
+    global _index_dirty
+    ensure()
+    with _auto_tx():
+        conn = _connect()
+        conn.execute(
+            "INSERT INTO autopilot_log(at,line) VALUES (?,?)",
+            (now_ms() if at is None else int(at), str(line)),
+        )
+        conn.execute(
+            "DELETE FROM autopilot_log WHERE id NOT IN ("
+            "SELECT id FROM autopilot_log ORDER BY id DESC LIMIT ?)",
+            (AUTOPILOT_LOG_MAX,),
+        )
+        _index_dirty = True
+        _bump_rev(conn)
+
+
+def autopilot_log_rows(limit=None, offset=0):
+    """Logzeilen in Reihenfolge des Schreibens (älteste zuerst)."""
+    ensure()
+    conn = _connect()
+    if limit is None:
+        rows = conn.execute(
+            "SELECT id,at,line FROM autopilot_log ORDER BY id"
+        ).fetchall()
+    else:
+        if limit <= 0:
+            return []
+        rows = conn.execute(
+            "SELECT id,at,line FROM autopilot_log "
+            "ORDER BY id DESC LIMIT ? OFFSET ?",
+            (int(limit), max(0, int(offset))),
+        ).fetchall()
+        rows = list(reversed(rows))
+    return [{"id": row["id"], "at": row["at"], "line": row["line"]} for row in rows]
+
+
+def autopilot_log_text(limit=200):
+    """Log als Text; die neuesten `limit` Zeilen, älteste zuerst."""
+    return "".join(row["line"] + "\n" for row in autopilot_log_rows(limit))
+
+
+def autopilot_log_clear():
+    global _index_dirty
+    ensure()
+    with _auto_tx():
+        conn = _connect()
+        conn.execute("DELETE FROM autopilot_log")
+        _index_dirty = True
+        _bump_rev(conn)
 
 
 def tick_alarm(now=None, limit_ms=TICK_ALARM_MS):
@@ -1790,10 +2105,6 @@ def pipeline_run_load(run_id):
 
 def pipeline_run_list(ticket=None):
     ensure()
-    # Im Altdatei-Fallback gibt es keine Pipeline-Tabellen; `_connect()` würde
-    # sonst eine leere DB anlegen und den Fallback still beenden.
-    if not _db_ready():
-        return []
     conn = _connect()
     if ticket is None:
         rows = conn.execute(
@@ -1889,66 +2200,150 @@ def pipeline_steps(run_id):
 # ---------------------------------------------------------------- Anhänge
 
 
-def _copy_attachment(source, tid, wanted, dedupe=True):
-    folder = attachments_dir(tid)
-    os.makedirs(folder, exist_ok=True)
+CACHE_PREFIX = "data/fabric/cache/attachments"
+
+
+def attachment_cache_rel(tid, position, name):
+    """Pfad, den UI und Prompt nennen: relativ zum App-Home."""
+    return f"{CACHE_PREFIX}/{tid}/{int(position)}-{name}"
+
+
+def attachment_cache_abs(tid, position, name):
+    """Tatsächlicher Ablageort im Wegwerf-Cache unter `$FAB_HOME`."""
+    return os.path.join(
+        cache_dir(), "attachments", tid, f"{int(position)}-{name}"
+    )
+
+
+def _mime(name):
+    import mimetypes
+
+    guessed, _encoding = mimetypes.guess_type(name or "")
+    return guessed or "application/octet-stream"
+
+
+def _materialize(tid, position, name, data):
+    """Cache-Datei bei Bedarf schreiben; Rückgabe: relativer Pfad."""
+    rel = attachment_cache_rel(tid, position, name)
+    if data is None:
+        return rel
+    path = attachment_cache_abs(tid, position, name)
+    try:
+        if os.path.isfile(path) and os.path.getsize(path) == len(data):
+            return rel
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as handle:
+            handle.write(bytes(data))
+    except OSError as exc:
+        raise FabError(f"Anhang-Cache nicht schreibbar: {exc}")
+    return rel
+
+
+_ATTACHMENT_COLUMNS = "position,name,path,at,mime,data"
+
+
+def attachment_rows(tid):
+    """Alle Anhänge eines Tickets mit Bytes, in Positionsreihenfolge."""
+    ensure()
+    tid = normalize_id(tid)
+    rows = _connect().execute(
+        f"SELECT {_ATTACHMENT_COLUMNS} FROM attachments "
+        "WHERE ticket=? ORDER BY position",
+        (tid,),
+    ).fetchall()
+    return [
+        {
+            "position": row["position"],
+            "name": row["name"],
+            "at": row["at"],
+            "mime": row["mime"] or _mime(row["name"]),
+            "data": row["data"],
+        }
+        for row in rows
+    ]
+
+
+def attachment_models(tid, materialize=True):
+    """Lesemodell-Einträge der Anhänge inklusive `cache_path`."""
+    models = []
+    for row in attachment_rows(tid):
+        rel = (
+            _materialize(tid, row["position"], row["name"], row["data"])
+            if materialize
+            else attachment_cache_rel(tid, row["position"], row["name"])
+        )
+        models.append(
+            {
+                "name": row["name"],
+                "position": row["position"],
+                "path": rel,
+                "cache_path": rel,
+                "at": row["at"],
+                "mime": row["mime"],
+            }
+        )
+    return models
+
+
+def attachment_materialize(tid, position=None):
+    """Cache schreiben (nur fehlende Dateien) und Pfade zurückgeben."""
+    models = attachment_models(tid)
+    if position is None:
+        return models
+    number = int(position)
+    for row in models:
+        if row["cache_path"].endswith(f"/{number}-{row['name']}"):
+            return row
+    raise FabError(f"Ticket {tid} hat keinen Anhang an Position {position}")
+
+
+def _unique_name(conn, tid, wanted):
+    stem, suffix = os.path.splitext(wanted or "bild")
+    name = wanted or "bild"
+    counter = 2
+    while conn.execute(
+        "SELECT 1 FROM attachments WHERE ticket=? AND name=?", (tid, name)
+    ).fetchone() is not None:
+        name = f"{stem}-{counter}{suffix}"
+        counter += 1
+    return name
+
+
+def attachment_add(source, tid, wanted_name, dedupe=True):
+    """Bild in die DB legen; liefert (Name, relativer `cache_path`)."""
+    ensure()
+    tid = normalize_id(tid)
     try:
         with open(source, "rb") as handle:
             data = handle.read()
     except OSError as exc:
         raise FabError(f"Datei nicht lesbar: {source}: {exc}")
-    if dedupe:
-        for name in sorted(os.listdir(folder)):
-            target = os.path.join(folder, name)
-            if not os.path.isfile(target):
-                continue
-            try:
-                with open(target, "rb") as handle:
-                    if handle.read() == data:
-                        return name
-            except OSError:
-                continue
-    stem, suffix = os.path.splitext(wanted)
-    counter = 2
-    while True:
-        target = os.path.join(folder, wanted)
-        if not os.path.exists(target):
-            with open(target, "wb") as handle:
-                handle.write(data)
-            return wanted
-        wanted = f"{stem}-{counter}{suffix}"
-        counter += 1
-
-
-def attachment_add(source, tid, wanted_name, dedupe=True):
-    """Bildkopie plus Anhangszeile; liefert (Name, relativer Pfad)."""
-    ensure()
-    tid = normalize_id(tid)
-    name = _copy_attachment(source, tid, wanted_name, dedupe=dedupe)
-    relative = f"data/fabric/attachments/{tid}/{name}"
-    if _db_ready():
-        with _auto_tx():
-            conn = _connect()
+    with _auto_tx():
+        conn = _connect()
+        if dedupe:
             existing = conn.execute(
-                "SELECT 1 FROM attachments WHERE ticket=? AND path=?", (tid, relative)
+                "SELECT position,name FROM attachments WHERE ticket=? AND data=?",
+                (tid, data),
             ).fetchone()
-            if existing is None:
-                row = conn.execute(
-                    "SELECT COALESCE(MAX(position),0)+1 FROM attachments WHERE ticket=?",
-                    (tid,),
-                ).fetchone()
-                conn.execute(
-                    "INSERT INTO attachments(ticket,position,name,path,at) VALUES (?,?,?,?,?)",
-                    (tid, int(row[0]), name, relative, now_ms()),
-                )
-            _dirty_tickets.add(tid)
-    else:
-        ticket = _legacy_load(tid)
-        items = ticket.setdefault("attachments", [])
-        if not any(item.get("path") == relative for item in items):
-            items.append({"name": name, "path": relative, "at": now_ms()})
-            _legacy_save(ticket, touch=False)
-    return name, relative
+            if existing is not None:
+                name = existing["name"]
+                rel = _materialize(tid, existing["position"], name, data)
+                _dirty_tickets.add(tid)
+                return name, rel
+        name = _unique_name(conn, tid, wanted_name)
+        row = conn.execute(
+            "SELECT COALESCE(MAX(position),0)+1 FROM attachments WHERE ticket=?",
+            (tid,),
+        ).fetchone()
+        position = int(row[0])
+        rel = attachment_cache_rel(tid, position, name)
+        conn.execute(
+            "INSERT INTO attachments(ticket,position,name,path,at,data,mime) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (tid, position, name, rel, now_ms(), sqlite3.Binary(data), _mime(name)),
+        )
+        _dirty_tickets.add(tid)
+    return name, rel
 
 
 # ---------------------------------------------------------------- Backup
@@ -1991,8 +2386,6 @@ def prune_backups(keep=14):
 
 def backup():
     ensure()
-    if not _db_ready():
-        return ""
     os.makedirs(backups_dir(), exist_ok=True)
     stamp = datetime.fromtimestamp(now_ms() / 1000).strftime("%Y%m%d-%H%M%S-%f")
     target = os.path.join(backups_dir(), f"fabric-{stamp}.db")
@@ -2020,8 +2413,6 @@ def backup():
 
 
 def _maybe_daily_backup():
-    if not _db_ready():
-        return
     today = datetime.fromtimestamp(now_ms() / 1000).date().isoformat()
     conn = _connect()
     row = conn.execute("SELECT value FROM meta WHERE key='last_backup_day'").fetchone()
@@ -2125,23 +2516,224 @@ def _read_legacy_events():
     return rows, skipped
 
 
-def _move_legacy():
-    os.makedirs(legacy_dir(), exist_ok=True)
-    moved = []
-    for name in ("tickets", "counter", "events.jsonl", "index.json", "herdr.json"):
-        source = os.path.join(home(), name)
-        if not os.path.exists(source):
+def _read_legacy_autopilot():
+    """Altdateien des Autopiloten: Status, Logzeilen, Pause und Wächtermarke."""
+    state = None
+    path = os.path.join(home(), "autopilot.json")
+    try:
+        with open(path, encoding="utf-8") as handle:
+            parsed = json.load(handle)
+        if isinstance(parsed, dict):
+            state = parsed
+    except (OSError, ValueError):
+        state = None
+    lines = []
+    try:
+        with open(os.path.join(home(), "autopilot.log"), encoding="utf-8") as handle:
+            lines = [line.rstrip("\n") for line in handle if line.strip()]
+    except OSError:
+        lines = []
+    pause = None
+    try:
+        with open(os.path.join(home(), "autopilot-pause"), encoding="utf-8") as handle:
+            pause = handle.read()
+    except OSError:
+        pause = None
+    tick_off = os.path.exists(os.path.join(home(), "tick-off"))
+    return state, lines, pause, tick_off
+
+
+def _import_autopilot(conn):
+    """Autopilotstatus, Log und Marken übernehmen, ohne Bestehendes zu überschreiben."""
+    state, lines, pause, tick_off = _read_legacy_autopilot()
+    if state is not None:
+        conn.execute(
+            "INSERT INTO meta(key,value) VALUES ('autopilot',?) "
+            "ON CONFLICT(key) DO NOTHING",
+            (json.dumps(state, ensure_ascii=False),),
+        )
+    rows = int(conn.execute("SELECT COUNT(*) FROM autopilot_log").fetchone()[0])
+    if lines and rows == 0:
+        for line in lines[-AUTOPILOT_LOG_MAX:]:
+            conn.execute(
+                "INSERT INTO autopilot_log(at,line) VALUES (?,?)",
+                (now_ms(), line),
+            )
+    if tick_off:
+        conn.execute(
+            "INSERT INTO meta(key,value) VALUES ('tick_off','1') "
+            "ON CONFLICT(key) DO NOTHING"
+        )
+    if pause is not None:
+        conn.execute(
+            "INSERT INTO meta(key,value) VALUES ('autopilot_pause',?) "
+            "ON CONFLICT(key) DO NOTHING",
+            (pause,),
+        )
+
+
+def _legacy_attachment_file(tid, name):
+    for candidate in (
+        os.path.join(attachments_dir(tid), name),
+    ):
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def _import_legacy_attachments(conn):
+    """Vorhandene Dateien unter `attachments/` in die BLOB-Spalte übernehmen."""
+    rows = conn.execute(
+        "SELECT ticket,position,name,data FROM attachments ORDER BY ticket,position"
+    ).fetchall()
+    for row in rows:
+        if row["data"] is not None:
             continue
-        target = os.path.join(legacy_dir(), name)
-        if os.path.exists(target):
-            stamp = datetime.fromtimestamp(now_ms() / 1000).strftime("%Y%m%d-%H%M%S")
-            candidate = f"{target}-{stamp}"
-            suffix = 2
-            while os.path.exists(candidate):
-                candidate = f"{target}-{stamp}-{suffix}"
-                suffix += 1
-            target = candidate
-        shutil.move(source, target)
+        source = _legacy_attachment_file(row["ticket"], row["name"])
+        if source is None:
+            continue
+        try:
+            with open(source, "rb") as handle:
+                data = handle.read()
+        except OSError:
+            continue
+        conn.execute(
+            "UPDATE attachments SET data=?, mime=?, path=? "
+            "WHERE ticket=? AND position=?",
+            (
+                sqlite3.Binary(data),
+                _mime(row["name"]),
+                attachment_cache_rel(row["ticket"], row["position"], row["name"]),
+                row["ticket"],
+                row["position"],
+            ),
+        )
+
+
+def _legacy_roster_dir():
+    """Ordner der Altkonfiguration: `FAB_ROSTER`-Pfad oder `<repo>/fabric/`."""
+    raw = os.environ.get("FAB_ROSTER")
+    if raw:
+        path = os.path.abspath(os.path.expanduser(raw))
+        return os.path.dirname(path)
+    return os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+
+
+def _import_legacy_config(conn, folder=None):
+    """Roster, Prompts und Vorlagen aus Dateien übernehmen, falls die DB leer ist."""
+    from . import prompts
+
+    folder = folder or _legacy_roster_dir()
+    roster_file = os.path.join(folder, "roster.json")
+    has_roster = conn.execute(
+        "SELECT 1 FROM config WHERE key='roster'"
+    ).fetchone()
+    if has_roster is None and os.path.isfile(roster_file):
+        try:
+            with open(roster_file, encoding="utf-8") as handle:
+                raw = handle.read()
+            json.loads(raw)
+        except (OSError, ValueError):
+            raw = None
+        if raw:
+            conn.execute(
+                "INSERT INTO config(key,value,updated_at) VALUES ('roster',?,?)",
+                (raw, now_ms()),
+            )
+    prompt_dir = os.path.join(folder, "prompts")
+    if os.path.isdir(prompt_dir):
+        for name in sorted(os.listdir(prompt_dir)):
+            if not name.endswith(".md"):
+                continue
+            path = os.path.join(prompt_dir, name)
+            if not os.path.isfile(path):
+                continue
+            key = f"prompts/{name}"
+            if conn.execute(
+                "SELECT 1 FROM prompts WHERE path=?", (key,)
+            ).fetchone() is not None:
+                continue
+            try:
+                with open(path, encoding="utf-8") as handle:
+                    text = handle.read()
+            except OSError:
+                continue
+            conn.execute(
+                "INSERT INTO prompts(path,text,updated_at) VALUES (?,?,?)",
+                (key, text, now_ms()),
+            )
+    template_dir = os.path.join(folder, "templates")
+    if os.path.isdir(template_dir):
+        for name in sorted(os.listdir(template_dir)):
+            if not name.endswith(".md"):
+                continue
+            key = name[:-3]
+            if conn.execute(
+                "SELECT 1 FROM templates WHERE name=?", (key,)
+            ).fetchone() is not None:
+                continue
+            try:
+                with open(os.path.join(template_dir, name), encoding="utf-8") as handle:
+                    text = handle.read()
+            except OSError:
+                continue
+            conn.execute(
+                "INSERT INTO templates(name,text,updated_at) VALUES (?,?,?)",
+                (key, text, now_ms()),
+            )
+    # Mitgelieferte Prompts/Vorlagen als Untergrenze, wenn die DB nichts hat.
+    from . import templates as templates_mod
+
+    for key, text in prompts.DEFAULTS.items():
+        if conn.execute(
+            "SELECT 1 FROM prompts WHERE path=?", (key,)
+        ).fetchone() is None:
+            conn.execute(
+                "INSERT INTO prompts(path,text,updated_at) VALUES (?,?,?)",
+                (key, text, now_ms()),
+            )
+    for name, text in templates_mod.DEFAULTS.items():
+        if conn.execute(
+            "SELECT 1 FROM templates WHERE name=?", (name,)
+        ).fetchone() is None:
+            conn.execute(
+                "INSERT INTO templates(name,text,updated_at) VALUES (?,?,?)",
+                (name, text, now_ms()),
+            )
+
+
+_MOVE_LEGACY = (
+    "tickets",
+    "counter",
+    "events.jsonl",
+    "index.json",
+    "herdr.json",
+    "autopilot.json",
+    "autopilot.log",
+    "autopilot-pause",
+    "tick-off",
+    "attachments",
+)
+
+
+def _move_legacy():
+    """Altdateien in `legacy/files-<stempel>/` verschieben; liefert die Namen."""
+    names = [
+        name for name in _MOVE_LEGACY if os.path.exists(os.path.join(home(), name))
+    ]
+    if not names:
+        return []
+    os.makedirs(legacy_dir(), exist_ok=True)
+    stamp = datetime.fromtimestamp(now_ms() / 1000).strftime("%Y%m%d-%H%M%S")
+    target_dir = os.path.join(legacy_dir(), f"files-{stamp}")
+    suffix = 2
+    while os.path.exists(target_dir):
+        target_dir = os.path.join(legacy_dir(), f"files-{stamp}-{suffix}")
+        suffix += 1
+    os.makedirs(target_dir)
+    moved = []
+    for name in names:
+        shutil.move(os.path.join(home(), name), os.path.join(target_dir, name))
         moved.append(name)
     return moved
 
@@ -2170,19 +2762,30 @@ def _legacy_space():
 
 
 def _regenerate_all():
+    """Alle Lesemodelle aus der DB neu schreiben und `meta.rev` erhöhen."""
     global _bootstrapping
     previous = _bootstrapping
     _bootstrapping = 1
     try:
-        conn = _connect()
-        ids = [row["id"] for row in conn.execute("SELECT id FROM tickets ORDER BY number")]
-        for tid in ids:
-            _write_model(_ticket_from_row(conn, conn.execute(
-                "SELECT * FROM tickets WHERE id=?", (tid,)
-            ).fetchone()))
         from . import index as index_mod
 
-        index_mod.rebuild()
+        conn = _connect()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            reviewer = _reviewer()
+            rows = conn.execute("SELECT * FROM tickets ORDER BY number").fetchall()
+            for row in rows:
+                _write_model(conn, _ticket_from_row(conn, row), reviewer)
+            payload = index_mod.build()
+            _model_write(conn, "index", _json_line(payload))
+            _bump_rev(conn)
+            conn.execute("COMMIT")
+        except BaseException:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            raise
     finally:
         _bootstrapping = previous
 
@@ -2195,7 +2798,7 @@ def _migrate_locked(force=False):
         counter_value = _read_legacy_counter()
         events, skipped = _read_legacy_events()
     except BaseException as exc:
-        _fallback[current] = True
+        _fallback.add(current)
         return _report("failed", error=str(exc))
     space = _legacy_space()
 
@@ -2212,6 +2815,7 @@ def _migrate_locked(force=False):
     os.close(fd)
     try:
         conn = sqlite3.connect(tmp, isolation_level=None)
+        conn.row_factory = sqlite3.Row
         try:
             for statement in _SCHEMA:
                 conn.execute(statement)
@@ -2234,6 +2838,8 @@ def _migrate_locked(force=False):
                         row.get("reason") or "",
                     ),
                 )
+            _import_autopilot(conn)
+            _import_legacy_attachments(conn)
             new = _counts_db(conn)
             conn.execute("COMMIT")
         finally:
@@ -2250,14 +2856,13 @@ def _migrate_locked(force=False):
             os.unlink(tmp)
         except OSError:
             pass
-        _fallback[current] = True
+        _fallback.add(current)
         return _report("failed", old=old, skipped=skipped, error=str(exc))
 
     # Ab hier ist die DB die Quelle.
-    _fallback.pop(current, None)
+    _fallback.discard(current)
     conn = _connect()
     conn.execute("PRAGMA journal_mode=WAL")
-    moved = _move_legacy()
     if space:
         conn.execute(
             "INSERT INTO meta(key,value) VALUES ('herdr_space',?) "
@@ -2269,8 +2874,64 @@ def _migrate_locked(force=False):
         "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
         (_MIGRATION_MARKER, "1"),
     )
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        _import_legacy_config(conn)
+        conn.execute("COMMIT")
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
     _regenerate_all()
+    moved = _move_legacy()
     return _report("migrated", old=old, new=new, skipped=skipped, moved=moved)
+
+
+def _needs_upgrade():
+    if _legacy_files_present():
+        return True
+    if os.path.exists(db_path()):
+        conn = _connect()
+        if conn.execute(
+            "SELECT 1 FROM meta WHERE key=?", (CONFIG_MARKER,)
+        ).fetchone() is not None:
+            return False
+        if conn.execute("SELECT 1 FROM config WHERE key='roster'").fetchone() is None:
+            return os.path.isfile(os.path.join(_legacy_roster_dir(), "roster.json"))
+    return False
+
+
+def _upgrade_legacy_files():
+    """Altdateien einer bestehenden DB übernehmen und in `legacy/` verschieben."""
+    global _upgrading
+    if _upgrading or not _needs_upgrade():
+        return
+    _upgrading += 1
+    try:
+        with _flock():
+            if not _needs_upgrade():
+                return
+            conn = _connect()
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                _import_autopilot(conn)
+                _import_legacy_attachments(conn)
+                _import_legacy_config(conn)
+                conn.execute(
+                    "INSERT INTO meta(key,value) VALUES (?,?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (CONFIG_MARKER, "1"),
+                )
+                conn.execute("COMMIT")
+            except BaseException:
+                try:
+                    conn.execute("ROLLBACK")
+                except sqlite3.Error:
+                    pass
+                raise
+            _regenerate_all()
+            _move_legacy()
+    finally:
+        _upgrading -= 1
 
 
 def migrate(force=False):
@@ -2279,23 +2940,18 @@ def migrate(force=False):
     current = home()
     os.makedirs(current, exist_ok=True)
     if force:
-        _fallback.pop(current, None)
+        _fallback.discard(current)
         _bootstrapped.discard(current)
     with _flock():
         if os.path.exists(db_path()):
-            _fallback.pop(current, None)
             if meta_get(_MIGRATION_MARKER) == "1":
                 return _report("already", old=_counts_db(_connect()),
                                new=_counts_db(_connect()))
             return _report("empty", old=_counts_db(_connect()),
                            new=_counts_db(_connect()))
-        if not _has_legacy():
+        if not _legacy_files_present():
             return _report("empty")
-        _fallback.pop(current, None)
         report = _migrate_locked(force=force)
-        if report["status"] == "failed":
-            _fallback[current] = True
-            _legacy_prepare()
         return report
 
 
@@ -2304,13 +2960,6 @@ def migrate(force=False):
 
 def storage_info():
     ensure()
-    if not _db_ready():
-        return {
-            "path": str(db_path()),
-            "journal_mode": "none",
-            "tables": [],
-            "counts": _empty_counts(),
-        }
     conn = _connect()
     mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
     tables = [

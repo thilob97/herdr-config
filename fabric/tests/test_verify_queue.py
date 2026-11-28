@@ -62,6 +62,16 @@ with open(path, "a", encoding="utf-8") as handle:
 
 
 class VerifyQueueCase(FabricCase):
+    def write_roster(self, **overrides):
+        """Roster schreiben und sofort in die Test-DB übernehmen.
+
+        Die Läufe starten hier als Subprozesse, nicht über `self.cli`; ohne
+        den Sync läse der Kindprozess das alte `max_verify` aus der DB.
+        """
+        data = super().write_roster(**overrides)
+        self._sync_config()
+        return data
+
     def write_steps(self, repo, steps):
         path = os.path.join(repo, ".fabric", "pipeline.json")
         self._write(path, json.dumps({"steps": steps}, ensure_ascii=False))
@@ -422,9 +432,7 @@ class VerifyQueueTest(VerifyQueueCase):
             seen["abandoned"] = verifyslots.abandoned(run_id)
             return real_finish(run_id, state, duration_ms, reason)
 
-        with self.store_env(), mock.patch.dict(
-            os.environ, {"FAB_ROSTER": self.roster}
-        ), mock.patch.object(
+        with self.store_env(), mock.patch.object(
             store, "pipeline_run_finish", side_effect=spy_finish
         ):
             result = pipeline.run(repo, "verify", ticket="T-2")

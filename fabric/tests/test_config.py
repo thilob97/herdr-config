@@ -14,7 +14,11 @@ class ConfigCase(FabricCase):
         return super().mark()
 
     def roster_json(self):
-        return json.loads(self._read(self.roster))
+        from fabric.fablib import store
+
+        with self.store_env():
+            raw = store.config_get(store.ROSTER_CONFIG_KEY)
+        return json.loads(raw or "{}")
 
     def write_raw_roster(self, data):
         self._write(self.roster, json.dumps(data, ensure_ascii=False, indent=2))
@@ -22,8 +26,15 @@ class ConfigCase(FabricCase):
     def prompt_path(self, name):
         return os.path.join(self.roster_dir, "prompts", f"{name}.md")
 
+    def prompt_text(self, name):
+        from fabric.fablib import store
+
+        with self.store_env():
+            return store.prompt_get(f"prompts/{name}.md")
+
     def config_call(self, function, *args, **kwargs):
         """Ruft die config-API im Fixture-Umfeld auf (ohne Subprozess)."""
+        self._sync_config()
         with mock.patch.dict(os.environ, self.env):
             return function(*args, **kwargs)
 
@@ -51,7 +62,7 @@ class RosterTests(ConfigCase):
             ]
         )
         payload = json.loads(self.ok("roster", "--json").stdout)
-        self.assertEqual(payload["path"], self.roster)
+        self.assertEqual(payload["path"], "fabric.db/config.roster")
         self.assertEqual(payload["max_sessions"], 4)
         self.assertEqual(payload["reviewer"], "ada")
         self.assertEqual(
@@ -92,9 +103,10 @@ class RosterTests(ConfigCase):
 
     def test_roster_fehlt(self):
         os.unlink(self.roster)
-        result = self.cli("roster", "--json")
+        result = self.cli("roster", "--json", env={"FAB_ROSTER": self.roster})
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Roster fehlt", result.stderr)
+        self.assertIn("fabric.db/config.roster", result.stderr)
 
 
 class AgentTests(ConfigCase):
@@ -125,7 +137,7 @@ class AgentTests(ConfigCase):
                 "argv": ["pi", "--model", "sonnet", "--flag"],
             },
         )
-        text = self._read(self.prompt_path("mira"))
+        text = self.prompt_text("mira")
         self.assertIn("mira", text)
         self.assertIn("recherche", text)
         payload = json.loads(self.ok("roster", "--json").stdout)
@@ -153,11 +165,11 @@ class AgentTests(ConfigCase):
                          ["zap", "ada", "mira"])
 
     def test_agent_add_nutzt_bestehenden_prompt(self):
-        before = self._read(self.prompt_path("zap"))
+        before = self.prompt_text("zap")
         self.ok("agent", "rm", "zap", "--from", "mensch")
         self.ok("agent", "add", "zap", "--role", "umsetzer",
                 "--argv-json", '["true"]', "--from", "mensch")
-        self.assertEqual(self._read(self.prompt_path("zap")), before)
+        self.assertEqual(self.prompt_text("zap"), before)
         self.assertEqual(self.roster_json()["agents"][-1]["prompt"], "prompts/zap.md")
 
     def test_agent_add_mit_prompt_text(self):
@@ -166,7 +178,7 @@ class AgentTests(ConfigCase):
             "--argv-json", '["pi"]', "--prompt-text", "Eigene Rolle\n",
             "--from", "mensch",
         )
-        self.assertEqual(self._read(self.prompt_path("mira")), "Eigene Rolle\n")
+        self.assertEqual(self.prompt_text("mira"), "Eigene Rolle\n")
 
     def test_agent_add_weist_ungueltiges_ab(self):
         cases = [
@@ -199,12 +211,12 @@ class AgentTests(ConfigCase):
             (("add", "mira", "--role", " ", "--argv-json", '["x"]'),
              "Rolle"),
         ]
-        before = self._read(self.roster)
+        before = self.roster_json()
         for args, message in cases:
             result = self.cli("agent", args[0], *args[1:], "--from", "mensch")
             self.assertNotEqual(result.returncode, 0, args)
             self.assertIn(message, result.stderr, args)
-            self.assertEqual(self._read(self.roster), before, args)
+            self.assertEqual(self.roster_json(), before, args)
         result = self.cli("agent", "add", "mira", "--role", "r",
                           "--argv-json", '["x"]')
         self.assertNotEqual(result.returncode, 0)
@@ -230,7 +242,7 @@ class AgentTests(ConfigCase):
         self.assertEqual(zap["argv"], ["claude", "--model", "opus"])
         self.ok("agent", "edit", "zap", "--prompt-text", "Neue Rolle\n",
                 "--from", "mensch")
-        self.assertEqual(self._read(self.prompt_path("zap")), "Neue Rolle\n")
+        self.assertEqual(self.prompt_text("zap"), "Neue Rolle\n")
         self.assertEqual(len(self.events_since(mark, "config")), 2)
         result = self.cli("agent", "edit", "zap", "--from", "mensch")
         self.assertNotEqual(result.returncode, 0)
@@ -247,18 +259,18 @@ class AgentTests(ConfigCase):
                          ["zap", "pruefer"])
         self.assertEqual(data["reviewer"], "pruefer")
         self.assertEqual(data["agents"][1]["prompt"], "prompts/pruefer.md")
-        self.assertTrue(os.path.isfile(self.prompt_path("pruefer")))
-        self.assertFalse(os.path.exists(self.prompt_path("ada")))
+        self.assertIsNotNone(self.prompt_text("pruefer"))
+        self.assertIsNone(self.prompt_text("ada"))
 
     def test_agent_edit_rename_verweigert_bei_arbeit(self):
-        before = self._read(self.roster)
+        before = self.roster_json()
         self.set_live({"fab-zap-t-1": "t5"})
         result = self.cli("agent", "edit", "zap", "--rename", "zoe",
                           "--from", "mensch")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("nicht umbenannt", result.stderr)
         self.assertIn("laufende Sessions: fab-zap-t-1", result.stderr)
-        self.assertEqual(self._read(self.roster), before)
+        self.assertEqual(self.roster_json(), before)
 
         self.set_live({})
         tid = self.new("Offen")
@@ -286,7 +298,7 @@ class AgentTests(ConfigCase):
         self.assertEqual([row["name"] for row in self.roster_json()["agents"]],
                          ["ada"])
         self.assertIn("prompts/zap.md", result.stdout)
-        self.assertTrue(os.path.isfile(self.prompt_path("zap")))
+        self.assertIsNotNone(self.prompt_text("zap"))
         self.assertEqual(len(self.events_since(mark, "config")), 1)
 
     def test_agent_rm_nennt_alle_gruende(self):
@@ -354,11 +366,11 @@ class PromptTests(ConfigCase):
         self.assertEqual([row["kind"] for row in rows],
                          ["orchestrator", "preamble", "agent", "agent"])
         preamble = rows[1]
+        self.assertEqual(preamble["path"], "prompts/preamble.md")
+        preamble_text = self.prompt_text("preamble")
         self.assertEqual(
-            preamble["path"],
-            os.path.abspath(os.path.join(self.roster_dir, "prompts", "preamble.md")),
+            preamble["bytes"], len(preamble_text.encode("utf-8"))
         )
-        self.assertEqual(preamble["bytes"], os.path.getsize(preamble["path"]))
         self.assertEqual(
             preamble["placeholders"],
             ["id", "title", "agent", "role", "worktree", "branch", "base",
@@ -366,7 +378,7 @@ class PromptTests(ConfigCase):
         )
         self.assertEqual(rows[0]["placeholders"], [])
         self.assertEqual(self.ok("prompt", "show", "preamble").stdout,
-                         self._read(preamble["path"]))
+                         preamble_text)
         self.assertIn("Zap-Rolle", self.ok("prompt", "show", "zap").stdout)
         self.assertIn("Orchestrator-Rolle",
                       self.ok("prompt", "show", "orchestrator").stdout)
@@ -390,7 +402,7 @@ class PromptTests(ConfigCase):
         self.assertIn("{quatsch}", result.stderr)
         self.assertIn("bekannt sind", result.stderr)
         self.assertEqual(
-            self._read(self.prompt_path("preamble")),
+            self.prompt_text("preamble"),
             "# {id} von {agent}\n\nUnbekannt: {quatsch}\n",
         )
         configs = self.events_since(mark, "config")
@@ -437,11 +449,10 @@ class PromptTests(ConfigCase):
 
         self.ok("prompt", "set", "orchestrator", "--team", "zweit",
                 "--text", "Neu für zwei.\n", "--from", "mensch")
-        self.assertEqual(
-            self._read(self.prompt_path("zweit-orchestrator")), "Neu für zwei.\n")
+        self.assertEqual(self.prompt_text("zweit-orchestrator"), "Neu für zwei.\n")
         self.assertIn(
             "Orchestrator-Rolle",
-            self._read(self.prompt_path("orchestrator")),
+            self.prompt_text("orchestrator"),
         )
         result = self.cli("prompt", "show", "orchestrator", "--team", "fehlt")
         self.assertNotEqual(result.returncode, 0)
@@ -720,7 +731,7 @@ class FreitextTests(ConfigCase):
         for mark in self.MARKS:
             self.ok("prompt", "set", "preamble", f"--text={mark}\n",
                     "--from", "mensch")
-            self.assertEqual(self._read(self.prompt_path("preamble")), f"{mark}\n")
+            self.assertEqual(self.prompt_text("preamble"), f"{mark}\n")
         repo = self.make_repo()
         for mark in self.MARKS:
             self.ok("repo", "set", repo, "lessons", f"--text={mark}",
@@ -784,7 +795,7 @@ class VersionTests(ConfigCase):
 
 
 class AutoCommitTests(ConfigCase):
-    """Schreibbefehle committen nur ihre eigenen Dateien (Ticket T-9)."""
+    """Roster, Prompts und Vorlagen liegen in der DB: kein Git-Commit mehr (T-9)."""
 
     def git_roster_repo(self):
         self.git_out(self.roster_dir, "init", "-q", "-b", "main")
@@ -793,69 +804,45 @@ class AutoCommitTests(ConfigCase):
         self.git_out(self.roster_dir, "add", "roster.json", "prompts")
         self.git_out(self.roster_dir, "commit", "-qm", "start")
 
-    def head_files(self):
-        raw = self.git_out(
-            self.roster_dir, "show", "--name-only", "--format=", "HEAD"
-        )
-        return [line for line in raw.splitlines() if line.strip()]
+    def head(self):
+        return self.git_out(self.roster_dir, "rev-parse", "HEAD")
 
     def status(self):
         return self.git_out(self.roster_dir, "status", "--porcelain")
 
-    def test_settings_committet_nur_den_roster(self):
+    def test_settings_aendern_nur_die_db(self):
         self.git_roster_repo()
         self.write_file(self.prompt_path("ada"), "lokal\n")
-        before = self.git_out(self.roster_dir, "rev-parse", "HEAD")
+        before = self.head()
         self.ok("settings", "set", "max_sessions", "5", "--from", "mensch")
-        after = self.git_out(self.roster_dir, "rev-parse", "HEAD")
-        self.assertNotEqual(before, after)
-        self.assertEqual(self.head_files(), ["roster.json"])
-        subject = self.git_out(self.roster_dir, "log", "-1", "--format=%s")
-        self.assertIn("chore(roster): max_sessions: 4 → 5", subject)
+        self.assertEqual(self.head(), before)
+        self.assertEqual(self.roster_json()["max_sessions"], 5)
         self.assertEqual(self.status(), "M prompts/ada.md")
 
-    def test_prompt_set_committet_nur_die_promptdatei(self):
+    def test_prompt_set_aendert_nur_die_db(self):
         self.git_roster_repo()
         self.write_file(self.prompt_path("ada"), "lokal\n")
+        before = self.head()
         self.ok(
             "prompt", "set", "zap", "--text", "Neuer Text\n", "--from", "mensch"
         )
-        self.assertEqual(self.head_files(), ["prompts/zap.md"])
-        subject = self.git_out(self.roster_dir, "log", "-1", "--format=%s")
-        self.assertTrue(
-            subject.startswith("chore(prompt): prompts/zap.md gespeichert")
-        )
+        self.assertEqual(self.head(), before)
+        self.assertEqual(self.prompt_text("zap"), "Neuer Text\n")
         self.assertEqual(self.status(), "M prompts/ada.md")
 
-    def test_agent_add_committet_roster_und_prompt(self):
+    def test_agent_add_und_rename_committen_nichts(self):
         self.git_roster_repo()
-        self.write_file(self.prompt_path("ada"), "lokal\n")
+        before = self.head()
         self.ok(
             "agent", "add", "mira", "--role", "recherche",
             "--argv-json", '["true"]', "--from", "mensch",
         )
-        self.assertEqual(
-            sorted(self.head_files()), ["prompts/mira.md", "roster.json"]
-        )
-        self.assertEqual(self.status(), "M prompts/ada.md")
-
-    def test_agent_edit_rename_committet_promptdatei(self):
-        self.git_roster_repo()
         self.ok("agent", "edit", "ada", "--rename", "pruefer", "--from", "mensch")
-        files = self.head_files()
-        self.assertIn("roster.json", files)
-        self.assertIn("prompts/pruefer.md", files)
-        self.assertNotIn("prompts/ada.md", files)
+        self.assertEqual(self.head(), before)
         self.assertEqual(self.status(), "")
-
-    def test_kein_commit_ausserhalb_des_basis_branches(self):
-        self.git_roster_repo()
-        self.git_out(self.roster_dir, "checkout", "-q", "-b", "arbeit")
-        before = self.git_out(self.roster_dir, "rev-parse", "HEAD")
-        self.ok("settings", "set", "max_sessions", "6", "--from", "mensch")
-        after = self.git_out(self.roster_dir, "rev-parse", "HEAD")
-        self.assertEqual(before, after)
-        self.assertIn("roster.json", self.status())
+        self.assertIsNotNone(self.prompt_text("mira"))
+        self.assertIsNone(self.prompt_text("ada"))
+        self.assertIsNotNone(self.prompt_text("pruefer"))
 
 
 class MigrationTests(ConfigCase):
@@ -895,12 +882,9 @@ class MigrationTests(ConfigCase):
         self.ok("roster", "--json")
         self.assertEqual(self._read(self.roster), raw)
         self.assertEqual(
-            self.git_out(self.roster_dir, "rev-list", "--count", "HEAD"), "2"
+            self.git_out(self.roster_dir, "rev-list", "--count", "HEAD"), "1"
         )
-        self.assertEqual(
-            self.git_out(self.roster_dir, "log", "-1", "--format=%s"),
-            "chore(roster): Roster zu Team herdr-app migriert",
-        )
+        self.assertEqual(self.roster_json(), data)
 
 
 class BlueprintTests(ConfigCase):
@@ -924,7 +908,7 @@ class BlueprintTests(ConfigCase):
         self.assertEqual(
             [row["name"] for row in data["blueprints"]], ["zap", "ada", "mira"]
         )
-        text = self._read(self.prompt_path("mira"))
+        text = self.prompt_text("mira")
         self.assertIn("mira", text)
         self.assertIn("recherche", text)
         configs = self.events_since(mark, "config")
@@ -962,8 +946,8 @@ class BlueprintTests(ConfigCase):
         self.assertEqual(
             [row["name"] for row in fresh["blueprints"]], ["zap", "pruefer"]
         )
-        self.assertTrue(os.path.isfile(self.prompt_path("pruefer")))
-        self.assertFalse(os.path.exists(self.prompt_path("ada")))
+        self.assertIsNotNone(self.prompt_text("pruefer"))
+        self.assertIsNone(self.prompt_text("ada"))
 
     def test_rename_mit_eigenem_promptpfad(self):
         self.ok("roster", "--json")
@@ -982,14 +966,14 @@ class BlueprintTests(ConfigCase):
 
     def test_rm_verweigert_genutzte_und_entfernt_freie(self):
         self.ok("roster", "--json")
-        before = self._read(self.roster)
+        before = self.roster_json()
         with self.assertRaises(FabError) as ctx:
             self.config_call(config.remove_blueprint, "zap", "mensch")
         self.assertIn(
             "Blaupause „zap“ wird im Team „herdr-app“ genutzt",
             str(ctx.exception),
         )
-        self.assertEqual(self._read(self.roster), before)
+        self.assertEqual(self.roster_json(), before)
 
         self.config_call(
             config.add_blueprint, "nina", "hilfe", None, '["true"]', None,
@@ -1000,7 +984,7 @@ class BlueprintTests(ConfigCase):
         self.assertNotIn(
             "nina", [row["name"] for row in self.roster_json()["blueprints"]]
         )
-        self.assertTrue(os.path.isfile(self.prompt_path("nina")))
+        self.assertIsNotNone(self.prompt_text("nina"))
 
 
 class TeamTests(ConfigCase):
@@ -1034,13 +1018,10 @@ class TeamTests(ConfigCase):
             entry["orchestrator"],
             {"argv": ["omp"], "prompt": "prompts/orchestrator-zwei.md"},
         )
-        prompt = os.path.join(
-            self.roster_dir, "prompts", "orchestrator-zwei.md"
-        )
-        self.assertTrue(os.path.isfile(prompt))
+        self.assertIsNotNone(self.prompt_text("orchestrator-zwei"))
         self.assertEqual(
-            self._read(prompt),
-            self._read(os.path.join(self.roster_dir, "prompts", "orchestrator.md")),
+            self.prompt_text("orchestrator-zwei"),
+            self.prompt_text("orchestrator"),
         )
         data = self.roster_json()
         self.assertEqual(
@@ -1064,7 +1045,7 @@ class TeamTests(ConfigCase):
             config.add_team, "zwei", [repo], '[{"blueprint": "zap"}]',
             orchestrator_argv_json='["true"]', reviewer="zap", actor="mensch",
         )
-        before = self._read(self.roster)
+        before = self.roster_json()
         with self.assertRaises(FabError) as ctx:
             self.config_call(
                 config.add_team, "drei", [repo], '[{"blueprint": "ada"}]',
@@ -1072,7 +1053,7 @@ class TeamTests(ConfigCase):
                 actor="mensch",
             )
         self.assertIn("gehört bereits zu Team zwei", str(ctx.exception))
-        self.assertEqual(self._read(self.roster), before)
+        self.assertEqual(self.roster_json(), before)
 
         other = self.make_repo("andere")
         with self.assertRaises(FabError) as ctx:
@@ -1082,7 +1063,7 @@ class TeamTests(ConfigCase):
                 actor="mensch",
             )
         self.assertIn("Prüfer muss Mitglied des Teams sein", str(ctx.exception))
-        self.assertEqual(self._read(self.roster), before)
+        self.assertEqual(self.roster_json(), before)
 
         with self.assertRaises(FabError) as ctx:
             self.config_call(
@@ -1092,7 +1073,7 @@ class TeamTests(ConfigCase):
                 actor="mensch",
             )
         self.assertIn("Unbekannte Blaupause", str(ctx.exception))
-        self.assertEqual(self._read(self.roster), before)
+        self.assertEqual(self.roster_json(), before)
 
     def test_edit_aendert_team_und_rm_entfernt_es(self):
         repo = self.make_repo()
@@ -1140,11 +1121,11 @@ class TeamTests(ConfigCase):
         self.assertEqual(data["teams"], [])
         self.assertEqual(data["agents"], [])
         self.assertEqual(data["reviewer"], "")
-        raw = self._read(self.roster)
+        raw = self.roster_json()
         payload = json.loads(self.ok("roster", "--json").stdout)
         self.assertIsNone(payload["team"])
         self.assertEqual(payload["agents"], [])
-        self.assertEqual(self._read(self.roster), raw)
+        self.assertEqual(self.roster_json(), raw)
 
     def test_default_prompt_je_team_und_set_aendert_nur_ein_team(self):
         repo = self.make_repo()
@@ -1152,26 +1133,15 @@ class TeamTests(ConfigCase):
             config.add_team, "zwei", [repo], '[{"blueprint": "zap"}]',
             orchestrator_argv_json='["true"]', reviewer="zap", actor="mensch",
         )
-        herdr_prompt = self.prompt_path("orchestrator")
-        zwei_prompt = os.path.join(
-            self.roster_dir, "prompts", "orchestrator-zwei.md"
-        )
-        self.assertEqual(
-            (herdr_prompt, zwei_prompt),
-            (
-                os.path.join(self.roster_dir, "prompts", "orchestrator.md"),
-                os.path.join(self.roster_dir, "prompts", "orchestrator-zwei.md"),
-            ),
-        )
-        herdr_before = self._read(herdr_prompt)
-        self.assertEqual(self._read(zwei_prompt), herdr_before)
+        herdr_before = self.prompt_text("orchestrator")
+        self.assertEqual(self.prompt_text("orchestrator-zwei"), herdr_before)
 
         self.ok(
             "prompt", "set", "orchestrator", "--team", "zwei",
             "--text", "Nur für zwei.\n", "--from", "mensch",
         )
-        self.assertEqual(self._read(zwei_prompt), "Nur für zwei.\n")
-        self.assertEqual(self._read(herdr_prompt), herdr_before)
+        self.assertEqual(self.prompt_text("orchestrator-zwei"), "Nur für zwei.\n")
+        self.assertEqual(self.prompt_text("orchestrator"), herdr_before)
 
     def test_rm_verweigert_offene_tickets_und_laufenden_orchestrator(self):
         repo = self.make_repo()
@@ -1181,7 +1151,7 @@ class TeamTests(ConfigCase):
         )
         tid = self.new("Offene Arbeit", repo=repo)
         self.patch_ticket(tid, status="todo")
-        before = self._read(self.roster)
+        before = self.roster_json()
 
         with self.assertRaises(FabError) as ctx:
             self.config_call(config.remove_team, "zwei", "mensch")
@@ -1189,7 +1159,7 @@ class TeamTests(ConfigCase):
         self.assertIn("Team „zwei“ lässt sich nicht löschen", text)
         self.assertIn(tid, text)
         self.assertIn("(todo)", text)
-        self.assertEqual(self._read(self.roster), before)
+        self.assertEqual(self.roster_json(), before)
 
         self.patch_ticket(tid, status="done")
         self.set_live({"fab-zwei-orchestrator": "t0"})
@@ -1198,7 +1168,7 @@ class TeamTests(ConfigCase):
         text = str(ctx.exception)
         self.assertIn("fab-zwei-orchestrator", text)
         self.assertIn("fab orchestrator stop zwei", text)
-        self.assertEqual(self._read(self.roster), before)
+        self.assertEqual(self.roster_json(), before)
 
         self.set_live({})
         self.config_call(config.remove_team, "zwei", "mensch")
@@ -1206,13 +1176,7 @@ class TeamTests(ConfigCase):
             [entry["name"] for entry in self.roster_json()["teams"]],
             ["herdr-app"],
         )
-        self.assertTrue(
-            os.path.isfile(
-                os.path.join(
-                    self.roster_dir, "prompts", "orchestrator-zwei.md"
-                )
-            )
-        )
+        self.assertIsNotNone(self.prompt_text("orchestrator-zwei"))
 
     def test_uebersteuerungen_stehen_in_der_meldung(self):
         repo = self.make_repo()
@@ -1229,7 +1193,7 @@ class TeamTests(ConfigCase):
 
     def test_rename_verweigert_live_orchestrator_und_merkt_alten_namen(self):
         repo = self.add_team()
-        before = self._read(self.roster)
+        before = self.roster_json()
         self.set_live({"fab-zwei-orchestrator": "t0"})
         with self.assertRaises(FabError) as ctx:
             self.config_call(
@@ -1239,7 +1203,7 @@ class TeamTests(ConfigCase):
         self.assertIn("lässt sich nicht umbenennen", text)
         self.assertIn("fab-zwei-orchestrator", text)
         self.assertIn("fab orchestrator stop zwei", text)
-        self.assertEqual(self._read(self.roster), before)
+        self.assertEqual(self.roster_json(), before)
 
         self.set_live({})
         message = self.config_call(
@@ -1262,7 +1226,7 @@ class TeamTests(ConfigCase):
 
     def test_rename_verweigert_live_agent_session(self):
         self.add_team()
-        before = self._read(self.roster)
+        before = self.roster_json()
         self.set_live({"fab-zwei-zap-t-1": "t5"})
         with self.assertRaises(FabError) as ctx:
             self.config_call(
@@ -1273,16 +1237,12 @@ class TeamTests(ConfigCase):
         self.assertIn("fab-zwei-zap-t-1", text)
         self.assertIn("hc kill", text)
         self.assertNotIn("fab orchestrator stop", text)
-        self.assertEqual(self._read(self.roster), before)
+        self.assertEqual(self.roster_json(), before)
 
     def test_rename_ohne_sessions_bleibt_wie_bisher(self):
         self.add_team()
-        herdr_prompt = self.prompt_path("orchestrator")
-        before = self._read(herdr_prompt)
-        drei_prompt = os.path.join(
-            self.roster_dir, "prompts", "orchestrator-drei.md"
-        )
-        self.assertFalse(os.path.exists(drei_prompt))
+        herdr_before = self.prompt_text("orchestrator")
+        self.assertIsNone(self.prompt_text("orchestrator-drei"))
 
         message = self.config_call(
             config.edit_team, "zwei", rename="drei", actor="mensch"
@@ -1293,19 +1253,19 @@ class TeamTests(ConfigCase):
             [entry["name"] for entry in data["teams"]], ["herdr-app", "drei"]
         )
         self.assertEqual(data["teams"][0]["name"], "herdr-app")
-        self.assertEqual(self._read(herdr_prompt), before)
-        self.assertFalse(os.path.exists(drei_prompt))
+        self.assertEqual(self.prompt_text("orchestrator"), herdr_before)
+        self.assertIsNone(self.prompt_text("orchestrator-drei"))
 
     def test_rm_verweigert_live_agent_session(self):
         self.add_team()
-        before = self._read(self.roster)
+        before = self.roster_json()
         self.set_live({"fab-zwei-zap-t-1": "t5"})
         with self.assertRaises(FabError) as ctx:
             self.config_call(config.remove_team, "zwei", "mensch")
         text = str(ctx.exception)
         self.assertIn("Team „zwei“ lässt sich nicht löschen", text)
         self.assertIn("fab-zwei-zap-t-1", text)
-        self.assertEqual(self._read(self.roster), before)
+        self.assertEqual(self.roster_json(), before)
 
         self.set_live({})
         self.config_call(config.remove_team, "zwei", "mensch")
@@ -1317,7 +1277,7 @@ class TeamTests(ConfigCase):
     def test_alias_terminale_frueherer_namen_blockieren_rm(self):
         self.add_team()
         self.set_previous_names("zwei", ["tmpx"])
-        before = self._read(self.roster)
+        before = self.roster_json()
 
         self.set_live({"fab-tmpx-orchestrator": "t0"})
         with self.assertRaises(FabError) as ctx:
@@ -1325,7 +1285,7 @@ class TeamTests(ConfigCase):
         text = str(ctx.exception)
         self.assertIn("fab-tmpx-orchestrator", text)
         self.assertIn("fab orchestrator stop zwei", text)
-        self.assertEqual(self._read(self.roster), before)
+        self.assertEqual(self.roster_json(), before)
 
         with mock.patch.dict(os.environ, self.env):
             roster = agents.load()
@@ -1336,7 +1296,7 @@ class TeamTests(ConfigCase):
         with self.assertRaises(FabError) as ctx:
             self.config_call(config.remove_team, "zwei", "mensch")
         self.assertIn("fab-tmpx-zap-t-1", str(ctx.exception))
-        self.assertEqual(self._read(self.roster), before)
+        self.assertEqual(self.roster_json(), before)
 
     def test_praefix_ordnet_terminale_dem_laengsten_teamnamen_zu(self):
         self.add_team("herdr", self.make_repo("herdr"))
@@ -1401,7 +1361,7 @@ class GlobalLimitTests(ConfigCase):
     def test_ungueltige_werte_lassen_datei_unveraendert(self):
         self.ok("settings", "set", "max_sessions_total", "12",
                 "--from", "mensch")
-        before = self._read(self.roster)
+        before = self.roster_json()
         for value in ("0", "65", "viel"):
             result = self.cli(
                 "settings", "set", "max_sessions_total", value,
@@ -1409,7 +1369,7 @@ class GlobalLimitTests(ConfigCase):
             )
             self.assertNotEqual(result.returncode, 0, value)
             self.assertIn("max_sessions_total", result.stderr, value)
-            self.assertEqual(self._read(self.roster), before, value)
+            self.assertEqual(self.roster_json(), before, value)
 
 
 class LegacyCompatTests(ConfigCase):

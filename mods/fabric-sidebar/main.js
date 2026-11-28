@@ -5,10 +5,13 @@
 import { View, div, image, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import {
-  agents, appHome, checking, exec, fonts, openOverlay, readTextFile, run, setAgentOrder,
+  agents, appHome, checking, exec, fonts, openOverlay, run, setAgentOrder,
   setShared, settings, shared, spaces, terminals, theme,
 } from "herdr";
 import * as model from "./model.js";
+import { createReader } from "./db.js";
+
+const db = createReader(exec);
 
 // Spiegel von mods/fabric/ui.js: gleiche Schriftgrößen, Abstände, Radien und
 // Größen; Herdr erlaubt keine mod-übergreifenden Importe.
@@ -37,11 +40,16 @@ function parseJson(text, fallback = null) {
 function normalizeIndex(raw) {
   return {
     tickets: Array.isArray(raw?.tickets) ? raw.tickets : [],
+    inbox: Array.isArray(raw?.inbox) ? raw.inbox : [],
     roster: Array.isArray(raw?.roster) ? raw.roster : [],
     teams: Array.isArray(raw?.teams) ? raw.teams : [],
     fabrics: Array.isArray(raw?.fabrics) ? raw.fabrics : [],
     alarm: raw?.alarm ?? null,
   };
+}
+
+function dbPath() {
+  return `${appHome()}/data/fabric/fabric.db`;
 }
 
 function statusColor(t, status) {
@@ -405,16 +413,47 @@ export default class FabricSidebar extends View {
     this.loading = false;
     this.closed = false;
     this.hovered = null;
+    // `undefined` = noch nie gelesen; `null` = Datenbank ohne `meta.rev`.
+    this.rev = undefined;
+    this.tickRunning = false;
     if (checking()) return;
 
     const reload = async (cx) => {
-      await this.load();
-      if (!this.closed) cx.notify();
+      const changed = await this.load();
+      if (changed && !this.closed) cx.notify();
     };
     cx.spawn((cx) => reload(cx));
-    // Index und Laufzeit: die Datei ist klein; ein 5-s-Takt hält beides frisch.
+    // Fünf-Sekunden-Rückfall: prüft nur `meta.rev` und liest erst bei Änderung.
     cx.timer.every(5000, (cx) => {
       if (!this.closed) cx.spawn((cx) => reload(cx));
+    });
+    // Der Tick-Takt lebt hier, weil die Seitenleiste auch bei geschlossenem
+    // Fabric-Fenster eingehängt ist. Beide Instanzen teilen den Versuch.
+    cx.timer.every(10000, (cx) => {
+      if (!this.closed) this.tick(cx);
+    });
+  }
+
+  tick(cx) {
+    if (this.tickRunning) return;
+    const now = Date.now();
+    if (!model.tickDue(shared("fabric.tickAttempt"), now)) return;
+    setShared("fabric.tickAttempt", now);
+    this.tickRunning = true;
+    cx.spawn(async () => {
+      const call = (args, timeout) => exec(`${appHome()}/fabric/fab`, args, {
+        cwd: appHome(), timeout,
+      });
+      try {
+        const result = await call(["tick"], 120000);
+        // Scheitert der Lauf, bleibt `last_tick` stehen; der Index-Lauf
+        // veröffentlicht den fälligen Alarm im Posteingang.
+        if (result?.code !== 0) await call(["index"], 30000);
+      } catch {
+        try { await call(["index"], 30000); } catch { /* still */ }
+      } finally {
+        this.tickRunning = false;
+      }
     });
   }
 
@@ -428,27 +467,41 @@ export default class FabricSidebar extends View {
     this.closed = true;
   }
 
+  /** Liest den Index aus der Datenbank; true nur bei geändertem `rev`. */
   async load() {
-    if (this.loading) return;
+    if (this.loading) return false;
     this.loading = true;
     try {
-      const text = await readTextFile(`${appHome()}/data/fabric/index.json`);
+      let rev = null;
+      try {
+        rev = await db.metaValue(dbPath(), "rev");
+      } catch {
+        rev = null;
+      }
+      if (this.rev !== undefined && rev === this.rev && this.index !== null) return false;
+      this.rev = rev;
+      let text = null;
+      try {
+        text = await db.readModel(dbPath(), "index");
+      } catch (error) {
+        this.index = null;
+        this.loadError = message(error);
+        return true;
+      }
       if (text == null) {
         this.index = null;
-        this.loadError = "index.json fehlt";
-        return;
+        this.loadError = "Die Fabric-Datenbank enthält noch keinen Index.";
+        return true;
       }
       const raw = parseJson(text, null);
       if (!raw) {
         this.index = null;
-        this.loadError = "index.json ist unlesbar";
-        return;
+        this.loadError = "Der Index in der Datenbank ist unlesbar.";
+        return true;
       }
       this.index = normalizeIndex(raw);
       this.loadError = null;
-    } catch (error) {
-      this.index = null;
-      this.loadError = message(error);
+      return true;
     } finally {
       this.loading = false;
     }
@@ -499,6 +552,7 @@ export default class FabricSidebar extends View {
     );
     const free = model.freeAgentCards(terms, listed, spaces(), shared("agents.sort"));
     const alarms = model.activeAlarms(this.index?.alarm);
+    const inbox = model.inboxCount(this.index);
     // `agent.next`/`agent.prev` folgen der Reihenfolge, die hier steht: freie
     // Karten (angepinnt, wartend, arbeitend, untätig) und dann die Teams.
     // Ohne diesen Aufruf liefe die Tastaturbelegung ins Leere, weil der
@@ -560,7 +614,41 @@ export default class FabricSidebar extends View {
               .items_center()
               .justify_center()
               .child(String(rows.length)),
-          ),
+          )
+          // Kompakter Posteingang statt eines eigenen Blocks: Zahl der
+          // offenen Einträge, Klick öffnet die Seite im Fabric-Fenster.
+          .when(inbox > 0, (el) => el.child(
+            h_flex()
+              .id("fabric-sidebar-inbox")
+              .flex_none()
+              .h(SIZE.badge)
+              .px(SPACE.xs)
+              .gap(SPACE.xs)
+              .items_center()
+              .rounded(SIZE.badge / 2)
+              .bg(t.accent + ALPHA.tint)
+              .cursor_pointer()
+              .hover((style) => style.opacity(0.86))
+              .tooltip(`${inbox} im Posteingang · im Fenster öffnen`)
+              .on_click((_event, cx) => {
+                cx.stop_propagation();
+                openRoute({ page: "inbox" });
+              })
+              .child(div().text_size(FONT.xs).font_semibold().text_color(t.accent).child("Posteingang"))
+              .child(div()
+                .min_w(SIZE.badge)
+                .h(SIZE.badge)
+                .px(SPACE.xs)
+                .rounded(SIZE.badge / 2)
+                .bg(t.accent)
+                .text_size(FONT.xs)
+                .font_semibold()
+                .text_color(t.background)
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(String(inbox))),
+          )),
       )
       .when(alarms.length > 0, (el) => el.child(
         v_flex()

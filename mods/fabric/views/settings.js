@@ -1,4 +1,4 @@
-// Einstellungen: Datenordner, Zähler, Version, Rosterpfad und Tasten.
+// Einstellungen: Datenordner, Zähler, Version, Datenbankpfad und Tasten.
 
 import { div } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
@@ -62,7 +62,7 @@ function dataCard(app, cx, t) {
     infoRow(app, t, "Datenordner", app.dir, { copy: app.dir, mono: true }),
     infoRow(app, t, "Tickets", String(app.tickets.length)),
     infoRow(app, t, "Ereignisse", String(app.events.length)),
-    infoRow(app, t, "Stand der Index-Datei", model.absoluteTime(app.index?.generated_at) || "—"),
+    infoRow(app, t, "Stand des Index", model.absoluteTime(app.index?.generated_at) || "—"),
     div().text_size(T.xs).text_color(t.dim).whitespace_normal()
       .child(`Stufen: ${counts.join(" · ")}`),
   ], { id: "fabric-settings-data", padding: S.m, gap: S.xs });
@@ -89,8 +89,8 @@ function versionCard(app, cx, t) {
   return ui.card(t, [
     ui.sectionTitle(t, "Fabric"),
     infoRow(app, t, "Version", app.version || (app.versionError ? `nicht lesbar: ${app.versionError}` : "wird gelesen …"), { mono: true }),
-    infoRow(app, t, "Roster", `${app.dir.replace(/\/data\/fabric$/, "")}/fabric/roster.json`, {
-      copy: `${app.dir.replace(/\/data\/fabric$/, "")}/fabric/roster.json`, mono: true,
+    infoRow(app, t, "Datenbank", `${app.dir}/fabric.db`, {
+      copy: `${app.dir}/fabric.db`, mono: true,
     }),
     infoRow(app, t, "CLI", `${app.dir.replace(/\/data\/fabric$/, "")}/fabric/fab`, {
       copy: `${app.dir.replace(/\/data\/fabric$/, "")}/fabric/fab`, mono: true,

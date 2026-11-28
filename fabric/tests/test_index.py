@@ -97,7 +97,10 @@ class IndexTests(FabricCase):
         self.assertEqual(len(payload["events"]), 300)
         self.assertEqual(payload["events"][0]["text"], "zeile 5")
         self.assertEqual(payload["events"][-1]["text"], "zeile 304")
-        size = os.path.getsize(os.path.join(self.home, "index.json"))
+        with self.store_env():
+            raw = store.read_model("index")
+        self.assertIsNotNone(raw)
+        size = len(raw.encode("utf-8"))
         self.assertLess(size, 1024 * 1024)
 
     def test_inbox_eintraege_haben_stabile_ids(self):

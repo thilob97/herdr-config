@@ -84,7 +84,11 @@ class DiffTests(FabricCase):
         self.assertTrue(proof["image"])
         self.assertTrue(proof["exists"])
         self.assertTrue(os.path.isabs(proof["path"]))
-        self.assertTrue(proof["path"].endswith(os.path.join("attachments", tid, "bild.png")))
+        self.assertTrue(
+            proof["path"].endswith(
+                os.path.join("cache", "attachments", tid, "1-bild.png")
+            )
+        )
 
     def test_handover_nennt_bild_und_datei(self):
         repo, tid, worktree, _ = self.changes()

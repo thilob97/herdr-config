@@ -9,43 +9,56 @@ Konzept: `docs/concept.md`. Wer davon abweicht, ändert zuerst diese Datei.
 |---|---|---|
 | CLI | `fabric/fab` (ausführbar, Python 3, nur stdlib), Module in `fabric/fablib/` | getrackt |
 | CLI-Tests | `fabric/tests/test_*.py` — `python3 -m unittest discover -s fabric/tests -t .` | getrackt |
-| Roster | `fabric/roster.json` | getrackt |
-| Prompts | `fabric/prompts/{orchestrator,preamble,<agent>}.md` | getrackt |
+| Roster, Prompts, Vorlagen | SQLite (`config.roster`, `prompts`, `templates` in `$FAB_HOME/fabric.db`); bearbeiten über `fab team/blueprint/prompt/template …` oder das Fenster | nicht in Git |
 | Mod | `mods/fabric/` (ein Mod, mehrere Ansichten) | getrackt |
 | Mod-Tests | `mods/fabric/test/*.test.mjs` — `node --test mods/fabric/test/` | getrackt |
 | Layout | `layouts/fabric.json` | getrackt |
 | Daten | `$FAB_HOME`, Standard `~/.config/herdr-app/data/fabric/` | ignoriert |
 | Worktrees | `~/.herdr/worktrees/<repo-basename>/<branch-slug>` | — |
 | Vorschau-Home | `/tmp/fab-preview/<ID>/` (Home, User-Home, FAB_HOME; eigener Core `fabp-<id>`) | — |
-| Orchestrator-Arbeitsordner | `~/.herdr/fabric-orchestrator/` (bekommt `AGENTS.md` aus `fabric/prompts/orchestrator.md` bei jedem Start) | — |
+| Orchestrator-Arbeitsordner | `~/.herdr/fabric-orchestrator/` (bekommt `AGENTS.md` aus dem Prompt `prompts/orchestrator.md` in SQLite bei jedem Start) | — |
 | launchd-Agent `fab tick` (macOS) | `~/Library/LaunchAgents/de.herdr.fabric.tick.plist`; legt der erste `fab`-Aufruf idempotent an, `FAB_TICK_AUTOSTART=0` schaltet ab, `FAB_LAUNCH_AGENTS_DIR` lenkt das Verzeichnis um; der Auftrag trägt immer das Standard-Home und ist nicht an ein abweichendes `FAB_HOME` gebunden | — |
 
 `fab` findet seinen Code über den eigenen Pfad (Symlink `~/.local/bin/fab` → `fabric/fab` ist erlaubt). Der Mod ruft immer den absoluten Pfad `${appHome()}/fabric/fab` auf.
 
 ## 2. Daten (`$FAB_HOME`)
 
+Alle Laufzeitdaten liegen ausschließlich in `fabric.db`. Es gibt keine Daten-JSON-Dateien mehr; Mod und Seitenleiste lesen die Lesemodelle direkt aus SQLite.
+
 ```
-fabric.db            SQLite (WAL): tickets, comments, sessions, events, counter, attachments, meta
+fabric.db            SQLite (WAL): tickets, comments, sessions, events, counter,
+                     attachments (Bytes als BLOB), meta, read_models, autopilot_log,
+                     config, prompts, templates, workflows, flow_runs, flow_steps,
+                     pipeline_runs, pipeline_steps
 fabric.db-wal/-shm   SQLite-Begleitdateien im WAL-Modus
-tickets/T-<n>.json   Lesemodell je Ticket, nach jeder Änderung aus der DB erzeugt
-index.json           Lesemodell für den Mod, nach JEDER Änderung atomar neu geschrieben (tmp + rename)
-attachments/<ID>/    Bilddateien; die Tabelle `attachments` hält nur den Verweis
+cache/               Wegwerf-Cache, u. a. cache/attachments/<ID>/<position>-<name>
 backups/             Sicherungen (`fab backup` und täglich automatisch, höchstens 14)
 legacy/              abgelegte Altdateien nach erfolgreicher Migration (nicht löschen)
 lock                 flock für Schreibvorgänge und die einmalige Migration
 ```
 
-Die gesamte Datenhaltung läuft über die schmale Schnittstelle in `fabric/fablib/store.py`; kein anderes Modul öffnet `fabric.db` oder die Dateien unter `data/fabric/` selbst. Ausnahme ist die Erzeugung der Lesemodelle `index.json` und `tickets/<ID>.json`.
+Nur diese Dateien bleiben: Datenbank samt WAL-Dateien, OS-Lockdateien (`lock`, `verify-runs/*.lock`, `verify-slots/`, `verify-starts/`), `backups/`, `legacy/`, der wegwerfbare `cache/` und `.tmp/` für die Übergabe der UI an `fab`. Alles andere – Tickets, Roster, Prompts, Vorlagen, Anhänge, Autopilotstatus und -log, Wächtermarke – steht in der Datenbank.
+
+Tabellen mit Sonderrolle:
+
+- `read_models(key, value, updated_at)` – die früheren Dokumente `index.json` (Schlüssel `index`) und `tickets/<ID>.json` (Schlüssel `ticket:<ID>`) als JSON-Text, exakt in der alten Form. Anhänge tragen dort zusätzlich `cache_path`.
+- `meta(key, value)` – u. a. `rev` (Integer als Text, zählt jede Änderung an Lesemodellen, `autopilot`, `autopilot_pause`, `tick_off`, `autopilot_log`), `autopilot` (Status-JSON), `autopilot_pause` (Pausengrund), `tick_off` (Marke „Wächter aus“), `last_tick`, `last_backup_day`.
+- `autopilot_log(id, at, line)` – das Autopilotlog, auf die neuesten 2000 Zeilen begrenzt.
+- `config(key, value)` – Schlüssel `roster` mit dem vollständigen Roster-JSON (auch `fab roster --json`).
+- `prompts(path, text)` – Prompttexte unter dem im Roster genannten Pfad, z. B. `prompts/zap.md`.
+- `templates(name, text)` – Ticketvorlagen (`bug`, `feature`, `refactor`, `chore`, eigene).
+
+Die gesamte Datenhaltung läuft über die schmale Schnittstelle in `fabric/fablib/store.py`; kein anderes Modul öffnet `fabric.db`. Mod und Seitenleiste lesen nur (`/usr/bin/sqlite3 -readonly -json`), geschrieben wird ausschließlich von `fab`.
 
 - **Zeit.** Alle Uhrleser (`store.now_ms()`, Kosten, Liegezeiten, Vorschau, Sicherung) nutzen die zentrale Uhr in `fabric/fablib/clock.py`. Ohne `FAB_NOW` gilt die echte Uhr; `FAB_NOW` (Epoch-Millisekunden oder ISO 8601, ohne Zone lokal) friert sie für Tests ein.
-- **Eine Änderung = eine Transaktion.** Ticket, Ereignis und Zähler werden gemeinsam festgeschrieben oder gar nicht; ein abgebrochener Schreibvorgang hinterlässt keinen halben Zustand.
-- **Sperre nur für Zustand, nicht für Arbeit.** Der flock in `lock` schützt nur kurze Lese-/Schreibblöcke; Lesebefehle (`list`, `show`, `inbox`, `roster`, `agents`, `stats`, `flow list`, `autopilot status`) nehmen ihn nicht. Lange Arbeiten wie Prüfläufe, `git merge/push`, `gh` und `hc` laufen außerhalb; `handover` und `accept` lesen den Zustand, geben die Sperre frei und tragen das Ergebnis nur ein, wenn das Ticket unverändert ist (Compare-and-Set über `store.revision`). Die Revision zählt Zustand, nicht Verlauf: `comments`, `updated_at`, `cost` und `waits` ändern sie nicht; Status, Branch, Zuständiger, `accept` und andere Felder schon. Ein während der Arbeit parallel hinzugekommener Kommentar wird beim Speichern übernommen (Schlüssel `(at, author, text)`), eine Feldänderung bricht dagegen mit „Ticket wurde während der Arbeit geändert“ ab. Ein wartender Schreiber bricht nach `FAB_LOCK_TIMEOUT` Sekunden (Standard 30) mit `gesperrt von PID <pid> (<befehl>) seit <n> s` ab; Halterdaten stehen in `lock.holder`.
-- **Lesemodelle aus der DB.** Nach dem Commit schreibt `fab` die betroffenen `tickets/<ID>.json` und `index.json` neu. Der Mod und die Seitenleiste lesen weiterhin nur diese Dateien und bleiben unverändert.
-- **Migration.** Fehlt `fabric.db` und liegen Altdateien (`tickets/*.json`, `counter`, `events.jsonl`) vor, überführt der erste Aufruf sie automatisch; `fab migrate` macht dasselbe ausdrücklich. Der Bericht vergleicht Tickets, Kommentare, Sessions, Ereignisse, Anhänge und Zähler in Alt und Neu. Bei Abweichung bleibt die DB aus, die Altdateien bleiben unberührt, und `fab` arbeitet weiter auf ihnen, bis die Migration gelingt. Nach Erfolg wandern die Altdateien nach `legacy/`.
+- **Eine Änderung = eine Transaktion.** Ticket, Ereignis, Zähler und die betroffenen Lesemodelle werden gemeinsam festgeschrieben oder gar nicht; `meta.rev` zählt im selben Commit. Ein abgebrochener Schreibvorgang hinterlässt keinen halben Zustand.
+- **Sperre nur für Zustand, nicht für Arbeit.** Der flock in `lock` schützt nur kurze Lese-/Schreibblöcke; Lesebefehle (`list`, `show`, `inbox`, `roster`, `agents`, `stats`, `flow list`, `autopilot status`) nehmen ihn nicht. Lange Arbeiten wie Prüfläufe, `git merge/push`, `gh` und `hc` laufen außerhalb; `handover` und `accept` lesen den Zustand, geben die Sperre frei und tragen das Ergebnis nur ein, wenn das Ticket unverändert ist (Compare-and-Set über `store.revision`). Die Revision zählt Zustand, nicht Verlauf: `comments`, `updated_at`, `cost` und `waits` ändern sie nicht; Status, Branch, Zuständiger, `accept` und andere Felder schon.
+- **Lesemodelle aus der DB.** Nach dem Commit schreibt `fab` die betroffenen Zeilen in `read_models` neu; der Mod liest sie über `meta.rev`. `fab index` baut sie vollständig neu.
+- **Migration.** Fehlt `fabric.db` und liegen Altdateien vor (`tickets/*.json`, `counter`, `events.jsonl`, `index.json`, `herdr.json`, `autopilot.json`, `autopilot.log`, `autopilot-pause`, `tick-off`, `attachments/`), überführt der erste Aufruf sie automatisch; `fab migrate` macht dasselbe ausdrücklich. Der Bericht vergleicht Tickets, Kommentare, Sessions, Ereignisse, Anhänge und Zähler in Alt und Neu. Bei Abweichung bleibt die DB aus, die Altdateien bleiben unberührt, und `fab` meldet den Fehler (kein Datei-Fallback mehr). Nach Erfolg wandern alle Altdateien in ein Stempelverzeichnis `legacy/files-<YYYYmmdd-HHMMSS>/`; ein zweiter Lauf ändert nichts. Eine bestehende `fabric.db` bekommt fehlende Altdateien beim nächsten Öffnen nachgezogen.
 - **Sicherung.** Beim ersten Schreibzugriff eines Tages und über `fab tick` entsteht eine konsistente sqlite-Backup-Kopie in `backups/`; `fab backup` erzwingt eine. Die letzten 14 bleiben.
 - **IDs** kommen aus der Tabelle `counter`, nie aus dem Dateinamen-Maximum: `T-1`, `T-2`, …
 
-### Ticket `tickets/T-<n>.json`
+### Ticket `read_models`-Schlüssel `ticket:T-<n>`
 
 ```json
 {
@@ -72,7 +85,7 @@ Die gesamte Datenhaltung läuft über die schmale Schnittstelle in `fabric/fabli
   "checks": {"state": "pass", "head": "<sha>", "at": 1790000000000, "tail": "letzte 20 Zeilen"},
   "verdict": {"state": "pass", "by": "ada", "head": "<sha>", "at": 1790000000000, "summary": "…"},
   "attachments": [
-    {"name": "bild.png", "path": "data/fabric/attachments/T-1/bild.png", "at": 1790000000000}
+    {"name": "bild.png", "position": 1, "path": "data/fabric/cache/attachments/T-1/1-bild.png", "cache_path": "data/fabric/cache/attachments/T-1/1-bild.png", "at": 1790000000000, "mime": "image/png"}
   ],
   "stall": {
     "rule": "doing", "since": 1790000000000, "attempts": 1,
@@ -101,7 +114,7 @@ Die gesamte Datenhaltung läuft über die schmale Schnittstelle in `fabric/fabli
 - `status`: `draft` → `todo` → `doing` → `review` → `done`; daneben `dropped`. Zeiten in Epoch-Millisekunden.
 - Felder ohne Wert: `null` bzw. `[]`. Kein Feld fehlt. Unbekannte Felder bleiben beim Schreiben erhalten — auch in einzelnen Kommentaren: deren Rohdaten werden vollständig gespeichert, `n` bleibt die vergebene Nummer, neue Kommentare zählen ab der höchsten vorhandenen Nummer weiter.
 - `checks`/`verdict` gelten nur, solange `head` dem aktuellen HEAD des Worktrees entspricht.
-- `attachments`: nur Bilder (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`), abgelegt von `fab attach` unter `data/fabric/attachments/<ID>/`. `path` ist relativ zur App-Wurzel (`~/.config/herdr-app`), damit der Mod ihn als Bild laden kann; im Body und in Kommentaren steht derselbe Pfad als Markdown-Bildlink `![name](path)`.
+- `attachments`: nur Bilder (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`) in der Spalte `data` (BLOB), dazu `mime`. `path`/`cache_path` zeigen auf `data/fabric/cache/attachments/<ID>/<position>-<name>` (relativ zur App-Wurzel `~/.config/herdr-app`); die Datei ist ein wegwerfbarer Cache unter `$FAB_HOME/cache/` und wird beim Erzeugen des Lesemodells bzw. von `fab attach` materialisiert. Im Body und in Kommentaren steht derselbe Pfad als Markdown-Bildlink `![name](path)`.
 - `stall`: nur von `fab tick` geschrieben, optional. `rule` ∈ `doing mention review todo blocked`, `since` = Beginn des Stillstands, `attempts` = bisherige Weck-/Startversuche, `attention` = nach zwei erfolglosen Versuchen oder Regel 5, `reason` einzeilig ohne „stockt seit“, `agent` = zu weckender Agent oder `orchestrator`. Ein Kommentar im Ticket, jede zugestellte manuelle Weckung und jeder Statuswechsel entfernen `stall`; `fab tick` entfernt ihn, sobald die Bedingung wegfällt. `draft`, `review`, `done` und `dropped` werden von `fab tick` weder gelesen noch verändert.
 - `sessions[]`: `ended` (optional) hält das beobachtete Ende einer Session `{at, code, reason, terminal}`; `seen_live` (optional, bool) belegt, dass die Session in einem Tick lief. Beide setzt `fab tick`/`fab dispatch` über `fabric/fablib/sessions.py`; ein neuer Start über `remember_session` entfernt `ended` und bei neuer Terminaladresse auch `seen_live`.
 - `max_cost`: optionales Kostenlimit in USD (`fab edit --max-cost`), `null` = kein Limit. `cost` ist der zuletzt gespeicherte Stand aus den Session-Protokollen (omp: `FAB_OMP_SESSIONS` oder `~/.omp/agent/sessions`, claude: `FAB_CLAUDE_PROJECTS` oder `~/.claude/projects`, je Worktree-Ordner); `fab show` rechnet frisch, `store.save` schreibt den Stand mit. `waits` wird nur ins Lesemodell geschrieben, nie in die DB: drei Stufen `doing`, `review` (Label mit Prüfername), `mensch` mit Millisekunden und `open`.
@@ -118,7 +131,7 @@ Bei `wake` steht in `text` genau eines von: `geweckt`, `gestartet`, `an orchestr
 Bei `tick` steht in `text` eines von: `geweckt`, `gestartet`, `an orchestrator`, `attention`, `gelöst`; `reason` nennt Regel und Grund, z. B. `Regel 1 (doing): keine Session seit 12 min`.
 Bei `session_ended` nennt `reason` Exit-Code, Endzeit und hc-Grund (`Exit 129 · Ende 2026-11-22 12:21 · Grund killed`) oder `Fehlstart: Session nie sichtbar`; `text` enthält die letzten Bildschirmzeilen aus `hc read` (höchstens 20 Zeilen/2000 Zeichen, Kürzung wird benannt). Je Session und Ende genau ein Ereignis.
 
-### Lesemodell `index.json`
+### Lesemodell `read_models`-Schlüssel `index`
 
 ```json
 {
@@ -170,12 +183,12 @@ Bei `session_ended` nennt `reason` Exit-Code, Endzeit und hc-Grund (`Exit 129 ·
 - Lebt `last_tick` länger als 5 min zurück, steht zusätzlich genau **ein** `attention`-Eintrag ohne Ticket in der Inbox (`attention:tick:<last_tick>`); der nächste Tick räumt ihn ab. Der Zustand steht zusätzlich als `tick` im Lesemodell.
 - `alarm` ist der aktive Alarmzustand aus `fabric/fablib/alarm.py` (Abschnitt 4e). Jeder Alarm erzeugt zentral genau einen Inbox-Eintrag `attention:<alarm.id>` mit `alarm`, `run` und bei `tick` zusätzlich `since`; quittierte Alarme fehlen in beiden Listen.
 - Der Mod zählt nichts selbst: Inbox-Zahl = `inbox.length`, Stufen = Tickets nach `status`.
-- Jeder Inbox-Eintrag trägt eine stabile `id`; sie bleibt über Neuberechnungen von `index.json` gleich, solange der Eintrag besteht.
-- `index.json` bleibt unter 1 MiB: Ticket-Einträge ohne `body` und ohne `comments`, höchstens 300 Ereignisse.
+- Jeder Inbox-Eintrag trägt eine stabile `id`; sie bleibt über Neuberechnungen des Lesemodells gleich, solange der Eintrag besteht.
+- Das Lesemodell `index` bleibt unter 1 MiB: Ticket-Einträge ohne `body` und ohne `comments`, höchstens 300 Ereignisse.
 
 ## 3. CLI
 
-Alle schreibenden Befehle schreiben jede Änderung in genau einer Transaktion, hängen Ereignisse an und erzeugen danach die Lesemodelle (`index.json`, betroffene `tickets/<ID>.json`) neu; `fab accept` schreibt seinen Fortschritt in mehreren solchen Transaktionen, eine je Schritt (Abschnitt „Wiederaufnehmbare Abnahme“). Fehler: Exit-Code ≠ 0, deutsche Meldung auf stderr. `--json` liefert maschinenlesbare Ausgabe, wo angegeben.
+Alle schreibenden Befehle schreiben jede Änderung in genau einer Transaktion, hängen Ereignisse an und erzeugen danach die Lesemodelle (Schlüssel `index`, betroffene `ticket:<ID>`) neu; `fab accept` schreibt seinen Fortschritt in mehreren solchen Transaktionen, eine je Schritt (Abschnitt „Wiederaufnehmbare Abnahme“). Fehler: Exit-Code ≠ 0, deutsche Meldung auf stderr. `--json` liefert maschinenlesbare Ausgabe, wo angegeben.
 
 | Befehl | Wirkung |
 |---|---|
@@ -188,7 +201,7 @@ Alle schreibenden Befehle schreiben jede Änderung in genau einer Transaktion, h
 | `fab assign ID NAME --from NAME` | Zuständigen auf ein Mitglied des Teams setzen, zu dem das Ticket-Repo gehört; ein Nicht-Mitglied wird mit Team und Mitgliederliste abgelehnt |
 | `fab link ID --blocked-by ID… --from NAME` | Abhängigkeiten, ohne Zyklen. `--remove ID…` entfernt sie; fällt die letzte weg, startet `fab` das Ticket wie nach einer Abnahme (Abschnitt `fab accept`). |
 | `fab comment ID --from NAME [--no-wake] "<text>"` | Kommentar; jede `@erwähnung` weckt (Abschnitt 4). Gibt pro genanntem Namen eine Zeile mit dem Ergebnis aus. |
-| `fab attach ID DATEI [--no-edit] [--from NAME]` | Bild als Anhang: `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp` (Groß/klein egal). Kopiert nach `data/fabric/attachments/<ID>/<name>` (Name aus der Datei, bereinigt; gleicher Inhalt wird wiederverwendet, sonst `-2`, `-3`, …). Gibt die Zeile `![<name>](data/fabric/attachments/<ID>/<name>)` aus, hängt den Anhang an `attachments` und standardmäßig den Link an den Body; `--no-edit` lässt den Body unverändert. Akteur: `--from`, Standard `mensch`. |
+| `fab attach ID DATEI [--no-edit] [--from NAME]` | Bild als Anhang: `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp` (Groß/klein egal). Legt die Bytes als BLOB in `attachments` (Name aus der Datei, bereinigt; gleicher Inhalt wird wiederverwendet, sonst `-2`, `-3`, …) und materialisiert sofort `data/fabric/cache/attachments/<ID>/<position>-<name>`. Gibt die Zeile `![<name>](data/fabric/cache/attachments/<ID>/<position>-<name>)` aus, hängt den Anhang an `attachments` und standardmäßig den Link an den Body; `--no-edit` lässt den Body unverändert. Akteur: `--from`, Standard `mensch`. |
 | `fab diff ID [--json] [--file PFAD]` | Änderungen vor der Abnahme: Dateien mit `+`/`−` (`git diff --numstat base...branch`), Commits (`git log base..branch`), HEAD sowie Nachweise aus Ticket-Anhängen und im Handover genannten Dateien/Screenshots. `--json` liefert `{id, base, branch, head, merge_base, files, commits, proofs}`; `--file` den Text-Diff einer Datei (mit `--json` als `{path, diff}`). |
 | `fab preview start [--page board\|ticket\|settings\|workflows\|repos\|team\|context\|knowledge]\|shot\|stop ID` | Eigene Vorschau-Instanz je Ticket-Worktree unter `/tmp/fab-preview/<ID>/`. `start` kopiert `settings.json`, `keys.json`, `layouts/`, `mods/` und die CLI aus dem Ticket-Worktree (nie `data`) nach `/tmp/fab-preview/<ID>/home`, nutzt ein privates `HOME` und `HC_SESSION` `fabp-<id>`, legt ein Demo-Ticket an (nie echte Ticketdaten), ergänzt Demokosten und Liegezeiten und startet ein eigenes Herdr-Fenster mit eigenem Core; `--page` wählt die Startseite (Standard `board`; `repos` öffnet den Steckbrief, `knowledge` den Wissensordner eines isolierten Demo-Repos im Vorschau-Home, `context` die Kontextvorschau des Demo-Tickets). `shot` speichert dort ein PNG und hängt es nach denselben Regeln wie `fab attach` an (Feld `attachments`, Link im Body); Akteur: `--from`, sonst `assignee`, sonst `mensch`. `stop` beendet App und Core und entfernt `/tmp/fab-preview/<ID>`. |
 | `fab dispatch ID [--agent NAME] --from NAME` | Verlangt `repo`, einen Abschnitt `## Abnahmekriterien` und keine offenen `blocked_by`. Legt Branch `fab/<ID>-<slug>` vom aktuellen HEAD des Repos und den Worktree an, startet den Agenten (Abschnitt 5), Status `doing`. Läuft er schon für das Ticket: wecken statt starten. Eine beendete Session (nicht in `hc ls`, `state == "finished"` in `hc ls --all`) wird vorher als `session_ended` vermerkt; „läuft schon“ gilt nur für eine lebende Session, sonst startet `dispatch` neu. |
@@ -203,14 +216,14 @@ Alle schreibenden Befehle schreiben jede Änderung in genau einer Transaktion, h
 | `fab drop ID --from NAME "<grund>"` | Status `dropped`, Sessions beenden (auch ohne Eintrag unter `## Sessions`, per Label `fab.ticket` oder Namen), Worktree bleibt. |
 | `fab wake ID NAME --from NAME ["<text>"]` | Wecken von Hand, gleiche Regeln wie bei Erwähnungen |
 | `fab tick [--dry-run] [--install\|--uninstall]` | Stillstandswächter (Abschnitt 4b). Ohne Optionen ein Lauf: wecken/starten oder `attention`, sonst nichts; zusätzlich meldet und beendet er lebende Sessions zu `done`/`dropped`-Tickets (per Label `fab.ticket` oder Namen `fab-<team>-<agent>-t-<n>`). Beendete Sessions offener Tickets erkennt er an `hc ls --all`: `state == "finished"` schreibt genau einmal `session_ended` mit Exit-Code, Endzeit und letzten Zeilen; eine nie sichtbare Session meldet `Fehlstart`. Ein `doing`-Ticket ohne lebende Session bekommt dadurch sofort `attention`, ohne die Stillstandsfrist abzuwarten. Jeder echte Lauf schreibt `last_tick`; ist er älter als 5 min, erscheint ein `attention`-Eintrag in der Inbox. `--dry-run` zeigt nur die geplanten Aktionen und schreibt insbesondere kein `last_tick`. `--install` legt den launchd-Agent `~/Library/LaunchAgents/de.herdr.fabric.tick.plist` (Intervall 60 s) an, `--uninstall` entfernt ihn; ohne Auftrag legt der erste `fab`-Aufruf ihn unter macOS selbst an (Abschnitt 4b). Kein `--from`. |
-| `fab pause [--from NAME]` · `fab resume [--from NAME]` | Fabric anhalten bzw. fortsetzen. `pause` setzt die Marke `<FAB_HOME>/tick-off` und entfernt den launchd-Auftrag (wie `fab tick --uninstall`), beendet Autopilot, alle Team-Orchestratoren und die Agenten-Sessions offener Tickets. Solange die Marke liegt, tut `fab tick` nichts (auch nicht aus dem Takt des Fabric-Fensters), es gibt keinen Tick-Alarm, und jedes Wecken endet als `unterdrückt: pausiert` (`fabric/fablib/wake.py`). `resume` entfernt die Marke, legt den launchd-Auftrag wieder an, startet fehlende Orchestratoren und holt Weckrufe nach, die seit dem letzten `pause` als `unterdrückt: pausiert` endeten (je offenem Ticket und Ziel einmal, mit dem letzten Kommentar des Absenders); den Autopiloten startet `fab autopilot start` getrennt. `index.json["paused"]` zeigt den Zustand. |
+| `fab pause [--from NAME]` · `fab resume [--from NAME]` | Fabric anhalten bzw. fortsetzen. `pause` setzt die Marke `meta.tick_off` in `fabric.db` und entfernt den launchd-Auftrag (wie `fab tick --uninstall`), beendet Autopilot, alle Team-Orchestratoren und die Agenten-Sessions offener Tickets. Solange die Marke liegt, tut `fab tick` nichts (auch nicht aus dem Takt des Fabric-Fensters), es gibt keinen Tick-Alarm, und jedes Wecken endet als `unterdrückt: pausiert` (`fabric/fablib/wake.py`). `resume` entfernt die Marke, legt den launchd-Auftrag wieder an, startet fehlende Orchestratoren und holt Weckrufe nach, die seit dem letzten `pause` als `unterdrückt: pausiert` endeten (je offenem Ticket und Ziel einmal, mit dem letzten Kommentar des Absenders); den Autopiloten startet `fab autopilot start` getrennt. `index.json["paused"]` zeigt den Zustand. |
 | `fab close ID --commit SHA [--note TEXT] [--from NAME]` | Ticket abschließen, dessen Arbeit schon auf der Basis liegt (etwa direkt auf main umgesetzt). Der Commit muss von der Basis erreichbar sein, sonst Abbruch. Ein Branch des Tickets ohne eigene Commits über der Basis wird wie bei `accept` samt Worktree, Sessions und Vorschau aufgeräumt; hat er noch eigene Commits, bricht `close` ab. Status `done`, Kommentar und Ereignis `accept` mit Basis und Commit; freigewordene Tickets starten wie nach `accept`. |
 | `fab orchestrator start\|stop\|status [TEAM]` | Orchestrator-Terminal je Team verwalten (Abschnitt 5) |
-| `fab autopilot start [--until HH:MM\|done] \| stop \| resume \| status [--json]` | Autopilot-Terminal `autopilot` ohne Parent starten, beenden, eine Pause aufheben oder den Status zeigen; `--json` liefert genau den Inhalt von `$FAB_HOME/autopilot.json`. Ein zweiter Start bei laufendem Terminal bricht mit Meldung ab (Abschnitt 4d). |
-| `fab alarm status [--json]` / `fab alarm ack [--json]` | Aktive Alarme bei rotem `main`, pausiertem Autopilot, wiederholt übersprungenen Abnahmen und ausgefallenem `fab tick` zeigen bzw. alle aktuellen quittieren (Abschnitt 4e). `status --json` liefert `{active, count, alarms}`; `ack` gibt `{acked, active, count, alarms}` aus und schreibt `index.json` neu. |
+| `fab autopilot start [--until HH:MM\|done] \| stop \| resume \| status [--json]` | Autopilot-Terminal `autopilot` ohne Parent starten, beenden, eine Pause aufheben oder den Status zeigen; `--json` liefert genau den Inhalt von `meta.autopilot`; `fab autopilot log [--limit N] [--json]` zeigt das Log aus `autopilot_log`. Ein zweiter Start bei laufendem Terminal bricht mit Meldung ab (Abschnitt 4d). |
+| `fab alarm status [--json]` / `fab alarm ack [--json]` | Aktive Alarme bei rotem `main`, pausiertem Autopilot, wiederholt übersprungenen Abnahmen und ausgefallenem `fab tick` zeigen bzw. alle aktuellen quittieren (Abschnitt 4e). `status --json` liefert `{active, count, alarms}`; `ack` gibt `{acked, active, count, alarms}` aus und schreibt das Lesemodell `index` neu. |
 | `fab agents [--json]` | Mitglieder aller Teams mit Teamzuordnung (`teams`) und laufende Sessions. Beendete Sessions zeigen `beendet`; je Ticket und Terminalname erscheint nur der neueste Start. |
-| `fab inbox [--json]` | wie `index.json.inbox` |
-| `fab index` | `index.json` neu erzeugen |
+| `fab inbox [--json]` | wie `index.inbox` im Lesemodell |
+| `fab index` | alle Lesemodelle in `read_models` neu erzeugen (Statuszeile nennt `meta.rev`) |
 | `fab migrate [--json]` | Altdateien nach `fabric.db` überführen und den Abgleichsbericht zeigen; ein zweiter Lauf ändert nichts |
 | `fab backup [--json]` | Konsistente SQLite-Sicherung nach `data/fabric/backups/` schreiben; behält die letzten 14 |
 
@@ -252,7 +265,7 @@ Vor dem Push im PR-Weg gleicht `fab accept` die lokale Basis mit `origin/<base>`
 
 - Fehlt `origin/<base>`, bleibt die lokale Basis unverändert und wird gepusht.
 - Liegt die lokale Basis hinter `origin/<base>` und hat keine eigenen Commits, wird sie per `git merge --ff-only origin/<base>` nachgezogen.
-- Andernfalls hat sie eigene Commits über `origin/<base>`; diese dürfen ausschließlich die von `fab` verwalteten Pfade `.fabric/`, `fabric/roster.json`, `fabric/prompts/`, `fabric/templates/` und die App-Konfiguration `settings.json`, `keys.json`, `layouts/` betreffen (`FAB_PATHS` in `fabric/fablib/managed.py:26`). Dann rebased `fab` auf `origin/<base>` (`fabric/fablib/cli.py:1704-1712`) und pusht die Basis mit. Das nimmt die Auto-Commits mit, die `fab` selbst auf main legt: `chore(roster)` aus `fabric/fablib/config.py:172` und `agents.py:56`, `chore(prompt)` aus `prompts.py:137`, `chore(template)` aus `templates.py:127` und `chore: UI-Konfiguration (Autopilot)` für App-Konfiguration aus `fabric/fablib/autopilot.py:432-434`; das Vorlagenziel liegt neben dem Roster (`templates.py:29-34`). Betrifft auch nur eine Datei außerhalb dieser Pfade – etwa `fabric/fablib/x.py` oder ein gemischter Commit –, bricht es vor jedem Push mit `fremde lokale Commits über origin/<base>; nichts gepusht` und der Liste der fremden Dateien ab; die Meldung nennt alle erlaubten Pfade. Ein Rückstand zu `origin/<base>` ist damit kein Abbruchgrund mehr.
+- Andernfalls hat sie eigene Commits über `origin/<base>`; diese dürfen ausschließlich die von `fab` verwalteten Pfade `.fabric/` und die App-Konfiguration `settings.json`, `keys.json`, `layouts/` betreffen (`FAB_PATHS` in `fabric/fablib/managed.py`). Dann rebased `fab` auf `origin/<base>` (`fabric/fablib/cli.py:1704-1712`) und pusht die Basis mit. Das nimmt die Auto-Commits mit, die auf main entstehen: `chore(fabric)` für `.fabric/` und das Vorlagenziel liegt neben dem Roster (`templates.py:29-34`). Betrifft auch nur eine Datei außerhalb dieser Pfade – etwa `fabric/fablib/x.py` oder ein gemischter Commit –, bricht es vor jedem Push mit `fremde lokale Commits über origin/<base>; nichts gepusht` und der Liste der fremden Dateien ab; die Meldung nennt alle erlaubten Pfade. Ein Rückstand zu `origin/<base>` ist damit kein Abbruchgrund mehr.
 
 ### Wiederaufnehmbare Abnahme
 
@@ -326,7 +339,7 @@ Der Workflow `fabric/flows/projektkarte.json` erneuert die Karte stündlich (`cr
 
 ## 3b. Konfiguration und Pflege (für das UI)
 
-Das UI pflegt alles über diese Befehle. Alle schreiben atomar (tmp + `os.replace`), lassen unbekannte Felder stehen, schreiben ein Ereignis `config` (`text` = was geändert wurde), erzeugen `index.json` neu und verlangen `--from` (das UI übergibt `mensch`). Fehler: deutsche Meldung auf stderr, Exit ≠ 0. Schreibbefehle committen ihre eigenen Dateien gezielt selbst — Roster als `chore(roster): …`, Promptdatei als `chore(prompt): …` —, aber nur wenn der Checkout auf seinem Basis-Branch steht; andere Änderungen bleiben uncommittet, und außerhalb eines Git-Repos wird nichts committet.
+Das UI pflegt alles über diese Befehle. Alle schreiben in einer SQLite-Transaktion, lassen unbekannte Felder stehen, schreiben ein Ereignis `config` (`text` = was geändert wurde), erzeugen das Lesemodell `index` neu und verlangen `--from` (das UI übergibt `mensch`). Fehler: deutsche Meldung auf stderr, Exit ≠ 0. Roster, Prompts und Vorlagen werden nicht mehr committet: sie stehen in `fabric.db` (`config`, `prompts`, `templates`).
 
 | Befehl | Wirkung |
 |---|---|
@@ -365,13 +378,13 @@ Das UI pflegt alles über diese Befehle. Alle schreiben atomar (tmp + `os.replac
 | `fab decide [propose] T-x --from N "ENTSCHEIDUNG" [--reason "TEXT"]` · `fab decide confirm\|reject T-x D1 --from N` · `fab decide list [--repo [PFAD]]` | Legt einen Entscheidungs-Vorschlag (`D1`, Feld `decision_proposals`, Ereignis `decision`) im Ticket an; `--from mensch` bestätigt sofort. Bestätigen schreibt die Zeile in `.fabric/decisions.md` des Ticket-Repos, Verwerfen nicht. `list` zeigt offene Vorschläge (`T-x D1 · von · Text · Begründung: …`) bzw. mit `--repo` die bestätigten Zeilen des Checkouts (Standard: aktueller Ordner). |
 | `fab link ID --remove ID… --from N` | Abhängigkeiten entfernen |
 | `fab new "<satz>" [--template NAME] [--issue N] [--repo PFAD] [--from NAME] [--no-wake]` | wie oben; `--no-wake` legt nur den Entwurf an, ohne `@orchestrator`-Kommentar |
-| `fab template list [--json]` | Vorlagen in fester Reihenfolge `bug`, `feature`, `refactor`, `chore`, danach weitere alphabetisch: `[{name, path, bytes}]`, Pfad absolut. Lokale Vorlagen (neben dem Roster) gewinnen gegen die mitgelieferten aus `fabric/templates/`. |
+| `fab template list [--json]` | Vorlagen in fester Reihenfolge `bug`, `feature`, `refactor`, `chore`, danach weitere alphabetisch: `[{name, path, bytes}]`, Pfad absolut. Vorlagen liegen in der Tabelle `templates`. |
 | `fab template show NAME` | Rohtext der Vorlage. Unbekannter Name: deutsche Meldung mit allen vorhandenen Namen, Exit ≠ 0. |
 | `fab template set NAME --text T --from N` | Speichert atomar im aktiven Vorlagenordner (Umgebungsvariable `FAB_TEMPLATES`, sonst `<Rosterordner>/templates`), Ereignis `config` und eigener Commit `chore(template): templates/<name>.md gespeichert (<n> Bytes)`. Name muss `^[a-z][a-z0-9_-]*$` erfüllen. |
 | `fab issue list [--repo PFAD] [--json]` | Offene GitHub-Issues des Repos (`--repo` Standard: Git-Wurzel des aktuellen Ordners) über `gh issue list`: `[{number, title, url}]`, Text `#12 Titel`. Fehlt ein github.com-Origin, `gh` oder die Anmeldung, bricht der Befehl mit deutscher Meldung ab. |
 | `fab version` | Version (Datum + Git-HEAD des Fabric-Codes) |
 
-`index.json.roster` enthält je Blaupause `{name, role, color, program, model, teams}`; `index.json.teams` nennt Reihenfolge, Prüfer, Limit und Orchestrator je Team für die Seitenleiste. `index.json.fabrics` listet die Fabric-Namen (`standard` zuerst); jeder Ticket-Eintrag trägt `fabric` (Fabric seines Teams, `""` ohne Team). Das UI liest den vollständigen Roster bei Bedarf über `fab roster --json`.
+`index.roster` enthält je Blaupause `{name, role, color, program, model, teams}`; `index.teams` nennt Reihenfolge, Prüfer, Limit und Orchestrator je Team für die Seitenleiste. `index.fabrics` listet die Fabric-Namen (`standard` zuerst); jeder Ticket-Eintrag trägt `fabric` (Fabric seines Teams, `""` ohne Team). Das UI liest den vollständigen Roster bei Bedarf über `fab roster --json`.
 
 ## 4. Wecken durch Erwähnung
 
@@ -414,7 +427,7 @@ Jedes Ergebnis wird als `wake`-Ereignis geschrieben, auch jede Unterdrückung. I
 - Auslöser: Jeder echte `fab tick` schreibt `last_tick` (Millisekunden, zentrale Uhr) in die Tabelle `meta`. Fehlt der launchd-Auftrag, legt der erste `fab`-Aufruf ihn unter macOS idempotent an (Intervall 60 s, `RunAtLoad` aus); `FAB_TICK_AUTOSTART=0` schaltet das ab, `FAB_LAUNCH_AGENTS_DIR` lenkt das Verzeichnis um, und ohne ausdrückliche Freigabe (`=1`) wird aus einem Worktree nichts angelegt, weil dessen Pfad beim Aufräumen verschwindet. Der Auftrag trägt immer das Standard-Home `~/.config/herdr-app/data/fabric`, nie das `FAB_HOME` des auslösenden Aufrufs: weicht `FAB_HOME` ab, wird nichts angelegt und `fab tick --install` nennt den Grund; eine bestehende Plist mit abweichendem `FAB_HOME` schreibt der nächste `fab`-Aufruf auf das Standard-Home um.
 - Der Mod-Timer lebt im Inbox-Block, den es nur im Layout `fabric` gibt (`layouts/fabric.json`); in jedem anderen Layout tickt bei geschlossenem Fabric-Fenster nur launchd. Beide Ansichten teilen sich den letzten Versuch; scheitert der Aufruf, stößt der Mod einen Index-Lauf an, der den Alarm veröffentlicht.
 - Ursache des Ausfalls vom 22.11. (T-80): Der Tick-Timer war nur in der `isApp`-Ansicht (das Fabric-Overlay) registriert. Das Schließen des Fensters beendete die Ansicht samt Timer, während der launchd-Auftrag nie automatisch angelegt worden war.
-- Alarm: Ist `last_tick` älter als 5 min, enthält `index.json` unter `tick` den Zustand `{last_tick, age_ms, limit_ms, stale: true}` und die Inbox genau einen `attention`-Eintrag `attention:tick:<last_tick>` mit Text `fab tick seit … nicht gelaufen`. Derselbe Ausfall erzeugt keinen zweiten Eintrag; der nächste erfolgreiche Tick schreibt `last_tick` neu und löst den Eintrag auf. Ohne bekannten `last_tick` gibt es keinen Alarm. Banner und rote Lampe baut T-75 auf diesem Zustand.
+- Alarm: Ist `last_tick` älter als 5 min, enthält das Lesemodell `index` unter `tick` den Zustand `{last_tick, age_ms, limit_ms, stale: true}` und die Inbox genau einen `attention`-Eintrag `attention:tick:<last_tick>` mit Text `fab tick seit … nicht gelaufen`. Derselbe Ausfall erzeugt keinen zweiten Eintrag; der nächste erfolgreiche Tick schreibt `last_tick` neu und löst den Eintrag auf. Ohne bekannten `last_tick` gibt es keinen Alarm. Banner und rote Lampe baut T-75 auf diesem Zustand.
 
 ## 4c. Neustart des Orchestrators
 
@@ -434,7 +447,7 @@ Der Kontext des Team-Orchestrators bleibt begrenzt. Zähler und Leerlauf werden 
 
 Die Schleife läuft alle 120 s:
 
-- **Abnahme:** Der Autopilot ruft `fab accept` auf; dieses prüft den Ablauf selbst (Abschnitt „Wiederaufnehmbare Abnahme“). Nur ohne begonnene Abnahme (`accept.steps` leer und `pr.state` nicht `merged`) gilt davor das Gate: `checks` und `verdict` `pass` auf dem aktuellen HEAD des Worktrees (`head(worktree)`); bei `no_change` zählen live `git.branch_exists` und `commit_count` über der Basis. Bei begonnener Abnahme entfällt das Gate, damit ein abgebrochener Lauf (etwa nach `pr_merged` oder `cleaned`) beim nächsten Lauf fortsetzt. Das Haupt-Checkout muss in beiden Fällen sauber sein; uncommittet dürfen nur die Pfade aus `CONFIG_PATHS` sein: `fabric/roster.json`, `fabric/prompts/` und die App-Konfiguration `settings.json`, `keys.json`, `layouts/` (`fabric/fablib/managed.py:19-28`). `ensure_clean_main` committet sie als `chore: UI-Konfiguration (Autopilot)` (`fabric/fablib/autopilot.py:430-438`), ohne den Inhalt zu vergleichen oder zu normalisieren; `is_config_path` prüft Einträge mit `/` als Präfix und Dateien exakt (`managed.py:31-49`).
+- **Abnahme:** Der Autopilot ruft `fab accept` auf; dieses prüft den Ablauf selbst (Abschnitt „Wiederaufnehmbare Abnahme“). Nur ohne begonnene Abnahme (`accept.steps` leer und `pr.state` nicht `merged`) gilt davor das Gate: `checks` und `verdict` `pass` auf dem aktuellen HEAD des Worktrees (`head(worktree)`); bei `no_change` zählen live `git.branch_exists` und `commit_count` über der Basis. Bei begonnener Abnahme entfällt das Gate, damit ein abgebrochener Lauf (etwa nach `pr_merged` oder `cleaned`) beim nächsten Lauf fortsetzt. Das Haupt-Checkout muss in beiden Fällen sauber sein; uncommittet dürfen nur die Pfade aus `CONFIG_PATHS` sein: die App-Konfiguration `settings.json`, `keys.json`, `layouts/` (`fabric/fablib/managed.py:19-28`). `ensure_clean_main` committet sie als `chore: UI-Konfiguration (Autopilot)` (`fabric/fablib/autopilot.py:430-438`), ohne den Inhalt zu vergleichen oder zu normalisieren; `is_config_path` prüft Einträge mit `/` als Präfix und Dateien exakt (`managed.py:31-49`).
 - **Zeitlimit der Abnahme:** Um den Aufruf von `fab accept` liegt kein Gesamtlimit (`fabric/fablib/autopilot.py`, `try_accept`): Ein solches schlösse die Wartezeit des Merge-Stand-Laufs auf einen Prüfplatz ein und brach Abnahmen unter Last mit `exit 124` ab (T-142). Begrenzt sind die Teile einzeln: jeder Prüfschritt durch `pipeline.DEFAULT_TIMEOUT` (1200 s, `fabric/fablib/pipeline.py`), das Warten auf einen Platz durch `verifyslots.wait_timeout()` (`FAB_VERIFY_WAIT`, Standard 1800 s), git und gh durch `git.PUSH_TIMEOUT` (600 s).
 - **Blockierter main:** Trägt main daneben eine andere uncommittete Datei (etwa `README.md`) oder eine Mischung, wird nichts committet, `ensure_clean_main` gibt `False` zurück und die Abnahme entfällt (`fabric/fablib/autopilot.py:440-453`). Je Autopilot-Runde zählt das höchstens einmal: `begin_round`/`end_round` sammeln die Beobachtungen aller review-Tickets eines Durchlaufs (`autopilot.py:293-312`, `986-1009`); ein Aufruf außerhalb von `once()` zählt sofort als eigene Runde (`440-448`). Zähler, Pfade und Repo liegen unter dem Meta-Schlüssel `autopilot_skip` (`autopilot.py:40-41`, `314-389`); ab `SKIP_ALARM_ROUNDS = 3` (`autopilot.py:40`) erscheint der Alarm `skip:<since>` mit allen blockierenden Pfaden (Abschnitt 4e), und der Autopilot weckt den Orchestrator genau einmal je Episode (`autopilot.py:370-386`, `405-415`, `fabric/fablib/wake.py:195-217`). `refresh_skip` prüft zu Beginn jeder Runde das gespeicherte Repo und löscht den Zustand, sobald dort keine uncommitteten Pfade mehr stehen (`autopilot.py:391-403`, `988`) – auch ohne abnahmebereites Ticket; ebenso löscht `ensure_clean_main` bei sauberem main oder erfolgreichem Konfigurations-Commit (`autopilot.py:357-368`, `426-429`, `436-438`).
 - **main nach dem Merge:** `.fabric/verify.sh` im Haupt-Checkout. Rot ⇒ ein zweiter Lauf nach 60 s. Bleibt es rot, entscheidet der gespeicherte Grund des zweiten Laufs (`pipeline.run()["reason"]`, Abschnitt „Pipeline“): Beginnt er mit `Abbruch:` (Zeitlimit, Signal, verwaister Lauf), gibt es keinen Revert. Sonst nimmt `autopilot._revert_main` (`fabric/fablib/autopilot.py:603-660`) den Merge-Commit an HEAD (`git revert -m 1`) zurück, wenn HEAD ein Merge-Commit ist und höchstens ein First-Parent-Commit über `origin/main` liegt: 0, wenn der PR-Weg den Merge schon gepusht hat, 1, wenn der lokale Weg ihn noch nicht gepusht hat. Danach folgt `git push origin main`; der Revert liegt damit auch auf `origin/main`, und lokales `main` und `origin/main` bleiben gleich. Mehr als ein First-Parent-Commit (fremde lokale Commits) oder ein HEAD, der kein Merge-Commit ist, führen zu keinem Revert. Scheitert der Fetch oder der Push, wird nichts gepusht; einen bereits angelegten lokalen Revert verwirft `git reset --keep` auf den Stand davor. In jedem Rot-Fall pausiert der Autopilot (`fabric/fablib/autopilot.py:842-851`); die Pause hängt nicht am Exit-Code des Reverts. Der Pausengrund steht in `autopilot.json` (`reason`) und im Pausenalarm, der Hauptalarm ergänzt ihn als `– Grund: …` (`fabric/fablib/alarm.py:107-150`); ein `@orchestrator`-Kommentar am Ticket weckt den Orchestrator, damit er die Pause ohne Menschen auflösen kann.
@@ -443,14 +456,14 @@ Die Schleife läuft alle 120 s:
 - **Stillstand:** Ohne lebende Session und ohne Ereignis seit 20 min wird der Zuständige geweckt (höchstens dreimal, dann der Orchestrator); zwischen Weckungen liegen mindestens 30 min.
 - **Verteilen:** Offene `todo` ohne Blocker stoßen höchstens alle 30 min einen Orchestrator-Hinweis an.
 
-Statusdatei `$FAB_HOME/autopilot.json` (Standard `data/fabric/autopilot.json`): `state` (`running`/`paused`/`stopped`), `reason`, `end` (ISO `YYYY-MM-DDTHH:MM`, leer bei `done`), `updated_at` (ms), `paused_since` (ms, Beginn der laufenden Pause; leer außerhalb von `paused`), `last_action`, `log` und `pid`. Weitere Felder dürfen hinzukommen; Leser ignorieren Unbekanntes. Die Pausemarke liegt daneben in `autopilot-pause`, das Log in `autopilot.log`.
+Status `meta.autopilot` in `fabric.db`: `state` (`running`/`paused`/`stopped`), `reason`, `end` (ISO `YYYY-MM-DDTHH:MM`, leer bei `done`), `updated_at` (ms), `paused_since` (ms, Beginn der laufenden Pause; leer außerhalb von `paused`), `last_action`, `log` und `pid`. Weitere Felder dürfen hinzukommen; Leser ignorieren Unbekanntes. Die Pausemarke liegt in `meta.autopilot_pause`, das Log in der Tabelle `autopilot_log` (neueste 2000 Zeilen).
 
 ## 4e. Alarme
 
-`fab alarm status [--json]` und `fab alarm ack [--json]` lesen und quittieren den Alarmzustand in `index.json["alarm"]`. Abgeleitet wird aus fünf Quellen:
+`fab alarm status [--json]` und `fab alarm ack [--json]` lesen und quittieren den Alarmzustand im Lesemodell `index.alarm`. Abgeleitet wird aus fünf Quellen:
 
 - **main rot:** Der jüngste Pipeline-Lauf mit `trigger == "main"` endet `fail`. Schritt ist der erste fehlgeschlagene Schritt, das Ticket kommt aus dem Lauf oder aus dem Betreff von `git log -1 --format=%s <head>` (`T-<n>`). „zurückgenommen“ wird nur gemeldet, wenn `git log -n 50 --format=%B` im Repo `This reverts commit <head>` enthält. Nach einem grünen main-Lauf ist der Alarm weg.
-- **Pause:** `autopilot.json` steht auf `paused`; `since` ist `paused_since`, sonst `updated_at`, und `text` nennt den gespeicherten `reason`. Bei aktivem main-Alarm erscheint die Pause nicht als eigener Alarm, weil der main-Alarm `resume` anbietet; der main-Alarm übernimmt den Pausengrund als `reason` und im Text (`– Grund: …`).
+- **Pause:** `meta.autopilot` steht auf `paused`; `since` ist `paused_since`, sonst `updated_at`, und `text` nennt den gespeicherten `reason`. Bei aktivem main-Alarm erscheint die Pause nicht als eigener Alarm, weil der main-Alarm `resume` anbietet; der main-Alarm übernimmt den Pausengrund als `reason` und im Text (`– Grund: …`).
 - **skip:** `autopilot.skip_state()` liefert `count`, `paths`, `since`, `notified` und `repo`; solange `count < SKIP_ALARM_ROUNDS` (3, `fabric/fablib/autopilot.py:38`), gibt es keinen Alarm. Ab der Schwelle trägt `skip:<since>` die Uhrzeit des ersten Skips, die Anzahl der übersprungenen Runden und alle blockierenden Pfade, die `git.pending_paths` (`fabric/fablib/git.py:80`) gemeldet hat, im Text (`fabric/fablib/alarm.py:174-197`); einsortiert ist er nach der Pause und vor Orchestrator und tick (`alarm.py:17`). `refresh_skip` löscht den Zustand zu Beginn jeder Autopilot-Runde, sobald das gespeicherte Repo sauber ist (`fabric/fablib/autopilot.py:389-401`, `917`); ebenso tun das sauberer main oder ein erfolgreicher Konfigurations-Commit in `ensure_clean_main` (`autopilot.py:355-366`, `425-427`, `434-436`). Damit fällt der Alarm aus `fab alarm status` und der Inbox.
 - **orchestrator:** Ein Orchestrator-Start, der ohne Antwort endgültig scheitert, erscheint als `orchestrator:<team>:<at>` mit `reason: "Start ohne Antwort"` (`fabric/fablib/alarm.py:223-257`, Abschnitt 4c).
 - **tick:** `store.tick_alarm()` ist `stale` (älter als 5 min); `since` ist `last_tick`, der Text nennt das Alter.
@@ -459,7 +472,7 @@ Jeder Alarm trägt eine stabile `id` (`main:<run>`, `pause:<since>`, `skip:<sinc
 
 ## 5. Agenten starten
 
-Roster `fabric/roster.json`:
+Roster (`config.roster` in SQLite, `fab roster --json` zeigt es):
 
 ```json
 {
@@ -504,7 +517,7 @@ Ein einziger Mod, mehrfach im Layout, Ansicht über `props().view`:
 | `inbox` | `index.inbox`, neueste oben. Klick → `setShared("fabric.selected", id)` und Ticket-Ansicht zeigen. Die Zahl hängt als Badge am Kopf. |
 | `timeline` | Ereignisse aus `index.events` als chronologischer Feed, neueste oben und nach Tagen gruppiert. Je Zeile: Akteur, Satz („weckte ada“, „änderte den Status“, „urteilte“), Ticket-ID, Uhrzeit, Art-Punkt; `wake` nennt das Ziel im Satz. Die Auswahl grenzt auf ein Ticket ein, „Alle“ zeigt wieder alle. Klick auf eine Zeile wählt das Ticket. |
 
-- Der Mod liest nur `index.json` und `tickets/<ID>.json` (`readTextFile`). Er beobachtet `data/fabric` mit `watchFolder`, mit einem 5-s-Timer als Rückfall.
+- Der Mod liest die Lesemodelle direkt aus `fabric.db` (`exec /usr/bin/sqlite3 -readonly -json`, Schlüssel `index` und `ticket:<ID>`) und pollt `meta.rev`; ohne Änderung lädt er nichts neu.
 - Solange der Inbox-Block existiert (Layout `fabric`), ruft der Mod jede Minute `fab tick` auf (Abschnitt 4b); ein laufender Tick blockiert keinen zweiten. Board- und Ticket-Karten zeigen bei `stall` „stockt seit …“ mit dem Grund als Tooltip.
 - Geschrieben wird nur über `exec("${appHome()}/fabric/fab", […])`. Der Mod schreibt nie selbst in Ticket-Dateien.
 - Gemeinsamer Zustand: `shared("fabric.selected")` (gewähltes Ticket).

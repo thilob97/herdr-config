@@ -5,11 +5,12 @@ import { View, div } from "gpui-kit";
 import { InputState, TextareaState, EditorState, ScrollHandle, VirtualListScrollHandle, TextView, h_flex, v_flex, Popup } from "gpui-base";
 import {
   appHome, checking, closeOverlay, exec, focused, knownAgents, layout, nextCommand, notify,
-  openOverlay, pickFolder, playSound, props, readTextFile, run, setShared, shared, spaces, terminals,
+  openOverlay, pickFolder, playSound, props, run, setShared, shared, spaces, terminals,
   watchFolder, writeTextFile,
 } from "herdr";
 import * as ui from "./ui.js";
 import * as model from "./model.js";
+import { createReader, logText } from "./db.js";
 import { renderBoard } from "./views/board.js";
 import { renderTicket } from "./views/ticket.js";
 import { renderTicketsPage } from "./views/tickets-page.js";
@@ -22,7 +23,7 @@ import { renderWorkflowsPage } from "./views/workflows.js";
 import { renderPipelinesPage } from "./views/pipelines.js";
 import { renderSettings } from "./views/settings.js";
 import { renderTicketsPanel } from "./views/tickets.js";
-import { renderInboxPanel as renderPosteingangPanel, renderInboxPage } from "./views/inbox.js";
+import { renderInboxPage } from "./views/inbox.js";
 import { renderCommandsPage } from "./views/commands.js";
 import { renderStatsPage } from "./views/stats.js";
 import { renderTimelinePanel } from "./views/timeline.js";
@@ -31,6 +32,7 @@ import { renderDialogs, renderBlueprintDrawer } from "./views/dialogs.js";
 import { renderContextPreview } from "./views/context.js";
 
 const VIEWS = ["inbox", "commands", "stats", "board", "tickets", "ticket", "team", "fabrics", "workflows", "pipelines", "prompts", "templates", "repos", "settings"];
+const db = createReader(exec);
 const NAV = [
   { page: "inbox", icon: "inbox" },
   { page: "board", icon: "board" },
@@ -101,6 +103,7 @@ export default class Fabric extends View {
     this.menu = null;
     this.modal = null;
     this.imageOpen = null;
+    this.attachmentPaths = new Map();
     this.newOpen = false;
     this.inboxFilter = "all";
     this.autopilotOpen = false;
@@ -111,7 +114,12 @@ export default class Fabric extends View {
     this.watch = null;
     this.refreshing = false;
     this.pending = false;
-    this.tickRunning = false;
+    // `undefined` heißt „noch nie gelesen“; null steht für eine Datenbank ohne
+    // `meta.rev`. Beides unterscheidet den ersten Lauf vom leeren Zustand.
+    this.dataRev = undefined;
+    this.autopilotLogRev = undefined;
+    this.ticketFor = null;
+    this.ticketRev = undefined;
     this.fieldFocused = false;
     this.cursorId = null;
     this.assigneeFilter = "all";
@@ -352,9 +360,9 @@ export default class Fabric extends View {
     cx.spawn(async (cx) => {
       this.asyncCx = cx;
       await this.refresh(cx);
-      // Vorschau: das Fabric-Fenster nach dem Start einmal öffnen, damit
+      // Vorschau: der Dienst öffnet das Fenster nach dem Start einmal, damit
       // Screenshots ohne Mausklick dieselbe Ansicht wie im Alltag zeigen.
-      if (!this.isApp && shared("fabric.previewWindow")) {
+      if (this.view === "service" && shared("fabric.previewWindow")) {
         setShared("fabric.previewWindow", null);
         this.openInWindow(this.currentRoute(), cx);
       }
@@ -373,35 +381,10 @@ export default class Fabric extends View {
         this.ensurePage(cx);
       }
       this.watchLoop(cx);
-      this.commandLoop(cx);
+      // Genau eine Instanz hört auf die Kürzel: der immer eingehängte Dienst.
+      if (this.view === "service") this.commandLoop(cx);
     });
     cx.timer.every(5000, (cx) => { if (!this.closed) this.refresh(cx); });
-    if (this.isApp || this.view === "inbox") {
-      // Der Posteingang-Block lebt in der Seitenleiste auch bei geschlossenem
-      // Fabric-Fenster; dort läuft der Tick-Takt. Beide Instanzen teilen sich
-      // den letzten Versuch, damit jede Minute genau ein Lauf startet.
-      cx.timer.every(10000, (cx) => {
-        if (this.closed || this.tickRunning) return;
-        const now = Date.now();
-        if (!model.tickDue(shared("fabric.tickAttempt"), now)) return;
-        setShared("fabric.tickAttempt", now);
-        this.tickRunning = true;
-        cx.spawn(async () => {
-          try {
-            const result = await this.execFab(["tick"], { timeout: 120000 });
-            // Scheitert der Lauf, bleibt `last_tick` stehen; der Index-Lauf
-            // veröffentlicht den fälligen Alarm im Posteingang.
-            if (result?.code !== 0) {
-              await this.execFab(["index"], { timeout: 30000 });
-            }
-          } catch {
-            try { await this.execFab(["index"], { timeout: 30000 }); } catch { /* still */ }
-          } finally {
-            this.tickRunning = false;
-          }
-        });
-      });
-    }
     if (this.isApp) {
       cx.timer.every(300, (cx) => {
         if (this.closed) return;
@@ -743,49 +726,73 @@ export default class Fabric extends View {
       return;
     }
     this.refreshing = true;
+    let changed = false;
     try {
       do {
         this.pending = false;
-        await this.readOnce();
+        changed = (await this.readOnce()) || changed;
       } while (this.pending && !this.closed);
       this.checkContextPreview(_cx);
     } finally {
       this.refreshing = false;
-      this.notifyNow();
+      if (changed) this.notifyNow();
     }
   }
 
+  dbPath() {
+    return `${this.dir}/fabric.db`;
+  }
+
+  /** Liest den Stand aus `fabric.db`; true, wenn sich die Ansicht ändert.
+   *  `meta.rev` ist der billige Wächter: ohne neuen Wert bleibt alles stehen. */
   async readOnce() {
-    let text = null;
+    let changed = false;
+    const dbPath = this.dbPath();
+    let rev = null;
     try {
-      text = await readTextFile(`${this.dir}/index.json`);
+      rev = await db.metaValue(dbPath, "rev");
     } catch {
-      text = null;
+      rev = null;
     }
-    let autopilot = null;
-    try {
-      autopilot = await readTextFile(`${this.dir}/autopilot.json`);
-    } catch {
-      autopilot = null;
-    }
-    this.autopilotText = autopilot;
-    if (this.autopilotOpen) await this.loadAutopilotLog();
-    let next = null;
-    this.loadError = null;
-    if (text !== null) {
+    if (this.dataRev === undefined || rev !== this.dataRev) {
+      let text = null;
       try {
-        next = normalizeIndex(JSON.parse(text));
-      } catch (error) {
-        this.loadError = `index.json ist unlesbar: ${message(error)}`;
+        text = await db.readModel(dbPath, "index");
+      } catch {
+        text = null;
       }
+      let autopilot = null;
+      try {
+        autopilot = await db.metaValue(dbPath, "autopilot");
+      } catch {
+        autopilot = null;
+      }
+      this.autopilotText = autopilot;
+      let next = null;
+      this.loadError = null;
+      if (text !== null) {
+        try {
+          next = normalizeIndex(JSON.parse(text));
+        } catch (error) {
+          this.loadError = `Index ist unlesbar: ${message(error)}`;
+        }
+      }
+      this.index = next;
+      this.dataRev = rev;
+      changed = true;
+      // Nur der Dienst meldet neue Einträge; sonst könnten Dienst und Fenster
+      // denselben Eintrag doppelt anzeigen.
+      if (this.view === "service") this.notifyPosteingang();
+      if (this.autopilotOpen) await this.loadAutopilotLog();
+    } else if (this.autopilotOpen && this.autopilotLogRev !== this.dataRev) {
+      await this.loadAutopilotLog();
     }
-    this.index = next;
-    this.notifyPosteingang();
 
     // Der Fabric-Filter ist geteilt: ein anderes Fenster kann ihn ändern.
     const scope = String(shared("fabric.scope") ?? "").trim();
     if (scope !== this.fabricScope) {
       this.fabricScope = scope;
+      changed = true;
       this.normalizeReportTeam();
       // Eine sichtbare Statistik gehört jetzt zu einer anderen Fabric.
       if (this.report && this.currentRoute().page === "stats") this.loadReport();
@@ -796,8 +803,9 @@ export default class Fabric extends View {
     if (wanted !== this.openId) {
       this.openId = wanted;
       this.resetTicketEditing();
+      changed = true;
     }
-    await this.loadTicket();
+    changed = (await this.loadTicket()) || changed;
     if (this.needsHistoryScroll && this.isApp) {
       this.needsHistoryScroll = false;
       try { this.historyScroll.scroll_to_item(this.historyLastIndex); } catch { /* noch kein Layout */ }
@@ -808,36 +816,46 @@ export default class Fabric extends View {
       this.ticketError = null;
       this.titleEdit = null;
       this.bodyEditor = null;
+      changed = true;
       if (this.selectedId() === wanted) setShared("fabric.selected", null);
     }
     this.ready = true;
+    return changed;
   }
 
   async loadTicket() {
     const id = this.openId;
     if (!id) {
+      const had = this.ticket !== null || this.ticketError !== null;
       this.ticket = null;
       this.ticketError = null;
       this.bodyEditor = null;
       this.bodyFor = null;
-      return;
+      this.ticketFor = null;
+      this.ticketRev = undefined;
+      this.attachmentPaths = new Map();
+      return had;
     }
+    if (this.ticketFor === id && this.ticketRev === this.dataRev && this.ticket) return false;
     let text = null;
     try {
-      text = await readTextFile(`${this.dir}/tickets/${id}.json`);
+      text = await db.readModel(this.dbPath(), `ticket:${id}`);
     } catch (error) {
       this.ticket = null;
       this.ticketError = `Ticket ${id} ist nicht lesbar: ${message(error)}`;
-      return;
+      return true;
     }
     if (text === null) {
       this.ticket = null;
       this.ticketError = `Ticket ${id} wurde nicht gefunden.`;
-      return;
+      this.ticketFor = id;
+      this.ticketRev = this.dataRev;
+      return true;
     }
     try {
       this.ticket = JSON.parse(text);
       this.ticketError = null;
+      this.attachmentPaths = model.attachmentPaths(this.ticket);
       if (this.bodyFor !== id) {
         this.bodyFor = id;
         this.bodySaved = this.ticket.body ?? "";
@@ -864,9 +882,13 @@ export default class Fabric extends View {
       } else {
         this.clearChanges();
       }
+      this.ticketFor = id;
+      this.ticketRev = this.dataRev;
+      return true;
     } catch (error) {
       this.ticket = null;
       this.ticketError = `Ticket ${id} ist unlesbar: ${message(error)}`;
+      return true;
     }
   }
 
@@ -3099,7 +3121,7 @@ export default class Fabric extends View {
   }
 
   async rebuildIndex(cx) {
-    await this.action("index", ["index"], { success: "index.json neu erzeugt." });
+    await this.action("index", ["index"], { success: "Index neu erzeugt." });
   }
 
   async loadVersion(cx) {
@@ -3394,6 +3416,13 @@ export default class Fabric extends View {
     if (!text) return;
     cx.write_to_clipboard(String(text));
     notify({ title: "Fabric", body: label, level: "success" });
+  }
+
+  /** Bildpfad aus dem Ticket: alte Anhangspfade zeigen auf den Cache. */
+  imagePath(path) {
+    const value = String(path ?? "");
+    if (!value) return "";
+    return this.attachmentPaths.get(value) ?? value;
   }
 
   openImage(image) {
@@ -4980,11 +5009,13 @@ export default class Fabric extends View {
 
   render(cx) {
     this.lastCx = cx;
+    // Kopfloser Dienst: hängt immer im Layout, zeichnet nichts, hält aber
+    // Abfragen, Kürzel, Posteingangs-Meldungen und den Vorschau-Start am Leben.
+    if (this.view === "service") return div().size(0);
     const t = ui.colors();
     if (!this.ready) {
       return ui.page(t, [ui.header(t, "Fabric"), ui.loading(t)]);
     }
-    if (this.view === "inbox") return renderPosteingangPanel(this, cx, t);
     if (this.view === "timeline") return renderTimelinePanel(this, cx, t);
     if (this.view === "switcher") return renderSwitcher(this, cx, t);
     if (this.view === "app") return this.renderWindow(cx, t);
@@ -5305,14 +5336,12 @@ export default class Fabric extends View {
 
   // ---------- Autopilot ----------
 
-  autopilotLogPath() {
-    const info = model.autopilotPopover(this.autopilotText, null, Date.now());
-    return info.logPath || `${this.dir}/autopilot.log`;
-  }
-
+  /** Die neuesten Zeilen aus `autopilot_log`; das Popover zeigt die letzten 20. */
   async loadAutopilotLog() {
+    this.autopilotLogRev = this.dataRev;
     try {
-      this.autopilotLogText = await readTextFile(this.autopilotLogPath());
+      const rows = await db.autopilotLog(this.dbPath(), 200);
+      this.autopilotLogText = logText(rows);
     } catch {
       this.autopilotLogText = null;
     }
@@ -5367,8 +5396,6 @@ export default class Fabric extends View {
     const info = model.autopilotPopover(this.autopilotText, this.autopilotLogText, Date.now());
     const lamp = model.autopilotLamp(this.autopilotText, Date.now(), this.index?.alarm);
     const actions = model.autopilotActions(lamp, this.index?.alarm);
-    const logPath = info.logPath || `${this.dir}/autopilot.log`;
-    const logError = this.errorFor("autopilot-log");
 
     return ui.popoverPanel(t, [
       v_flex().w_full().px(ui.SPACE.m).pt(ui.SPACE.m).pb(ui.SPACE.s).gap(ui.SPACE.xs)
@@ -5388,12 +5415,7 @@ export default class Fabric extends View {
         .when(Boolean(info.endLabel), (el) => el.child(div()
           .text_size(ui.FONT.xs)
           .text_color(t.dim)
-          .child(info.endLabel)))
-        .when(Boolean(logError), (el) => el.child(div()
-          .text_size(ui.FONT.xs)
-          .text_color(t.blocked)
-          .whitespace_normal()
-          .child(logError.text))),
+          .child(info.endLabel))),
       v_flex().w_full().when(actions.start, (row) => row.child(
         h_flex().w_full().px(ui.SPACE.m).pb(ui.SPACE.xs).gap(ui.SPACE.xs).items_center()
           .child(ui.button(t, {
@@ -5434,23 +5456,8 @@ export default class Fabric extends View {
           danger: true,
           tooltip: "Autopilot stoppen",
           onClick: (cx) => cx.spawn(async (cx) => { await this.stopAutopilot(cx); }),
-        })))
-        .child(ui.button(t, {
-          id: `${popupId}-log`,
-          label: "Log öffnen",
-          icon: "external",
-          small: true,
-          tooltip: "Autopilot-Log im Editor öffnen",
-          onClick: (cx) => cx.spawn(async () => { await this.openAutopilotLog(); }),
-        })),
+        }))),
       v_flex().w_full().border_t(1).border_color(t.border).p(ui.SPACE.m).gap(ui.SPACE.xs)
-        .child(div()
-          .text_size(ui.FONT.xs)
-          .text_color(t.dim)
-          .whitespace_nowrap()
-          .truncate()
-          .tooltip(logPath)
-          .child(logPath))
         .when(info.lines.length > 0, (el) => el.child(
           div()
             .w_full()
@@ -5509,33 +5516,6 @@ export default class Fabric extends View {
       },
     });
     if (result.ok) this.autopilotOpen = false;
-    this.notifyNow();
-  }
-
-  async openAutopilotLog() {
-    const logPath = this.autopilotLogPath();
-    let text = null;
-    try {
-      text = await readTextFile(logPath);
-    } catch {
-      text = null;
-    }
-    if (text === null) {
-      const hintText = `Kein Log unter ${logPath}.`;
-      this.setError("autopilot-log", hintText);
-      notify({ title: "Fabric", body: hintText, level: "warning" });
-      this.notifyNow();
-      return;
-    }
-    this.autopilotLogText = text;
-    this.setError("autopilot-log", null);
-    try {
-      await exec("/usr/bin/open", [logPath]);
-    } catch (error) {
-      const failure = `Log ließ sich nicht öffnen: ${message(error)}`;
-      this.setError("autopilot-log", failure);
-      notify({ title: "Fabric", body: failure, level: "error" });
-    }
     this.notifyNow();
   }
 

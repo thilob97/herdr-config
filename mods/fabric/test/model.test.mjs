@@ -12,6 +12,7 @@ import "./window-body.test.mjs";
 
 import {
   groupByStage, mentionSegments, sortInbox, inboxRetry, lessonArgs, timelineFeed, eventSummary, relativeTime,
+  attachmentPaths, imageRefs,
   PAGE_WORDS, pageWord, roleLabel, promptKindWord, actorLabel,
   STAGES, STATUS_WORDS, INBOX_WORDS, EVENT_WORDS,
   stallLabel, stallReason,
@@ -31,7 +32,6 @@ import {
   flowRemoveEdge, flowPatchEdge, flowOutgoing, flowEdgeWhenOptions, flowPlaceholders, flowValidate,
   autopilotLamp, autopilotLogLines, autopilotPopover, autopilotActions, AUTOPILOT_STALE_MS,
   alarmEntries, alarmActive,
-  tickDue, TICK_INTERVAL_MS,
   PIPELINE_STATE_WORDS, PIPELINE_TRIGGER_WORDS, pipelineState, pipelineStateWord, pipelineTriggerWord,
   pipelineStepSummary, pipelineRunsNewest, pipelineLastRun, pipelineBadge, pipelineAutoStep,
   pipelineOpenSteps, pipelineLogLines, pipelineLogSearch, pipelineDuration, pipelineRunTarget,
@@ -2591,18 +2591,6 @@ test("Autopilot-Aktionen: Starten, Pause aufheben und Stoppen je Zustand", () =>
   assert.deepEqual(autopilotActions({ state: "unbekannt" }), { start: false, resume: false, stop: false });
 });
 
-test("Tick ist jede Minute fällig, auch ohne offenes Fabric-Fenster", () => {
-  assert.equal(TICK_INTERVAL_MS, 60000);
-  assert.equal(tickDue(undefined, 1000), true);
-  assert.equal(tickDue(null, 1000), true);
-  assert.equal(tickDue(0, 1000), true);
-  assert.equal(tickDue("kaputt", 1000), true);
-  assert.equal(tickDue(1000, 1000), false);
-  assert.equal(tickDue(1000, 1000 + TICK_INTERVAL_MS - 1), false);
-  assert.equal(tickDue(1000, 1000 + TICK_INTERVAL_MS), true);
-  assert.equal(tickDue(5000, 1000), false);
-});
-
 test("Pipeline-Zustände werden abgeleitet, benannt und gezählt", () => {
   assert.equal(pipelineState({ state: "PASS" }), "pass");
   assert.equal(pipelineState({ state: " fail " }), "fail");
@@ -3378,4 +3366,26 @@ test("Repo hinzufügen: Prüfungen vor dem Anlegen", async () => {
   assert.match(repoAddPlan({ mode: "new", team: "web", parent: "/r", name: ".neu" }).error, /Name:/);
   assert.match(repoAddPlan({ mode: "new", team: "web", parent: "/r", name: "ne u" }).error, /Name:/);
   assert.equal(repoAddPlan({ mode: "new", team: "web", parent: "/r", name: "a-b_c.d" }).path, "/r/a-b_c.d");
+});
+
+test("alte Anhangspfade zeigen auf den Cache-Pfad des Lesemodells", () => {
+  const ticket = {
+    id: "T-12",
+    attachments: [
+      {
+        name: "bild.png",
+        path: "data/fabric/attachments/T-12/bild.png",
+        cache_path: "data/fabric/cache/attachments/T-12/1-bild.png",
+      },
+      { name: "ohne-cache.png", path: "data/fabric/attachments/T-12/ohne-cache.png" },
+    ],
+  };
+  const map = attachmentPaths(ticket);
+  assert.equal(map.get("data/fabric/attachments/T-12/bild.png"),
+    "data/fabric/cache/attachments/T-12/1-bild.png");
+  assert.equal(map.get("data/fabric/attachments/T-12/ohne-cache.png"), undefined);
+  assert.equal(map.get("data/fabric/cache/attachments/T-12/1-bild.png"), undefined);
+  assert.deepEqual([...attachmentPaths(null)], []);
+  assert.equal(imageRefs("![bild](data/fabric/cache/attachments/T-12/1-bild.png)")[0].path,
+    "data/fabric/cache/attachments/T-12/1-bild.png");
 });

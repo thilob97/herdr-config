@@ -4,11 +4,11 @@
 Persönliche Herdr-Konfiguration (`~/.config/herdr-app`) plus **Fabric**: Der Mensch schreibt ein Ticket in einem Satz, der Orchestrator formuliert und verteilt, Agenten arbeiten und sprechen sich ausschließlich im Ticket ab. `@name` weckt den Genannten. Konzept: `docs/concept.md`.
 
 ## Nutzer
-Ein Mensch (Thilo) als Auftraggeber und Abnehmer, dazu die Agenten aus `fabric/roster.json`: Orchestrator, Umsetzer `zap`, Prüferin `ada`.
+Ein Mensch (Thilo) als Auftraggeber und Abnehmer, dazu die Agenten aus dem Roster (SQLite, `fab roster --json`): Orchestrator, Umsetzer `zap`, Prüferin `ada`.
 
 ## Architektur kurz
 - CLI `fab`: `fabric/fab` mit `fabric/fablib/*.py`, Python 3, nur stdlib. Speicher ist SQLite unter `data/fabric/fabric.db` (nicht getrackt).
-- Prompts und Roster: `fabric/prompts/`, `fabric/roster.json`.
+- Prompts, Roster und Vorlagen: in SQLite (`fab prompt/roster/template …`).
 - Mods (JS, Herdr-Mod-API): `mods/fabric/` (Fenster mit Tickets, Inbox, Timeline, Workflows, Pipelines, Repos, Team), `mods/fabric-sidebar/`, `mods/fabric-toast/`, `mods/agents-filtered/`.
 - Workflows: `fabric/flows/*.json` (Engine `fabric/fablib/flows.py`).
 - Vertrag für Daten, CLI, Wecken und Mod: `docs/fabric.md`; UI: `docs/fabric-ui.md`.

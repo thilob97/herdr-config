@@ -119,7 +119,9 @@ function titleBlock(app, cx, t, ticket) {
 
 function body(app, cx, t, ticket) {
   const dirty = app.bodyEditor ? model.isDirty(app.bodyEditor.value(), app.bodySaved) : false;
-  const images = ticket.body ? model.imageRefs(ticket.body) : [];
+  const images = ticket.body
+    ? model.imageRefs(ticket.body).map((entry) => ({ ...entry, path: app.imagePath(entry.path) }))
+    : [];
   const toolbar = h_flex()
     .flex_none()
     .w_full()
@@ -307,9 +309,10 @@ function changesProofs(app, cx, t, data) {
   if (!proofs.length) return ui.hint(t, "Keine Nachweise im Handover oder als Anhang.");
   const images = proofs
     .filter((proof) => proof.image && proof.exists)
-    .map((proof) => ({ path: appImagePath(proof.path), alt: proofName(proof) }))
+    .map((proof) => ({ path: app.imagePath(appImagePath(proof.path)), alt: proofName(proof) }))
     .filter((proof) => proof.path);
-  const files = proofs.filter((proof) => !proof.exists || !proof.image || !appImagePath(proof.path));
+  const files = proofs.filter((proof) => !proof.exists || !proof.image
+    || !app.imagePath(appImagePath(proof.path)));
   return v_flex().w_full().gap(S.s)
     .when(images.length > 0, (el) => el.child(
       ui.imageGallery(
@@ -402,7 +405,8 @@ function historyRow(app, cx, t, row, index, cards = []) {
       .child(div().text_size(T.xs).text_color(t.dim).child(model.wakeLine(row.event)));
   }
   const comment = row.comment;
-  const images = model.imageRefs(comment.text ?? "");
+  const images = model.imageRefs(comment.text ?? "")
+    .map((entry) => ({ ...entry, path: app.imagePath(entry.path) }));
   const hint = model.commentDecisionHint(comment, cards);
   return v_flex()
     .id(`fabric-entry-${comment.n ?? index}`)

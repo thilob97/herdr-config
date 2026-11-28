@@ -10,7 +10,8 @@
 - Weckt bei Stillstand den Zuständigen (höchstens dreimal), danach den
   Orchestrator; stößt das Verteilen höchstens alle 30 Minuten an.
 
-Status, Log und Pausemarke liegen unter `store.home()`.
+Status, Log und Pausemarke liegen in `fabric.db` (`meta.autopilot`,
+`autopilot_log`, `meta.autopilot_pause`).
 """
 import datetime
 import json
@@ -57,21 +58,6 @@ _round_paths = []
 _round_repo = ""
 
 
-# ---------------------------------------------------------------- Pfade
-
-
-def state_path():
-    return os.path.join(store.home(), "autopilot.json")
-
-
-def log_path():
-    return os.path.join(store.home(), "autopilot.log")
-
-
-def pause_path():
-    return os.path.join(store.home(), "autopilot-pause")
-
-
 # ---------------------------------------------------------------- Zeit
 
 
@@ -109,11 +95,11 @@ def _end_text_for(end):
     return end.strftime("%Y-%m-%dT%H:%M") if end else ""
 
 
-# ---------------------------------------------------------------- Statusdatei
+# ---------------------------------------------------------------- Status
 
 
 def write_state(state, reason="", end="", last_action=None):
-    """Statusdatei atomar schreiben; unbekannte Leserfelder bleiben unberührt."""
+    """Status in `meta.autopilot` schreiben; unbekannte Leserfelder bleiben unberührt."""
     previous = read_state()
     updated_at = int(epoch() * 1000)
     if state == "paused":
@@ -130,61 +116,45 @@ def write_state(state, reason="", end="", last_action=None):
         "updated_at": updated_at,
         "paused_since": paused_since,
         "last_action": _last_action if last_action is None else last_action,
-        "log": log_path(),
+        "log": "db",
         "pid": os.getpid(),
     }
-    folder = store.home()
-    os.makedirs(folder, exist_ok=True)
-    handle, tmp = tempfile.mkstemp(dir=folder, prefix=".autopilot-", suffix=".json")
-    try:
-        with os.fdopen(handle, "w", encoding="utf-8") as stream:
-            json.dump(data, stream, ensure_ascii=False)
-        os.replace(tmp, state_path())
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    store.meta_set(store.AUTOPILOT_KEY, json.dumps(data, ensure_ascii=False))
     return data
 
 
 def read_state():
-    """Statusdatei als Dict; fehlt sie oder ist sie kaputt, ein leeres Dict."""
+    """Status aus `meta.autopilot`; fehlt er oder ist er kaputt, ein leeres Dict."""
+    raw = store.meta_get(store.AUTOPILOT_KEY)
+    if not raw:
+        return {}
     try:
-        with open(state_path(), encoding="utf-8") as stream:
-            data = json.load(stream)
-    except (OSError, ValueError):
+        data = json.loads(raw)
+    except (TypeError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
 
 
 def log(msg):
-    """Zeile ins Log schreiben und `last_action` fortschreiben."""
+    """Zeile ins Autopilotlog (`autopilot_log`) und `last_action` fortschreiben."""
     global _last_action
     line = f"{now():%H:%M:%S} {msg}"
     _last_action = line[:200]
-    folder = store.home()
-    os.makedirs(folder, exist_ok=True)
-    with open(log_path(), "a", encoding="utf-8") as stream:
-        stream.write(line + "\n")
+    store.autopilot_log_append(line, at=int(epoch() * 1000))
     return line
 
 
+def paused():
+    """Pausemarke der Abnahme in der DB (`meta.autopilot_pause`)."""
+    return store.meta_get(store.AUTOPILOT_PAUSE_KEY) is not None
+
+
 def _pause(reason=""):
-    try:
-        os.makedirs(store.home(), exist_ok=True)
-        with open(pause_path(), "w", encoding="utf-8") as stream:
-            stream.write(reason or "")
-    except OSError:
-        pass
+    store.meta_set(store.AUTOPILOT_PAUSE_KEY, reason or "")
 
 
 def _clear_pause():
-    try:
-        os.unlink(pause_path())
-    except OSError:
-        pass
+    store.meta_delete(store.AUTOPILOT_PAUSE_KEY)
 
 
 def reset():
@@ -713,10 +683,10 @@ def start(until="done", cwd=None):
         labels={"fab.role": "autopilot"},
     )
     log(f"Autopilot gestartet in {repo}, Ende {value}")
-    paused = os.path.exists(pause_path())
+    pause_active = paused()
     write_state(
-        "paused" if paused else "running",
-        "main nach Merge rot – Abnahmen pausiert" if paused else "",
+        "paused" if pause_active else "running",
+        "main nach Merge rot – Abnahmen pausiert" if pause_active else "",
         end=_end_text_for(end),
     )
     return {"started": True, "repo": repo, "answer": answer}
@@ -1024,12 +994,12 @@ def run(until="done"):
     global _paused, _end, _end_text
     _end = parse_until(until)
     _end_text = _end_text_for(_end)
-    _paused = os.path.exists(pause_path())
+    _paused = paused()
     log(f"Autopilot gestartet, Ende {_end_text or 'offen'}")
     while _end is None or now() < _end:
         # `fab autopilot resume` läuft in einem anderen Prozess: die Marke ist
         # die Wahrheit, nicht das Gedächtnis dieser Schleife.
-        _paused = os.path.exists(pause_path())
+        _paused = paused()
         try:
             if not once():
                 return 0

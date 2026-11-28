@@ -1,4 +1,4 @@
-"""Bild-Anhänge: kopieren, verlinken, anzeigen und Fehler."""
+"""Bild-Anhänge: Bytes in SQLite, Cache-Pfad, verlinken, anzeigen und Fehler."""
 import os
 
 from fabric.tests.support import FabricCase
@@ -12,13 +12,16 @@ class AttachTests(FabricCase):
             handle.write(data)
         return path
 
+    def _cache(self, tid, name):
+        return os.path.join(self.home, "cache", "attachments", tid, name)
+
     def test_kopiert_verlinkt_body_und_show(self):
         tid = self.new("Mit Bild")
         source = self._source("bild.png", b"\x89PNG-eins")
         result = self.ok("attach", tid, source)
-        reference = f"![bild.png](data/fabric/attachments/{tid}/bild.png)"
+        reference = f"![bild.png](data/fabric/cache/attachments/{tid}/1-bild.png)"
         self.assertEqual(result.stdout.strip(), reference)
-        target = os.path.join(self.home, "attachments", tid, "bild.png")
+        target = self._cache(tid, "1-bild.png")
         self.assertTrue(os.path.isfile(target))
         with open(source, "rb") as handle:
             expected = handle.read()
@@ -30,8 +33,9 @@ class AttachTests(FabricCase):
         self.assertEqual(len(ticket["attachments"]), 1)
         entry = ticket["attachments"][0]
         self.assertEqual(entry["name"], "bild.png")
-        self.assertEqual(entry["path"], f"data/fabric/attachments/{tid}/bild.png")
+        self.assertEqual(entry["cache_path"], reference.split("](")[1].rstrip(")"))
         self.assertIsInstance(entry["at"], int)
+        self.assertEqual(entry["mime"], "image/png")
         show = self.ok("show", tid).stdout
         self.assertIn("## Anhänge", show)
         self.assertIn(reference, show)
@@ -41,7 +45,7 @@ class AttachTests(FabricCase):
         before = self.ticket(tid)["body"]
         source = self._source("ohne-link.png")
         result = self.ok("attach", tid, source, "--no-edit")
-        reference = f"![ohne-link.png](data/fabric/attachments/{tid}/ohne-link.png)"
+        reference = f"![ohne-link.png](data/fabric/cache/attachments/{tid}/1-ohne-link.png)"
         self.assertEqual(result.stdout.strip(), reference)
         self.assertEqual(self.ticket(tid)["body"], before)
         self.assertEqual(len(self.ticket(tid)["attachments"]), 1)
@@ -72,11 +76,9 @@ class AttachTests(FabricCase):
         tid = self.new("Namen")
         source = self._source("Mein Foto.PNG")
         result = self.ok("attach", tid, source)
-        reference = f"![mein-foto.png](data/fabric/attachments/{tid}/mein-foto.png)"
+        reference = f"![mein-foto.png](data/fabric/cache/attachments/{tid}/1-mein-foto.png)"
         self.assertEqual(result.stdout.strip(), reference)
-        self.assertTrue(
-            os.path.isfile(os.path.join(self.home, "attachments", tid, "mein-foto.png"))
-        )
+        self.assertTrue(os.path.isfile(self._cache(tid, "1-mein-foto.png")))
 
     def test_gleicher_inhalt_wird_wiederverwendet(self):
         tid = self.new("Gleich")
@@ -84,8 +86,8 @@ class AttachTests(FabricCase):
         first = self.ok("attach", tid, source).stdout.strip()
         second = self.ok("attach", tid, source).stdout.strip()
         self.assertEqual(first, second)
-        folder = os.path.join(self.home, "attachments", tid)
-        self.assertEqual(os.listdir(folder), ["gleich.png"])
+        folder = os.path.join(self.home, "cache", "attachments", tid)
+        self.assertEqual(os.listdir(folder), ["1-gleich.png"])
         self.assertEqual(len(self.ticket(tid)["attachments"]), 1)
 
     def test_anderer_inhalt_bekommt_nummer(self):
@@ -94,11 +96,22 @@ class AttachTests(FabricCase):
         second_source = self._source(os.path.join("zwei", "bild.png"), b"zwei")
         first = self.ok("attach", tid, first_source).stdout.strip()
         second = self.ok("attach", tid, second_source).stdout.strip()
-        self.assertIn("bild.png", first)
+        self.assertIn("1-bild.png", first)
         self.assertEqual(
             second,
-            f"![bild-2.png](data/fabric/attachments/{tid}/bild-2.png)",
+            f"![bild-2.png](data/fabric/cache/attachments/{tid}/2-bild-2.png)",
         )
-        folder = os.path.join(self.home, "attachments", tid)
-        self.assertEqual(sorted(os.listdir(folder)), ["bild-2.png", "bild.png"])
+        folder = os.path.join(self.home, "cache", "attachments", tid)
+        self.assertEqual(sorted(os.listdir(folder)), ["1-bild.png", "2-bild-2.png"])
         self.assertEqual(len(self.ticket(tid)["attachments"]), 2)
+
+    def test_bytes_stehen_in_der_datenbank(self):
+        tid = self.new("Blob")
+        source = self._source("blob.png", b"\x89PNG-blob")
+        self.ok("attach", tid, source)
+        from fabric.fablib import store
+
+        with self.store_env():
+            rows = store.attachment_rows(tid)
+        self.assertEqual(rows[0]["data"], b"\x89PNG-blob")
+        self.assertEqual(rows[0]["mime"], "image/png")

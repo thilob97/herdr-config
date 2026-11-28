@@ -33,10 +33,34 @@ class PreviewTests(FabricCase):
             os.path.join(worktree, "layouts", "fabric.json"), '{"l": 1}\n'
         )
         root = self.preview_root(tid)
+        # Die Vorschau seedet ihre DB aus `home/fabric` der Worktree-Kopie.
+        # Das Fixture-Roster (inkl. Team-Rechten für das Demo-Repo) mitgeben.
+        self.own_repo(os.path.join(root, "home"))
+        self.write_file(
+            os.path.join(worktree, "fabric", "roster.json"), self._read(self.roster)
+        )
         self.addCleanup(shutil.rmtree, root, ignore_errors=True)
         self.addCleanup(self.cli, "preview", "stop", tid)
         shutil.rmtree(root, ignore_errors=True)
         return repo, tid, worktree
+
+    def model(self, key):
+        from fabric.fablib import store
+
+        with self.store_env():
+            return store.read_model(key)
+
+    def seeded_tickets(self, fab_home):
+        import sqlite3
+
+        conn = sqlite3.connect(os.path.join(fab_home, "fabric.db"))
+        try:
+            rows = conn.execute(
+                "SELECT key,value FROM read_models WHERE key LIKE 'ticket:%'"
+            ).fetchall()
+        finally:
+            conn.close()
+        return [json.loads(value) for _key, value in rows]
 
     def _bytes(self, path):
         with open(path, "rb") as handle:
@@ -305,11 +329,9 @@ class PreviewTests(FabricCase):
             self.fake_home, ".config", "herdr-app", "settings.json"
         )
         self.write_file(canary, '{"canary": true}\n')
-        real_ticket = os.path.join(self.home, "tickets", f"{tid}.json")
-        real_index = os.path.join(self.home, "index.json")
         canary_before = self._bytes(canary)
-        ticket_before = self._bytes(real_ticket)
-        index_before = self._bytes(real_index)
+        ticket_before = self.model(f"ticket:{tid}")
+        index_before = self.model("index")
 
         result = self.ok("preview", "start", tid, env={"HERDR_APP_SLEEP": "1"})
         self.assertIn("Vorschau läuft", result.stdout)
@@ -330,17 +352,14 @@ class PreviewTests(FabricCase):
 
         fab_home = os.path.join(home, "data", "fabric")
         self.assertTrue(os.path.isdir(fab_home))
-        tickets_dir = os.path.join(fab_home, "tickets")
-        seeded = sorted(os.listdir(tickets_dir))
-        self.assertTrue(seeded, tickets_dir)
-        seeded_ticket = json.loads(
-            self._text(os.path.join(tickets_dir, seeded[0]))
-        )
-        self.assertIn("Vorschau", seeded_ticket["title"])
+        self.assertTrue(os.path.isfile(os.path.join(fab_home, "fabric.db")))
+        seeded = self.seeded_tickets(fab_home)
+        self.assertTrue(seeded, fab_home)
+        self.assertIn("Vorschau", seeded[0]["title"])
 
         self.assertEqual(self._bytes(canary), canary_before)
-        self.assertEqual(self._bytes(real_ticket), ticket_before)
-        self.assertEqual(self._bytes(real_index), index_before)
+        self.assertEqual(self.model(f"ticket:{tid}"), ticket_before)
+        self.assertEqual(self.model("index"), index_before)
         self.assertIn(["status"], self.herdr_calls())
 
     def test_shot_haengt_png_ans_ticket(self):
@@ -360,7 +379,7 @@ class PreviewTests(FabricCase):
             ticket["attachments"],
         )
         self.assertIn("![", ticket["body"])
-        self.assertIn("data/fabric/attachments/", result.stdout)
+        self.assertIn("data/fabric/cache/attachments/", result.stdout)
 
     def test_stop_beendet_prozess_und_raeumt_auf(self):
         repo, tid, worktree = self.preview_ticket()
@@ -400,11 +419,6 @@ class PreviewTests(FabricCase):
         self.assertIsInstance(preview["at"], int)
         self.assertGreater(preview["at"], 0)
 
-    def test_preamble_erklaert_vorschau(self):
-        text = self._text(os.path.join(FABRIC, "prompts", "preamble.md"))
-        self.assertIn("fab preview", text)
-        self.assertIn("fab preview shot", text)
-
     def test_page_knowledge_seedet_wissensordner_im_demorepo(self):
         repo, tid, worktree = self.preview_ticket()
         home = os.path.join(self.preview_root(tid), "home")
@@ -418,11 +432,8 @@ class PreviewTests(FabricCase):
         self.assertEqual(seeded["fabric.route"], {"page": "repos"})
         self.assertEqual(seeded["fabric.repoTab"], "wissen")
 
-        tickets_dir = os.path.join(home, "data", "fabric", "tickets")
-        tickets = [
-            json.loads(self._text(os.path.join(tickets_dir, name)))
-            for name in sorted(os.listdir(tickets_dir))
-        ]
+        fab_home = os.path.join(home, "data", "fabric")
+        tickets = self.seeded_tickets(fab_home)
         demo = next(row for row in tickets if "Vorschau" in row["title"])
         self.assertEqual(
             os.path.realpath(demo["repo"]), os.path.realpath(home)

@@ -64,18 +64,17 @@ class TemplateTests(FabricCase):
         )
         return repo
 
-    def shipped(self, name):
-        return os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "templates",
-            f"{name}.md",
-        )
+    def template_text(self, name):
+        from fabric.fablib import store
+
+        with self.store_env():
+            return store.template_get(name)
 
     def test_mitgelieferte_vorlagen_haben_abschnitte(self):
+        from fabric.fablib import templates
+
         for name in ("bug", "feature", "refactor", "chore"):
-            path = self.shipped(name)
-            self.assertTrue(os.path.isfile(path), path)
-            text = self._read(path)
+            text = templates.DEFAULTS[name]
             self.assertTrue(text.endswith("\n"), name)
             for heading in ("## Ziel", "## Kontext", "## Abnahmekriterien", "## Grenzen"):
                 self.assertIn(heading, text, name)
@@ -87,33 +86,25 @@ class TemplateTests(FabricCase):
         names = [row["name"] for row in rows]
         self.assertEqual(names[:4], ["bug", "feature", "refactor", "chore"])
         by_name = {row["name"]: row for row in rows}
-        self.assertTrue(os.path.isabs(by_name["bug"]["path"]))
+        self.assertEqual(by_name["bug"]["path"], "bug")
         self.assertGreater(by_name["bug"]["bytes"], 0)
         text = self.ok("template", "list").stdout
         self.assertIn("bug  ", text)
         self.assertIn(" B  ", text)
 
     def test_template_show_und_set_roundtrip(self):
-        shipped_before = self._read(self.shipped("bug"))
         raw = self.ok("template", "show", "bug").stdout
         self.assertIn("## Ziel", raw)
         self.assertIn("{satz}", raw)
 
-        folder = os.path.join(self.tmp, "eigene-vorlagen")
-        env = self.gh_env(FAB_TEMPLATES=folder)
         text = "# Eigener Fehler\n\n## Ziel\n{satz}\n"
-        self.ok("template", "set", "bug", "--text", text, "--from", "mensch", env=env)
+        self.ok("template", "set", "bug", "--text", text, "--from", "mensch")
 
-        path = os.path.join(folder, "bug.md")
-        self.assertEqual(self._read(path), text)
-        self.assertEqual(self.ok("template", "show", "bug", env=env).stdout, text)
-        rows = json.loads(self.ok("template", "list", "--json", env=env).stdout)
+        self.assertEqual(self.template_text("bug"), text)
+        self.assertEqual(self.ok("template", "show", "bug").stdout, text)
+        rows = json.loads(self.ok("template", "list", "--json").stdout)
         row = next(row for row in rows if row["name"] == "bug")
-        self.assertEqual(row["path"], os.path.abspath(path))
-
-        # Ohne FAB_TEMPLATES gilt weiter die mitgelieferte Fassung.
-        self.assertEqual(self._read(self.shipped("bug")), shipped_before)
-        self.assertEqual(self.ok("template", "show", "bug").stdout, shipped_before)
+        self.assertEqual(row["path"], "bug")
 
         events = [row for row in self.events() if row["kind"] == "config"]
         self.assertTrue(any("Vorlage bug gespeichert" in row["text"] for row in events))

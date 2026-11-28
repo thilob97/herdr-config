@@ -14,7 +14,10 @@ from unittest import mock
 from fabric.fablib import events, store
 from fabric.tests.support import FAB, FabricCase
 
-TICKETS = ("tickets", "comments", "sessions", "events", "counter", "attachments")
+TICKETS = (
+    "tickets", "comments", "sessions", "events", "counter", "attachments",
+    "read_models", "autopilot_log", "config", "prompts", "templates",
+)
 
 
 class SqliteTests(FabricCase):
@@ -43,6 +46,7 @@ class SqliteTests(FabricCase):
             return store.load(tid)
 
     def _write_legacy_fixture(self):
+        self._drop_db()
         first = {
             "id": "T-1",
             "title": "Altes Ticket",
@@ -92,12 +96,41 @@ class SqliteTests(FabricCase):
             os.path.join(self.home, "events.jsonl"),
             "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows),
         )
+        attachment = os.path.join(
+            self.home, "attachments", "T-1", "bild.png")
+        os.makedirs(os.path.dirname(attachment), exist_ok=True)
+        with open(attachment, "wb") as handle:
+            handle.write(b"\x89PNG\r\n\x1a\nlegacy")
 
     def _legacy_entries(self):
         folder = os.path.join(self.home, "legacy")
         if not os.path.isdir(folder):
             return []
         return sorted(os.listdir(folder))
+
+    def _drop_db(self):
+        """DB entfernen, damit die Altdateien-Migration im Test wieder greift."""
+        with self._env():
+            store._close_conn()
+            store._bootstrapped.discard(self.home)
+            store._fallback.discard(self.home)
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                os.remove(os.path.join(self.home, "fabric.db" + suffix))
+            except FileNotFoundError:
+                pass
+
+    def _newest_legacy_files(self):
+        folder = os.path.join(self.home, "legacy")
+        names = sorted(
+            name for name in os.listdir(folder) if name.startswith("files-")
+        )
+        self.assertTrue(names, "kein legacy/files-* nach der Migration")
+        return os.path.join(folder, names[-1])
+
+    def _legacy_files_entries(self):
+        newest = self._newest_legacy_files()
+        return sorted(os.listdir(newest))
 
     # 1
 
@@ -126,7 +159,8 @@ class SqliteTests(FabricCase):
                 self.assertEqual(store.all_tickets(), [])
                 self.assertEqual(store.event_rows(), [])
                 self.assertEqual(store.next_id(), "T-1")
-            self.assertFalse(os.path.exists(store.ticket_path("T-1")))
+                self.assertIsNone(
+                    store.read_model(store.ticket_model_key("T-1")))
 
     # 3
 
@@ -145,13 +179,33 @@ class SqliteTests(FabricCase):
         self.assertEqual(report["old"]["events"], 2)
         self.assertEqual(report["old"]["counter"], 3)
 
-        legacy = os.path.join(self.home, "legacy")
+        legacy = self._newest_legacy_files()
         self.assertTrue(os.path.exists(os.path.join(legacy, "tickets", "T-1.json")))
         self.assertTrue(os.path.exists(os.path.join(legacy, "counter")))
         self.assertTrue(os.path.exists(os.path.join(legacy, "events.jsonl")))
-        # Regeneriertes Lesemodell am alten Ort
         self.assertTrue(os.path.exists(
+            os.path.join(legacy, "attachments", "T-1", "bild.png")))
+        # Keine Altdateien mehr im Datenordner, keine Ticketdateien am alten Ort.
+        self.assertFalse(os.path.exists(os.path.join(self.home, "index.json")))
+        self.assertFalse(os.path.exists(
             os.path.join(self.home, "tickets", "T-1.json")))
+
+        with self._env():
+            index_model = store.read_model_json("index")
+            ticket_model = store.read_model_json(
+                store.ticket_model_key("T-1"))
+            self.assertEqual(
+                [row["id"] for row in index_model["tickets"]], ["T-1", "T-2"])
+            self.assertEqual(ticket_model["title"], "Altes Ticket")
+            attachment = store.attachment_models("T-1")[0]
+            self.assertEqual(attachment["name"], "bild.png")
+            self.assertEqual(
+                attachment["cache_path"],
+                "data/fabric/cache/attachments/T-1/1-bild.png")
+            rows = store.attachment_rows("T-1")
+            self.assertEqual(rows[0]["data"], b"\x89PNG\r\n\x1a\nlegacy")
+        self.assertTrue(os.path.isfile(os.path.join(
+            self.home, "cache", "attachments", "T-1", "1-bild.png")))
 
         shown = json.loads(self.ok("show", "T-1", "--json").stdout)
         self.assertEqual([row["text"] for row in shown["comments"]],
@@ -177,14 +231,18 @@ class SqliteTests(FabricCase):
         result = self.ok("list")
         self.assertIn("T-1", result.stdout)
         self.assertTrue(os.path.exists(os.path.join(self.home, "fabric.db")))
-        self.assertEqual(self._legacy_entries(),
-                         ["counter", "events.jsonl", "tickets"])
+        self.assertEqual(len(self._legacy_entries()), 1)
+        self.assertEqual(self._legacy_files_entries(), [
+            "attachments", "counter", "events.jsonl", "tickets",
+        ])
         self.assertFalse(os.path.exists(os.path.join(self.home, "counter")))
         self.assertFalse(os.path.exists(os.path.join(self.home, "events.jsonl")))
+        self.assertFalse(os.path.exists(os.path.join(self.home, "tickets")))
 
     # 5
 
     def test_migration_fehler_bleibt_auf_altdateien(self):
+        self._drop_db()
         valid = {"id": "T-1", "title": "Gut", "status": "todo", "comments": []}
         self._write(
             os.path.join(self.home, "tickets", "T-1.json"),
@@ -194,9 +252,10 @@ class SqliteTests(FabricCase):
         self._write(os.path.join(self.home, "counter"), "3\n")
 
         result = self.cli("list")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("T-1", result.stdout)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Fabric-Datenbank", result.stderr)
         self.assertFalse(os.path.exists(os.path.join(self.home, "fabric.db")))
+        self.assertEqual(self._legacy_entries(), [])
         self.assertTrue(os.path.exists(
             os.path.join(self.home, "tickets", "T-1.json")))
         self.assertTrue(os.path.exists(
@@ -212,6 +271,7 @@ class SqliteTests(FabricCase):
         self.assertEqual(report["status"], "migrated")
         self.assertEqual(report["new"]["tickets"], 2)
         self.assertTrue(os.path.exists(os.path.join(self.home, "fabric.db")))
+        self.assertEqual(len(self._legacy_entries()), 1)
         shown = json.loads(self.ok("show", "T-2", "--json").stdout)
         self.assertEqual(shown["title"], "Repariert")
 
@@ -242,7 +302,7 @@ class SqliteTests(FabricCase):
         self.assertEqual(self.index_entry(tid)["comment_count"], 3)
 
     def index_entry(self, tid):
-        payload = json.loads(self._read(os.path.join(self.home, "index.json")))
+        payload = self.index()
         return next(row for row in payload["tickets"] if row["id"] == tid)
 
     # 7
@@ -362,6 +422,7 @@ class SqliteTests(FabricCase):
 
     def test_altdatenbank_bekommt_kommentar_rohdaten(self):
         """Alte DB ohne comments.data: Spalte nachziehen, NULL-Fallback lesen."""
+        self._drop_db()
         tid = "T-1"
         path = os.path.join(self.home, "fabric.db")
         conn = sqlite3.connect(path)
@@ -405,6 +466,8 @@ class SqliteTests(FabricCase):
         self.assertEqual(loaded["comments"][0]["mentions"], ["ada"])
         self.assertEqual(loaded["comments"][1]["text"], "alt drei")
 
+        # Die Alt-DB hat kein Roster; ohne Repo-Dateien kommt es nur aus der DB.
+        self.write_roster()
         self.ok("comment", tid, "--from", "zap", "--no-wake", "neu")
         numbered = self._db_ticket(tid)
         self.assertEqual([item["n"] for item in numbered["comments"]],
@@ -429,6 +492,7 @@ class SqliteTests(FabricCase):
 
     def test_altdatenbank_bekommt_pipeline_grund(self):
         """Alte DB ohne pipeline_runs.reason: Spalte nachziehen, Läufe bleiben."""
+        self._drop_db()
         path = os.path.join(self.home, "fabric.db")
         conn = sqlite3.connect(path)
         try:
@@ -552,6 +616,135 @@ class SqliteTests(FabricCase):
 
     # 10
 
+    def test_lesemodelle_und_rev_beim_speichern(self):
+        tid = self.new("Rev")
+        with self._env():
+            self.assertIsNotNone(store.read_model("index"))
+            self.assertIsNotNone(store.read_model(store.ticket_model_key(tid)))
+            before = store.rev()
+            with store.locked():
+                ticket = store.load(tid)
+                ticket["title"] = "Frisch"
+                store.save(ticket)
+            self.assertGreater(store.rev(), before)
+            self.assertEqual(
+                store.read_model_json(store.ticket_model_key(tid))["title"],
+                "Frisch")
+            before = store.rev()
+
+        self.ok("index")
+        with self._env():
+            self.assertGreater(store.rev(), before)
+            self.assertEqual(
+                store.read_model_json("index")["tickets"][0]["title"], "Frisch")
+
+    def test_meta_rev_zaehlt_autopilot_und_waechter(self):
+        with self._env():
+            mutations = (
+                lambda: store.meta_set(store.AUTOPILOT_KEY, "{}"),
+                lambda: store.meta_set(store.AUTOPILOT_PAUSE_KEY, "pause"),
+                lambda: store.set_tick_off(),
+                lambda: store.clear_tick_off(),
+                lambda: store.autopilot_log_append("zeile"),
+            )
+            for mutate in mutations:
+                before = store.rev()
+                mutate()
+                self.assertGreater(store.rev(), before)
+
+    def test_tick_off_ist_eine_db_marke(self):
+        home = os.path.join(
+            self.fake_home, ".config", "herdr-app", "data", "fabric")
+        guard = {"FAB_TICK_NO_LAUNCHCTL": "1", "FAB_HOME": home}
+        self.ok("tick", "--uninstall", env=guard)
+        self.assertFalse(os.path.exists(os.path.join(home, "tick-off")))
+        with mock.patch.dict(
+                os.environ, {"FAB_HOME": home, "HOME": self.fake_home}):
+            self.assertTrue(store.tick_disabled())
+            self.assertIsNotNone(store.meta_get(store.TICK_OFF_KEY))
+
+        self.ok("tick", "--install", env=guard)
+        with mock.patch.dict(
+                os.environ, {"FAB_HOME": home, "HOME": self.fake_home}):
+            self.assertFalse(store.tick_disabled())
+
+    def test_autopilot_log_haelt_die_neuesten_2000(self):
+        with self._env():
+            store.autopilot_log_clear()
+            for index in range(2005):
+                store.autopilot_log_append(f"zeile {index}")
+            rows = store.autopilot_log_rows()
+        self.assertEqual(len(rows), 2000)
+        self.assertEqual(rows[0]["line"], "zeile 5")
+        self.assertEqual(rows[-1]["line"], "zeile 2004")
+
+    def test_migration_importiert_autopilot_und_marken(self):
+        self._drop_db()
+        self._write(
+            os.path.join(self.home, "autopilot.json"),
+            json.dumps({"state": "paused", "reason": "grund", "end": ""}),
+        )
+        self._write(
+            os.path.join(self.home, "autopilot.log"), "alt eins\nalt zwei\n")
+        self._write(os.path.join(self.home, "autopilot-pause"), "pausiert")
+        self._write(os.path.join(self.home, "tick-off"), "")
+
+        report = json.loads(self.ok("migrate", "--json").stdout)
+        self.assertEqual(report["status"], "migrated")
+        for name in ("autopilot.json", "autopilot.log", "autopilot-pause",
+                     "tick-off"):
+            self.assertIn(name, report["moved"])
+            self.assertFalse(os.path.exists(os.path.join(self.home, name)))
+
+        with self._env():
+            state = json.loads(store.meta_get(store.AUTOPILOT_KEY))
+            self.assertEqual(state["state"], "paused")
+            self.assertEqual(
+                [row["line"] for row in store.autopilot_log_rows()],
+                ["alt eins", "alt zwei"],
+            )
+            self.assertTrue(store.tick_disabled())
+            self.assertEqual(
+                store.meta_get(store.AUTOPILOT_PAUSE_KEY), "pausiert")
+
+        self.assertIn("Wächter aus", self.ok("tick").stdout)
+
+        second = json.loads(self.ok("migrate", "--json").stdout)
+        self.assertEqual(second["status"], "already")
+        with self._env():
+            self.assertEqual(
+                [row["line"] for row in store.autopilot_log_rows()],
+                ["alt eins", "alt zwei"],
+            )
+
+    def test_anhang_als_blob_mit_cache_pfad(self):
+        tid = self.new("Anhang")
+        payload = b"\x89PNG\r\n\x1a\nanhang"
+        source = os.path.join(self.tmp, "bild.png")
+        with open(source, "wb") as handle:
+            handle.write(payload)
+
+        with self._env():
+            name, rel = store.attachment_add(source, tid, "bild.png")
+            self.assertEqual(name, "bild.png")
+            self.assertEqual(
+                rel, "data/fabric/cache/attachments/T-1/1-bild.png")
+            rows = store.attachment_rows(tid)
+            self.assertEqual(rows[0]["data"], payload)
+            self.assertEqual(rows[0]["mime"], "image/png")
+            models = store.attachment_models(tid)
+            self.assertEqual(models[0]["cache_path"], rel)
+            self.assertEqual(models[0]["path"], rel)
+
+        self.assertTrue(os.path.isfile(os.path.join(
+            self.home, "cache", "attachments", "T-1", "1-bild.png")))
+        self.assertFalse(os.path.exists(os.path.join(self.home, "attachments")))
+        entry = self.ticket(tid)["attachments"][0]
+        self.assertEqual(entry["path"], rel)
+        self.assertEqual(entry["cache_path"], rel)
+
+    # 11
+
     def test_kein_direktzugriff_ausser_store(self):
         fablib = os.path.join(os.path.dirname(FAB), "fablib")
         sources = {}
@@ -570,17 +763,20 @@ class SqliteTests(FabricCase):
             self.assertNotIn("counter_path", text,
                              f"{name} greift direkt auf den Zähler zu")
 
-        # Lesemodell index.json darf nur index.py schreiben; Hilfetexte in
-        # cli.py nennen den Namen, schreiben ihn aber nicht.
+        # `index.json` ist reine Migrationserinnerung in store.py; kein Modul
+        # nennt oder schreibt den alten Dateipfad sonst.
         for name, text in sources.items():
-            for line in text.splitlines():
-                if "index.json" not in line:
-                    continue
-                writes = ("open(" in line or "atomic_write" in line
-                          or "write_text" in line)
-                if writes:
-                    self.assertEqual(name, "index.py",
-                                     f"{name} schreibt index.json direkt: {line}")
+            self.assertNotIn(
+                "index.json", text,
+                f"{name} nennt index.json außerhalb der Migration")
+        with open(os.path.join(fablib, "store.py"), encoding="utf-8") as handle:
+            store_text = handle.read()
+        for line in store_text.splitlines():
+            if "index.json" not in line:
+                continue
+            writes = ("open(" in line or "atomic_write" in line
+                      or "write_text" in line)
+            self.assertFalse(writes, f"store.py schreibt index.json: {line}")
 
         # Ticketdateien only über `store` lesen.
         for name, text in sources.items():

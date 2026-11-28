@@ -13,7 +13,7 @@ class AlarmTests(FabricCase):
         super().setUp()
         patcher = mock.patch.dict(
             os.environ,
-            {"FAB_HOME": self.home, "FAB_ROSTER": self.roster, "FAB_NOW": ""},
+            {"FAB_HOME": self.home, "FAB_NOW": ""},
         )
         patcher.start()
         self.addCleanup(patcher.stop)

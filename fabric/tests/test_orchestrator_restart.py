@@ -36,8 +36,10 @@ class OrchestratorRestartCase(FabricCase):
         )
 
     def roster_json(self):
-        with open(self.roster, encoding="utf-8") as handle:
-            return json.load(handle)
+        from fabric.fablib import store
+
+        with self.store_env():
+            return json.loads(store.config_get(store.ROSTER_CONFIG_KEY) or "{}")
 
     def calls(self):
         return [row[0] for row in self.hc_calls()]

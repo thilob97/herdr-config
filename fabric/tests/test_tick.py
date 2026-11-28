@@ -131,8 +131,9 @@ class TickCase(FabricCase):
         self.assertIn("Keine Aktion.", self.ok("tick").stdout)
 
         self.ok("settings", "set", "tick_doing_minutes", "5", "--from", "mensch")
-        with open(self.roster, encoding="utf-8") as handle:
-            self.assertEqual(json.load(handle)["tick_doing_minutes"], 5)
+        with self.store_env():
+            data = json.loads(store.config_get(store.ROSTER_CONFIG_KEY))
+        self.assertEqual(data["tick_doing_minutes"], 5)
         result = self.ok("tick")
         self.assertIn("Regel 1 (doing)", result.stdout)
         self.assertEqual(len(self.runs()), 1)
@@ -843,7 +844,7 @@ class TickCase(FabricCase):
     # -- launchd
 
     def test_install_und_uninstall(self):
-        guard = {"FAB_TICK_NO_LAUNCHCTL": "1", "FAB_HOME": ""}
+        guard = {"FAB_TICK_NO_LAUNCHCTL": "1", "FAB_HOME": self.standard_home()}
         result = self.ok("tick", "--install", env=guard)
         plist = os.path.join(
             self.fake_home, "Library", "LaunchAgents", "de.herdr.fabric.tick.plist"
@@ -860,7 +861,6 @@ class TickCase(FabricCase):
         self.assertTrue(os.path.isabs(data["ProgramArguments"][0]))
         plist_env = data["EnvironmentVariables"]
         self.assertEqual(plist_env["FAB_HOME"], self.standard_home())
-        self.assertEqual(plist_env["FAB_ROSTER"], self.roster)
         self.assertIn("PATH", plist_env)
         self.assertIn("Hinweis", result.stdout)
 
@@ -868,6 +868,15 @@ class TickCase(FabricCase):
         self.assertIn(plist, result.stdout)
         self.assertFalse(os.path.exists(plist))
         self.assertIn("Hinweis", result.stdout)
+        with mock.patch.dict(os.environ, {"FAB_HOME": self.standard_home()}):
+            self.assertTrue(store.tick_disabled())
+        self.assertFalse(
+            os.path.exists(os.path.join(self.standard_home(), "tick-off"))
+        )
+
+        self.ok("tick", "--install", env=guard)
+        with mock.patch.dict(os.environ, {"FAB_HOME": self.standard_home()}):
+            self.assertFalse(store.tick_disabled())
 
     def test_install_ohne_launchd_ist_nur_hinweis(self):
         path = os.path.join(self.bin, "launchctl")
@@ -875,7 +884,7 @@ class TickCase(FabricCase):
         os.chmod(path, 0o755)
         result = self.ok(
             "tick", "--install",
-            env={"FAB_TICK_NO_LAUNCHCTL": "1", "FAB_HOME": ""},
+            env={"FAB_TICK_NO_LAUNCHCTL": "1", "FAB_HOME": self.standard_home()},
         )
         self.assertEqual(result.returncode, 0)
         self.assertIn("Hinweis", result.stdout)
@@ -968,7 +977,7 @@ class TickCase(FabricCase):
             "version",
             env={
                 "FAB_TICK_AUTOSTART": "1",
-                "FAB_HOME": "",
+                "FAB_HOME": self.standard_home(),
                 "FAB_LAUNCH_AGENTS_DIR": agents,
                 "LAUNCHCTL_LOG": log,
             },
@@ -1000,7 +1009,7 @@ class TickCase(FabricCase):
         log = self.launchctl_stub()
         env = {
             "FAB_TICK_AUTOSTART": "1",
-            "FAB_HOME": "",
+            "FAB_HOME": self.standard_home(),
             "FAB_LAUNCH_AGENTS_DIR": agents,
             "LAUNCHCTL_LOG": log,
         }
@@ -1041,7 +1050,7 @@ class TickCase(FabricCase):
         log = self.launchctl_stub()
         env = {
             "FAB_TICK_AUTOSTART": "1",
-            "FAB_HOME": "",
+            "FAB_HOME": self.standard_home(),
             "FAB_LAUNCH_AGENTS_DIR": agents,
             "LAUNCHCTL_LOG": log,
         }
@@ -1072,7 +1081,8 @@ class TickCase(FabricCase):
         self.set_last_tick(now - 60 * MINUTE)
         with self.store_env():
             self.assertTrue(store.tick_alarm(now)["stale"])
-            store.atomic_write(store.tick_off_path(), "aus\n")
+            store.set_tick_off("aus\n")
+            self.assertTrue(store.tick_disabled())
             self.assertFalse(store.tick_alarm(now)["stale"])
 
     # -- Alarm bei ausbleibendem Tick

@@ -965,7 +965,6 @@ def payload():
         "RunAtLoad": False,
         "EnvironmentVariables": {
             "FAB_HOME": standard_home(),
-            "FAB_ROSTER": agents.roster_path(),
             "PATH": os.environ.get("PATH") or "/usr/local/bin:/usr/bin:/bin",
         },
     }
@@ -985,10 +984,7 @@ def install():
     target = plist_path()
     text = plistlib.dumps(payload(), sort_keys=True).decode("utf-8")
     store.atomic_write(target, text, mode=0o644)
-    try:
-        os.remove(store.tick_off_path())
-    except FileNotFoundError:
-        pass
+    store.clear_tick_off()
     ok, detail = _launchctl("bootstrap", f"gui/{os.getuid()}", target)
     return target, ok, detail
 
@@ -996,8 +992,9 @@ def install():
 def uninstall(keep_off=True):
     """`launchctl bootout` versuchen und die Plist löschen.
 
-    `keep_off` hinterlegt die Marke `tick-off`, damit der nächste `fab`-Aufruf
-    den Auftrag nicht über den Autostart wieder anlegt; nur `install` hebt sie auf.
+    `keep_off` hinterlegt die Marke `meta.tick_off`, damit der nächste
+    `fab`-Aufruf den Auftrag nicht über den Autostart wieder anlegt; nur
+    `install` hebt sie auf.
     """
     target = plist_path()
     ok, detail = _launchctl("bootout", f"gui/{os.getuid()}", target)
@@ -1006,7 +1003,7 @@ def uninstall(keep_off=True):
     except FileNotFoundError:
         pass
     if keep_off:
-        store.atomic_write(store.tick_off_path(), "fab tick --uninstall\n")
+        store.set_tick_off("fab tick --uninstall")
     return target, ok, detail
 
 

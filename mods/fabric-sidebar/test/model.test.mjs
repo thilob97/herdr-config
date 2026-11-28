@@ -6,9 +6,9 @@ import assert from "node:assert/strict";
 
 import {
   activeAlarms, alarmButtons,
-  busyLabel, costOf, costText, fabricAddresses, fabricEntry, fabricRows, freeAgentCards,
-  freeCornerIcon, freeSpriteKey, freeStatusWord, hiddenAgentAddresses, machineLabel, pinCommand,
-  roleLabel, runtimeText, statusWord, ticketFromName, truncateTask,
+  busyLabel, costOf, costText, fabricAddresses, fabricEntry, fabricList, fabricRows, freeAgentCards,
+  freeCornerIcon, freeSpriteKey, freeStatusWord, hiddenAgentAddresses, inboxCount, machineLabel,
+  pinCommand, roleLabel, runtimeText, statusWord, ticketFromName, tickDue, truncateTask,
 } from "../model.js";
 import { visibleAgents } from "../../agents-filtered/model.js";
 
@@ -636,4 +636,19 @@ test("fabricList: Fabrics mit Teams, offenen Tickets und Agenten; standard vorn"
     { name: "privat", teams: 1, open: 1, agents: 2 },
   ]);
   assert.deepEqual(fabricList({}, []).map((row) => row.name), ["standard"]);
+});
+
+test("Posteingangs-Zähler kommt aus dem Index", () => {
+  assert.equal(inboxCount({ inbox: [{}, {}] }), 2);
+  assert.equal(inboxCount({ inbox: [] }), 0);
+  assert.equal(inboxCount({}), 0);
+  assert.equal(inboxCount(null), 0);
+});
+
+test("Tick ist ohne Versuch sofort fällig, sonst nach einer Minute", () => {
+  assert.equal(tickDue(undefined, NOW), true);
+  assert.equal(tickDue(0, NOW), true);
+  assert.equal(tickDue(NOW - 59_000, NOW), false);
+  assert.equal(tickDue(NOW - 60_000, NOW), true);
+  assert.equal(tickDue("keine Zahl", NOW), true);
 });

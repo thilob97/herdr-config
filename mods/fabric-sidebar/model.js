@@ -577,7 +577,7 @@ export function freeAgentCards(
   return { cards, groups, busy };
 }
 
-// --- Alarme aus index.json (`alarm`) ---------------------------------------
+// --- Alarme aus dem Index-Lesemodell (`alarm`) ------------------------------
 // Der Index veröffentlicht die Alarme bereits fertig beschriftet; hier bleibt
 // nur, welche gezeigt werden und in welcher Reihenfolge ihre Knöpfe stehen.
 
@@ -648,4 +648,19 @@ export function fabricList(index = {}, rows = []) {
       agents: (rows ?? []).filter((row) => teamFabric.get(String(row?.team ?? "")) === name).length,
     }))
     .sort((a, b) => Number(b.name === "standard") - Number(a.name === "standard"));
+}
+
+/** Offene Einträge im Posteingang; der Index enthält nur Unerledigtes. */
+export function inboxCount(index = {}) {
+  return Array.isArray(index?.inbox) ? index.inbox.length : 0;
+}
+
+export const TICK_INTERVAL_MS = 60000;
+
+/** Ist der nächste `fab tick` fällig? Ohne bekannten Versuch sofort.
+ *  Die Instanzen teilen `fabric.tickAttempt`, damit nur ein Lauf startet. */
+export function tickDue(lastAttempt, now = Date.now(), interval = TICK_INTERVAL_MS) {
+  const stamp = Number(lastAttempt);
+  if (!Number.isFinite(stamp) || stamp <= 0) return true;
+  return Number(now) - stamp >= interval;
 }

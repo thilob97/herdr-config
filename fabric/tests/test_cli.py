@@ -4,6 +4,7 @@ import os
 import subprocess
 import unittest
 
+from fabric.fablib import store
 from fabric.tests.support import FAB, FabricCase
 
 
@@ -277,8 +278,9 @@ class CliTests(FabricCase):
         rows = json.loads(self.ok("inbox", "--json").stdout)
         self.assertTrue(any(row["kind"] == "question" for row in rows))
         output = self.ok("index").stdout
-        self.assertIn("index.json", output)
-        self.assertTrue(os.path.isfile(os.path.join(self.home, "index.json")))
+        self.assertIn("fabric.db/read_models", output)
+        with self.store_env():
+            self.assertIsNotNone(store.read_model("index"))
 
     def test_kommentar_gibt_zeile_pro_name(self):
         tid = self.new("Namen")
@@ -333,7 +335,10 @@ class CliTests(FabricCase):
         self.assertIn("Rolle umsetzer", result.stdout)
         self.assertIn("Farbe c3", result.stdout)
         self.assertIn("Prompt prompts/neo.md", result.stdout)
-        self.assertEqual(self._read(prompt), "Neue Rolle\n")
+        with self.store_env():
+            self.assertEqual(
+                store.prompt_get("prompts/neo.md"), "Neue Rolle\n")
+        self.assertFalse(os.path.exists(prompt))
         rows = self._blueprint_rows()
         self.assertIn("neo", rows)
         self.assertEqual(rows["neo"]["role"], "umsetzer")
@@ -356,9 +361,13 @@ class CliTests(FabricCase):
         self.assertNotIn("neo", rows)
         self.assertEqual(rows["nova"]["role"], "pruefer")
         self.assertEqual(rows["nova"]["argv"], ["true"])
-        self.assertTrue(os.path.isfile(
-            os.path.join(self.roster_dir, "prompts", "nova.md")))
+        with self.store_env():
+            self.assertIsNone(store.prompt_get("prompts/neo.md"))
+            self.assertEqual(
+                store.prompt_get("prompts/nova.md"), "Neue Rolle\n")
         self.assertFalse(os.path.exists(prompt))
+        self.assertFalse(os.path.exists(
+            os.path.join(self.roster_dir, "prompts", "nova.md")))
 
         result = self.ok("blueprint", "rm", "nova", "--from", "mensch")
         self.assertIn(
@@ -366,7 +375,10 @@ class CliTests(FabricCase):
             result.stdout,
         )
         self.assertNotIn("nova", self._blueprint_rows())
-        self.assertTrue(os.path.isfile(
+        with self.store_env():
+            self.assertEqual(
+                store.prompt_get("prompts/nova.md"), "Neue Rolle\n")
+        self.assertFalse(os.path.exists(
             os.path.join(self.roster_dir, "prompts", "nova.md")))
 
         result = self.cli("blueprint", "rm", "zap", "--from", "mensch")

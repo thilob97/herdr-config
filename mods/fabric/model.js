@@ -605,6 +605,22 @@ export function stripImages(text) {
   return String(text ?? "").replace(IMAGE_MARKDOWN, "$1");
 }
 
+/** Alte Anhangspfade (`data/fabric/attachments/…`) auf den Cache-Pfad aus dem
+ *  Lesemodell abbilden; neue Markdown-Verweise zeigen schon dorthin. */
+export function attachmentPaths(ticket) {
+  const map = new Map();
+  const id = ticket?.id;
+  for (const item of ticket?.attachments ?? []) {
+    const cache = String(item?.cache_path ?? "").trim();
+    if (!cache) continue;
+    const old = String(item?.path ?? "").trim();
+    if (old) map.set(old, cache);
+    const name = String(item?.name ?? "").trim();
+    if (id && name) map.set(`data/fabric/attachments/${id}/${name}`, cache);
+  }
+  return map;
+}
+
 /** Anhang an `range` einfügen: { text, caret }. Leerraum bleibt, sonst ein Trennzeichen. */
 export function insertAttachment(text, range, reference) {
   const source = String(text ?? "");
@@ -3440,15 +3456,6 @@ export function autopilotActions(lamp, alarm = null) {
     resume: state === "paused",
     stop: state === "running" || state === "paused",
   };
-}
-
-export const TICK_INTERVAL_MS = 60000;
-
-/** Ist der nächste `fab tick` fällig? Ohne bekannten Versuch sofort. */
-export function tickDue(lastAttempt, now = Date.now(), interval = TICK_INTERVAL_MS) {
-  const stamp = Number(lastAttempt);
-  if (!Number.isFinite(stamp) || stamp <= 0) return true;
-  return Number(now) - stamp >= interval;
 }
 
 // ---------- Pipelines ----------

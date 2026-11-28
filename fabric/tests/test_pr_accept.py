@@ -1021,18 +1021,18 @@ class PrAcceptTests(FabricCase):
         self.ok("handover", tid, "--from", "zap", "fertig")
         return repo, tid, worktree, bare
 
-    def test_roster_commit_wird_rebased_und_die_basis_gepusht(self):
-        # `fab team edit` committet fabric/roster.json lokal auf main
-        # (config.py:172).
+    def test_keys_commit_wird_rebased_und_die_basis_gepusht(self):
+        # Die App-Konfiguration (keys.json) wird von Herdr geschrieben und
+        # gehört zu `managed.CONFIG_PATHS`.
         repo, tid, worktree, bare = self.accept_mit_fab_commit(
-            managed.ROSTER_FILE
+            managed.KEYS_FILE
         )
 
         result = self.ok("accept", tid, env=self.gh_env(bare, GH_MERGE_COMMIT="1"))
 
         self.assertIn(URL, result.stdout + result.stderr)
         self.assertEqual(self.ticket(tid)["status"], "done")
-        for name in (managed.ROSTER_FILE, "aenderung.txt"):
+        for name in (managed.KEYS_FILE, "aenderung.txt"):
             self.assertEqual(
                 self.git(
                     bare, "cat-file", "-e", f"refs/heads/main:{name}"
@@ -1041,34 +1041,16 @@ class PrAcceptTests(FabricCase):
                 name,
             )
 
-    def test_prompt_commit_wird_rebased_und_die_basis_gepusht(self):
-        # `fab prompts save` committet unter fabric/prompts/ (prompts.py:137).
-        prompt = managed.PROMPTS_DIR + "zap.md"
-        repo, tid, worktree, bare = self.accept_mit_fab_commit(prompt)
+    def test_layout_commit_wird_rebased_und_die_basis_gepusht(self):
+        # Layouts unter `layouts/` committet der Autopilot ungefragt mit.
+        layout = managed.LAYOUTS_DIR + "fabric.json"
+        repo, tid, worktree, bare = self.accept_mit_fab_commit(layout)
 
         result = self.ok("accept", tid, env=self.gh_env(bare, GH_MERGE_COMMIT="1"))
 
         self.assertIn(URL, result.stdout + result.stderr)
         self.assertEqual(self.ticket(tid)["status"], "done")
-        for name in (prompt, "aenderung.txt"):
-            self.assertEqual(
-                self.git(
-                    bare, "cat-file", "-e", f"refs/heads/main:{name}"
-                ).returncode,
-                0,
-                name,
-            )
-
-    def test_template_commit_wird_rebased_und_die_basis_gepusht(self):
-        # `fab templates save` committet unter fabric/templates/ (templates.py:127).
-        template = managed.TEMPLATES_DIR + "bug.md"
-        repo, tid, worktree, bare = self.accept_mit_fab_commit(template)
-
-        result = self.ok("accept", tid, env=self.gh_env(bare, GH_MERGE_COMMIT="1"))
-
-        self.assertIn(URL, result.stdout + result.stderr)
-        self.assertEqual(self.ticket(tid)["status"], "done")
-        for name in (template, "aenderung.txt"):
+        for name in (layout, "aenderung.txt"):
             self.assertEqual(
                 self.git(
                     bare, "cat-file", "-e", f"refs/heads/main:{name}"
@@ -1102,9 +1084,9 @@ class PrAcceptTests(FabricCase):
         repo, tid, worktree = self.review_ticket()
         bare = self.setup_origin(repo)
         bare_main = self.git_out(bare, "rev-parse", "refs/heads/main")
-        self.write_file(os.path.join(repo, managed.ROSTER_FILE), "lokal\n")
+        self.write_file(os.path.join(repo, managed.SETTINGS_FILE), "lokal\n")
         self.write_file(os.path.join(repo, "fremd.txt"), "fremd\n")
-        self.git_out(repo, "add", managed.ROSTER_FILE, "fremd.txt")
+        self.git_out(repo, "add", managed.SETTINGS_FILE, "fremd.txt")
         self.git_out(repo, "commit", "-qm", "gemischter Commit")
 
         result = self.cli("accept", tid, env=self.gh_env(bare))

@@ -508,7 +508,7 @@ def cmd_new(args):
         if roster is not None and teams.team_for_repo(roster, repo) is None:
             raise FabError(teams.no_team_message(repo))
         if roster is None and not args.no_wake:
-            print(f"Warnung: Roster fehlt ({agents.roster_path()}); @orchestrator wird nicht geweckt",
+            print("Warnung: Roster fehlt (fabric.db/config.roster); @orchestrator wird nicht geweckt",
                   file=sys.stderr)
 
         issue = None
@@ -739,16 +739,15 @@ def _proof_roots(ticket, order):
 
 
 def _attachment_proofs(ticket):
-    roots = _proof_roots(ticket, ("home_parent", "home", "worktree", "repo"))
     proofs = []
-    for item in ticket.get("attachments") or []:
-        path = item.get("path") or ""
-        name = item.get("name") or os.path.basename(path)
-        resolved = _resolve_candidate(roots, path)
-        if resolved is None and name:
-            stored = os.path.join(store.attachments_dir(ticket["id"]), name)
-            if os.path.isfile(stored):
-                resolved = os.path.abspath(stored)
+    for item in store.attachment_models(ticket["id"]):
+        name = item.get("name") or "Anhang"
+        path = item.get("cache_path") or ""
+        resolved = store.attachment_cache_abs(
+            ticket["id"], item["position"], name
+        )
+        if not os.path.isfile(resolved):
+            resolved = None
         proofs.append(
             {
                 "name": name,
@@ -2687,10 +2686,7 @@ def cmd_resume(args):
     startet `fab autopilot start` bewusst getrennt."""
     actor = _actor(args) or "mensch"
     roster = agents.load(required=False)
-    try:
-        os.remove(store.tick_off_path())
-    except FileNotFoundError:
-        pass
+    store.clear_tick_off()
     print("Wächter an")
     path, ok, detail = tick.install()
     if path is None:
@@ -3095,8 +3091,9 @@ def cmd_index(args):
     with store.locked():
         payload = index.rebuild()
     print(
-        f"{store.index_path()}: {len(payload['tickets'])} Tickets, "
-        f"{len(payload['inbox'])} Inbox-Einträge, {len(payload['events'])} Ereignisse"
+        f"fabric.db/read_models: {len(payload['tickets'])} Tickets, "
+        f"{len(payload['inbox'])} Inbox-Einträge, {len(payload['events'])} Ereignisse "
+        f"(meta.rev {store.rev()})"
     )
     return 0
 
@@ -4180,6 +4177,14 @@ def cmd_autopilot(args):
         return 0
     if action == "run":
         return autopilot.run(args.until)
+    if action == "log":
+        rows = store.autopilot_log_rows(args.limit)
+        if args.json:
+            print(json.dumps(rows, ensure_ascii=False, indent=2))
+        else:
+            for row in rows:
+                print(row["line"])
+        return 0
     state = autopilot.status()
     if args.json:
         print(json.dumps(state, ensure_ascii=False, indent=2))
@@ -4974,6 +4979,15 @@ def build_parser():
         "resume", help="Pausemarke entfernen und weiterlaufen",
         description="Pausemarke entfernen und weiterlaufen",
     )
+    auto_log = auto_sub.add_parser(
+        "log", help="Autopilotlog aus der Datenbank zeigen",
+        description="Autopilotlog aus der Datenbank zeigen",
+    )
+    auto_log.add_argument(
+        "--limit", type=int, default=200, metavar="N",
+        help="die neuesten N Zeilen (Standard: 200)",
+    )
+    auto_log.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe")
     auto_run = auto_sub.add_parser(
         "run", help="Autopilot-Schleife (intern)", description="Autopilot-Schleife (intern)",
     )
@@ -5003,7 +5017,7 @@ def build_parser():
 
     item = command("commands", "Alle Befehle mit Argumenten auflisten (für das Fenster)", cmd_commands)
     item.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe")
-    command("index", "index.json neu erzeugen", cmd_index)
+    command("index", "Lesemodelle in fabric.db neu erzeugen", cmd_index)
     item = command("migrate", "Altdaten in die SQLite-Datenbank übernehmen", cmd_migrate)
     item.add_argument("--json", action="store_true", help="maschinenlesbare Ausgabe")
     item = command("backup", "Datenbank nach data/fabric/backups sichern", cmd_backup)
@@ -5066,7 +5080,7 @@ def _ensure_tick_agent():
 
 
 def _publish_tick_alarm(args):
-    """`index.json` neu schreiben, wenn der Wächter-Alarm kippt.
+    """Lesemodell `index` neu schreiben, wenn der Wächter-Alarm kippt.
 
     Nur der Übergang kostet einen Schreibvorgang; solange derselbe Ausfall
     anhält, bleibt der bereits veröffentlichte Eintrag stehen. `--dry-run`

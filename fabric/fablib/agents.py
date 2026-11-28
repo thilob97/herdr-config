@@ -2,7 +2,6 @@
 import json
 import os
 import re
-import stat
 
 from . import claude, context, hc, herdr, render, store, teams
 from .errors import FabError, HcError, HerdrError
@@ -12,87 +11,57 @@ FABRIC_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 _PLACEHOLDER = re.compile(r"\{([a-z_]+)\}")
 
 
-def roster_path():
-    raw = os.environ.get("FAB_ROSTER")
-    if raw:
-        return os.path.abspath(os.path.expanduser(raw))
-    return os.path.join(FABRIC_DIR, "roster.json")
-
-
-def _mode(path, fallback):
-    try:
-        return stat.S_IMODE(os.stat(path).st_mode)
-    except OSError:
-        return fallback
-
-
-def _read(path, required):
-    try:
-        with open(path, encoding="utf-8") as handle:
-            data = json.load(handle)
-    except FileNotFoundError:
+def roster_data(required=True):
+    """Roster-JSON aus der Datenbank; `None`, wenn es fehlt und nicht Pflicht ist."""
+    raw = store.config_get(store.ROSTER_CONFIG_KEY)
+    if raw is None:
         if required:
-            raise FabError(f"Roster fehlt: {path}")
+            raise FabError(
+                "Roster fehlt: fabric.db/config.roster; fab roster init anlegen"
+            )
         return None
-    except json.JSONDecodeError as exc:
-        raise FabError(f"Roster {path} ist kein gültiges JSON: {exc}")
+    try:
+        data = json.loads(raw)
+    except ValueError as exc:
+        raise FabError(f"Roster in fabric.db ist kein gültiges JSON: {exc}")
     if not isinstance(data, dict):
-        raise FabError(f"Roster {path} ist kein JSON-Objekt")
+        raise FabError("Roster in fabric.db ist kein JSON-Objekt")
     return data
 
 
-def _apply_roster_migration(path, data):
-    """Roster schreiben; der Aufrufer hält den Store-Lock oder den Bootstrap-Lock."""
-    from . import git, index
-
-    fresh = _read(path, required=False) or data
-    if not teams.migrate(fresh):
-        return fresh
-    store.atomic_write(
-        path,
-        json.dumps(fresh, ensure_ascii=False, indent=2) + "\n",
-        mode=_mode(path, 0o644),
-    )
-    git.commit_paths(
-        path,
-        [path],
-        f"chore(roster): Roster zu Team {teams.DEFAULT_TEAM} migriert",
-    )
-    index.rebuild()
-    return fresh
-
-
-def _migrate(path, data):
+def _migrate(data):
     """Altes Roster einmalig zu Blaupausen und Team `herdr-app` umschreiben.
 
-    Läuft beim ersten Lesen; ein zweiter Lauf findet `teams` und schreibt
-    nichts. Der Schreibvorgang steht unter dem Store-Lock und überschreibt
-    keine parallele Migration: nach dem Lock wird die Datei neu gelesen.
-    Während der Datenmigration hält `store` den Bootstrap-Lock bereits; ein
-    zweites `locked()` würde denselben flock im selben Prozess blockieren.
+    Der Schreibvorgang steht unter dem Store-Lock; nach dem Lock wird der
+    gespeicherte Stand neu gelesen, damit keine parallele Migration verloren
+    geht. Während der Datenmigration hält `store` den Bootstrap-Lock bereits;
+    ein zweites `locked()` würde denselben flock im selben Prozess blockieren.
     """
     if not teams.migrate(data):
         return data
-    try:
-        if store.bootstrap_active():
-            return _apply_roster_migration(path, data)
-        with store.locked():
-            return _apply_roster_migration(path, data)
-    except OSError as exc:
-        raise FabError(f"Roster {path} nicht migrierbar: {exc}")
+    if store.bootstrap_active():
+        return data
+    with store.locked():
+        fresh = roster_data(required=False) or data
+        if not teams.migrate(fresh):
+            return fresh
+        store.config_set(
+            store.ROSTER_CONFIG_KEY,
+            json.dumps(fresh, ensure_ascii=False, indent=2) + "\n",
+        )
+        return fresh
 
 
 def load(required=True):
-    path = roster_path()
-    data = _read(path, required)
+    data = roster_data(required)
     if data is None:
         return None
-    data = _migrate(path, data)
+    data = _migrate(data)
     teams.ensure_fabrics(data)
     expanded = teams.expansion(data)
     return {
-        "path": path,
-        "dir": os.path.dirname(path),
+        "path": "fabric.db/config.roster",
+        "dir": "",
         "max_sessions": expanded["max_sessions"],
         "max_sessions_total": expanded["max_sessions_total"],
         "max_verify": expanded["max_verify"],
@@ -357,12 +326,9 @@ def split_argv(argv):
 
 
 def prompt_text(roster, rel):
-    path = rel if os.path.isabs(rel) else os.path.join(roster["dir"], rel)
-    try:
-        with open(path, encoding="utf-8") as handle:
-            return handle.read()
-    except FileNotFoundError:
-        raise FabError(f"Prompt fehlt: {path}")
+    from . import prompts
+
+    return prompts.text(roster, rel)
 
 
 def _fill(text, values):

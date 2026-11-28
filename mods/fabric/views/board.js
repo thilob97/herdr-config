@@ -276,7 +276,7 @@ export function renderBoard(app, cx, t) {
     .child(
       !app.index
         ? (app.loadError
-          ? ui.emptyState(t, { title: "Tickets nicht lesbar", text: "Die Index-Datei konnte nicht gelesen werden." })
+          ? ui.emptyState(t, { title: "Tickets nicht lesbar", text: "Der Index konnte nicht gelesen werden." })
           : ui.loading(t, "Tickets werden geladen …"))
         : total === 0
           ? ui.emptyState(t, {

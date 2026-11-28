@@ -14,8 +14,11 @@ class RepoAddTests(FabricCase):
         self.ok("roster", "--json")
 
     def roster_data(self):
-        with open(self.roster, encoding="utf-8") as handle:
-            return json.load(handle)
+        from fabric.fablib import store
+
+        with self.store_env():
+            raw = store.config_get(store.ROSTER_CONFIG_KEY)
+        return json.loads(raw or "{}")
 
     def team_repos(self, name=None):
         name = name or self.team
@@ -186,7 +189,11 @@ class RepoAddTests(FabricCase):
         from unittest import mock
         from fabric.fablib import repos, store
 
-        tickets = [{"id": f"T-{n}", "repo": self.tmp, "status": "doing"} for n in range(20)]
+        tickets = [
+            {"id": f"T-{n}", "title": f"T-{n}", "repo": self.tmp,
+             "status": "doing", "comments": []}
+            for n in range(20)
+        ]
         with mock.patch.object(store, "all_tickets", return_value=tickets), \
                 mock.patch.object(repos, "_checkout", return_value=self.tmp) as checkout:
             rows = repos.known()

@@ -198,10 +198,8 @@ class AutopilotCase(FabricCase):
 
     def stored(self, tid):
         """Ticket direkt aus dem Store lesen (self.ticket ist die Fixture)."""
-        with open(
-            os.path.join(self.home, "tickets", f"{tid}.json"), encoding="utf-8"
-        ) as handle:
-            return json.load(handle)
+        with self.store_env():
+            return store.load(tid)
 
     def setup_origin(self, repo):
         """Bare-Remote als origin; die GitHub-URL wird darauf umgebogen."""
@@ -290,16 +288,16 @@ class AutopilotCase(FabricCase):
         self.assertEqual(state["end"], "2026-01-01T08:00")
         self.assertEqual(state["updated_at"], int(stamp.timestamp() * 1000))
         self.assertEqual(state["last_action"], "x")
-        self.assertEqual(state["log"], autopilot.log_path())
+        self.assertEqual(state["log"], "db")
         self.assertEqual(state["pid"], os.getpid())
         self.assertEqual(glob.glob(os.path.join(self.home, ".autopilot-*")), [])
-        with open(autopilot.log_path(), encoding="utf-8") as stream:
-            self.assertEqual(stream.read(), "07:00:00 hallo\n")
+        with self.store_env():
+            self.assertEqual(store.autopilot_log_text(), "07:00:00 hallo\n")
 
     def test_read_state_tolerates_missing_and_broken_files(self):
         self.assertEqual(autopilot.read_state(), {})
-        with open(autopilot.state_path(), "w", encoding="utf-8") as stream:
-            stream.write("{kaputt")
+        with self.store_env():
+            store.meta_set(store.AUTOPILOT_KEY, "{kaputt")
         self.assertEqual(autopilot.read_state(), {})
 
     # -- start/stop/resume/status
@@ -364,23 +362,21 @@ class AutopilotCase(FabricCase):
 
     def test_stop_writes_stopped_and_clears_pause(self):
         autopilot.write_state("running", end="2099-01-01T08:00")
-        with open(autopilot.pause_path(), "w", encoding="utf-8") as stream:
-            stream.write("pausiert")
+        autopilot._pause("pausiert")
         with mock.patch.object(autopilot.hc, "kill", return_value=True) as kill:
             state = autopilot.stop()
         kill.assert_called_once_with("autopilot")
         self.assertEqual(state["state"], "stopped")
         self.assertEqual(state["reason"], "gestoppt")
         self.assertEqual(state["end"], "2099-01-01T08:00")
-        self.assertFalse(os.path.exists(autopilot.pause_path()))
+        self.assertFalse(autopilot.paused())
         self.assertEqual(autopilot.read_state()["state"], "stopped")
 
     def test_resume_clears_pause_and_sets_running(self):
         autopilot.write_state("paused", reason="rot", end="2026-01-01T08:00")
-        with open(autopilot.pause_path(), "w", encoding="utf-8") as stream:
-            stream.write("rot")
+        autopilot._pause("rot")
         self.assertEqual(autopilot.resume(), "resumed")
-        self.assertFalse(os.path.exists(autopilot.pause_path()))
+        self.assertFalse(autopilot.paused())
         state = autopilot.read_state()
         self.assertEqual(state["state"], "running")
         self.assertEqual(state["reason"], "")
@@ -388,10 +384,9 @@ class AutopilotCase(FabricCase):
     def test_resume_keeps_stopped_state_and_reports_nothing_paused(self):
         autopilot.write_state("stopped", reason="gestoppt", end="2026-01-01T08:00")
         before = autopilot.read_state()
-        with open(autopilot.pause_path(), "w", encoding="utf-8") as stream:
-            stream.write("rot")
+        autopilot._pause("rot")
         self.assertEqual(autopilot.resume(), "not-paused")
-        self.assertFalse(os.path.exists(autopilot.pause_path()))
+        self.assertFalse(autopilot.paused())
         self.assertEqual(autopilot.read_state(), before)
         result = self.ok("autopilot", "resume")
         self.assertIn("nichts pausiert", result.stdout)
@@ -467,8 +462,8 @@ class AutopilotCase(FabricCase):
                 mock.patch.object(autopilot.subprocess, "run", side_effect=slow_accept):
             self.assertTrue(autopilot.try_accept(self.ticket()))
         self.assertEqual(seen, [None])
-        with open(autopilot.log_path(), encoding="utf-8") as handle:
-            text = handle.read()
+        with self.store_env():
+            text = store.autopilot_log_text()
         self.assertIn("accept T-1: exit 0", text)
         self.assertNotIn("Timeout", text)
 
@@ -641,7 +636,7 @@ class AutopilotCase(FabricCase):
             git_cmd.call_args_list,
         )
         self.assertTrue(autopilot._paused)
-        self.assertTrue(os.path.exists(autopilot.pause_path()))
+        self.assertTrue(autopilot.paused())
         state = autopilot.read_state()
         self.assertIn("Abbruch: Signal 15 im Schritt unittest", state["reason"])
         self.assertIn("kein Revert", state["reason"])
@@ -822,7 +817,7 @@ class AutopilotCase(FabricCase):
             git_cmd.call_args_list,
         )
         self.assertFalse(autopilot._paused)
-        self.assertFalse(os.path.exists(autopilot.pause_path()))
+        self.assertFalse(autopilot.paused())
         self.assertEqual(
             [args for args in calls if args[:2] == ("fab", "comment")], []
         )
@@ -853,7 +848,7 @@ class AutopilotCase(FabricCase):
                 autopilot.try_accept(dict(self.ticket(), id=tid))
             )
         self.assertTrue(autopilot._paused)
-        self.assertTrue(os.path.exists(autopilot.pause_path()))
+        self.assertTrue(autopilot.paused())
         self.assertIn("nicht erreichbar", autopilot.read_state()["reason"])
         comments = [args[-1] for args in calls if args[:2] == ("fab", "comment")]
         self.assertEqual(len(comments), 1)
@@ -909,9 +904,13 @@ class AutopilotCase(FabricCase):
         names = {item["name"]: item["path"] for item in ticket["attachments"]}
         stdout_name = next(name for name in names if name.endswith("-stdout.log"))
         stderr_name = next(name for name in names if name.endswith("-stderr.log"))
+        with self.store_env():
+            models = store.attachment_models(ticket["id"])
         for name, expected in ((stdout_name, stdout), (stderr_name, stderr)):
+            model = next(item for item in models if item["name"] == name)
             with open(
-                os.path.join(self.home, "attachments", ticket["id"], name),
+                os.path.join(self.home, "cache", "attachments", ticket["id"],
+                             f"{model['position']}-{name}"),
                 encoding="utf-8",
             ) as handle:
                 self.assertEqual(handle.read(), expected)
@@ -1181,9 +1180,14 @@ test at fail.mjs:3:1
             self.assertEqual(len(names), 2, case)
             self.assertTrue(names[0].endswith("-stdout.log"), names)
             self.assertTrue(names[1].endswith("-stderr.log"), names)
-            for name, expected in ((names[0], stdout), (names[1], stderr)):
+            with self.store_env():
+                models = store.attachment_models(tid)
+            for model, expected in zip(models, (stdout, stderr)):
                 with open(
-                    os.path.join(self.home, "attachments", tid, name),
+                    os.path.join(
+                        self.home, "cache", "attachments", tid,
+                        f"{model['position']}-{model['name']}",
+                    ),
                     encoding="utf-8",
                 ) as handle:
                     self.assertEqual(handle.read(), expected)
@@ -1294,8 +1298,7 @@ test at fail.mjs:3:1
         """`resume` in einem anderen Prozess muss die laufende Schleife lösen."""
         moment = datetime.datetime(2026, 1, 1, 7, 57)
         self.set_now(moment)
-        with open(autopilot.pause_path(), "w", encoding="utf-8") as stream:
-            stream.write("rot")
+        autopilot._pause("rot")
 
         def sleep(seconds):
             nonlocal moment
@@ -1307,7 +1310,7 @@ test at fail.mjs:3:1
         def once():
             seen.append(autopilot._paused)
             if len(seen) == 1:
-                os.unlink(autopilot.pause_path())
+                autopilot._clear_pause()
             return True
 
         with mock.patch.object(autopilot, "once", side_effect=once), \

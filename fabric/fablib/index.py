@@ -1,10 +1,9 @@
-"""Lesemodell `index.json`: Tickets ohne Body/Kommentare, Inbox, Roster, Ereignisse.
+"""Lesemodell `index` (read_models): Tickets ohne Body/Kommentare, Inbox, Roster, Ereignisse.
 
-`index.json` wird nach jeder Änderung atomar neu geschrieben und bleibt unter
-1 MiB: keine Bodies, keine Kommentarlisten, höchstens 300 Ereignisse.
+Der Schlüssel `index` wird nach jeder Änderung in derselben Transaktion neu
+geschrieben und bleibt unter 1 MiB: keine Bodies, keine Kommentarlisten,
+höchstens 300 Ereignisse.
 """
-import json
-
 from . import agents, costs, events, render, store, teams
 from .errors import FabError
 
@@ -45,7 +44,8 @@ def _reviewer():
 def entry(ticket, waits=None, team=None, fabric=None):
     if waits is None:
         waits = costs.waits(ticket, store.event_rows_for(ticket["id"]), _reviewer())
-    last = ticket["comments"][-1] if ticket["comments"] else None
+    comments = ticket.get("comments") or []
+    last = comments[-1] if comments else None
     return {
         "id": ticket["id"],
         "title": ticket["title"],
@@ -357,10 +357,6 @@ def build():
 
 def rebuild():
     payload = build()
-    if store.in_transaction():
-        store.defer_index(payload)
-        return payload
-    text = json.dumps(payload, ensure_ascii=False) + "\n"
-    store.atomic_write(store.index_path(), text)
+    store.defer_index(payload)
     return payload
 

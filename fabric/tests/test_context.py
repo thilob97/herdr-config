@@ -24,6 +24,7 @@ class ContextCase(FabricCase):
         self.ok("settings", "set", "context_limit", str(value), "--from", "mensch")
 
     def load_roster(self):
+        self._sync_config()
         with mock.patch.dict(os.environ, self.env):
             return agents.load()
 
@@ -36,11 +37,12 @@ class ContextCase(FabricCase):
 
     def start_context(self, tid):
         roster = self.load_roster()
-        start = agents.start_prompt(
-            roster,
-            self.ticket(tid),
-            {"name": "zap", "role": "umsetzer", "prompt": "prompts/zap.md"},
-        )
+        with self.store_env():
+            start = agents.start_prompt(
+                roster,
+                self.ticket(tid),
+                {"name": "zap", "role": "umsetzer", "prompt": "prompts/zap.md"},
+            )
         return roster, start.split("\n\nZap-Rolle:")[0]
 
 
@@ -269,12 +271,13 @@ class PromptContextTests(ContextCase):
             "Rolle\n\n## Projekt und Team\n\n{context}\n",
         )
         roster = self.load_roster()
-        start = agents.start_prompt(
-            roster,
-            self.ticket(tid),
-            {"name": "zap", "role": "umsetzer", "prompt": "prompts/zap.md"},
-        )
-        orchestrated = agents.orchestrator_prompt(roster, "herdr-app")
+        with self.store_env():
+            start = agents.start_prompt(
+                roster,
+                self.ticket(tid),
+                {"name": "zap", "role": "umsetzer", "prompt": "prompts/zap.md"},
+            )
+            orchestrated = agents.orchestrator_prompt(roster, "herdr-app")
         for text in (start, orchestrated):
             self.assertIn("## Projekt-Steckbrief", text)
             self.assertIn("Zweck: Testprojekt.", text)

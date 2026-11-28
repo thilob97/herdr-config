@@ -1,19 +1,45 @@
-"""Ticket-Vorlagen lesen, zeigen und speichern (T-37).
-
-Vorlagen liegen neben dem aktiven Roster (`FAB_ROSTER` bzw. `templates/` im
-Fabric-Ordner); fehlt eine Vorlage dort, gilt die mitgelieferte Fassung aus
-`fabric/templates/`. `list` führt beide Quellen zusammen, lokal gewinnt.
-"""
-import os
+"""Ticket-Vorlagen aus der Datenbank lesen, zeigen und speichern (T-37)."""
 import re
-import stat
 
-from . import agents, events, git, index, store
+from . import events, index, store
 from .errors import FabError
 
 NAME_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
 DEFAULT_ORDER = ("bug", "feature", "refactor", "chore")
 PLACEHOLDER = "{satz}"
+
+# Untergrenze für eine frische Datenbank; bestehende Installationen migrieren
+# ihre Dateien aus dem Rosterordner.
+DEFAULTS = {
+    "bug": (
+        "# Fehlerbericht\n\n## Ziel\n{satz}\n\n## Kontext\n"
+        "Was ist passiert, was war erwartet, wie lässt es sich wiederholen?\n\n"
+        "## Abnahmekriterien\n- [ ] Der Fehler tritt nicht mehr auf\n"
+        "- [ ] Ein Test deckt den Fall ab\n\n## Grenzen\n"
+        "Nur den gemeldeten Fehler beheben, keine Umbauten.\n"
+    ),
+    "feature": (
+        "# Neues Feature\n\n## Ziel\n{satz}\n\n## Kontext\n"
+        "Wer braucht das, und warum ist es wertvoll?\n\n"
+        "## Abnahmekriterien\n- [ ] Das Verhalten ist umgesetzt\n"
+        "- [ ] Ein Test prüft das neue Verhalten\n\n## Grenzen\n"
+        "So klein wie möglich umsetzen, keine Nebenbaustellen.\n"
+    ),
+    "refactor": (
+        "# Umbau\n\n## Ziel\n{satz}\n\n## Kontext\n"
+        "Was ist heute umständlich, und was soll danach einfacher sein?\n\n"
+        "## Abnahmekriterien\n- [ ] Das Verhalten bleibt gleich\n"
+        "- [ ] Die bestehenden Tests laufen weiter\n\n## Grenzen\n"
+        "Kein neues Verhalten, nur die Struktur ändern.\n"
+    ),
+    "chore": (
+        "# Aufräumen\n\n## Ziel\n{satz}\n\n## Kontext\n"
+        "Welche Kleinigkeit soll weg oder aktuell gehalten werden?\n\n"
+        "## Abnahmekriterien\n- [ ] Die Änderung ist erledigt\n"
+        "- [ ] Nichts anderes verhält sich anders\n\n## Grenzen\n"
+        "Nur diese Kleinigkeit, kein Umbau.\n"
+    ),
+}
 
 
 def validate_name(name):
@@ -26,45 +52,6 @@ def validate_name(name):
     return value
 
 
-def directory():
-    """Ordner der aktiven Vorlagen: `FAB_TEMPLATES` oder neben dem Roster."""
-    raw = os.environ.get("FAB_TEMPLATES")
-    if raw:
-        return os.path.abspath(os.path.expanduser(raw))
-    return os.path.join(os.path.dirname(agents.roster_path()), "templates")
-
-
-def packaged_directory():
-    """Mitgelieferte Vorlagen im Fabric-Code."""
-    return os.path.join(agents.FABRIC_DIR, "templates")
-
-
-def _path(where, name):
-    return os.path.join(where, f"{name}.md")
-
-
-def _mode(path, fallback):
-    try:
-        return stat.S_IMODE(os.stat(path).st_mode)
-    except OSError:
-        return fallback
-
-
-def _read(path):
-    with open(path, "rb") as handle:
-        return handle.read()
-
-
-def _candidates(name):
-    """Vorhandene Dateien in Reihenfolge: aktiv, dann mitgeliefert."""
-    found = []
-    for where in (directory(), packaged_directory()):
-        path = _path(where, name)
-        if os.path.isfile(path):
-            found.append(path)
-    return found
-
-
 def _sort_key(row):
     name = row["name"]
     if name in DEFAULT_ORDER:
@@ -73,41 +60,26 @@ def _sort_key(row):
 
 
 def entries():
-    """Alle Vorlagen, lokal vor mitgeliefert, in fester Reihenfolge."""
-    rows = {}
-    for where in (directory(), packaged_directory()):
-        try:
-            names = sorted(os.listdir(where))
-        except OSError:
-            continue
-        for filename in names:
-            if not filename.endswith(".md"):
-                continue
-            name = filename[:-3]
-            if not NAME_RE.match(name) or name in rows:
-                continue
-            path = _path(where, name)
-            try:
-                raw = _read(path)
-            except OSError:
-                continue
-            rows[name] = {
+    """Alle Vorlagen aus der DB in fester Reihenfolge."""
+    rows = []
+    for name in store.template_names():
+        raw = store.template_get(name) or ""
+        rows.append(
+            {
                 "name": name,
-                "path": os.path.abspath(path),
-                "bytes": len(raw),
+                "path": name,
+                "bytes": len(raw.encode("utf-8")),
             }
-    return sorted(rows.values(), key=_sort_key)
+        )
+    return sorted(rows, key=_sort_key)
 
 
 def show(name):
     """Rohtext der Vorlage; unbekannt → FabError mit vorhandenen Namen."""
     value = validate_name(name)
-    for path in _candidates(value):
-        try:
-            with open(path, encoding="utf-8") as handle:
-                return handle.read()
-        except OSError as exc:
-            raise FabError(f"Vorlage nicht lesbar: {path}: {exc}")
+    stored = store.template_get(value)
+    if stored is not None:
+        return stored
     known = [row["name"] for row in entries()]
     if not known:
         raise FabError(f"Unbekannte Vorlage „{value}“; es gibt keine Vorlagen")
@@ -117,19 +89,13 @@ def show(name):
 
 
 def save(name, text, actor):
-    """Speichert die Vorlage atomar im aktiven Ordner. Rückgabe: (Pfad, Bytes)."""
+    """Speichert die Vorlage in der DB. Rückgabe: (Name, Bytes)."""
     value = validate_name(name)
-    path = _path(directory(), value)
-    store.atomic_write(path, text, mode=_mode(path, 0o644))
+    store.template_set(value, text)
     size = len(text.encode("utf-8"))
     events.append("config", "", actor, "", f"Vorlage {value} gespeichert ({size} Bytes)")
     index.rebuild()
-    git.commit_paths(
-        path,
-        [path],
-        f"chore(template): templates/{value}.md gespeichert ({size} Bytes)",
-    )
-    return path, size
+    return value, size
 
 
 def render(text, sentence):

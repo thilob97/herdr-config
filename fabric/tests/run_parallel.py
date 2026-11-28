@@ -26,6 +26,8 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
+# Auch der Läufer selbst darf nie auf das Standard-Home fallen.
+os.environ["FAB_TEST_GUARD"] = "1"
 RAN_RE = re.compile(r"^Ran (\d+) tests? in ", re.MULTILINE)
 # Ein unittest-Fehler, dessen Ursache ein per Signal beendeter Unterprozess
 # ist: `assertEqual(r.returncode, 0)` zeigt `-15 != 0`, ein nicht geprüfter

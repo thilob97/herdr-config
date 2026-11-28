@@ -13,6 +13,26 @@ from fabric.tests.support import FAB, FabricCase
 
 
 class StoreTests(FabricCase):
+    def _drop_db(self):
+        """DB entfernen, damit die Altdateien-Migration wieder greift."""
+        with self.store_env():
+            store._close_conn()
+            store._bootstrapped.discard(self.home)
+            store._fallback.discard(self.home)
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                os.remove(os.path.join(self.home, "fabric.db" + suffix))
+            except FileNotFoundError:
+                pass
+
+    def _newest_legacy_files(self):
+        folder = os.path.join(self.home, "legacy")
+        names = sorted(
+            name for name in os.listdir(folder) if name.startswith("files-")
+        )
+        self.assertTrue(names, "kein legacy/files-* nach der Migration")
+        return os.path.join(folder, names[-1])
+
     def test_locked_ist_im_prozess_reentrant(self):
         def scenario():
             with store.locked():
@@ -64,8 +84,12 @@ class StoreTests(FabricCase):
             self.assertEqual(process.returncode, 0, err)
             results.append(out.strip())
         self.assertEqual(sorted(results), ["T-1", "T-2"])
-        self.assertTrue(os.path.isfile(os.path.join(self.home, "tickets", "T-1.json")))
-        self.assertTrue(os.path.isfile(os.path.join(self.home, "tickets", "T-2.json")))
+        with self.store_env():
+            for tid in ("T-1", "T-2"):
+                self.assertIsNotNone(
+                    store.read_model(store.ticket_model_key(tid)),
+                    f"Lesemodell für {tid} fehlt",
+                )
         third = self.new("Drittes")
         self.assertEqual(third, "T-3")
 
@@ -89,6 +113,7 @@ class StoreTests(FabricCase):
         self.assertEqual(len(fresh["comments"]), 2)
 
     def test_fehlende_felder_werden_ergaenzt(self):
+        self._drop_db()
         path = os.path.join(self.home, "tickets", "T-1.json")
         self.write_file(path, json.dumps({"id": "T-1", "title": "Alt"}))
         result = self.ok("show", "T-1", "--json")
@@ -102,14 +127,15 @@ class StoreTests(FabricCase):
         self.assertEqual(ticket["status"], "draft")
         self.assertEqual(ticket["blocked_by"], [])
         self.assertIsNone(ticket["checks"])
-        legacy = os.path.join(self.home, "legacy", "tickets", "T-1.json")
-        self.assertTrue(os.path.isfile(legacy))
+        legacy = self._newest_legacy_files()
+        self.assertTrue(os.path.isfile(os.path.join(legacy, "tickets", "T-1.json")))
         self.assertIn("tickets", self.storage()["tables"])
 
     def test_index_ist_atomar_und_lesbar(self):
         tid = self.new("Atomar")
         payload = self.index()
         self.assertEqual(payload["tickets"][0]["id"], tid)
+        self.assertFalse(os.path.exists(os.path.join(self.home, "index.json")))
         self.assertFalse(os.path.exists(os.path.join(self.home, "index.json.tmp")))
 
     def test_jetzt_liest_naive_lokale_iso_zeit(self):

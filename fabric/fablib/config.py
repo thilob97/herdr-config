@@ -1,16 +1,15 @@
 """Roster und Einstellungen pflegen (Abschnitt 3b des Vertrags).
 
-Jede Änderung läuft unter dem Lock aus `store`, schreibt atomar, lässt Felder
-stehen, die `fab` nicht kennt, hängt ein `config`-Ereignis an und erzeugt
-`index.json` neu. Quelle sind Blaupausen und Teams; die Legacy-Felder
-(`agents`, `reviewer`, `orchestrator`, `max_sessions`) werden gespiegelt.
-Alle Meldungen sind deutsch und für das UI gedacht.
+Jede Änderung läuft unter dem Lock aus `store`, schreibt das Roster-JSON in
+die Tabelle `config`, lässt Felder stehen, die `fab` nicht kennt, hängt ein
+`config`-Ereignis an und erzeugt das Lesemodell `index` neu. Quelle sind
+Blaupausen und Teams; die Legacy-Felder (`agents`, `reviewer`, `orchestrator`,
+`max_sessions`) werden gespiegelt. Prompttexte liegen in `prompts`, Vorlagen
+in `templates`. Alle Meldungen sind deutsch und für das UI gedacht.
 """
 import json
-import os
-import stat
 
-from . import agents, context, events, git, hc, index, store, teams
+from . import agents, context, events, hc, index, store, teams
 from .errors import FabError, HcError
 
 NAME_RE = teams.NAME_RE
@@ -56,27 +55,11 @@ ist ein neues Ticket mit `--blocked-by`, keine Nachricht.
 """
 
 
-# ---------------------------------------------------------------- Datei
-
-def _mode(path, fallback):
-    try:
-        return stat.S_IMODE(os.stat(path).st_mode)
-    except OSError:
-        return fallback
-
+# ---------------------------------------------------------------- Datenbank
 
 def _load():
-    path = agents.roster_path()
-    try:
-        with open(path, encoding="utf-8") as handle:
-            data = json.load(handle)
-    except FileNotFoundError:
-        raise FabError(f"Roster fehlt: {path}")
-    except json.JSONDecodeError as exc:
-        raise FabError(f"Roster {path} ist kein gültiges JSON: {exc}")
-    if not isinstance(data, dict):
-        raise FabError(f"Roster {path} ist kein JSON-Objekt")
-    return path, data
+    data = agents.roster_data(required=True)
+    return "fabric.db/config.roster", data
 
 
 def _migrate(data):
@@ -156,20 +139,13 @@ def _member_descriptions(members):
     return rows
 
 
-def _abs(directory, rel):
-    return rel if os.path.isabs(rel) else os.path.join(directory, rel)
-
-
 def _commit(path, data, actor, text, written=()):
-    store.atomic_write(
-        path,
+    store.config_set(
+        store.ROSTER_CONFIG_KEY,
         json.dumps(data, ensure_ascii=False, indent=2) + "\n",
-        mode=_mode(path, 0o644),
     )
     events.append("config", "", actor, "", text)
     index.rebuild()
-    # Nur die Dateien dieses Befehls committen; False ist kein Fehler.
-    git.commit_paths(path, [path, *written], f"chore(roster): {text}")
 
 
 def _sync_legacy(data):
@@ -353,18 +329,11 @@ def _add_blueprint(path, data, name, role, color, argv_json, prompt_text):
             f"fab blueprint edit {name}"
         )
     value = _check_color(color) if color is not None else _next_color(entries)
-    directory = os.path.dirname(path)
     rel = f"prompts/{name}.md"
-    target = _abs(directory, rel)
-    written = []
     if prompt_text is not None:
-        store.atomic_write(target, prompt_text, mode=_mode(target, 0o644))
-        written.append(target)
-    elif not os.path.exists(target):
-        store.atomic_write(
-            target, TEMPLATE.format(name=name, role=role), mode=0o644
-        )
-        written.append(target)
+        store.prompt_set(rel, prompt_text)
+    elif store.prompt_get(rel) is None:
+        store.prompt_set(rel, TEMPLATE.format(name=name, role=role))
     entry = {
         "name": name,
         "role": role,
@@ -373,14 +342,13 @@ def _add_blueprint(path, data, name, role, color, argv_json, prompt_text):
         "argv": argv,
     }
     entries.append(entry)
-    return entry, written
+    return entry, []
 
 
 def _edit_blueprint(path, data, name, rename, role, color, argv_json,
                     prompt_text):
     entries = _blueprints(data)
     entry = teams.blueprint(data, name)
-    directory = os.path.dirname(path)
 
     target = name
     if rename is not None:
@@ -409,16 +377,14 @@ def _edit_blueprint(path, data, name, rename, role, color, argv_json,
     move = None
     if target != name and current_rel == f"prompts/{name}.md":
         final_rel = f"prompts/{target}.md"
-        new_abs = _abs(directory, final_rel)
-        if os.path.exists(new_abs) and prompt_text is None:
+        if store.prompt_get(final_rel) is not None and prompt_text is None:
             raise FabError(
-                f"Promptdatei {final_rel} gibt es schon; wähle einen anderen "
+                f"Prompt {final_rel} gibt es schon; wähle einen anderen "
                 f"Namen oder gib mit --prompt-text einen neuen Text"
             )
-        move = (_abs(directory, current_rel), new_abs)
+        move = (current_rel, final_rel)
 
     changes = []
-    written = []
     if role is not None:
         value = _check_role(role)
         if value != entry.get("role"):
@@ -435,18 +401,15 @@ def _edit_blueprint(path, data, name, rename, role, color, argv_json,
             changes.append("argv " + " ".join(argv))
         entry["argv"] = argv
 
-    if move is not None:
-        if os.path.exists(move[0]):
-            os.replace(move[0], move[1])
-            written.extend(move)
+    if move is not None and prompt_text is None:
+        stored = store.prompt_get(move[0])
+        if stored is not None:
+            store.prompt_set(move[1], stored)
+            store.prompt_delete(move[0])
     if target != name:
         changes.append(f"Name {name} → {target}")
     if prompt_text is not None:
-        prompt_abs = _abs(directory, final_rel)
-        store.atomic_write(
-            prompt_abs, prompt_text, mode=_mode(prompt_abs, 0o644)
-        )
-        written.append(prompt_abs)
+        store.prompt_set(final_rel, prompt_text)
         changes.append(f"Prompt {final_rel}")
     if entry.get("prompt") != final_rel:
         entry["prompt"] = final_rel
@@ -470,7 +433,7 @@ def _edit_blueprint(path, data, name, rename, role, color, argv_json,
             "Nichts zu ändern: nutze --rename, --role, --color, --argv-json "
             "oder --prompt-text"
         )
-    return changes, target, written
+    return changes, target, []
 
 
 def add_blueprint(name, role, color, argv_json, prompt_text, actor):
@@ -674,23 +637,14 @@ def add_team(name, repos, members_json, orchestrator_argv_json=None,
             legacy.get("prompt") or teams.DEFAULT_ORCHESTRATOR_PROMPT
         )
     teams.validate_team(data, name, normalized, members, reviewer, limit)
-    written = []
-    if template is not None:
-        directory = os.path.dirname(path)
-        source = _abs(directory, template)
-        target = _abs(directory, prompt)
-        if not os.path.exists(target):
-            if not os.path.isfile(source):
-                raise FabError(
-                    f"Orchestrator-Vorlage fehlt: {source}; lege sie an oder "
-                    "gib --orchestrator-prompt PFAD an"
-                )
-            with open(source, encoding="utf-8") as handle:
-                raw = handle.read()
-            store.atomic_write(
-                target, raw, mode=_mode(target, _mode(source, 0o644))
+    if template is not None and store.prompt_get(prompt) is None:
+        raw = store.prompt_get(template)
+        if raw is None:
+            raise FabError(
+                f"Orchestrator-Vorlage fehlt: {template}; lege sie an oder "
+                "gib --orchestrator-prompt PFAD an"
             )
-            written.append(target)
+        store.prompt_set(prompt, raw)
     entry = {
         "name": name,
         "fabric": fabric,
@@ -709,7 +663,6 @@ def add_team(name, repos, members_json, orchestrator_argv_json=None,
         f"Team {name} angelegt: {len(normalized)} Repo(s), Mitglieder "
         f"{', '.join(_member_descriptions(members))}, Prüfer {reviewer}, "
         f"max_sessions {limit}, Fabric {fabric}",
-        written=written,
     )
     return entry
 

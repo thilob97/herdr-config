@@ -46,8 +46,10 @@ class FabricCaseBase(FabricCase):
         }
 
     def roster_file(self):
-        with open(self.roster, encoding="utf-8") as handle:
-            return json.load(handle)
+        from fabric.fablib import store
+
+        with self.store_env():
+            return json.loads(store.config_get(store.ROSTER_CONFIG_KEY) or "{}")
 
 
 class LegacyTests(FabricCaseBase):
@@ -189,9 +191,9 @@ class IndexAndReportTests(FabricCaseBase):
 
     def test_index_traegt_fabric_und_fabrics(self):
         tid = self.new("Fabric-Ticket")
-        # `fab index` schreibt nur; lesen über die Datei.
-        with open(os.path.join(self.home, "index.json"), encoding="utf-8") as handle:
-            data = json.load(handle)
+        # `fab index` schreibt in die DB; lesen über das Lesemodell.
+        self.ok("index")
+        data = self.index()
         entry = next(row for row in data["tickets"] if row["id"] == tid)
         self.assertEqual(entry["fabric"], "privat")
         self.assertEqual(entry["team"], "herdr-app")

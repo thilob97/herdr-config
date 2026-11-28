@@ -1,6 +1,6 @@
 """Alarme aus Pipeline-, Autopilot- und Wächterzustand.
 
-Die UI liest `index.json["alarm"]`; derselbe Zustand speist die Alarm-Einträge
+Die UI liest das Lesemodell `index` (`alarm`); derselbe Zustand speist die Alarm-Einträge
 der Inbox. Quittiert wird über den Meta-Schlüssel `alarm_ack` (JSON-Liste),
 damit ein Alarm nicht bei jeder Neuberechnung erneut als Banner erscheint.
 """

@@ -231,13 +231,8 @@ def environment(state):
     Menschen hängen; es wird deshalb entfernt, damit `HC_SESSION` greift.
     """
     env = dict(os.environ)
-    for key in ("HC_TERMINAL_SOCKET", "HC_SCOPE", "HC_TERMINAL_ID"):
+    for key in ("HC_TERMINAL_SOCKET", "HC_SCOPE", "HC_TERMINAL_ID", "FAB_ROSTER"):
         env.pop(key, None)
-    roster = os.path.join(state["home"], "fabric", "roster.json")
-    if os.path.isfile(roster):
-        env["FAB_ROSTER"] = roster
-    else:
-        env.pop("FAB_ROSTER", None)
     env.update(
         {
             "HOME": state["userhome"],
@@ -354,7 +349,7 @@ def _seed_window(state, page="board"):
 def _seed_metrics(state):
     """Demokosten und -liegezeiten in der Vorschau-Datenbank anlegen.
 
-    Nur in der DB, nicht in den Lesemodellen: `fab tick` baut `index.json` aus
+    Nur in der DB, nicht in den Lesemodellen: `fab tick` baut das Lesemodell aus
     der DB neu und würde injizierte Werte sonst wieder verlieren.
     """
     from . import events, index, store
@@ -401,7 +396,7 @@ def _seed_metrics(state):
     keys = {
         "HOME": state["userhome"],
         "FAB_HOME": state["fab_home"],
-        "FAB_ROSTER": os.path.join(state["home"], "fabric", "roster.json"),
+
     }
     previous = {key: os.environ.get(key) for key in keys}
     os.environ.update(keys)
@@ -453,7 +448,7 @@ def _seed_pipelines(state):
     keys = {
         "HOME": state["userhome"],
         "FAB_HOME": state["fab_home"],
-        "FAB_ROSTER": os.path.join(state["home"], "fabric", "roster.json"),
+
     }
     previous = {key: os.environ.get(key) for key in keys}
     os.environ.update(keys)
@@ -525,7 +520,6 @@ def _seed_alarm(state):
     keys = {
         "HOME": state["userhome"],
         "FAB_HOME": state["fab_home"],
-        "FAB_ROSTER": os.path.join(state["home"], "fabric", "roster.json"),
     }
     previous = {key: os.environ.get(key) for key in keys}
     os.environ.update(keys)
@@ -556,14 +550,20 @@ def _seed_alarm(state):
                 "updated_at": now,
                 "paused_since": now - 60000,
                 "last_action": "ROT nach T-1: Revert, Abnahmen pausiert",
-                "log": os.path.join(state["fab_home"], "autopilot.log"),
+                "log": "db",
                 "pid": 0,
             }
-            store.atomic_write(
-                os.path.join(state["fab_home"], "autopilot.json"),
-                json.dumps(payload, ensure_ascii=False),
+            store.meta_set(
+                store.AUTOPILOT_KEY, json.dumps(payload, ensure_ascii=False)
             )
-            # Die UI liest den Alarm aus index.json; ohne diesen Lauf sähe die
+            store.meta_set(store.AUTOPILOT_PAUSE_KEY, payload["reason"])
+            for line in (
+                "07:50:00 ROT nach T-1: Revert, Abnahmen pausiert",
+                "07:51:00 Autopilot gestartet, Ende offen",
+                "07:52:00 ROT nach T-1: main nach Merge rot",
+            ):
+                store.autopilot_log_append(line, at=now)
+            # Der Alarm steht im Lesemodell `index`; ohne diesen Lauf sähe die
             # Vorschau bis zum nächsten `fab`-Aufruf keinen Banner.
             index.rebuild()
     finally:
@@ -604,9 +604,29 @@ def _seed_knowledge_repo(state):
     return home
 
 
+def _seed_config(state):
+    """Roster, Prompts und Vorlagen aus der DB des Aufrufers in die Vorschau-DB
+    legen: Konfiguration liegt nur noch in SQLite, nicht mehr im Repo."""
+    from . import store
+
+    with store.locked():
+        data = store.config_export()
+    keys = {"HOME": state["userhome"], "FAB_HOME": state["fab_home"]}
+    previous = {key: os.environ.get(key) for key in keys}
+    os.environ.update(keys)
+    try:
+        with store.locked():
+            store.config_import(data)
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 def _seed(state, ticket, worktree, repo=None):
     env = environment(state)
-    env["FAB_ROSTER"] = os.path.join(root(ticket["id"]), "keine-roster.json")
     title = ticket.get("title") or ""
     command = [
         sys.executable,
@@ -705,6 +725,7 @@ def start(ticket, page="board"):
         os.makedirs(folder, exist_ok=True)
     _copy_worktree(worktree, state["home"])
     _seed_window(state, page)
+    _seed_config(state)
     demo_repo = _seed_knowledge_repo(state) if page == "knowledge" else None
     _seed(state, ticket, worktree, repo=demo_repo)
     _seed_metrics(state)

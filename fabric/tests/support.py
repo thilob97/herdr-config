@@ -13,6 +13,10 @@ from unittest import mock
 
 from fabric.fablib import store
 
+# Scharfschaltung: `store.home()` bricht ab, wenn ein Test ohne temporäres
+# FAB_HOME läuft. Die echten Daten unter dem Standard-Home bleiben unberührt.
+os.environ["FAB_TEST_GUARD"] = "1"
+
 FAB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "fab")
 FABRIC = os.path.dirname(FAB)
 
@@ -199,6 +203,7 @@ PREAMBLE = (
 class FabricCase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="fabtest-")
+        os.environ["FAB_TEST_ROOT"] = self.tmp
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.home = os.path.join(self.tmp, "data")
         self.fake_home = os.path.join(self.tmp, "home")
@@ -223,6 +228,8 @@ class FabricCase(unittest.TestCase):
                     "Ada-Rolle: prüfe das Ticket.\n")
         self.roster = os.path.join(self.roster_dir, "roster.json")
         self._owned_repos = []
+        self._config_seen = {}
+        self._config_paths = {}
         self.write_roster()
         self.hc_log = os.path.join(self.tmp, "hc.log")
         self.ls_json = os.path.join(self.tmp, "ls.json")
@@ -246,7 +253,6 @@ class FabricCase(unittest.TestCase):
         self.env.update(
             HOME=self.fake_home,
             FAB_HOME=self.home,
-            FAB_ROSTER=self.roster,
             FAB_CLAUDE_JSON=self.claude_json,
             HC_LOG=self.hc_log,
             HC_LS=self.ls_json,
@@ -259,8 +265,70 @@ class FabricCase(unittest.TestCase):
             PATH=self.bin + os.pathsep + os.environ.get("PATH", ""),
             GIT_CONFIG_NOSYSTEM="1",
         )
+        self._sync_config()
 
     # -- Grundlagen
+
+    def _sync_config(self):
+        """Datei-Fixture (Roster, Prompts, Vorlagen) in die Test-DB übernehmen.
+
+        Die Tests arbeiten weiter mit Dateien im Rosterordner; der Fab-Betrieb
+        liest SQLite. Geändert wird nur, wenn sich eine Datei seit dem letzten
+        Lauf bewegt hat — so überschreibt das Seeden keine DB-Änderung einer
+        vorherigen `fab`-Ausführung. Verschwundene Dateien löschen den Eintrag.
+        """
+        files = []
+        if os.path.isfile(self.roster):
+            files.append(("roster", self.roster, None))
+        for folder, kind in (
+            (os.path.join(self.roster_dir, "prompts"), "prompt"),
+            (os.path.join(self.roster_dir, "templates"), "template"),
+        ):
+            if not os.path.isdir(folder):
+                continue
+            for name in sorted(os.listdir(folder)):
+                if name.endswith(".md"):
+                    files.append((kind, os.path.join(folder, name), name[:-3]))
+        pending = []
+        for kind, path, name in files:
+            self._config_paths[path] = (kind, name)
+            stat = os.stat(path)
+            stamp = (stat.st_mtime_ns, stat.st_size)
+            if self._config_seen.get(path) == stamp:
+                continue
+            try:
+                with open(path, encoding="utf-8") as handle:
+                    text = handle.read()
+            except OSError:
+                continue
+            pending.append((kind, path, name, text, stamp, False))
+        for path, (kind, name) in self._config_paths.items():
+            if not os.path.exists(path):
+                pending.append((kind, path, name, None, None, True))
+        if not pending:
+            return
+        with mock.patch.dict(os.environ, {"FAB_HOME": self.home, "HOME": self.fake_home}):
+            with store.locked():
+                for kind, path, name, text, stamp, deleted in pending:
+                    if deleted:
+                        if kind == "roster":
+                            store.config_delete(store.ROSTER_CONFIG_KEY)
+                        elif kind == "prompt":
+                            store.prompt_delete(f"prompts/{name}.md")
+                        else:
+                            store.template_delete(name)
+                        self._config_seen.pop(path, None)
+                        continue
+                    if kind == "roster":
+                        try:
+                            store.roster_set(json.loads(text))
+                        except ValueError:
+                            continue
+                    elif kind == "prompt":
+                        store.prompt_set(f"prompts/{name}.md", text)
+                    else:
+                        store.template_set(name, text)
+                    self._config_seen[path] = stamp
 
     def _write(self, path, text):
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -320,7 +388,25 @@ class FabricCase(unittest.TestCase):
         if path not in self._owned_repos:
             self._owned_repos.append(path)
         self.ok("roster", "--json")
-        data = json.loads(self._read(self.roster))
+        with self.store_env():
+            data = json.loads(store.config_get(store.ROSTER_CONFIG_KEY) or "{}")
+        if not data.get("teams"):
+            # Die Datei-Fixture in `write_roster` legt Teams erst an, sobald
+            # ein Repo gehört wird. Der erste `own_repo`-Aufruf füllt das
+            # deshalb nach, statt am fehlenden Schlüssel zu scheitern.
+            agents = data.get("agents") or []
+            data["blueprints"] = [dict(entry) for entry in agents]
+            data["teams"] = [
+                {
+                    "name": team,
+                    "repos": self._team_repos(),
+                    "orchestrator": dict(data.get("orchestrator") or {}),
+                    "members": [{"blueprint": entry["name"]} for entry in agents],
+                    "reviewer": data.get("reviewer"),
+                    "max_sessions": data.get("max_sessions", 4),
+                }
+            ]
+            data.setdefault("max_sessions_total", data.get("max_sessions", 4))
         entry = next(item for item in data["teams"] if item["name"] == team)
         repos = list(entry.get("repos") or [])
         for candidate in [path, *self._team_repos()]:
@@ -337,6 +423,7 @@ class FabricCase(unittest.TestCase):
         return path
 
     def cli(self, *args, env=None, cwd=None, input_text=None, timeout=None):
+        self._sync_config()
         merged = dict(self.env)
         merged.update(env or {})
         return subprocess.run(
@@ -410,7 +497,8 @@ class FabricCase(unittest.TestCase):
 
     def store_env(self):
         """`store` im Fixture-Home ausführen, ohne Subprozess."""
-        return mock.patch.dict(os.environ, {"FAB_HOME": self.home})
+        self._sync_config()
+        return mock.patch.dict(os.environ, {"FAB_HOME": self.home, "HOME": self.fake_home})
 
     def meta(self, key):
         with self.store_env():
@@ -466,8 +554,11 @@ class FabricCase(unittest.TestCase):
         return rows
 
     def ticket(self, tid):
-        with open(os.path.join(self.home, "tickets", f"{tid}.json"), encoding="utf-8") as handle:
-            return json.load(handle)
+        with self.store_env():
+            payload = store.read_model_json(store.ticket_model_key(tid))
+        if payload is None:
+            raise FileNotFoundError(f"Ticket {tid} hat kein Lesemodell")
+        return payload
 
     def patch_ticket(self, tid, **fields):
         with self.store_env():
@@ -478,8 +569,11 @@ class FabricCase(unittest.TestCase):
         return ticket
 
     def index(self):
-        with open(os.path.join(self.home, "index.json"), encoding="utf-8") as handle:
-            return json.load(handle)
+        with self.store_env():
+            payload = store.read_model_json("index")
+        if payload is None:
+            raise FileNotFoundError("index hat kein Lesemodell")
+        return payload
 
     def new(self, sentence="Test", repo=None, author=None):
         explicit = repo is not None

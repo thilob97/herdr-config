@@ -1,9 +1,7 @@
-"""Promptdateien lesen, zeigen und schreiben (Abschnitt 3b des Vertrags)."""
-import os
+"""Prompts aus der Datenbank lesen, zeigen und schreiben (Abschnitt 3b)."""
 import re
-import stat
 
-from . import events, git, index, store, teams
+from . import events, index, store, teams
 from .errors import FabError
 
 PLACEHOLDER_RE = re.compile(r"\{([a-z][a-z0-9_-]*)\}")
@@ -15,6 +13,25 @@ KNOWN = (
 ORCHESTRATOR = "orchestrator"
 PREAMBLE = "preamble"
 PREAMBLE_PATH = "prompts/preamble.md"
+ORCHESTRATOR_PATH = "prompts/orchestrator.md"
+
+# Untergrenze für eine frische Datenbank; bestehende Installationen migrieren
+# ihre Dateien aus dem Rosterordner.
+DEFAULTS = {
+    PREAMBLE_PATH: (
+        "# Ticket {id}: {title}\n\n"
+        "Du bist {agent} ({role}) im Worktree {worktree} auf {branch} "
+        "(Basis {base}). Prüferin ist {reviewer}.\n"
+    ),
+    ORCHESTRATOR_PATH: (
+        "# Orchestrator\n\n"
+        "Du formulierst den Satz des Menschen zu ausführbarer Arbeit um und "
+        "verteilst sie an das Team. Du schreibst keinen Produktcode, du prüfst "
+        "nicht selbst und du nimmst nichts ab: `accept` und `reject` gehören "
+        "dem Menschen. Kein Merge, kein Push.\n\n"
+        "## Lehren\n\n{lessons}\n\n## Kontext\n\n{context}\n"
+    ),
+}
 
 
 def placeholders(text):
@@ -29,17 +46,6 @@ def placeholders(text):
 
 def unknown_placeholders(text):
     return [name for name in placeholders(text) if name not in KNOWN]
-
-
-def _mode(path, fallback):
-    try:
-        return stat.S_IMODE(os.stat(path).st_mode)
-    except OSError:
-        return fallback
-
-
-def _abs(roster, rel):
-    return rel if os.path.isabs(rel) else os.path.join(roster["dir"], rel)
 
 
 def _team_entry(roster, team):
@@ -64,7 +70,7 @@ def _agents(roster):
 
 
 def _resolve(roster, name, team=None):
-    """→ (kind, relativer Pfad) für `orchestrator`, `preamble` oder eine Blaupause."""
+    """→ (kind, relativer Schlüssel) für `orchestrator`, `preamble` oder eine Blaupause."""
     value = (name or "").strip()
     if not value:
         raise FabError("Prompt-Name fehlt")
@@ -86,6 +92,14 @@ def _resolve(roster, name, team=None):
     )
 
 
+def text(_roster, rel):
+    """Prompttext aus der DB; fehlt er, ein deutscher Fehler."""
+    stored = store.prompt_get(rel)
+    if stored is None:
+        raise FabError(f"Prompt fehlt: {rel}")
+    return stored
+
+
 def entries(roster):
     rows = []
     sources = [
@@ -96,19 +110,14 @@ def entries(roster):
         (entry["name"], "agent", entry["prompt"]) for entry in _agents(roster)
     ]
     for name, kind, rel in sources:
-        path = _abs(roster, rel)
-        try:
-            with open(path, "rb") as handle:
-                raw = handle.read()
-        except OSError:
-            raw = b""
+        raw = store.prompt_get(rel) or ""
         rows.append(
             {
                 "name": name,
                 "kind": kind,
-                "path": os.path.abspath(path),
-                "bytes": len(raw),
-                "placeholders": placeholders(raw.decode("utf-8", "replace")),
+                "path": rel,
+                "bytes": len(raw.encode("utf-8")),
+                "placeholders": placeholders(raw),
             }
         )
     return rows
@@ -116,25 +125,14 @@ def entries(roster):
 
 def show(roster, name, team=None):
     _kind, rel = _resolve(roster, name, team)
-    path = _abs(roster, rel)
-    try:
-        with open(path, encoding="utf-8") as handle:
-            return handle.read()
-    except FileNotFoundError:
-        raise FabError(f"Prompt fehlt: {path}")
-    except OSError as exc:
-        raise FabError(f"Prompt nicht lesbar: {path}: {exc}")
+    return text(roster, rel)
 
 
-def save(roster, name, text, actor, team=None):
-    """Speichert den Rohtext atomar. Rückgabe: (Pfad, Bytes, unbekannte Platzhalter)."""
+def save(roster, name, text_value, actor, team=None):
+    """Speichert den Rohtext in der DB. Rückgabe: (Schlüssel, Bytes, unbekannte Platzhalter)."""
     _kind, rel = _resolve(roster, name, team)
-    path = _abs(roster, rel)
-    store.atomic_write(path, text, mode=_mode(path, 0o644))
-    size = len(text.encode("utf-8"))
+    store.prompt_set(rel, text_value)
+    size = len(text_value.encode("utf-8"))
     events.append("config", "", actor, "", f"Prompt {rel} gespeichert ({size} Bytes)")
     index.rebuild()
-    git.commit_paths(
-        path, [path], f"chore(prompt): {rel} gespeichert ({size} Bytes)"
-    )
-    return path, size, unknown_placeholders(text)
+    return rel, size, unknown_placeholders(text_value)
